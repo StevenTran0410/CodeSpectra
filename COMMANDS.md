@@ -23,6 +23,28 @@ uv pip install -e ".[dev]"
 cd ..
 ```
 
+### GitHub integration (optional)
+
+To enable the GitHub connect feature, register an OAuth App:
+
+1. Go to [github.com/settings/developers](https://github.com/settings/developers) → **New OAuth App**
+2. Set **Homepage URL** to `http://localhost`
+3. Set **Authorization callback URL** to `http://localhost` (unused for Device Flow)
+4. Enable **Device Flow** in the app settings
+5. Copy the **Client ID** (not the secret — Device Flow is a public-client flow)
+6. Set the environment variable before starting the app:
+
+```bash
+# PowerShell
+$env:CODESPECTRA_GITHUB_CLIENT_ID = "your_client_id_here"
+npm run dev
+
+# bash / zsh
+CODESPECTRA_GITHUB_CLIENT_ID=your_client_id_here npm run dev
+```
+
+Or add it to a `.env` file at the project root (never commit this file).
+
 ---
 
 ## Development

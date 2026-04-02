@@ -6,6 +6,7 @@ import { registerWorkspaceHandlers } from './api/workspace.api'
 import { registerProviderHandlers } from './api/provider.api'
 import { registerConsentHandlers } from './api/consent.api'
 import { registerFolderHandlers } from './api/folder.api'
+import { registerGitHubHandlers } from './api/github.api'
 import { registerAppHandlers } from './api/app.api'
 import { logger } from './shared/logger'
 
@@ -25,6 +26,7 @@ app.whenReady().then(async () => {
     registerProviderHandlers(client)
     registerConsentHandlers(client)
     registerFolderHandlers(client)
+    registerGitHubHandlers(client)
 
     createMainWindow()
     logger.info('Startup complete')

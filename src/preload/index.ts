@@ -4,7 +4,11 @@ import type {
   Workspace,
   ProviderConfig,
   CreateProviderRequest,
-  UpdateProviderRequest
+  UpdateProviderRequest,
+  DeviceFlowStart,
+  DeviceFlowPollResult,
+  GitHubAccount,
+  GitHubRepoListResponse,
 } from '../main/api/types'
 
 const api = {
@@ -41,6 +45,20 @@ const api = {
     revalidate: (id: string) => ipcRenderer.invoke('folder:revalidate', id),
     branches: (id: string): Promise<string[]> => ipcRenderer.invoke('folder:branches', id),
     setBranch: (id: string, branch: string) => ipcRenderer.invoke('folder:setBranch', id, branch)
+  },
+  github: {
+    startDeviceFlow: (): Promise<DeviceFlowStart> =>
+      ipcRenderer.invoke('github:startDeviceFlow'),
+    pollDeviceFlow: (deviceCode: string): Promise<DeviceFlowPollResult> =>
+      ipcRenderer.invoke('github:pollDeviceFlow', deviceCode),
+    openBrowser: (url: string): Promise<void> =>
+      ipcRenderer.invoke('github:openBrowser', url),
+    getAccount: (): Promise<GitHubAccount | null> =>
+      ipcRenderer.invoke('github:getAccount'),
+    disconnect: (): Promise<void> =>
+      ipcRenderer.invoke('github:disconnect'),
+    listRepos: (query?: string, page?: number): Promise<GitHubRepoListResponse> =>
+      ipcRenderer.invoke('github:listRepos', query, page),
   },
   app: {
     getVersion: (): Promise<string> => ipcRenderer.invoke('app:get-version'),

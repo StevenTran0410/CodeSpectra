@@ -13,9 +13,17 @@ import {
   ChevronDown,
   XCircle,
   Link,
+  Search,
+  LogOut,
+  Copy,
+  Check,
+  ExternalLink,
+  Lock,
+  Unlock,
 } from 'lucide-react'
 import { useLocalRepoStore } from '../../store/local-repo.store'
-import type { LocalRepo, ValidateFolderResponse } from '../../types/electron'
+import { useGitHubStore } from '../../store/github.store'
+import type { GitHubRepo, LocalRepo, ValidateFolderResponse } from '../../types/electron'
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Validation preview card — shown after folder picker before saving
@@ -348,10 +356,340 @@ function AddFolderPanel({ onClose }: { onClose: () => void }) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// GitHub — Device Flow Wizard
+// ──────────────────────────────────────────────────────────────────────────────
+function GitHubConnectWizard({ onCancel }: { onCancel: () => void }) {
+  const { deviceFlow, connecting, connectStatus, connectError, startConnect, pollConnect, cancelConnect } = useGitHubStore()
+  const [copied, setCopied] = useState(false)
+  // Polling interval ref
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const intervalRef = useRef(deviceFlow?.interval ?? 5)
+
+  const stopPolling = () => {
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
+  }
+
+  useEffect(() => {
+    if (deviceFlow && connectStatus === 'waiting') {
+      intervalRef.current = deviceFlow.interval
+      stopPolling()
+      pollRef.current = setInterval(async () => {
+        await pollConnect()
+        const status = useGitHubStore.getState().connectStatus
+        if (status === 'slow_down') {
+          intervalRef.current = Math.min(intervalRef.current + 5, 30)
+          stopPolling()
+          pollRef.current = setInterval(() => pollConnect(), intervalRef.current * 1000)
+        }
+        if (!['waiting', 'slow_down'].includes(status)) stopPolling()
+      }, intervalRef.current * 1000)
+    }
+    return stopPolling
+  }, [deviceFlow, connectStatus, pollConnect])
+
+  const handleCancel = () => { stopPolling(); cancelConnect(); onCancel() }
+
+  const handleCopy = () => {
+    if (deviceFlow?.user_code) {
+      navigator.clipboard.writeText(deviceFlow.user_code)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    }
+  }
+
+  if (connectStatus === 'expired') return (
+    <div className="bg-zinc-800/60 border border-zinc-700 rounded-xl p-5 space-y-4">
+      <p className="text-sm text-amber-400 font-medium">Code expired. Start again.</p>
+      <div className="flex gap-2">
+        <button onClick={() => { startConnect() }} className="btn-primary text-xs">Try again</button>
+        <button onClick={handleCancel} className="btn-secondary text-xs">Cancel</button>
+      </div>
+    </div>
+  )
+
+  if (connectStatus === 'denied') return (
+    <div className="bg-zinc-800/60 border border-zinc-700 rounded-xl p-5 space-y-4">
+      <p className="text-sm text-red-400 font-medium">Authorization denied.</p>
+      <button onClick={handleCancel} className="btn-secondary text-xs">Close</button>
+    </div>
+  )
+
+  if (connectStatus === 'error') return (
+    <div className="bg-zinc-800/60 border border-zinc-700 rounded-xl p-5 space-y-4">
+      <p className="text-sm text-red-400 font-medium">Error: {connectError}</p>
+      <button onClick={handleCancel} className="btn-secondary text-xs">Close</button>
+    </div>
+  )
+
+  return (
+    <div className="bg-zinc-800/60 border border-zinc-700 rounded-xl p-5 space-y-5">
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-semibold text-zinc-200">Connect GitHub</h3>
+        <button onClick={handleCancel} className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors">Cancel</button>
+      </div>
+
+      {!deviceFlow && connecting && (
+        <div className="flex items-center gap-2 text-sm text-zinc-400 py-4">
+          <Loader2 size={14} className="animate-spin" />
+          Starting device flow…
+        </div>
+      )}
+
+      {deviceFlow && (
+        <>
+          <div className="text-sm text-zinc-400 space-y-1">
+            <p>Your browser has been opened at:</p>
+            <a
+              href="#"
+              onClick={(e) => { e.preventDefault(); window.api.github.openBrowser(deviceFlow.verification_uri) }}
+              className="text-xs text-blue-400 hover:underline font-mono"
+            >
+              {deviceFlow.verification_uri}
+            </a>
+          </div>
+
+          {/* User code — big & prominent */}
+          <div className="flex flex-col items-center gap-3 py-4 border border-zinc-700 rounded-xl bg-zinc-900/60">
+            <p className="text-xs text-zinc-500">Enter this code on GitHub</p>
+            <div className="flex items-center gap-3">
+              <span className="text-3xl font-mono font-bold tracking-widest text-zinc-100 select-all">
+                {deviceFlow.user_code}
+              </span>
+              <button
+                onClick={handleCopy}
+                className="p-2 text-zinc-500 hover:text-zinc-300 hover:bg-zinc-700 rounded-md transition-colors"
+                title="Copy code"
+              >
+                {copied ? <Check size={14} className="text-emerald-400" /> : <Copy size={14} />}
+              </button>
+            </div>
+            <button
+              onClick={() => window.api.github.openBrowser(deviceFlow.verification_uri)}
+              className="flex items-center gap-1.5 text-xs text-blue-400 hover:text-blue-300 transition-colors"
+            >
+              <ExternalLink size={12} />
+              Open GitHub again
+            </button>
+          </div>
+
+          <div className="flex items-center gap-2 text-xs text-zinc-500">
+            <Loader2 size={12} className="animate-spin" />
+            Waiting for authorization…
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// GitHub — Connected account card
+// ──────────────────────────────────────────────────────────────────────────────
+function GitHubAccountCard() {
+  const { account, disconnect, loadRepos, repos, repoPage, repoHasMore, loadingRepos, repoError, repoQuery, loadMoreRepos, clearRepoError } = useGitHubStore()
+  const [query, setQuery] = useState(repoQuery)
+  const searchTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => { loadRepos() }, [loadRepos])
+
+  const handleSearch = (val: string) => {
+    setQuery(val)
+    if (searchTimeout.current) clearTimeout(searchTimeout.current)
+    searchTimeout.current = setTimeout(() => loadRepos(val, 1), 400)
+  }
+
+  if (!account) return null
+
+  return (
+    <div className="space-y-4">
+      {/* Account card */}
+      <div className="flex items-center gap-3 bg-zinc-800/40 border border-zinc-700/70 rounded-xl px-4 py-3">
+        {account.avatar_url ? (
+          <img src={account.avatar_url} alt={account.login} className="w-9 h-9 rounded-full border border-zinc-600" />
+        ) : (
+          <div className="w-9 h-9 rounded-full bg-zinc-700 border border-zinc-600 flex items-center justify-center text-zinc-400 font-semibold text-sm">
+            {account.login[0].toUpperCase()}
+          </div>
+        )}
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-semibold text-zinc-100">{account.display_name ?? account.login}</p>
+          <p className="text-xs text-zinc-500">@{account.login}</p>
+        </div>
+        <button
+          onClick={() => disconnect()}
+          title="Disconnect GitHub"
+          className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs text-zinc-500 hover:text-red-400 hover:bg-red-500/10 border border-zinc-700 hover:border-red-500/30 rounded-lg transition-colors"
+        >
+          <LogOut size={12} />
+          Disconnect
+        </button>
+      </div>
+
+      {/* Repo search */}
+      <div className="relative">
+        <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500 pointer-events-none" />
+        <input
+          type="text"
+          value={query}
+          onChange={(e) => handleSearch(e.target.value)}
+          placeholder="Search repositories…"
+          className="w-full pl-9 pr-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-zinc-500 transition-colors"
+        />
+      </div>
+
+      {repoError && (
+        <div className="flex items-center gap-2 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2 text-xs text-red-400">
+          <AlertTriangle size={12} />
+          <span className="flex-1">{repoError}</span>
+          <button onClick={clearRepoError} className="text-red-500/60 hover:text-red-400">✕</button>
+        </div>
+      )}
+
+      {/* Repo list */}
+      <div className="space-y-2">
+        {loadingRepos && repos.length === 0 && (
+          <div className="flex items-center gap-2 text-sm text-zinc-500 py-4">
+            <Loader2 size={14} className="animate-spin" /> Loading repositories…
+          </div>
+        )}
+
+        {repos.map((repo) => (
+          <GitHubRepoCard key={repo.id} repo={repo} />
+        ))}
+
+        {!loadingRepos && repos.length === 0 && !repoError && (
+          <p className="text-sm text-zinc-600 py-4 text-center">No repositories found</p>
+        )}
+      </div>
+
+      {/* Load more */}
+      {repoHasMore && (
+        <button
+          onClick={loadMoreRepos}
+          disabled={loadingRepos}
+          className="w-full py-2 text-xs text-zinc-500 hover:text-zinc-300 border border-zinc-700 hover:border-zinc-600 rounded-lg transition-colors flex items-center justify-center gap-1.5"
+        >
+          {loadingRepos ? <Loader2 size={12} className="animate-spin" /> : null}
+          {loadingRepos ? 'Loading…' : `Load more (page ${repoPage + 1})`}
+        </button>
+      )}
+    </div>
+  )
+}
+
+function GitHubRepoCard({ repo }: { repo: GitHubRepo }) {
+  const timeAgo = (iso: string) => {
+    const diff = Date.now() - new Date(iso).getTime()
+    const days = Math.floor(diff / 86400000)
+    if (days === 0) return 'today'
+    if (days === 1) return 'yesterday'
+    if (days < 30) return `${days}d ago`
+    const months = Math.floor(days / 30)
+    return months === 1 ? '1mo ago' : `${months}mo ago`
+  }
+
+  return (
+    <div className="flex items-start gap-3 bg-zinc-800/40 border border-zinc-700/70 rounded-xl p-3 hover:border-zinc-600 transition-colors">
+      <div className="shrink-0 w-8 h-8 rounded-lg bg-zinc-700/60 border border-zinc-600 flex items-center justify-center mt-0.5">
+        {repo.is_private ? <Lock size={13} className="text-amber-400" /> : <Unlock size={13} className="text-zinc-400" />}
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-sm font-semibold text-zinc-100 truncate">{repo.name}</span>
+          {repo.is_private && (
+            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs bg-amber-500/10 text-amber-400 border border-amber-500/20">
+              Private
+            </span>
+          )}
+          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs bg-zinc-700/60 text-zinc-500 border border-zinc-600">
+            <GitBranch size={10} />
+            {repo.default_branch}
+          </span>
+        </div>
+        {repo.description && (
+          <p className="text-xs text-zinc-500 mt-0.5 line-clamp-2">{repo.description}</p>
+        )}
+        <div className="flex items-center gap-3 mt-1.5">
+          <span className="text-xs text-zinc-600">{repo.owner_login}/{repo.name}</span>
+          <span className="text-xs text-zinc-600">Updated {timeAgo(repo.updated_at)}</span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// GitHub — full section (not connected / connecting / connected)
+// ──────────────────────────────────────────────────────────────────────────────
+function GitHubSection() {
+  const { account, loadingAccount, connecting, connectStatus, startConnect, loadAccount } = useGitHubStore()
+  const [showWizard, setShowWizard] = useState(false)
+
+  useEffect(() => { loadAccount() }, [loadAccount])
+
+  const handleConnect = async () => {
+    setShowWizard(true)
+    await startConnect()
+  }
+
+  // Auto-close wizard on success
+  useEffect(() => {
+    if (connectStatus === 'success') setShowWizard(false)
+  }, [connectStatus])
+
+  return (
+    <section>
+      <div className="flex items-center gap-2 mb-4">
+        <div className="flex items-center gap-2">
+          {/* GitHub icon via SVG */}
+          <svg viewBox="0 0 24 24" className="w-4 h-4 text-zinc-300 fill-current">
+            <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z" />
+          </svg>
+          <h2 className="text-sm font-semibold text-zinc-300">GitHub</h2>
+        </div>
+        {!account && !showWizard && !loadingAccount && (
+          <button
+            onClick={handleConnect}
+            disabled={connecting}
+            className="ml-auto btn-primary text-xs py-1.5 px-3"
+          >
+            {connecting ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} />}
+            Connect
+          </button>
+        )}
+      </div>
+
+      {showWizard && <GitHubConnectWizard onCancel={() => setShowWizard(false)} />}
+
+      {!showWizard && account && <GitHubAccountCard />}
+
+      {!showWizard && !account && !loadingAccount && (
+        <div className="border border-dashed border-zinc-700 rounded-xl p-6 text-center">
+          <div className="w-10 h-10 rounded-xl bg-zinc-800 border border-zinc-700 flex items-center justify-center mx-auto mb-3">
+            <svg viewBox="0 0 24 24" className="w-5 h-5 text-zinc-500 fill-current">
+              <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z" />
+            </svg>
+          </div>
+          <p className="text-sm font-medium text-zinc-400">Not connected to GitHub</p>
+          <p className="text-xs text-zinc-600 mt-1 max-w-xs mx-auto">
+            Connect to browse and select repositories using OAuth Device Flow — no password needed.
+          </p>
+          <button onClick={handleConnect} className="mt-4 btn-primary text-xs">
+            <Plus size={12} />
+            Connect GitHub
+          </button>
+        </div>
+      )}
+    </section>
+  )
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Main screen
 // ──────────────────────────────────────────────────────────────────────────────
 export default function CodeHostsSetup(): React.ReactElement {
   const { repos, loading, error, load, remove, revalidate, revalidatingId, clearError } = useLocalRepoStore()
+  const { account: ghAccount } = useGitHubStore()
   const [showAdd, setShowAdd] = useState(false)
 
   useEffect(() => { load() }, [load])
@@ -362,9 +700,10 @@ export default function CodeHostsSetup(): React.ReactElement {
         <div>
           <h1 className="screen-title">Code Hosts</h1>
           <p className="screen-subtitle">
-            {repos.length > 0
-              ? `${repos.length} local folder${repos.length !== 1 ? 's' : ''} connected`
-              : 'Open local folders or connect a code host'}
+            {[
+              ghAccount ? `GitHub: @${ghAccount.login}` : null,
+              repos.length > 0 ? `${repos.length} local folder${repos.length !== 1 ? 's' : ''}` : null,
+            ].filter(Boolean).join(' · ') || 'Open local folders or connect a code host'}
           </p>
         </div>
         {!showAdd && (
@@ -448,29 +787,20 @@ export default function CodeHostsSetup(): React.ReactElement {
           </div>
         </section>
 
-        {/* Coming soon: GitHub / Bitbucket */}
+        {/* GitHub section */}
+        <GitHubSection />
+
+        {/* Bitbucket — coming soon */}
         <section>
-          <div className="flex items-center gap-3 mb-4">
-            <div className="flex-1 h-px bg-zinc-800" />
-            <span className="text-xs text-zinc-600 font-medium">Coming soon</span>
-            <div className="flex-1 h-px bg-zinc-800" />
+          <div className="flex items-center gap-2 mb-4">
+            <div className="flex items-center gap-2 opacity-40">
+              <span className="text-base">⊛</span>
+              <h2 className="text-sm font-semibold text-zinc-400">Bitbucket</h2>
+              <span className="px-1.5 py-0.5 rounded text-xs bg-zinc-800 text-zinc-600 border border-zinc-700">Coming soon</span>
+            </div>
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            {[
-              { name: 'GitHub', icon: '⊙', desc: 'Connect via GitHub App (RPA-023)' },
-              { name: 'Bitbucket', icon: '⊛', desc: 'Connect via Bitbucket OAuth (RPA-024)' },
-            ].map((host) => (
-              <div
-                key={host.name}
-                className="flex items-center gap-3 p-4 border border-dashed border-zinc-800 rounded-xl opacity-40"
-              >
-                <span className="text-xl">{host.icon}</span>
-                <div>
-                  <p className="text-sm font-medium text-zinc-400">{host.name}</p>
-                  <p className="text-xs text-zinc-600 mt-0.5">{host.desc}</p>
-                </div>
-              </div>
-            ))}
+          <div className="border border-dashed border-zinc-800 rounded-xl p-5 opacity-40 text-center">
+            <p className="text-xs text-zinc-600">Bitbucket OAuth integration (RPA-024)</p>
           </div>
         </section>
       </div>

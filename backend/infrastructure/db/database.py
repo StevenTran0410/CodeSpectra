@@ -77,6 +77,21 @@ _MIGRATIONS: list[dict[str, Any]] = [
             ALTER TABLE local_repos ADD COLUMN selected_branch TEXT;
         """,
     },
+    {
+        "version": 4,
+        "description": "Add github_accounts table for GitHub OAuth device flow",
+        "sql": """
+            CREATE TABLE IF NOT EXISTS github_accounts (
+                id           TEXT PRIMARY KEY,
+                login        TEXT NOT NULL,
+                display_name TEXT,
+                avatar_url   TEXT,
+                access_token TEXT NOT NULL,
+                created_at   TEXT NOT NULL,
+                updated_at   TEXT NOT NULL
+            );
+        """,
+    },
 ]
 
 TARGET_VERSION = len(_MIGRATIONS) - 1
