@@ -51,6 +51,32 @@ _MIGRATIONS: list[dict[str, Any]] = [
             );
         """,
     },
+    {
+        "version": 2,
+        "description": "Add local_repos table for local folder import",
+        "sql": """
+            CREATE TABLE IF NOT EXISTS local_repos (
+                id                TEXT PRIMARY KEY,
+                path              TEXT NOT NULL UNIQUE,
+                name              TEXT NOT NULL,
+                source_type       TEXT NOT NULL DEFAULT 'local_folder',
+                is_git_repo       INTEGER NOT NULL DEFAULT 0,
+                git_branch        TEXT,
+                git_head_hash     TEXT,
+                git_remote_url    TEXT,
+                has_size_warning  INTEGER NOT NULL DEFAULT 0,
+                added_at          TEXT NOT NULL,
+                last_validated_at TEXT NOT NULL
+            );
+        """,
+    },
+    {
+        "version": 3,
+        "description": "Add selected_branch to local_repos (user-chosen branch for analysis)",
+        "sql": """
+            ALTER TABLE local_repos ADD COLUMN selected_branch TEXT;
+        """,
+    },
 ]
 
 TARGET_VERSION = len(_MIGRATIONS) - 1

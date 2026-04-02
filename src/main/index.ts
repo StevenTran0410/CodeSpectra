@@ -5,6 +5,7 @@ import { startPythonServer, stopPythonServer } from './infrastructure/python-ser
 import { registerWorkspaceHandlers } from './api/workspace.api'
 import { registerProviderHandlers } from './api/provider.api'
 import { registerConsentHandlers } from './api/consent.api'
+import { registerFolderHandlers } from './api/folder.api'
 import { registerAppHandlers } from './api/app.api'
 import { logger } from './shared/logger'
 
@@ -23,6 +24,7 @@ app.whenReady().then(async () => {
     registerWorkspaceHandlers(client)
     registerProviderHandlers(client)
     registerConsentHandlers(client)
+    registerFolderHandlers(client)
 
     createMainWindow()
     logger.info('Startup complete')
