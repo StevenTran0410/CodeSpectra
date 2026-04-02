@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import { ErrorBanner } from '../../components/ui/ErrorBanner'
 import {
   Plus,
   Trash2,
@@ -19,10 +20,7 @@ import {
 } from 'lucide-react'
 import { ConsentBanner } from '../../components/providers/ConsentBanner'
 import { useProviderStore, type TestResult } from '../../store/provider.store'
-import type { ProviderConfig, CreateProviderRequest, UpdateProviderRequest } from '../../types/electron'
-
-// Cloud provider kinds
-const CLOUD_KINDS = new Set(['openai', 'anthropic', 'gemini', 'deepseek'])
+import { CLOUD_KINDS, type ProviderConfig, type CreateProviderRequest, type UpdateProviderRequest } from '../../types/electron'
 
 // Model presets for cloud providers (shown when Browse is unavailable)
 const CLOUD_MODEL_PRESETS: Record<string, string[]> = {
@@ -595,13 +593,7 @@ export default function ProvidersScreen() {
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto px-8 py-6 space-y-8">
-        {error && (
-          <div className="flex items-center gap-3 bg-red-500/10 border border-red-500/20 text-red-400 text-sm rounded-lg px-4 py-3">
-            <XCircle size={16} />
-            <span className="flex-1">{error}</span>
-            <button onClick={clearError} className="text-xs underline">Dismiss</button>
-          </div>
-        )}
+        {error && <ErrorBanner message={error} onDismiss={clearError} />}
 
         {loading && (
           <div className="flex items-center gap-2 text-zinc-500 text-sm">

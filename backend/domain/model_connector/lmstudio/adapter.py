@@ -1,8 +1,9 @@
 """LM Studio provider adapter — uses the OpenAI-compatible /v1/chat/completions endpoint."""
 import httpx
 
-from domain.model_connector.errors import ProviderError, ProviderErrorCode
-from domain.model_connector.types import ChatRequest, ChatResponse, ProviderConfig
+from domain.model_connector._local_base import LocalAdapterBase
+from domain.model_connector.errors import ProviderError
+from domain.model_connector.types import ChatRequest, ChatResponse
 from shared.logger import logger
 
 _NO_MODEL_WARNING = (
@@ -11,15 +12,8 @@ _NO_MODEL_WARNING = (
 )
 
 
-class LMStudioAdapter:
+class LMStudioAdapter(LocalAdapterBase):
     """Wrapper over LM Studio's OpenAI-compatible REST API."""
-
-    def __init__(self, config: ProviderConfig) -> None:
-        self.config = config
-        self._client = httpx.AsyncClient(
-            base_url=config.base_url,
-            timeout=httpx.Timeout(connect=5.0, read=120.0, write=10.0, pool=5.0),
-        )
 
     async def list_models(self) -> list[str]:
         try:
@@ -28,32 +22,13 @@ class LMStudioAdapter:
             data = res.json()
             return [m["id"] for m in data.get("data", [])]
         except httpx.ConnectError as e:
-            raise ProviderError(
-                ProviderErrorCode.CONNECTION_REFUSED,
-                f"Cannot reach LM Studio at {self.config.base_url}. "
-                "Make sure LM Studio is open and the Local Server is enabled.",
-                provider_id=self.config.id,
-                retryable=True,
-            ) from e
+            raise self._map_connect_error(e) from e
         except httpx.TimeoutException as e:
-            raise ProviderError(
-                ProviderErrorCode.TIMEOUT,
-                f"LM Studio at {self.config.base_url} timed out.",
-                provider_id=self.config.id,
-                retryable=True,
-            ) from e
+            raise self._map_timeout(e) from e
         except httpx.HTTPStatusError as e:
-            raise ProviderError(
-                ProviderErrorCode.UNKNOWN,
-                f"LM Studio returned HTTP {e.response.status_code}.",
-                provider_id=self.config.id,
-            ) from e
+            raise self._map_http_status(e) from e
         except Exception as e:
-            raise ProviderError(
-                ProviderErrorCode.UNKNOWN,
-                str(e),
-                provider_id=self.config.id,
-            ) from e
+            raise self._map_unknown(e) from e
 
     async def chat(self, request: ChatRequest) -> ChatResponse:
         payload = {
@@ -77,35 +52,25 @@ class LMStudioAdapter:
                 completion_tokens=usage.get("completion_tokens"),
             )
         except httpx.ConnectError as e:
-            raise ProviderError(
-                ProviderErrorCode.CONNECTION_REFUSED,
-                f"Cannot reach LM Studio at {self.config.base_url}",
-                provider_id=self.config.id,
-                retryable=True,
-            ) from e
+            raise self._map_connect_error(e) from e
         except httpx.TimeoutException as e:
             raise ProviderError(
-                ProviderErrorCode.TIMEOUT,
+                # Override message — LM Studio times out when model is slow
+                self._map_timeout(e).code,
                 "LM Studio request timed out — the model may be too slow or context too large.",
                 provider_id=self.config.id,
                 retryable=True,
             ) from e
         except httpx.HTTPStatusError as e:
             raise ProviderError(
-                ProviderErrorCode.UNKNOWN,
+                self._map_http_status(e).code,
                 f"LM Studio returned HTTP {e.response.status_code}: {e.response.text[:200]}",
                 provider_id=self.config.id,
             ) from e
         except (KeyError, IndexError) as e:
-            raise ProviderError(
-                ProviderErrorCode.UNKNOWN,
-                f"Unexpected response format from LM Studio: {e}",
-                provider_id=self.config.id,
-            ) from e
+            raise self._map_unknown(e) from e
         except Exception as e:
-            raise ProviderError(
-                ProviderErrorCode.UNKNOWN, str(e), provider_id=self.config.id
-            ) from e
+            raise self._map_unknown(e) from e
 
     async def test_connection(self) -> tuple[bool, str, str | None]:
         """Returns (ok, message, warning).
@@ -121,6 +86,3 @@ class LMStudioAdapter:
             return True, f"Connected — {len(models)} model(s) loaded", None
         except ProviderError as e:
             return False, e.message, None
-
-    async def aclose(self) -> None:
-        await self._client.aclose()

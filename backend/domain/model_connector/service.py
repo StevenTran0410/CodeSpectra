@@ -1,11 +1,10 @@
 """ProviderConfigService — persistence + live adapter routing for LLM providers."""
 import json
-import uuid
-from datetime import datetime, timezone
 
 from infrastructure.db.database import get_db
 from shared.errors import ConflictError, NotFoundError
 from shared.logger import logger
+from shared.utils import new_id, utc_now_iso
 
 from .anthropic.adapter import AnthropicAdapter
 from .deepseek.adapter import DeepSeekAdapter
@@ -14,7 +13,7 @@ from .gemini.adapter import GeminiAdapter
 from .lmstudio.adapter import LMStudioAdapter
 from .ollama.adapter import OllamaAdapter
 from .openai.adapter import OpenAIAdapter
-from .types import CLOUD_KINDS, ProviderCapabilities, ProviderConfig, ProviderKind
+from .types import ProviderCapabilities, ProviderConfig, ProviderKind
 
 
 class TestConnectionResult:
@@ -94,8 +93,8 @@ class ProviderConfigService:
             if await cur.fetchone():
                 raise ConflictError(f"A provider named '{display_name}' already exists")
 
-        cfg_id = str(uuid.uuid4())
-        now = datetime.now(timezone.utc).isoformat()
+        cfg_id = new_id()
+        now = utc_now_iso()
         caps = (capabilities or ProviderCapabilities()).model_dump()
         ext = dict(extra or {})
         if api_key:
@@ -149,7 +148,7 @@ class ProviderConfigService:
                 if await cur.fetchone():
                     raise ConflictError(f"A provider named '{display_name}' already exists")
 
-        now = datetime.now(timezone.utc).isoformat()
+        now = utc_now_iso()
         await db.execute(
             """UPDATE provider_configs
                SET display_name=?, base_url=?, model_id=?, capabilities=?, extra=?, updated_at=?

@@ -1,12 +1,12 @@
 """GitHubService — OAuth device flow, token storage, and repository discovery."""
 import os
-from datetime import datetime, timezone
 
 import httpx
 
 from infrastructure.db.database import get_db
 from shared.errors import NotFoundError
 from shared.logger import logger
+from shared.utils import utc_now_iso
 
 from .types import (
     DeviceFlowPollResult,
@@ -191,7 +191,7 @@ class GitHubService:
         login = user["login"]
         display_name = user.get("name")
         avatar_url = user.get("avatar_url")
-        now = datetime.now(timezone.utc).isoformat()
+        now = utc_now_iso()
 
         db = get_db()
         # Preserve original created_at on reconnect

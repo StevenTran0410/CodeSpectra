@@ -22,11 +22,6 @@ class PollRequest(BaseModel):
     device_code: str
 
 
-class ListReposRequest(BaseModel):
-    query: str | None = None
-    page: int = 1
-
-
 # ──────────────────────────────────────────────────────────────────────────────
 # OAuth Device Flow
 # ──────────────────────────────────────────────────────────────────────────────

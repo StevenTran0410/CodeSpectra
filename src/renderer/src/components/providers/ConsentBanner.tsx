@@ -1,4 +1,4 @@
-import { AlertTriangle, Cloud, ExternalLink, X } from 'lucide-react'
+import { AlertTriangle, Cloud, X } from 'lucide-react'
 
 interface ConsentBannerProps {
   onAccept: () => void

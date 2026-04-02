@@ -1,10 +1,9 @@
 import json
-import uuid
-from datetime import datetime, timezone
 
 from infrastructure.db.database import get_db
 from shared.errors import ConflictError, NotFoundError
 from shared.logger import logger
+from shared.utils import new_id, utc_now_iso
 
 from .types import Workspace
 
@@ -40,8 +39,8 @@ class WorkspaceService:
         if existing:
             raise ConflictError(f"A workspace named '{name}' already exists")
 
-        ws_id = str(uuid.uuid4())
-        now = datetime.now(timezone.utc).isoformat()
+        ws_id = new_id()
+        now = utc_now_iso()
         await db.execute(
             "INSERT INTO workspaces (id, name, created_at, updated_at, settings) VALUES (?, ?, ?, ?, ?)",
             (ws_id, name, now, now, "{}"),
@@ -65,7 +64,7 @@ class WorkspaceService:
             if await cur.fetchone():
                 raise ConflictError(f"A workspace named '{new_name}' already exists")
 
-        now = datetime.now(timezone.utc).isoformat()
+        now = utc_now_iso()
         await db.execute(
             "UPDATE workspaces SET name = ?, updated_at = ? WHERE id = ?",
             (new_name, now, workspace_id),

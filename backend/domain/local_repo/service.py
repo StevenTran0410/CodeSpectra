@@ -1,13 +1,12 @@
 """LocalRepoService — path validation, git metadata reading, and CRUD."""
 import asyncio
 import subprocess
-import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 
 from infrastructure.db.database import get_db
 from shared.errors import ConflictError, NotFoundError
 from shared.logger import logger
+from shared.utils import new_id, utc_now_iso
 
 from .types import (
     AddLocalRepoRequest,
@@ -161,8 +160,8 @@ class LocalRepoService:
             if await cur.fetchone():
                 raise ConflictError(f"Folder '{req.path}' is already added")
 
-        repo_id = str(uuid.uuid4())
-        now = datetime.now(timezone.utc).isoformat()
+        repo_id = new_id()
+        now = utc_now_iso()
 
         await db.execute(
             """INSERT INTO local_repos
@@ -243,7 +242,7 @@ class LocalRepoService:
         """Refresh git metadata for an existing local repo."""
         existing = await self.get_by_id(repo_id)
         validation = await self.validate(ValidateFolderRequest(path=existing.path))
-        now = datetime.now(timezone.utc).isoformat()
+        now = utc_now_iso()
         db = get_db()
         await db.execute(
             """UPDATE local_repos
