@@ -9,14 +9,27 @@ import socket
 import sys
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from api.app import router as app_router
 from api.provider import router as provider_router
 from api.workspace import router as workspace_router
+from domain.model_connector.errors import ProviderError, ProviderErrorCode
 from infrastructure.db.database import close_db, init_db
 from shared.logger import logger
+
+# HTTP status codes for each ProviderErrorCode
+_PROVIDER_ERROR_STATUS: dict[ProviderErrorCode, int] = {
+    ProviderErrorCode.CONNECTION_REFUSED: 503,
+    ProviderErrorCode.TIMEOUT: 503,
+    ProviderErrorCode.AUTH_FAILED: 401,
+    ProviderErrorCode.MODEL_NOT_FOUND: 404,
+    ProviderErrorCode.CONTEXT_LIMIT_EXCEEDED: 422,
+    ProviderErrorCode.RATE_LIMITED: 429,
+    ProviderErrorCode.UNKNOWN: 502,
+}
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -55,6 +68,14 @@ def create_app() -> FastAPI:
     app.include_router(app_router)
     app.include_router(workspace_router, prefix="/api/workspace")
     app.include_router(provider_router, prefix="/api/provider")
+
+    @app.exception_handler(ProviderError)
+    async def provider_error_handler(_req: Request, exc: ProviderError) -> JSONResponse:
+        status = _PROVIDER_ERROR_STATUS.get(exc.code, 502)
+        return JSONResponse(
+            status_code=status,
+            content={"error": exc.code.value, "message": exc.message, "retryable": exc.retryable},
+        )
 
     return app
 

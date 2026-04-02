@@ -22,6 +22,8 @@ interface ProviderState {
   /** Map of providerId → string[] (available models from live fetch) */
   modelLists: Record<string, string[]>
   loadingModels: Record<string, boolean>
+  /** Map of providerId → error message when fetchModels fails */
+  modelErrors: Record<string, string>
 
   load: () => Promise<void>
   create: (req: CreateProviderRequest) => Promise<ProviderConfig>
@@ -40,6 +42,7 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
   testing: {},
   modelLists: {},
   loadingModels: {},
+  modelErrors: {},
 
   load: async () => {
     set({ loading: true, error: null })
@@ -100,7 +103,10 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
   },
 
   fetchModels: async (id) => {
-    set((s) => ({ loadingModels: { ...s.loadingModels, [id]: true } }))
+    set((s) => ({
+      loadingModels: { ...s.loadingModels, [id]: true },
+      modelErrors: { ...s.modelErrors, [id]: '' }
+    }))
     try {
       const { models } = await window.api.provider.models(id)
       set((s) => ({
@@ -108,8 +114,15 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
         modelLists: { ...s.modelLists, [id]: models }
       }))
       return models
-    } catch {
-      set((s) => ({ loadingModels: { ...s.loadingModels, [id]: false } }))
+    } catch (err) {
+      // Extract readable message from backend error if available
+      const raw = String(err)
+      const match = raw.match(/"message":"([^"]+)"/)
+      const msg = match ? match[1] : raw
+      set((s) => ({
+        loadingModels: { ...s.loadingModels, [id]: false },
+        modelErrors: { ...s.modelErrors, [id]: msg }
+      }))
       return get().modelLists[id] ?? []
     }
   },

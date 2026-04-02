@@ -119,7 +119,7 @@ interface ProviderFormProps {
 }
 
 function ProviderForm({ kind, initial, onClose }: ProviderFormProps) {
-  const { create, update, testConnection, fetchModels, testing, testResults, modelLists, loadingModels } = useProviderStore()
+  const { create, update, testConnection, fetchModels, testing, testResults, modelLists, loadingModels, modelErrors } = useProviderStore()
 
   const isEdit = !!initial
   const defaults = KIND_DEFAULTS[kind]
@@ -135,6 +135,7 @@ function ProviderForm({ kind, initial, onClose }: ProviderFormProps) {
   const isTesting = testing[tempId] ?? false
   const models = modelLists[tempId] ?? []
   const isLoadingModels = loadingModels[tempId] ?? false
+  const modelFetchError = modelErrors[tempId] ?? ''
 
   // For new providers we need a temporary saved ID to test — we skip inline test for new
   // Instead show test button only after save.
@@ -249,7 +250,13 @@ function ProviderForm({ kind, initial, onClose }: ProviderFormProps) {
           })}
         </div>
       )}
-      {showModelPicker && isEdit && models.length === 0 && !isLoadingModels && (
+      {showModelPicker && isEdit && modelFetchError && (
+        <div className="flex items-start gap-2 border border-red-500/20 rounded-md bg-red-500/5 px-3 py-3 text-xs text-red-400">
+          <XCircle size={13} className="shrink-0 mt-0.5" />
+          <span>{modelFetchError}</span>
+        </div>
+      )}
+      {showModelPicker && isEdit && models.length === 0 && !isLoadingModels && !modelFetchError && (
         <div className="border border-zinc-700 rounded-md bg-zinc-800 px-3 py-3 text-xs text-zinc-500">
           No models found.{kind === 'ollama' ? ' Run `ollama pull <model>` to download one.' : ' Load a model in LM Studio first.'}
         </div>
