@@ -612,7 +612,7 @@ function GitHubRepoCard({ repo }: { repo: GitHubRepo }) {
 // GitHub — full section (not connected / connecting / connected)
 // ──────────────────────────────────────────────────────────────────────────────
 function GitHubSection() {
-  const { account, loadingAccount, connecting, connectStatus, startConnect, loadAccount } = useGitHubStore()
+  const { account, loadingAccount, connecting, connectStatus, connectError, startConnect, loadAccount, cancelConnect } = useGitHubStore()
   const [showWizard, setShowWizard] = useState(false)
 
   useEffect(() => { loadAccount() }, [loadAccount])
@@ -627,6 +627,10 @@ function GitHubSection() {
     if (connectStatus === 'success') setShowWizard(false)
   }, [connectStatus])
 
+  // "Not configured" = client ID env var not set
+  const notConfigured = connectError?.toLowerCase().includes('not configured') ||
+    connectError?.toLowerCase().includes('codespectra_github_client_id')
+
   return (
     <section>
       <div className="flex items-center gap-2 mb-4">
@@ -634,7 +638,7 @@ function GitHubSection() {
           <GitHubIcon className="text-zinc-300" size={16} />
           <h2 className="text-sm font-semibold text-zinc-300">GitHub</h2>
         </div>
-        {!account && !showWizard && !loadingAccount && (
+        {!account && !showWizard && !loadingAccount && !notConfigured && (
           <button
             onClick={handleConnect}
             disabled={connecting}
@@ -646,11 +650,39 @@ function GitHubSection() {
         )}
       </div>
 
-      {showWizard && <GitHubConnectWizard onCancel={() => setShowWizard(false)} />}
+      {/* Setup required card */}
+      {notConfigured && (
+        <div className="bg-amber-500/5 border border-amber-500/20 rounded-xl p-5 space-y-3">
+          <div className="flex items-start gap-3">
+            <AlertTriangle size={16} className="text-amber-400 shrink-0 mt-0.5" />
+            <div>
+              <p className="text-sm font-medium text-amber-300">GitHub OAuth App not configured</p>
+              <p className="text-xs text-zinc-400 mt-1 leading-relaxed">
+                Set the <code className="text-amber-300 bg-zinc-800 px-1 py-0.5 rounded">CODESPECTRA_GITHUB_CLIENT_ID</code> environment variable before starting the app.
+              </p>
+            </div>
+          </div>
+          <ol className="text-xs text-zinc-400 space-y-1.5 pl-4 list-decimal">
+            <li>Go to <button onClick={() => window.api.github.openBrowser('https://github.com/settings/developers')} className="text-blue-400 hover:underline">github.com/settings/developers</button> → <strong className="text-zinc-300">New OAuth App</strong></li>
+            <li>Set Homepage URL to <code className="text-zinc-300">http://localhost</code></li>
+            <li>Enable <strong className="text-zinc-300">Device Flow</strong> in app settings</li>
+            <li>Copy the <strong className="text-zinc-300">Client ID</strong> (no secret needed)</li>
+            <li>Restart app with <code className="text-zinc-300 bg-zinc-800 px-1 py-0.5 rounded">CODESPECTRA_GITHUB_CLIENT_ID=your_id npm run dev</code></li>
+          </ol>
+          <button
+            onClick={() => { cancelConnect(); setShowWizard(false) }}
+            className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
+      {showWizard && !notConfigured && <GitHubConnectWizard onCancel={() => setShowWizard(false)} />}
 
       {!showWizard && account && <GitHubAccountCard />}
 
-      {!showWizard && !account && !loadingAccount && (
+      {!showWizard && !account && !loadingAccount && !notConfigured && (
         <div className="border border-dashed border-zinc-700 rounded-xl p-6 text-center">
           <div className="w-10 h-10 rounded-xl bg-zinc-800 border border-zinc-700 flex items-center justify-center mx-auto mb-3">
             <GitHubIcon className="text-zinc-500" size={20} />
