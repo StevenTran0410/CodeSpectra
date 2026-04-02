@@ -84,7 +84,6 @@ export interface GitHubRepoListResponse {
 // ── Providers ─────────────────────────────────────────────────────────────────
 
 export type ProviderKind = 'ollama' | 'lmstudio' | 'openai' | 'anthropic' | 'gemini' | 'deepseek'
-export const CLOUD_KINDS: ReadonlySet<ProviderKind> = new Set(['openai', 'anthropic', 'gemini', 'deepseek'])
 
 export interface ProviderCapabilities {
   streaming: boolean

@@ -20,7 +20,8 @@ import {
 } from 'lucide-react'
 import { ConsentBanner } from '../../components/providers/ConsentBanner'
 import { useProviderStore, type TestResult } from '../../store/provider.store'
-import { CLOUD_KINDS, type ProviderConfig, type CreateProviderRequest, type UpdateProviderRequest } from '../../types/electron'
+import { CLOUD_KINDS } from '../../types/constants'
+import type { ProviderConfig, CreateProviderRequest, UpdateProviderRequest } from '../../types/electron'
 
 // Model presets for cloud providers (shown when Browse is unavailable)
 const CLOUD_MODEL_PRESETS: Record<string, string[]> = {
