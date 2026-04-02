@@ -14,6 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from api.app import router as app_router
+from api.consent import router as consent_router
 from api.provider import router as provider_router
 from api.workspace import router as workspace_router
 from domain.model_connector.errors import ProviderError, ProviderErrorCode
@@ -68,6 +69,7 @@ def create_app() -> FastAPI:
     app.include_router(app_router)
     app.include_router(workspace_router, prefix="/api/workspace")
     app.include_router(provider_router, prefix="/api/provider")
+    app.include_router(consent_router, prefix="/api/consent")
 
     @app.exception_handler(ProviderError)
     async def provider_error_handler(_req: Request, exc: ProviderError) -> JSONResponse:

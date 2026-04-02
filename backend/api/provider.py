@@ -18,6 +18,7 @@ class CreateProviderRequest(BaseModel):
     model_id: str
     capabilities: ProviderCapabilities = ProviderCapabilities()
     extra: dict = {}
+    api_key: str = ""  # stored in extra, never returned in responses
 
     @field_validator("display_name")
     @classmethod
@@ -42,6 +43,7 @@ class UpdateProviderRequest(BaseModel):
     model_id: str | None = None
     capabilities: ProviderCapabilities | None = None
     extra: dict | None = None
+    api_key: str | None = None  # None = keep existing; non-empty = update
 
     @field_validator("base_url")
     @classmethod
@@ -76,6 +78,7 @@ async def create_provider(body: CreateProviderRequest) -> ProviderConfig:
         model_id=body.model_id,
         capabilities=body.capabilities,
         extra=body.extra,
+        api_key=body.api_key or None,
     )
 
 
@@ -93,6 +96,7 @@ async def update_provider(provider_id: str, body: UpdateProviderRequest) -> Prov
         model_id=body.model_id,
         capabilities=body.capabilities,
         extra=body.extra,
+        api_key=body.api_key or None,
     )
 
 

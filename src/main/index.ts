@@ -4,6 +4,7 @@ import { createMainWindow } from './window'
 import { startPythonServer, stopPythonServer } from './infrastructure/python-server/server'
 import { registerWorkspaceHandlers } from './api/workspace.api'
 import { registerProviderHandlers } from './api/provider.api'
+import { registerConsentHandlers } from './api/consent.api'
 import { registerAppHandlers } from './api/app.api'
 import { logger } from './shared/logger'
 
@@ -21,6 +22,7 @@ app.whenReady().then(async () => {
     registerAppHandlers()
     registerWorkspaceHandlers(client)
     registerProviderHandlers(client)
+    registerConsentHandlers(client)
 
     createMainWindow()
     logger.info('Startup complete')

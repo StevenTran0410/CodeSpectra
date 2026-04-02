@@ -7,10 +7,14 @@ from infrastructure.db.database import get_db
 from shared.errors import ConflictError, NotFoundError
 from shared.logger import logger
 
+from .anthropic.adapter import AnthropicAdapter
+from .deepseek.adapter import DeepSeekAdapter
 from .errors import ProviderError
+from .gemini.adapter import GeminiAdapter
 from .lmstudio.adapter import LMStudioAdapter
 from .ollama.adapter import OllamaAdapter
-from .types import ProviderCapabilities, ProviderConfig, ProviderKind
+from .openai.adapter import OpenAIAdapter
+from .types import CLOUD_KINDS, ProviderCapabilities, ProviderConfig, ProviderKind
 
 
 class TestConnectionResult:
@@ -20,12 +24,30 @@ class TestConnectionResult:
         self.warning = warning
 
 
-def _get_adapter(config: ProviderConfig) -> OllamaAdapter | LMStudioAdapter:
-    if config.kind == ProviderKind.OLLAMA:
-        return OllamaAdapter(config)
-    if config.kind == ProviderKind.LM_STUDIO:
-        return LMStudioAdapter(config)
-    raise ValueError(f"Unknown provider kind: {config.kind}")
+def _get_adapter(config: ProviderConfig):
+    match config.kind:
+        case ProviderKind.OLLAMA:
+            return OllamaAdapter(config)
+        case ProviderKind.LM_STUDIO:
+            return LMStudioAdapter(config)
+        case ProviderKind.OPENAI:
+            return OpenAIAdapter(config)
+        case ProviderKind.ANTHROPIC:
+            return AnthropicAdapter(config)
+        case ProviderKind.GEMINI:
+            return GeminiAdapter(config)
+        case ProviderKind.DEEPSEEK:
+            return DeepSeekAdapter(config)
+        case _:
+            raise ValueError(f"Unknown provider kind: {config.kind}")
+
+
+def _mask_extra(extra: dict) -> dict:
+    """Remove api_key from extra; replace with has_api_key flag."""
+    masked = dict(extra)
+    if "api_key" in masked:
+        masked["has_api_key"] = bool(masked.pop("api_key"))
+    return masked
 
 
 class ProviderConfigService:
@@ -35,9 +57,16 @@ class ProviderConfigService:
             "SELECT * FROM provider_configs ORDER BY created_at ASC"
         ) as cur:
             rows = await cur.fetchall()
-        return [self._row_to_config(r) for r in rows]
+        configs = [self._row_to_config(r) for r in rows]
+        return [c.model_copy(update={"extra": _mask_extra(dict(c.extra))}) for c in configs]
 
     async def get_by_id(self, provider_id: str) -> ProviderConfig:
+        """Returns masked config (no api_key in extra) — safe for API responses."""
+        config = await self._get_by_id_full(provider_id)
+        return config.model_copy(update={"extra": _mask_extra(dict(config.extra))})
+
+    async def _get_by_id_full(self, provider_id: str) -> ProviderConfig:
+        """Returns unmasked config with api_key — for internal/adapter use only."""
         db = get_db()
         async with db.execute(
             "SELECT * FROM provider_configs WHERE id = ?", (provider_id,)
@@ -55,10 +84,10 @@ class ProviderConfigService:
         model_id: str,
         capabilities: ProviderCapabilities | None = None,
         extra: dict | None = None,
+        api_key: str | None = None,
     ) -> ProviderConfig:
         db = get_db()
 
-        # Prevent duplicate display names
         async with db.execute(
             "SELECT 1 FROM provider_configs WHERE display_name = ?", (display_name,)
         ) as cur:
@@ -68,35 +97,25 @@ class ProviderConfigService:
         cfg_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
         caps = (capabilities or ProviderCapabilities()).model_dump()
-        ext = extra or {}
+        ext = dict(extra or {})
+        if api_key:
+            ext["api_key"] = api_key
 
         await db.execute(
             """INSERT INTO provider_configs
                (id, kind, display_name, base_url, model_id, capabilities, extra, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                cfg_id,
-                kind.value,
-                display_name,
-                base_url,
-                model_id,
-                json.dumps(caps),
-                json.dumps(ext),
-                now,
-                now,
-            ),
+            (cfg_id, kind.value, display_name, base_url, model_id,
+             json.dumps(caps), json.dumps(ext), now, now),
         )
         await db.commit()
         logger.info(f"Created provider config '{display_name}' ({cfg_id})")
 
         return ProviderConfig(
-            id=cfg_id,
-            kind=kind,
-            display_name=display_name,
-            base_url=base_url,
-            model_id=model_id,
+            id=cfg_id, kind=kind, display_name=display_name,
+            base_url=base_url, model_id=model_id,
             capabilities=capabilities or ProviderCapabilities(),
-            extra=ext,
+            extra=_mask_extra(ext),
         )
 
     async def update(
@@ -107,15 +126,20 @@ class ProviderConfigService:
         model_id: str | None = None,
         capabilities: ProviderCapabilities | None = None,
         extra: dict | None = None,
+        api_key: str | None = None,
     ) -> ProviderConfig:
-        existing = await self.get_by_id(provider_id)
+        existing = await self._get_by_id_full(provider_id)
         db = get_db()
 
         new_name = display_name or existing.display_name
         new_url = base_url or existing.base_url
         new_model = model_id or existing.model_id
         new_caps = (capabilities or existing.capabilities).model_dump()
-        new_extra = extra if extra is not None else existing.extra
+        new_extra = dict(existing.extra)  # full extra with api_key
+        if extra is not None:
+            new_extra.update(extra)
+        if api_key:  # only update key if explicitly provided
+            new_extra["api_key"] = api_key
 
         if display_name and display_name != existing.display_name:
             async with db.execute(
@@ -134,7 +158,7 @@ class ProviderConfigService:
         )
         await db.commit()
         logger.info(f"Updated provider config {provider_id}")
-        return await self.get_by_id(provider_id)
+        return await self.get_by_id(provider_id)  # masked version
 
     async def delete(self, provider_id: str) -> None:
         db = get_db()
@@ -147,7 +171,7 @@ class ProviderConfigService:
         logger.info(f"Deleted provider config {provider_id}")
 
     async def test_connection(self, provider_id: str) -> TestConnectionResult:
-        config = await self.get_by_id(provider_id)
+        config = await self._get_by_id_full(provider_id)
         adapter = _get_adapter(config)
         try:
             ok, message, warning = await adapter.test_connection()
@@ -158,7 +182,7 @@ class ProviderConfigService:
             await adapter.aclose()
 
     async def list_models(self, provider_id: str) -> list[str]:
-        config = await self.get_by_id(provider_id)
+        config = await self._get_by_id_full(provider_id)
         adapter = _get_adapter(config)
         try:
             return await adapter.list_models()

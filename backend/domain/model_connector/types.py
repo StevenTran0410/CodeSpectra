@@ -6,8 +6,22 @@ from pydantic import BaseModel
 
 
 class ProviderKind(str, Enum):
+    # Local providers
     OLLAMA = "ollama"
     LM_STUDIO = "lmstudio"
+    # Cloud providers (BYOK)
+    OPENAI = "openai"
+    ANTHROPIC = "anthropic"
+    GEMINI = "gemini"
+    DEEPSEEK = "deepseek"
+
+
+CLOUD_KINDS: frozenset[ProviderKind] = frozenset({
+    ProviderKind.OPENAI,
+    ProviderKind.ANTHROPIC,
+    ProviderKind.GEMINI,
+    ProviderKind.DEEPSEEK,
+})
 
 
 class ProviderCapabilities(BaseModel):

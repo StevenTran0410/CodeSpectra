@@ -6,7 +6,8 @@ export interface Workspace {
   settings: Record<string, unknown>
 }
 
-export type ProviderKind = 'ollama' | 'lmstudio'
+export type ProviderKind = 'ollama' | 'lmstudio' | 'openai' | 'anthropic' | 'gemini' | 'deepseek'
+export const CLOUD_KINDS: ReadonlySet<ProviderKind> = new Set(['openai', 'anthropic', 'gemini', 'deepseek'])
 
 export interface ProviderCapabilities {
   streaming: boolean
@@ -33,12 +34,14 @@ export interface CreateProviderRequest {
   base_url: string
   model_id: string
   capabilities?: Partial<ProviderCapabilities>
+  api_key?: string
 }
 
 export interface UpdateProviderRequest {
   display_name?: string
   base_url?: string
   model_id?: string
+  api_key?: string
 }
 
 declare global {
@@ -57,6 +60,10 @@ declare global {
         delete: (id: string) => Promise<void>
         test: (id: string) => Promise<{ ok: boolean; message: string; warning?: string }>
         models: (id: string) => Promise<{ models: string[] }>
+      }
+      consent: {
+        checkCloud: () => Promise<{ given: boolean }>
+        giveCloud: (given: boolean) => Promise<{ given: boolean }>
       }
       app: {
         getVersion: () => Promise<string>

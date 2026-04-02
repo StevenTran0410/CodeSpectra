@@ -27,6 +27,11 @@ const api = {
     models: (id: string): Promise<{ models: string[] }> =>
       ipcRenderer.invoke('provider:models', id)
   },
+  consent: {
+    checkCloud: (): Promise<{ given: boolean }> => ipcRenderer.invoke('consent:cloud:check'),
+    giveCloud: (given: boolean): Promise<{ given: boolean }> =>
+      ipcRenderer.invoke('consent:cloud:give', given)
+  },
   app: {
     getVersion: (): Promise<string> => ipcRenderer.invoke('app:get-version'),
     getUserDataPath: (): Promise<string> => ipcRenderer.invoke('app:get-user-data-path'),
