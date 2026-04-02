@@ -1,13 +1,14 @@
-import { app, BrowserWindow } from 'electron'
+import { app, BrowserWindow, dialog } from 'electron'
 import { electronApp, optimizer } from '@electron-toolkit/utils'
 import { createMainWindow } from './window'
-import { initDb, closeDb } from './db/database'
-import { WorkspaceService } from './workspace/workspace.service'
-import { registerWorkspaceHandlers } from './ipc/workspace.ipc'
-import { registerAppHandlers } from './ipc/app.ipc'
-import { logger } from './logger'
+import { startPythonServer, stopPythonServer } from './infrastructure/python-server/server'
+import { registerWorkspaceHandlers } from './api/workspace.api'
+import { registerProviderHandlers } from './api/provider.api'
+import { registerConsentHandlers } from './api/consent.api'
+import { registerAppHandlers } from './api/app.api'
+import { logger } from './shared/logger'
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   electronApp.setAppUserModelId('com.codespectra.app')
 
   app.on('browser-window-created', (_, window) => {
@@ -15,17 +16,23 @@ app.whenReady().then(() => {
   })
 
   try {
-    const db = initDb()
-    const workspaceService = new WorkspaceService(db)
+    logger.info(`CodeSpectra ${app.getVersion()} — starting Python backend...`)
+    const client = await startPythonServer()
 
     registerAppHandlers()
-    registerWorkspaceHandlers(workspaceService)
+    registerWorkspaceHandlers(client)
+    registerProviderHandlers(client)
+    registerConsentHandlers(client)
 
     createMainWindow()
-
-    logger.info(`CodeSpectra ${app.getVersion()} started`)
+    logger.info('Startup complete')
   } catch (err) {
-    logger.error('Fatal error during startup:', err)
+    const message = err instanceof Error ? err.message : String(err)
+    logger.error('Fatal startup error:', err)
+    await dialog.showErrorBox(
+      'CodeSpectra — Startup Failed',
+      `Could not start the analysis engine.\n\n${message}\n\nMake sure Python 3.11+ is installed and try again.`
+    )
     app.quit()
   }
 
@@ -35,12 +42,10 @@ app.whenReady().then(() => {
 })
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    closeDb()
-    app.quit()
-  }
+  stopPythonServer()
+  if (process.platform !== 'darwin') app.quit()
 })
 
 app.on('before-quit', () => {
-  closeDb()
+  stopPythonServer()
 })

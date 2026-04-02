@@ -23,6 +23,18 @@ build/
 *.log
 logs/
 
+# Python
+backend/.venv/
+backend/__pycache__/
+backend/**/__pycache__/
+backend/**/*.pyc
+backend/**/*.pyo
+backend/*.egg-info/
+backend/dist/
+backend/.pytest_cache/
+backend/.ruff_cache/
+*.db
+
 # Editor
 .idea/
 *.swp
