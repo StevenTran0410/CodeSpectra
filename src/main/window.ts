@@ -1,7 +1,7 @@
 import { BrowserWindow, session } from 'electron'
 import { is } from '@electron-toolkit/utils'
 import path from 'path'
-import { logger } from './logger'
+import { logger } from './shared/logger'
 
 export function createMainWindow(): BrowserWindow {
   const win = new BrowserWindow({

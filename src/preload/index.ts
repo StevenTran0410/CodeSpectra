@@ -1,6 +1,11 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
-import type { Workspace } from '../main/workspace/workspace.types'
+import type {
+  Workspace,
+  ProviderConfig,
+  CreateProviderRequest,
+  UpdateProviderRequest
+} from '../main/api/types'
 
 const api = {
   workspace: {
@@ -9,6 +14,18 @@ const api = {
     rename: (id: string, name: string): Promise<Workspace> =>
       ipcRenderer.invoke('workspace:rename', id, name),
     delete: (id: string): Promise<void> => ipcRenderer.invoke('workspace:delete', id)
+  },
+  provider: {
+    list: (): Promise<ProviderConfig[]> => ipcRenderer.invoke('provider:list'),
+    create: (req: CreateProviderRequest): Promise<ProviderConfig> =>
+      ipcRenderer.invoke('provider:create', req),
+    update: (id: string, req: UpdateProviderRequest): Promise<ProviderConfig> =>
+      ipcRenderer.invoke('provider:update', id, req),
+    delete: (id: string): Promise<void> => ipcRenderer.invoke('provider:delete', id),
+    test: (id: string): Promise<{ ok: boolean; message: string }> =>
+      ipcRenderer.invoke('provider:test', id),
+    models: (id: string): Promise<{ models: string[] }> =>
+      ipcRenderer.invoke('provider:models', id)
   },
   app: {
     getVersion: (): Promise<string> => ipcRenderer.invoke('app:get-version'),
@@ -21,8 +38,8 @@ if (process.contextIsolated) {
   contextBridge.exposeInMainWorld('electron', electronAPI)
   contextBridge.exposeInMainWorld('api', api)
 } else {
-  // @ts-expect-error fallback for non-contextIsolated environments
+  // @ts-expect-error fallback
   window.electron = electronAPI
-  // @ts-expect-error
+  // @ts-expect-error fallback
   window.api = api
 }

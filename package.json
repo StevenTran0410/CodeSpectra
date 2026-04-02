@@ -6,15 +6,14 @@
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
+    "dev:backend": "python backend/main.py --port 7868",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json",
-    "postinstall": "electron-rebuild -f -w better-sqlite3"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json"
   },
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.0",
     "@electron-toolkit/utils": "^3.0.0",
-    "better-sqlite3": "^11.5.0",
     "electron-log": "^5.2.0",
     "lucide-react": "^0.441.0",
     "react": "^18.3.1",
@@ -23,8 +22,6 @@
     "zustand": "^4.5.5"
   },
   "devDependencies": {
-    "@electron/rebuild": "^3.7.2",
-    "@types/better-sqlite3": "^7.6.11",
     "@types/node": "^20.16.0",
     "@types/react": "^18.3.5",
     "@types/react-dom": "^18.3.0",
@@ -44,7 +41,14 @@
       "output": "release"
     },
     "files": [
-      "out/**/*"
+      "out/**/*",
+      "backend/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "backend",
+        "to": "backend"
+      }
     ],
     "win": {
       "target": "nsis"
