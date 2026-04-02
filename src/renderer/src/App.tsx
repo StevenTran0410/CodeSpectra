@@ -4,13 +4,13 @@ import { AppShell } from './components/layout/AppShell'
 import { ErrorBoundary } from './components/ui/ErrorBoundary'
 import { Skeleton } from './components/ui/LoadingSkeleton'
 
-const Home = lazy(() => import('./routes/Home'))
-const ProvidersSetup = lazy(() => import('./routes/ProvidersSetup'))
-const CodeHostsSetup = lazy(() => import('./routes/CodeHostsSetup'))
-const RepositoriesScreen = lazy(() => import('./routes/RepositoriesScreen'))
-const AnalysisRunScreen = lazy(() => import('./routes/AnalysisRunScreen'))
-const ReportViewerScreen = lazy(() => import('./routes/ReportViewerScreen'))
-const SettingsScreen = lazy(() => import('./routes/SettingsScreen'))
+const Home = lazy(() => import('./screens/home'))
+const ProvidersSetup = lazy(() => import('./screens/providers'))
+const CodeHostsSetup = lazy(() => import('./screens/code-hosts'))
+const RepositoriesScreen = lazy(() => import('./screens/repositories'))
+const AnalysisRunScreen = lazy(() => import('./screens/analysis'))
+const ReportViewerScreen = lazy(() => import('./screens/reports'))
+const SettingsScreen = lazy(() => import('./screens/settings'))
 
 function PageFallback(): React.ReactElement {
   return (

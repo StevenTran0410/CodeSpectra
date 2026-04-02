@@ -1,0 +1,453 @@
+import { useEffect, useState } from 'react'
+import {
+  Plus,
+  Trash2,
+  RefreshCw,
+  CheckCircle2,
+  XCircle,
+  Loader2,
+  ChevronDown,
+  Pencil,
+  Shield,
+  Wifi
+} from 'lucide-react'
+import { useProviderStore } from '../../store/provider.store'
+import type { ProviderConfig, CreateProviderRequest, UpdateProviderRequest } from '../../types/electron'
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Sub-components
+// ──────────────────────────────────────────────────────────────────────────────
+
+function LocalBadge() {
+  return (
+    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+      <Shield size={10} />
+      Strict Local
+    </span>
+  )
+}
+
+function KindLabel({ kind }: { kind: string }) {
+  const label = kind === 'ollama' ? 'Ollama' : 'LM Studio'
+  const color = kind === 'ollama' ? 'text-violet-400 bg-violet-500/10 border-violet-500/20' : 'text-sky-400 bg-sky-500/10 border-sky-500/20'
+  return (
+    <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-mono border ${color}`}>
+      {label}
+    </span>
+  )
+}
+
+interface TestStatusProps {
+  ok: boolean
+  message: string
+}
+function TestStatus({ ok, message }: TestStatusProps) {
+  return (
+    <div className={`flex items-center gap-2 text-xs rounded px-3 py-2 ${ok ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400'}`}>
+      {ok ? <CheckCircle2 size={13} /> : <XCircle size={13} />}
+      <span>{message}</span>
+    </div>
+  )
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Add / Edit form
+// ──────────────────────────────────────────────────────────────────────────────
+const KIND_DEFAULTS: Record<string, Omit<CreateProviderRequest, 'kind'>> = {
+  ollama: { display_name: 'Ollama (local)', base_url: 'http://localhost:11434', model_id: '' },
+  lmstudio: { display_name: 'LM Studio (local)', base_url: 'http://localhost:1234', model_id: '' }
+}
+
+interface ProviderFormProps {
+  kind: 'ollama' | 'lmstudio'
+  initial?: ProviderConfig
+  onClose: () => void
+}
+
+function ProviderForm({ kind, initial, onClose }: ProviderFormProps) {
+  const { create, update, testConnection, fetchModels, testing, testResults, modelLists, loadingModels } = useProviderStore()
+
+  const isEdit = !!initial
+  const defaults = KIND_DEFAULTS[kind]
+  const [name, setName] = useState(initial?.display_name ?? defaults.display_name)
+  const [url, setUrl] = useState(initial?.base_url ?? defaults.base_url)
+  const [modelId, setModelId] = useState(initial?.model_id ?? '')
+  const [saving, setSaving] = useState(false)
+  const [formError, setFormError] = useState<string | null>(null)
+  const [showModelPicker, setShowModelPicker] = useState(false)
+
+  const tempId = initial?.id ?? '__new__'
+  const testResult = testResults[tempId]
+  const isTesting = testing[tempId] ?? false
+  const models = modelLists[tempId] ?? []
+  const isLoadingModels = loadingModels[tempId] ?? false
+
+  // For new providers we need a temporary saved ID to test — we skip inline test for new
+  // Instead show test button only after save.
+
+  const handleSave = async () => {
+    setFormError(null)
+    if (!name.trim()) { setFormError('Display name is required'); return }
+    if (!url.trim()) { setFormError('Base URL is required'); return }
+    if (!modelId.trim()) { setFormError('Model ID is required — test connection first to browse models'); return }
+
+    setSaving(true)
+    try {
+      if (isEdit && initial) {
+        const req: UpdateProviderRequest = { display_name: name, base_url: url, model_id: modelId }
+        await update(initial.id, req)
+      } else {
+        const req: CreateProviderRequest = { kind, display_name: name, base_url: url, model_id: modelId }
+        await create(req)
+      }
+      onClose()
+    } catch (err) {
+      setFormError(String(err))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleTest = async () => {
+    if (!initial) return
+    await testConnection(initial.id)
+  }
+
+  const handleFetchModels = async () => {
+    if (!initial) return
+    setShowModelPicker(true)
+    await fetchModels(initial.id)
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-2 mb-1">
+        <KindLabel kind={kind} />
+        <LocalBadge />
+      </div>
+
+      {/* Display name */}
+      <div>
+        <label className="block text-xs font-medium text-zinc-400 mb-1">Display name</label>
+        <input
+          className="w-full bg-zinc-800 border border-zinc-700 rounded-md px-3 py-2 text-sm text-zinc-100 focus:outline-none focus:border-violet-500 transition-colors"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="e.g. Ollama (local)"
+        />
+      </div>
+
+      {/* Base URL */}
+      <div>
+        <label className="block text-xs font-medium text-zinc-400 mb-1">Base URL</label>
+        <input
+          className="w-full bg-zinc-800 border border-zinc-700 rounded-md px-3 py-2 text-sm text-zinc-100 font-mono focus:outline-none focus:border-violet-500 transition-colors"
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+          placeholder="http://localhost:11434"
+        />
+      </div>
+
+      {/* Model ID */}
+      <div>
+        <label className="block text-xs font-medium text-zinc-400 mb-1">Model ID</label>
+        <div className="flex gap-2">
+          <input
+            className="flex-1 bg-zinc-800 border border-zinc-700 rounded-md px-3 py-2 text-sm text-zinc-100 font-mono focus:outline-none focus:border-violet-500 transition-colors"
+            value={modelId}
+            onChange={(e) => setModelId(e.target.value)}
+            placeholder="e.g. llama3.2:latest"
+          />
+          {isEdit && (
+            <button
+              onClick={handleFetchModels}
+              disabled={isLoadingModels}
+              className="flex items-center gap-1.5 px-3 py-2 text-xs bg-zinc-700 hover:bg-zinc-600 text-zinc-300 rounded-md transition-colors disabled:opacity-50"
+              title="Browse available models"
+            >
+              {isLoadingModels ? <Loader2 size={13} className="animate-spin" /> : <ChevronDown size={13} />}
+              Browse
+            </button>
+          )}
+        </div>
+        {!isEdit && (
+          <p className="mt-1 text-xs text-zinc-500">Save first, then browse available models via "Test & Browse".</p>
+        )}
+      </div>
+
+      {/* Model picker dropdown */}
+      {showModelPicker && isEdit && models.length > 0 && (
+        <div className="border border-zinc-700 rounded-md bg-zinc-800 divide-y divide-zinc-700 max-h-40 overflow-y-auto">
+          {models.map((m) => (
+            <button
+              key={m}
+              onClick={() => { setModelId(m); setShowModelPicker(false) }}
+              className={`w-full text-left px-3 py-2 text-sm font-mono hover:bg-zinc-700 transition-colors ${modelId === m ? 'text-violet-400' : 'text-zinc-300'}`}
+            >
+              {m}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Test connection (edit mode only) */}
+      {isEdit && (
+        <div className="space-y-2">
+          <button
+            onClick={handleTest}
+            disabled={isTesting}
+            className="flex items-center gap-2 px-3 py-2 text-xs bg-zinc-700 hover:bg-zinc-600 text-zinc-300 rounded-md transition-colors disabled:opacity-50"
+          >
+            {isTesting ? <Loader2 size={13} className="animate-spin" /> : <Wifi size={13} />}
+            Test connection
+          </button>
+          {testResult && <TestStatus ok={testResult.ok} message={testResult.message} />}
+        </div>
+      )}
+
+      {formError && (
+        <p className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded px-3 py-2">{formError}</p>
+      )}
+
+      {/* Actions */}
+      <div className="flex gap-2 justify-end pt-2">
+        <button
+          onClick={onClose}
+          className="px-4 py-2 text-sm text-zinc-400 hover:text-zinc-200 transition-colors"
+        >
+          Cancel
+        </button>
+        <button
+          onClick={handleSave}
+          disabled={saving}
+          className="flex items-center gap-2 px-4 py-2 text-sm bg-violet-600 hover:bg-violet-500 text-white rounded-md transition-colors disabled:opacity-50"
+        >
+          {saving && <Loader2 size={14} className="animate-spin" />}
+          {isEdit ? 'Save changes' : 'Add provider'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Provider card
+// ──────────────────────────────────────────────────────────────────────────────
+function ProviderCard({ config }: { config: ProviderConfig }) {
+  const { remove, testConnection, testing, testResults } = useProviderStore()
+  const [editing, setEditing] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+
+  const testResult = testResults[config.id]
+  const isTesting = testing[config.id] ?? false
+
+  if (editing) {
+    return (
+      <div className="bg-zinc-800/60 border border-zinc-700 rounded-xl p-5">
+        <ProviderForm kind={config.kind} initial={config} onClose={() => setEditing(false)} />
+      </div>
+    )
+  }
+
+  return (
+    <div className="bg-zinc-800/60 border border-zinc-700 rounded-xl p-5 space-y-3 hover:border-zinc-600 transition-colors">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-sm font-semibold text-zinc-100 truncate">{config.display_name}</span>
+            <KindLabel kind={config.kind} />
+            <LocalBadge />
+          </div>
+          <p className="mt-1 text-xs text-zinc-500 font-mono truncate">{config.base_url}</p>
+        </div>
+        <div className="flex items-center gap-1 shrink-0">
+          <button
+            onClick={() => setEditing(true)}
+            className="p-1.5 text-zinc-500 hover:text-zinc-300 hover:bg-zinc-700 rounded transition-colors"
+            title="Edit"
+          >
+            <Pencil size={14} />
+          </button>
+          <button
+            onClick={() => setConfirmDelete(true)}
+            className="p-1.5 text-zinc-500 hover:text-red-400 hover:bg-zinc-700 rounded transition-colors"
+            title="Delete"
+          >
+            <Trash2 size={14} />
+          </button>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-3 flex-wrap">
+        <span className="text-xs text-zinc-400">
+          Model: <span className="font-mono text-zinc-300">{config.model_id || <em className="text-zinc-600">not set</em>}</span>
+        </span>
+        <span className="text-xs text-zinc-600">·</span>
+        <span className="text-xs text-zinc-400">
+          Context: <span className="text-zinc-300">{config.capabilities.max_context_tokens.toLocaleString()} tokens</span>
+        </span>
+      </div>
+
+      <div className="flex items-center gap-2">
+        <button
+          onClick={() => testConnection(config.id)}
+          disabled={isTesting}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-zinc-700 hover:bg-zinc-600 text-zinc-300 rounded-md transition-colors disabled:opacity-50"
+        >
+          {isTesting ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+          Test connection
+        </button>
+        {testResult && <TestStatus ok={testResult.ok} message={testResult.message} />}
+      </div>
+
+      {confirmDelete && (
+        <div className="flex items-center gap-3 bg-red-500/5 border border-red-500/20 rounded-lg px-4 py-3">
+          <span className="text-xs text-red-400 flex-1">Remove this provider?</span>
+          <button
+            onClick={() => { remove(config.id); setConfirmDelete(false) }}
+            className="text-xs px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white rounded transition-colors"
+          >
+            Remove
+          </button>
+          <button
+            onClick={() => setConfirmDelete(false)}
+            className="text-xs px-3 py-1.5 text-zinc-400 hover:text-zinc-200 transition-colors"
+          >
+            Cancel
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Main screen
+// ──────────────────────────────────────────────────────────────────────────────
+type AddKind = 'ollama' | 'lmstudio' | null
+
+export default function ProvidersScreen() {
+  const { providers, loading, error, load, clearError } = useProviderStore()
+  const [adding, setAdding] = useState<AddKind>(null)
+
+  useEffect(() => { load() }, [load])
+
+  const ollamaProviders = providers.filter((p) => p.kind === 'ollama')
+  const lmStudioProviders = providers.filter((p) => p.kind === 'lmstudio')
+
+  return (
+    <div className="flex flex-col h-full">
+      {/* Header */}
+      <div className="shrink-0 px-8 pt-8 pb-4 border-b border-zinc-800">
+        <div className="flex items-start justify-between">
+          <div>
+            <h1 className="text-xl font-semibold text-zinc-100">Model Providers</h1>
+            <p className="mt-1 text-sm text-zinc-500">
+              Connect local AI models to power analysis. All local providers keep your code on-device.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* Content */}
+      <div className="flex-1 overflow-y-auto px-8 py-6 space-y-8">
+        {error && (
+          <div className="flex items-center gap-3 bg-red-500/10 border border-red-500/20 text-red-400 text-sm rounded-lg px-4 py-3">
+            <XCircle size={16} />
+            <span className="flex-1">{error}</span>
+            <button onClick={clearError} className="text-xs underline">Dismiss</button>
+          </div>
+        )}
+
+        {loading && (
+          <div className="flex items-center gap-2 text-zinc-500 text-sm">
+            <Loader2 size={16} className="animate-spin" />
+            Loading providers...
+          </div>
+        )}
+
+        {/* Ollama section */}
+        <section>
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <h2 className="text-sm font-semibold text-zinc-300">Ollama</h2>
+              <p className="text-xs text-zinc-500 mt-0.5">Run open-source models locally via Ollama's REST API</p>
+            </div>
+            {adding !== 'ollama' && (
+              <button
+                onClick={() => setAdding('ollama')}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-zinc-700 hover:bg-zinc-600 text-zinc-300 rounded-md transition-colors"
+              >
+                <Plus size={13} />
+                Add Ollama
+              </button>
+            )}
+          </div>
+
+          <div className="space-y-3">
+            {ollamaProviders.map((p) => <ProviderCard key={p.id} config={p} />)}
+
+            {adding === 'ollama' && (
+              <div className="bg-zinc-800/60 border border-violet-500/30 rounded-xl p-5">
+                <ProviderForm kind="ollama" onClose={() => setAdding(null)} />
+              </div>
+            )}
+
+            {ollamaProviders.length === 0 && adding !== 'ollama' && (
+              <div className="border border-dashed border-zinc-700 rounded-xl p-6 text-center">
+                <p className="text-sm text-zinc-500">No Ollama providers configured yet.</p>
+                <button
+                  onClick={() => setAdding('ollama')}
+                  className="mt-3 text-xs text-violet-400 hover:text-violet-300 underline transition-colors"
+                >
+                  Add your first Ollama provider
+                </button>
+              </div>
+            )}
+          </div>
+        </section>
+
+        {/* LM Studio section */}
+        <section>
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <h2 className="text-sm font-semibold text-zinc-300">LM Studio</h2>
+              <p className="text-xs text-zinc-500 mt-0.5">OpenAI-compatible local server — enable "Local Server" in LM Studio first</p>
+            </div>
+            {adding !== 'lmstudio' && (
+              <button
+                onClick={() => setAdding('lmstudio')}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-zinc-700 hover:bg-zinc-600 text-zinc-300 rounded-md transition-colors"
+              >
+                <Plus size={13} />
+                Add LM Studio
+              </button>
+            )}
+          </div>
+
+          <div className="space-y-3">
+            {lmStudioProviders.map((p) => <ProviderCard key={p.id} config={p} />)}
+
+            {adding === 'lmstudio' && (
+              <div className="bg-zinc-800/60 border border-sky-500/30 rounded-xl p-5">
+                <ProviderForm kind="lmstudio" onClose={() => setAdding(null)} />
+              </div>
+            )}
+
+            {lmStudioProviders.length === 0 && adding !== 'lmstudio' && (
+              <div className="border border-dashed border-zinc-700 rounded-xl p-6 text-center">
+                <p className="text-sm text-zinc-500">No LM Studio providers configured yet.</p>
+                <button
+                  onClick={() => setAdding('lmstudio')}
+                  className="mt-3 text-xs text-sky-400 hover:text-sky-300 underline transition-colors"
+                >
+                  Add your first LM Studio provider
+                </button>
+              </div>
+            )}
+          </div>
+        </section>
+      </div>
+    </div>
+  )
+}

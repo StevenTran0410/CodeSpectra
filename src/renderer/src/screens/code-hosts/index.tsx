@@ -1,6 +1,6 @@
 import React from 'react'
 import { GitBranch } from 'lucide-react'
-import { EmptyState } from '../components/ui/EmptyState'
+import { EmptyState } from '../../components/ui/EmptyState'
 
 export default function CodeHostsSetup(): React.ReactElement {
   return (

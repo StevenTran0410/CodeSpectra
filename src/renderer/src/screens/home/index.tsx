@@ -1,9 +1,9 @@
 import React, { useState } from 'react'
 import { FolderOpen, Plus, Pencil, Trash2, MoreHorizontal } from 'lucide-react'
-import { useWorkspaceStore } from '../store/workspace.store'
-import { WorkspaceModal } from '../components/workspace/WorkspaceModal'
-import { EmptyState } from '../components/ui/EmptyState'
-import { CardSkeleton } from '../components/ui/LoadingSkeleton'
+import { useWorkspaceStore } from '../../store/workspace.store'
+import { WorkspaceModal } from '../../components/workspace/WorkspaceModal'
+import { EmptyState } from '../../components/ui/EmptyState'
+import { CardSkeleton } from '../../components/ui/LoadingSkeleton'
 
 type ModalState =
   | { type: 'none' }

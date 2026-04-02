@@ -1,6 +1,6 @@
 import React from 'react'
 import { FlaskConical } from 'lucide-react'
-import { EmptyState } from '../components/ui/EmptyState'
+import { EmptyState } from '../../components/ui/EmptyState'
 
 export default function AnalysisRunScreen(): React.ReactElement {
   return (

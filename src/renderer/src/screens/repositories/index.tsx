@@ -1,7 +1,7 @@
 import React from 'react'
 import { FolderOpen } from 'lucide-react'
-import { EmptyState } from '../components/ui/EmptyState'
-import { useWorkspaceStore } from '../store/workspace.store'
+import { EmptyState } from '../../components/ui/EmptyState'
+import { useWorkspaceStore } from '../../store/workspace.store'
 
 export default function RepositoriesScreen(): React.ReactElement {
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId)
