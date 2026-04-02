@@ -14,10 +14,11 @@ export interface LocalRepo {
   name: string
   source_type: RepoSourceType
   is_git_repo: boolean
-  git_branch: string | null
+  git_branch: string | null      // actual HEAD branch at last validation
   git_head_hash: string | null
   git_remote_url: string | null
   has_size_warning: boolean
+  selected_branch: string | null // user-chosen analysis branch (null = use HEAD)
   added_at: string
   last_validated_at: string
 }
@@ -101,6 +102,8 @@ declare global {
         add: (path: string) => Promise<LocalRepo>
         remove: (id: string) => Promise<void>
         revalidate: (id: string) => Promise<LocalRepo>
+        branches: (id: string) => Promise<string[]>
+        setBranch: (id: string, branch: string) => Promise<LocalRepo>
       }
       app: {
         getVersion: () => Promise<string>

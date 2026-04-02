@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import {
   FolderOpen,
   GitBranch,
@@ -10,7 +10,7 @@ import {
   Shield,
   Trash2,
   AlertTriangle,
-  CheckCircle2,
+  ChevronDown,
   XCircle,
   Link,
 } from 'lucide-react'
@@ -121,6 +121,84 @@ function ValidationPreview({
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// Inline branch picker dropdown
+// ──────────────────────────────────────────────────────────────────────────────
+function BranchPicker({ repo }: { repo: LocalRepo }) {
+  const { branchesMap, loadingBranchesId, loadBranches, setBranch } = useLocalRepoStore()
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  const branches = branchesMap[repo.id]
+  const activeBranch = repo.selected_branch ?? repo.git_branch ?? 'HEAD'
+  const isLoading = loadingBranchesId === repo.id
+
+  const handleOpen = async () => {
+    if (!branches) await loadBranches(repo.id)
+    setOpen((v) => !v)
+  }
+
+  // Close on outside click
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    if (open) document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [open])
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        onClick={handleOpen}
+        className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-medium border transition-colors
+          ${repo.selected_branch
+            ? 'bg-indigo-500/10 text-indigo-400 border-indigo-500/20 hover:bg-indigo-500/20'
+            : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20 hover:bg-emerald-500/20'
+          }`}
+        title="Click to change analysis branch"
+      >
+        {isLoading ? <Loader2 size={10} className="animate-spin" /> : <GitBranch size={10} />}
+        {activeBranch}
+        {repo.selected_branch && repo.selected_branch !== repo.git_branch && (
+          <span className="text-indigo-500/70 text-xs">≠ HEAD</span>
+        )}
+        <ChevronDown size={10} />
+      </button>
+
+      {open && branches && (
+        <div className="absolute left-0 top-full mt-1 z-30 w-52 bg-zinc-800 border border-zinc-700 rounded-lg shadow-xl overflow-hidden">
+          <div className="px-3 py-2 text-xs text-zinc-500 font-medium border-b border-zinc-700">
+            Select analysis branch
+          </div>
+          <div className="max-h-48 overflow-y-auto">
+            {branches.map((b) => (
+              <button
+                key={b}
+                onClick={() => { setBranch(repo.id, b); setOpen(false) }}
+                className={`w-full text-left px-3 py-2 text-xs flex items-center gap-2 hover:bg-zinc-700 transition-colors
+                  ${b === activeBranch ? 'text-zinc-100 font-medium' : 'text-zinc-400'}`}
+              >
+                <GitBranch size={11} className={b === activeBranch ? 'text-emerald-400' : 'text-zinc-600'} />
+                <span className="flex-1 truncate">{b}</span>
+                {b === repo.git_branch && (
+                  <span className="text-zinc-600 text-xs shrink-0">HEAD</span>
+                )}
+                {b === activeBranch && b !== repo.git_branch && (
+                  <span className="text-indigo-400 text-xs shrink-0">selected</span>
+                )}
+              </button>
+            ))}
+          </div>
+          {branches.length === 0 && (
+            <div className="px-3 py-4 text-xs text-zinc-500 text-center">No local branches found</div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Repo card — shows a saved local folder
 // ──────────────────────────────────────────────────────────────────────────────
 function LocalRepoCard({
@@ -146,17 +224,17 @@ function LocalRepoCard({
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-sm font-semibold text-zinc-100">{repo.name}</span>
+
+            {/* Branch picker (git repo) or no-git badge */}
             {repo.is_git_repo ? (
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                <GitBranch size={10} />
-                {repo.git_branch ?? 'detached'}
-              </span>
+              <BranchPicker repo={repo} />
             ) : (
               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-amber-500/10 text-amber-400 border border-amber-500/20">
                 <AlertTriangle size={10} />
                 No git
               </span>
             )}
+
             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
               <Shield size={10} />
               Strict Local
@@ -176,6 +254,11 @@ function LocalRepoCard({
               <span className="inline-flex items-center gap-1 text-xs text-zinc-600 truncate max-w-xs">
                 <Link size={10} />
                 {repo.git_remote_url}
+              </span>
+            )}
+            {repo.selected_branch && repo.selected_branch !== repo.git_branch && (
+              <span className="text-xs text-indigo-400/70">
+                Analysis: <span className="font-mono">{repo.selected_branch}</span>
               </span>
             )}
           </div>

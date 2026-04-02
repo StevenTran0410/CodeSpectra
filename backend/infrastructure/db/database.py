@@ -70,6 +70,13 @@ _MIGRATIONS: list[dict[str, Any]] = [
             );
         """,
     },
+    {
+        "version": 3,
+        "description": "Add selected_branch to local_repos (user-chosen branch for analysis)",
+        "sql": """
+            ALTER TABLE local_repos ADD COLUMN selected_branch TEXT;
+        """,
+    },
 ]
 
 TARGET_VERSION = len(_MIGRATIONS) - 1

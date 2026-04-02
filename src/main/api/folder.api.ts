@@ -38,4 +38,15 @@ export function registerFolderHandlers(client: BackendClient): void {
     'folder:revalidate',
     (_event, id: string) => client.post(`/api/local-repo/${id}/revalidate`, {})
   )
+
+  ipcMain.handle(
+    'folder:branches',
+    (_event, id: string): Promise<string[]> => client.get(`/api/local-repo/${id}/branches`)
+  )
+
+  ipcMain.handle(
+    'folder:setBranch',
+    (_event, id: string, branch: string) =>
+      client.post(`/api/local-repo/${id}/branch`, { branch })
+  )
 }

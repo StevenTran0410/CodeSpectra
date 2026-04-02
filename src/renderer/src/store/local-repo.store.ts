@@ -9,6 +9,8 @@ interface LocalRepoState {
   validation: ValidateFolderResponse | null
   adding: boolean
   revalidatingId: string | null
+  branchesMap: Record<string, string[]>     // repo_id → branch list
+  loadingBranchesId: string | null
 
   load: () => Promise<void>
   validate: (path: string) => Promise<ValidateFolderResponse | null>
@@ -16,6 +18,8 @@ interface LocalRepoState {
   add: (path: string) => Promise<LocalRepo | null>
   remove: (id: string) => Promise<void>
   revalidate: (id: string) => Promise<void>
+  loadBranches: (id: string) => Promise<void>
+  setBranch: (id: string, branch: string) => Promise<void>
   clearError: () => void
 }
 
@@ -27,6 +31,8 @@ export const useLocalRepoStore = create<LocalRepoState>((set, get) => ({
   validation: null,
   adding: false,
   revalidatingId: null,
+  branchesMap: {},
+  loadingBranchesId: null,
 
   load: async () => {
     set({ loading: true, error: null })
@@ -83,6 +89,25 @@ export const useLocalRepoStore = create<LocalRepoState>((set, get) => ({
       }))
     } catch (err) {
       set({ revalidatingId: null, error: String(err) })
+    }
+  },
+
+  loadBranches: async (id: string) => {
+    set({ loadingBranchesId: id })
+    try {
+      const branches = await window.api.folder.branches(id)
+      set((s) => ({ branchesMap: { ...s.branchesMap, [id]: branches }, loadingBranchesId: null }))
+    } catch (err) {
+      set({ loadingBranchesId: null, error: String(err) })
+    }
+  },
+
+  setBranch: async (id: string, branch: string) => {
+    try {
+      const updated = await window.api.folder.setBranch(id, branch)
+      set((s) => ({ repos: s.repos.map((r) => (r.id === id ? updated : r)) }))
+    } catch (err) {
+      set({ error: String(err) })
     }
   },
 

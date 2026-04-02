@@ -38,7 +38,9 @@ const api = {
     list: () => ipcRenderer.invoke('folder:list'),
     add: (path: string) => ipcRenderer.invoke('folder:add', path),
     remove: (id: string): Promise<void> => ipcRenderer.invoke('folder:remove', id),
-    revalidate: (id: string) => ipcRenderer.invoke('folder:revalidate', id)
+    revalidate: (id: string) => ipcRenderer.invoke('folder:revalidate', id),
+    branches: (id: string): Promise<string[]> => ipcRenderer.invoke('folder:branches', id),
+    setBranch: (id: string, branch: string) => ipcRenderer.invoke('folder:setBranch', id, branch)
   },
   app: {
     getVersion: (): Promise<string> => ipcRenderer.invoke('app:get-version'),

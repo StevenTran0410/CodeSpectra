@@ -5,6 +5,7 @@ from domain.local_repo.service import LocalRepoService
 from domain.local_repo.types import (
     AddLocalRepoRequest,
     LocalRepo,
+    SetBranchRequest,
     ValidateFolderRequest,
     ValidateFolderResponse,
 )
@@ -36,3 +37,13 @@ async def remove_repo(repo_id: str) -> None:
 @router.post("/{repo_id}/revalidate", response_model=LocalRepo)
 async def revalidate_repo(repo_id: str) -> LocalRepo:
     return await _service.revalidate(repo_id)
+
+
+@router.get("/{repo_id}/branches", response_model=list[str])
+async def list_branches(repo_id: str) -> list[str]:
+    return await _service.list_branches(repo_id)
+
+
+@router.post("/{repo_id}/branch", response_model=LocalRepo)
+async def set_branch(repo_id: str, body: SetBranchRequest) -> LocalRepo:
+    return await _service.set_branch(repo_id, body)

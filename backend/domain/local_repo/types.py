@@ -18,12 +18,25 @@ class LocalRepo(BaseModel):
     name: str
     source_type: RepoSourceType = RepoSourceType.LOCAL_FOLDER
     is_git_repo: bool
-    git_branch: str | None
+    git_branch: str | None        # actual HEAD branch at last validation
     git_head_hash: str | None
     git_remote_url: str | None
     has_size_warning: bool
+    selected_branch: str | None   # user-chosen branch to analyze (None = use HEAD)
     added_at: str
     last_validated_at: str
+
+
+class SetBranchRequest(BaseModel):
+    branch: str
+
+    @field_validator("branch")
+    @classmethod
+    def branch_not_empty(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("branch cannot be empty")
+        return v
 
 
 class ValidateFolderRequest(BaseModel):

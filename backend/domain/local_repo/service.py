@@ -13,6 +13,7 @@ from .types import (
     AddLocalRepoRequest,
     LocalRepo,
     RepoSourceType,
+    SetBranchRequest,
     ValidateFolderRequest,
     ValidateFolderResponse,
 )
@@ -82,6 +83,18 @@ async def _check_size_warning(path: str) -> tuple[bool, str | None]:
     return await asyncio.to_thread(_check_size_warning_sync, path)
 
 
+def _list_branches_sync(path: str) -> list[str]:
+    """List all local git branches (blocking — run in thread)."""
+    raw = _run_git(path, ["branch", "--format=%(refname:short)"])
+    if not raw:
+        return []
+    return [b.strip() for b in raw.splitlines() if b.strip()]
+
+
+async def _list_branches(path: str) -> list[str]:
+    return await asyncio.to_thread(_list_branches_sync, path)
+
+
 def _row_to_model(row) -> LocalRepo:
     return LocalRepo(
         id=row["id"],
@@ -93,6 +106,7 @@ def _row_to_model(row) -> LocalRepo:
         git_head_hash=row["git_head_hash"],
         git_remote_url=row["git_remote_url"],
         has_size_warning=bool(row["has_size_warning"]),
+        selected_branch=row["selected_branch"],
         added_at=row["added_at"],
         last_validated_at=row["last_validated_at"],
     )
@@ -153,8 +167,9 @@ class LocalRepoService:
         await db.execute(
             """INSERT INTO local_repos
                (id, path, name, source_type, is_git_repo, git_branch,
-                git_head_hash, git_remote_url, has_size_warning, added_at, last_validated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                git_head_hash, git_remote_url, has_size_warning, selected_branch,
+                added_at, last_validated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 repo_id,
                 req.path,
@@ -165,6 +180,7 @@ class LocalRepoService:
                 validation.git_head_hash,
                 validation.git_remote_url,
                 int(validation.has_size_warning),
+                None,   # selected_branch defaults to None (use HEAD)
                 now,
                 now,
             ),
@@ -192,6 +208,36 @@ class LocalRepoService:
                 raise NotFoundError("LocalRepo", repo_id)
         await db.commit()
         logger.info(f"Removed local repo {repo_id}")
+
+    async def list_branches(self, repo_id: str) -> list[str]:
+        """Return all local git branches for this repo, or [] if not a git repo."""
+        repo = await self.get_by_id(repo_id)
+        if not repo.is_git_repo:
+            return []
+        return await _list_branches(repo.path)
+
+    async def set_branch(self, repo_id: str, req: SetBranchRequest) -> LocalRepo:
+        """Persist the user's chosen analysis branch."""
+        existing = await self.get_by_id(repo_id)
+        if not existing.is_git_repo:
+            raise ValueError("Cannot set branch on a non-git folder")
+
+        # Verify the branch actually exists locally
+        branches = await _list_branches(existing.path)
+        if branches and req.branch not in branches:
+            raise ValueError(
+                f"Branch '{req.branch}' not found in local repo. "
+                f"Available: {', '.join(branches[:10])}"
+            )
+
+        db = get_db()
+        await db.execute(
+            "UPDATE local_repos SET selected_branch=? WHERE id=?",
+            (req.branch, repo_id),
+        )
+        await db.commit()
+        logger.info(f"Set analysis branch to '{req.branch}' for repo {repo_id}")
+        return await self.get_by_id(repo_id)
 
     async def revalidate(self, repo_id: str) -> LocalRepo:
         """Refresh git metadata for an existing local repo."""
