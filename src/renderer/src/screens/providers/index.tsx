@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import {
   Plus,
   Trash2,
@@ -17,7 +17,6 @@ import {
   Eye,
   EyeOff
 } from 'lucide-react'
-import { useEffect, useRef } from 'react'
 import { ConsentBanner } from '../../components/providers/ConsentBanner'
 import { useProviderStore, type TestResult } from '../../store/provider.store'
 import type { ProviderConfig, CreateProviderRequest, UpdateProviderRequest } from '../../types/electron'
