@@ -1,0 +1,54 @@
+{
+  "schema_version": "1.0.0",
+  "id": "rpt-001-backend-service",
+  "job_id": "job-001",
+  "repo_name": "user-auth-service",
+  "repo_path": "/projects/user-auth-service",
+  "generated_at": "2026-04-01T09:00:00Z",
+  "scan_mode": "full",
+  "privacy_mode": "strict_local",
+  "provider_kind": "ollama",
+  "model_id": "llama3.2:8b",
+  "sections": [
+    {
+      "section_id": "project_identity",
+      "title": "Project Identity Card",
+      "content": "## Project Identity Card\n\n**Name:** user-auth-service\n\n**Primary language:** Python (94%) — TypeScript (6%)\n\n**Purpose:** Stateless JWT-based authentication microservice. Handles user registration, login, token refresh, and OAuth 2.0 callback flows for Google and GitHub. Designed to be deployed as a sidecar to other internal services.\n\n**Repository size:** 142 files, ~8,400 lines of code\n\n**Entry points:**\n- `src/main.py` — FastAPI app factory\n- `src/api/auth.py` — primary route group (`/auth/*`)\n- `src/api/oauth.py` — OAuth callback routes",
+      "evidence": [
+        {
+          "file_path": "src/main.py",
+          "line_start": 1,
+          "line_end": 24,
+          "excerpt": "from fastapi import FastAPI\nfrom src.api import auth, oauth, health\n\ndef create_app() -> FastAPI:\n    app = FastAPI(title='user-auth-service')\n    app.include_router(auth.router, prefix='/auth')\n    app.include_router(oauth.router, prefix='/oauth')\n    return app",
+          "relevance_note": "App factory — shows router structure and top-level organization"
+        }
+      ],
+      "confidence": {
+        "score": 0.94,
+        "basis": "symbol_count",
+        "caveats": []
+      },
+      "generated_at": "2026-04-01T09:01:00Z"
+    },
+    {
+      "section_id": "architecture_overview",
+      "title": "Architecture Overview",
+      "content": "## Architecture Overview\n\nThe service follows a **layered architecture** with clear separation between HTTP routing, business logic, and data access.\n\n```\n┌─────────────────────────────┐\n│  API Layer  (src/api/)      │  Route handlers, request validation\n├─────────────────────────────┤\n│  Service Layer (src/domain/)│  Business logic, token generation\n├─────────────────────────────┤\n│  Repository Layer (src/db/) │  SQLAlchemy models, DB queries\n├─────────────────────────────┤\n│  Infrastructure             │  Redis (token blacklist), SMTP, OAuth clients\n└─────────────────────────────┘\n```\n\n**Notable patterns:**\n- All secrets loaded from environment variables via `pydantic-settings`\n- Async throughout (FastAPI + SQLAlchemy async)\n- JWT signing uses RS256 (asymmetric); private key loaded at startup",
+      "evidence": [
+        {
+          "file_path": "src/domain/token_service.py",
+          "line_start": 18,
+          "line_end": 35,
+          "excerpt": "class TokenService:\n    def __init__(self, private_key: RSAPrivateKey) -> None:\n        self._key = private_key\n\n    def issue(self, subject: str, scopes: list[str]) -> str:\n        payload = {\"sub\": subject, \"scopes\": scopes, \"iat\": now(), \"exp\": now() + ACCESS_TTL}\n        return jwt.encode(payload, self._key, algorithm=\"RS256\")",
+          "relevance_note": "Core token issuance — RS256 asymmetric signing"
+        }
+      ],
+      "confidence": {
+        "score": 0.91,
+        "basis": "import_graph",
+        "caveats": ["OAuth client implementations not fully traced"]
+      },
+      "generated_at": "2026-04-01T09:02:00Z"
+    }
+  ]
+}

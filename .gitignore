@@ -1,5 +1,5 @@
 # Planning docs — local only, not committed
-repo_atlas_plan/
+# repo_atlas_plan is tracked — design docs and tickets should be in git
 
 # Cursor agent configs — local only
 .cursor/

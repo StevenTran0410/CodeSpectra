@@ -1,0 +1,54 @@
+{
+  "schema_version": "1.0.0",
+  "id": "rpt-002-monorepo",
+  "job_id": "job-002",
+  "repo_name": "platform-monorepo",
+  "repo_path": "/projects/platform-monorepo",
+  "generated_at": "2026-04-01T10:00:00Z",
+  "scan_mode": "full",
+  "privacy_mode": "strict_local",
+  "provider_kind": "ollama",
+  "model_id": "llama3.2:8b",
+  "sections": [
+    {
+      "section_id": "project_identity",
+      "title": "Project Identity Card",
+      "content": "## Project Identity Card\n\n**Name:** platform-monorepo\n\n**Primary languages:** TypeScript (61%), Python (24%), Go (15%)\n\n**Purpose:** Internal platform monorepo containing three distinct services and two shared libraries. Managed with Turborepo.\n\n**Repository size:** 1,840 files, ~94,000 lines of code\n\n**Top-level packages:**\n- `apps/api-gateway` — Go reverse proxy and rate limiter\n- `apps/data-pipeline` — Python ETL orchestration (Prefect)\n- `apps/web-dashboard` — React + TypeScript internal tooling UI\n- `packages/shared-types` — TypeScript type definitions shared across apps\n- `packages/config` — ESLint, TypeScript, and Prettier shared configs",
+      "evidence": [
+        {
+          "file_path": "turbo.json",
+          "line_start": 1,
+          "line_end": 22,
+          "excerpt": "{\n  \"$schema\": \"https://turbo.build/schema.json\",\n  \"pipeline\": {\n    \"build\": { \"dependsOn\": [\"^build\"], \"outputs\": [\"dist/**\"] },\n    \"test\":  { \"dependsOn\": [\"build\"] },\n    \"lint\":  {}\n  }\n}",
+          "relevance_note": "Turborepo pipeline — defines build dependency order across packages"
+        }
+      ],
+      "confidence": {
+        "score": 0.88,
+        "basis": "symbol_count",
+        "caveats": ["Go module graph partially resolved — some vendor deps not traversed"]
+      },
+      "generated_at": "2026-04-01T10:01:00Z"
+    },
+    {
+      "section_id": "risk_hotspots",
+      "title": "Risk / Complexity / Hotspot",
+      "content": "## Risk / Complexity / Hotspot\n\n### High-complexity files\n\n| File | Cyclomatic complexity | Why it matters |\n|---|---|---|\n| `apps/data-pipeline/src/orchestrator.py` | 47 | Central ETL coordinator — all pipeline logic funnels through here |\n| `apps/api-gateway/handler/proxy.go` | 38 | Request routing with 12 conditional branches |\n\n### Circular import risk\n\n`packages/shared-types` imports from `apps/web-dashboard/src/utils` — this creates a circular dependency that will break if either package is published independently. **Recommend extracting the shared utility to `packages/shared-types` directly.**\n\n### Test coverage gaps\n\n`apps/data-pipeline/src/transforms/` has 18 files with 0 test coverage. These are data transformation functions — high risk for silent data corruption bugs.",
+      "evidence": [
+        {
+          "file_path": "apps/data-pipeline/src/orchestrator.py",
+          "line_start": 1,
+          "line_end": 8,
+          "excerpt": "# Cyclomatic complexity: 47 (threshold: 10)\n# Last modified: 14 authors over 8 months\n# Referenced by: 23 other modules",
+          "relevance_note": "Highest-complexity file in the repository — primary maintenance risk"
+        }
+      ],
+      "confidence": {
+        "score": 0.79,
+        "basis": "import_graph",
+        "caveats": ["Complexity scores estimated from AST — not profiler data"]
+      },
+      "generated_at": "2026-04-01T10:05:00Z"
+    }
+  ]
+}

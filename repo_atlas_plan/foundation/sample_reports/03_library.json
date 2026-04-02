@@ -1,0 +1,54 @@
+{
+  "schema_version": "1.0.0",
+  "id": "rpt-003-library",
+  "job_id": "job-003",
+  "repo_name": "fast-cache",
+  "repo_path": "/projects/fast-cache",
+  "generated_at": "2026-04-01T11:00:00Z",
+  "scan_mode": "quick",
+  "privacy_mode": "byok_cloud",
+  "provider_kind": "openai",
+  "model_id": "gpt-4o",
+  "sections": [
+    {
+      "section_id": "project_identity",
+      "title": "Project Identity Card",
+      "content": "## Project Identity Card\n\n**Name:** fast-cache\n\n**Primary language:** Python (100%)\n\n**Purpose:** High-performance in-memory cache library with TTL support, LRU eviction, and optional Redis backend. Published on PyPI. Designed as a drop-in replacement for `cachetools` with async support.\n\n**Repository size:** 38 files, ~2,100 lines of code\n\n**Public API surface:**\n- `fast_cache.Cache` — synchronous LRU cache\n- `fast_cache.AsyncCache` — async-native variant\n- `fast_cache.RedisBackend` — pluggable Redis backend\n- `@fast_cache.cached(ttl=...)` — decorator for sync and async functions",
+      "evidence": [
+        {
+          "file_path": "fast_cache/__init__.py",
+          "line_start": 1,
+          "line_end": 12,
+          "excerpt": "from .cache import Cache, AsyncCache\nfrom .backends.redis import RedisBackend\nfrom .decorators import cached\n\n__all__ = [\"Cache\", \"AsyncCache\", \"RedisBackend\", \"cached\"]\n__version__ = \"2.4.1\"",
+          "relevance_note": "Public API surface — all user-facing exports"
+        }
+      ],
+      "confidence": {
+        "score": 0.97,
+        "basis": "symbol_count",
+        "caveats": []
+      },
+      "generated_at": "2026-04-01T11:01:00Z"
+    },
+    {
+      "section_id": "onboarding_digest",
+      "title": "Onboarding Digest",
+      "content": "## Onboarding Digest\n\n### Start here\n\n1. **`fast_cache/cache.py`** — Core `Cache` class. The entire eviction, TTL, and thread-safety logic lives here (~400 lines). Read this first.\n2. **`fast_cache/decorators.py`** — The `@cached` decorator. Shows how the public API wraps the core class.\n3. **`tests/test_cache.py`** — 87 test cases. The best specification of expected behavior.\n\n### Key concepts to understand\n\n- **Eviction policy:** LRU implemented with `collections.OrderedDict`; O(1) access and eviction.\n- **TTL implementation:** Lazy expiry — items are not evicted on a timer but on access. `get()` checks `time.monotonic()` before returning.\n- **Thread safety:** A single `threading.RLock` guards all mutations. Async variant uses `asyncio.Lock`.\n- **Backend protocol:** `RedisBackend` implements `CacheBackend` protocol — any object implementing `get`, `set`, `delete`, `clear` can be plugged in.\n\n### What NOT to expect\n\nThis library does not handle distributed cache invalidation, cache warming, or multi-level caching. It is intentionally single-process.",
+      "evidence": [
+        {
+          "file_path": "fast_cache/cache.py",
+          "line_start": 44,
+          "line_end": 62,
+          "excerpt": "def get(self, key: str, default: Any = _MISSING) -> Any:\n    with self._lock:\n        if key not in self._store:\n            return default if default is not _MISSING else None\n        entry = self._store[key]\n        if entry.expires_at and monotonic() > entry.expires_at:\n            del self._store[key]\n            return default if default is not _MISSING else None\n        self._store.move_to_end(key)  # LRU update\n        return entry.value",
+          "relevance_note": "Core get() — shows TTL lazy expiry and LRU update in one method"
+        }
+      ],
+      "confidence": {
+        "score": 0.96,
+        "basis": "symbol_count",
+        "caveats": []
+      },
+      "generated_at": "2026-04-01T11:03:00Z"
+    }
+  ]
+}
