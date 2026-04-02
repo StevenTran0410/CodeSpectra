@@ -52,6 +52,7 @@ class UpdateProviderRequest(BaseModel):
 class TestConnectionResponse(BaseModel):
     ok: bool
     message: str
+    warning: str | None = None
 
 
 class ListModelsResponse(BaseModel):
@@ -103,7 +104,7 @@ async def delete_provider(provider_id: str) -> None:
 @router.post("/{provider_id}/test", response_model=TestConnectionResponse)
 async def test_provider_connection(provider_id: str) -> TestConnectionResponse:
     result = await _service.test_connection(provider_id)
-    return TestConnectionResponse(ok=result.ok, message=result.message)
+    return TestConnectionResponse(ok=result.ok, message=result.message, warning=result.warning)
 
 
 @router.get("/{provider_id}/models", response_model=ListModelsResponse)

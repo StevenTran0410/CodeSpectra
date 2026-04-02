@@ -5,13 +5,16 @@ import {
   RefreshCw,
   CheckCircle2,
   XCircle,
+  AlertTriangle,
   Loader2,
   ChevronDown,
+  ChevronRight,
   Pencil,
   Shield,
-  Wifi
+  Wifi,
+  BookOpen
 } from 'lucide-react'
-import { useProviderStore } from '../../store/provider.store'
+import { useProviderStore, type TestResult } from '../../store/provider.store'
 import type { ProviderConfig, CreateProviderRequest, UpdateProviderRequest } from '../../types/electron'
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -37,15 +40,66 @@ function KindLabel({ kind }: { kind: string }) {
   )
 }
 
-interface TestStatusProps {
-  ok: boolean
-  message: string
-}
-function TestStatus({ ok, message }: TestStatusProps) {
+function TestStatus({ ok, message, warning }: TestResult) {
+  if (ok && warning) {
+    return (
+      <div className="space-y-1">
+        <div className="flex items-center gap-2 text-xs rounded px-3 py-2 bg-amber-500/10 text-amber-400">
+          <AlertTriangle size={13} className="shrink-0" />
+          <span>{message}</span>
+        </div>
+        <div className="flex items-start gap-2 text-xs rounded px-3 py-2 bg-zinc-800 text-zinc-400">
+          <AlertTriangle size={12} className="shrink-0 mt-0.5 text-amber-500/60" />
+          <span>{warning}</span>
+        </div>
+      </div>
+    )
+  }
   return (
     <div className={`flex items-center gap-2 text-xs rounded px-3 py-2 ${ok ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400'}`}>
       {ok ? <CheckCircle2 size={13} /> : <XCircle size={13} />}
       <span>{message}</span>
+    </div>
+  )
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// LM Studio setup guide
+// ──────────────────────────────────────────────────────────────────────────────
+function LMStudioSetupGuide() {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="border border-zinc-700/60 rounded-lg overflow-hidden">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center gap-2 px-4 py-3 text-xs text-zinc-400 hover:text-zinc-300 hover:bg-zinc-800/40 transition-colors"
+      >
+        <BookOpen size={13} className="text-sky-400" />
+        <span className="flex-1 text-left font-medium">How to enable LM Studio Local Server</span>
+        {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+      </button>
+      {open && (
+        <div className="px-4 pb-4 space-y-3 bg-zinc-800/20">
+          <ol className="space-y-2 text-xs text-zinc-400 list-none">
+            <li className="flex gap-3">
+              <span className="shrink-0 w-5 h-5 rounded-full bg-sky-500/20 text-sky-400 flex items-center justify-center text-[10px] font-bold">1</span>
+              <span>Open LM Studio → click the <span className="text-zinc-200 font-mono bg-zinc-700 px-1 rounded">↔</span> <strong className="text-zinc-300">Local Server</strong> tab in the left sidebar.</span>
+            </li>
+            <li className="flex gap-3">
+              <span className="shrink-0 w-5 h-5 rounded-full bg-sky-500/20 text-sky-400 flex items-center justify-center text-[10px] font-bold">2</span>
+              <span>Select a model from the dropdown at the top of the server tab, then click <strong className="text-zinc-300">Start Server</strong>.</span>
+            </li>
+            <li className="flex gap-3">
+              <span className="shrink-0 w-5 h-5 rounded-full bg-sky-500/20 text-sky-400 flex items-center justify-center text-[10px] font-bold">3</span>
+              <span>Default port is <span className="font-mono text-sky-400">1234</span>. Leave the base URL as <span className="font-mono text-zinc-300">http://localhost:1234</span> unless you changed it.</span>
+            </li>
+            <li className="flex gap-3">
+              <span className="shrink-0 w-5 h-5 rounded-full bg-sky-500/20 text-sky-400 flex items-center justify-center text-[10px] font-bold">4</span>
+              <span>Save the provider here, then click <strong className="text-zinc-300">Test connection</strong> — you should see the loaded model appear in Browse.</span>
+            </li>
+          </ol>
+        </div>
+      )}
     </div>
   )
 }
@@ -177,16 +231,27 @@ function ProviderForm({ kind, initial, onClose }: ProviderFormProps) {
 
       {/* Model picker dropdown */}
       {showModelPicker && isEdit && models.length > 0 && (
-        <div className="border border-zinc-700 rounded-md bg-zinc-800 divide-y divide-zinc-700 max-h-40 overflow-y-auto">
-          {models.map((m) => (
-            <button
-              key={m}
-              onClick={() => { setModelId(m); setShowModelPicker(false) }}
-              className={`w-full text-left px-3 py-2 text-sm font-mono hover:bg-zinc-700 transition-colors ${modelId === m ? 'text-violet-400' : 'text-zinc-300'}`}
-            >
-              {m}
-            </button>
-          ))}
+        <div className="border border-zinc-700 rounded-md bg-zinc-800 divide-y divide-zinc-700 max-h-48 overflow-y-auto">
+          {models.map((m) => {
+            // LM Studio model IDs can be very long paths — show filename only as label
+            const label = m.includes('/') ? m.split('/').pop()! : m
+            const isCurrent = modelId === m
+            return (
+              <button
+                key={m}
+                onClick={() => { setModelId(m); setShowModelPicker(false) }}
+                className={`w-full text-left px-3 py-2 hover:bg-zinc-700 transition-colors ${isCurrent ? 'bg-zinc-700/50' : ''}`}
+              >
+                <div className={`text-sm font-mono truncate ${isCurrent ? 'text-violet-400' : 'text-zinc-300'}`}>{label}</div>
+                {label !== m && <div className="text-[10px] text-zinc-600 truncate font-mono mt-0.5">{m}</div>}
+              </button>
+            )
+          })}
+        </div>
+      )}
+      {showModelPicker && isEdit && models.length === 0 && !isLoadingModels && (
+        <div className="border border-zinc-700 rounded-md bg-zinc-800 px-3 py-3 text-xs text-zinc-500">
+          No models found.{kind === 'ollama' ? ' Run `ollama pull <model>` to download one.' : ' Load a model in LM Studio first.'}
         </div>
       )}
 
@@ -412,7 +477,7 @@ export default function ProvidersScreen() {
           <div className="flex items-center justify-between mb-3">
             <div>
               <h2 className="text-sm font-semibold text-zinc-300">LM Studio</h2>
-              <p className="text-xs text-zinc-500 mt-0.5">OpenAI-compatible local server — enable "Local Server" in LM Studio first</p>
+              <p className="text-xs text-zinc-500 mt-0.5">OpenAI-compatible local server via LM Studio</p>
             </div>
             {adding !== 'lmstudio' && (
               <button
@@ -426,6 +491,7 @@ export default function ProvidersScreen() {
           </div>
 
           <div className="space-y-3">
+            <LMStudioSetupGuide />
             {lmStudioProviders.map((p) => <ProviderCard key={p.id} config={p} />)}
 
             {adding === 'lmstudio' && (

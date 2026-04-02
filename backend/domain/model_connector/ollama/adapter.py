@@ -32,9 +32,22 @@ class OllamaAdapter:
         except httpx.ConnectError as e:
             raise ProviderError(
                 ProviderErrorCode.CONNECTION_REFUSED,
-                f"Cannot reach Ollama at {self.config.base_url}: {e}",
+                f"Cannot reach Ollama at {self.config.base_url}. Make sure Ollama is running.",
                 provider_id=self.config.id,
                 retryable=True,
+            ) from e
+        except httpx.TimeoutException as e:
+            raise ProviderError(
+                ProviderErrorCode.TIMEOUT,
+                f"Ollama at {self.config.base_url} timed out.",
+                provider_id=self.config.id,
+                retryable=True,
+            ) from e
+        except httpx.HTTPStatusError as e:
+            raise ProviderError(
+                ProviderErrorCode.UNKNOWN,
+                f"Ollama returned HTTP {e.response.status_code}.",
+                provider_id=self.config.id,
             ) from e
         except Exception as e:
             raise ProviderError(
@@ -79,13 +92,19 @@ class OllamaAdapter:
                 ProviderErrorCode.UNKNOWN, str(e), provider_id=self.config.id
             ) from e
 
-    async def test_connection(self) -> tuple[bool, str]:
-        """Returns (ok, message) for UI health check."""
+    async def test_connection(self) -> tuple[bool, str, str | None]:
+        """Returns (ok, message, warning). Warning is non-None when connected but no models pulled."""
         try:
             models = await self.list_models()
-            return True, f"Connected — {len(models)} model(s) available"
+            if not models:
+                return (
+                    True,
+                    "Connected — no models pulled yet",
+                    "No models found. Run `ollama pull <model>` to download one.",
+                )
+            return True, f"Connected — {len(models)} model(s) available", None
         except ProviderError as e:
-            return False, e.message
+            return False, e.message, None
 
     async def aclose(self) -> None:
         await self._client.aclose()

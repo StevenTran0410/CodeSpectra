@@ -14,9 +14,10 @@ from .types import ProviderCapabilities, ProviderConfig, ProviderKind
 
 
 class TestConnectionResult:
-    def __init__(self, ok: bool, message: str) -> None:
+    def __init__(self, ok: bool, message: str, warning: str | None = None) -> None:
         self.ok = ok
         self.message = message
+        self.warning = warning
 
 
 def _get_adapter(config: ProviderConfig) -> OllamaAdapter | LMStudioAdapter:
@@ -149,8 +150,8 @@ class ProviderConfigService:
         config = await self.get_by_id(provider_id)
         adapter = _get_adapter(config)
         try:
-            ok, message = await adapter.test_connection()
-            return TestConnectionResult(ok=ok, message=message)
+            ok, message, warning = await adapter.test_connection()
+            return TestConnectionResult(ok=ok, message=message, warning=warning)
         except ProviderError as e:
             return TestConnectionResult(ok=False, message=e.message)
         finally:

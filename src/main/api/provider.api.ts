@@ -25,7 +25,7 @@ export function registerProviderHandlers(client: BackendClient): void {
 
   ipcMain.handle(
     'provider:test',
-    (_event, id: string): Promise<{ ok: boolean; message: string }> =>
+    (_event, id: string): Promise<{ ok: boolean; message: string; warning?: string }> =>
       client.post(`/api/provider/${id}/test`, {})
   )
 

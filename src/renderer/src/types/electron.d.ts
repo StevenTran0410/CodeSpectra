@@ -55,7 +55,7 @@ declare global {
         create: (req: CreateProviderRequest) => Promise<ProviderConfig>
         update: (id: string, req: UpdateProviderRequest) => Promise<ProviderConfig>
         delete: (id: string) => Promise<void>
-        test: (id: string) => Promise<{ ok: boolean; message: string }>
+        test: (id: string) => Promise<{ ok: boolean; message: string; warning?: string }>
         models: (id: string) => Promise<{ models: string[] }>
       }
       app: {

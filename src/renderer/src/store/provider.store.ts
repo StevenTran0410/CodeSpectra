@@ -5,9 +5,10 @@ import type {
   UpdateProviderRequest
 } from '../types/electron'
 
-interface TestResult {
+export interface TestResult {
   ok: boolean
   message: string
+  warning?: string
 }
 
 interface ProviderState {

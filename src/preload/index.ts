@@ -22,7 +22,7 @@ const api = {
     update: (id: string, req: UpdateProviderRequest): Promise<ProviderConfig> =>
       ipcRenderer.invoke('provider:update', id, req),
     delete: (id: string): Promise<void> => ipcRenderer.invoke('provider:delete', id),
-    test: (id: string): Promise<{ ok: boolean; message: string }> =>
+    test: (id: string): Promise<{ ok: boolean; message: string; warning?: string }> =>
       ipcRenderer.invoke('provider:test', id),
     models: (id: string): Promise<{ models: string[] }> =>
       ipcRenderer.invoke('provider:models', id)
