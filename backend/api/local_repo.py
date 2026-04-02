@@ -1,9 +1,10 @@
 """Local folder repository endpoints."""
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 from domain.local_repo.service import LocalRepoService
 from domain.local_repo.types import (
     AddLocalRepoRequest,
+    CloneFromUrlRequest,
     LocalRepo,
     SetBranchRequest,
     ValidateFolderRequest,
@@ -27,6 +28,14 @@ async def list_repos() -> list[LocalRepo]:
 @router.post("/", response_model=LocalRepo, status_code=201)
 async def add_repo(body: AddLocalRepoRequest) -> LocalRepo:
     return await _service.add(body)
+
+
+@router.post("/clone", response_model=LocalRepo, status_code=201)
+async def clone_repo(body: CloneFromUrlRequest) -> LocalRepo:
+    try:
+        return await _service.clone_from_url(body)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.delete("/{repo_id}", status_code=204)

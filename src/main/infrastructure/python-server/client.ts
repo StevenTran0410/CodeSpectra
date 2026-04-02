@@ -52,7 +52,7 @@ export class BackendClient {
 
   async healthCheck(): Promise<boolean> {
     try {
-      const res = await fetch(`${this.base}/health`, { signal: AbortSignal.timeout(2000) })
+      const res = await fetch(`${this.base}/api/app/health`, { signal: AbortSignal.timeout(2000) })
       return res.ok
     } catch {
       return false

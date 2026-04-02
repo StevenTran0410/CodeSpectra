@@ -5,10 +5,6 @@ import type {
   ProviderConfig,
   CreateProviderRequest,
   UpdateProviderRequest,
-  DeviceFlowStart,
-  DeviceFlowPollResult,
-  GitHubAccount,
-  GitHubRepoListResponse,
 } from '../main/api/types'
 
 const api = {
@@ -44,21 +40,16 @@ const api = {
     remove: (id: string): Promise<void> => ipcRenderer.invoke('folder:remove', id),
     revalidate: (id: string) => ipcRenderer.invoke('folder:revalidate', id),
     branches: (id: string): Promise<string[]> => ipcRenderer.invoke('folder:branches', id),
-    setBranch: (id: string, branch: string) => ipcRenderer.invoke('folder:setBranch', id, branch)
+    setBranch: (id: string, branch: string) => ipcRenderer.invoke('folder:setBranch', id, branch),
+    cloneFromUrl: (url: string) => ipcRenderer.invoke('folder:cloneFromUrl', url)
   },
-  github: {
-    startDeviceFlow: (): Promise<DeviceFlowStart> =>
-      ipcRenderer.invoke('github:startDeviceFlow'),
-    pollDeviceFlow: (deviceCode: string): Promise<DeviceFlowPollResult> =>
-      ipcRenderer.invoke('github:pollDeviceFlow', deviceCode),
-    openBrowser: (url: string): Promise<void> =>
-      ipcRenderer.invoke('github:openBrowser', url),
-    getAccount: (): Promise<GitHubAccount | null> =>
-      ipcRenderer.invoke('github:getAccount'),
-    disconnect: (): Promise<void> =>
-      ipcRenderer.invoke('github:disconnect'),
-    listRepos: (query?: string, page?: number): Promise<GitHubRepoListResponse> =>
-      ipcRenderer.invoke('github:listRepos', query, page),
+  git: {
+    getConfig: (): Promise<{ ssh_key_path: string | null }> =>
+      ipcRenderer.invoke('git:getConfig'),
+    setConfig: (sshKeyPath: string | null): Promise<{ ssh_key_path: string | null }> =>
+      ipcRenderer.invoke('git:setConfig', sshKeyPath),
+    pickSshKey: (): Promise<string | null> =>
+      ipcRenderer.invoke('git:pickSshKey'),
   },
   app: {
     getVersion: (): Promise<string> => ipcRenderer.invoke('app:get-version'),
