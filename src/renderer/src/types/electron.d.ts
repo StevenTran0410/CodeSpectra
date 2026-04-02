@@ -6,6 +6,35 @@ export interface Workspace {
   settings: Record<string, unknown>
 }
 
+export type RepoSourceType = 'github' | 'bitbucket' | 'local_folder'
+
+export interface LocalRepo {
+  id: string
+  path: string
+  name: string
+  source_type: RepoSourceType
+  is_git_repo: boolean
+  git_branch: string | null
+  git_head_hash: string | null
+  git_remote_url: string | null
+  has_size_warning: boolean
+  added_at: string
+  last_validated_at: string
+}
+
+export interface ValidateFolderResponse {
+  path: string
+  name: string
+  exists: boolean
+  is_directory: boolean
+  is_git_repo: boolean
+  git_branch: string | null
+  git_head_hash: string | null
+  git_remote_url: string | null
+  has_size_warning: boolean
+  size_warning_reason: string | null
+}
+
 export type ProviderKind = 'ollama' | 'lmstudio' | 'openai' | 'anthropic' | 'gemini' | 'deepseek'
 export const CLOUD_KINDS: ReadonlySet<ProviderKind> = new Set(['openai', 'anthropic', 'gemini', 'deepseek'])
 
@@ -64,6 +93,14 @@ declare global {
       consent: {
         checkCloud: () => Promise<{ given: boolean }>
         giveCloud: (given: boolean) => Promise<{ given: boolean }>
+      }
+      folder: {
+        pick: () => Promise<string | null>
+        validate: (path: string) => Promise<ValidateFolderResponse>
+        list: () => Promise<LocalRepo[]>
+        add: (path: string) => Promise<LocalRepo>
+        remove: (id: string) => Promise<void>
+        revalidate: (id: string) => Promise<LocalRepo>
       }
       app: {
         getVersion: () => Promise<string>

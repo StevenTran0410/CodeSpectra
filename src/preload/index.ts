@@ -32,6 +32,14 @@ const api = {
     giveCloud: (given: boolean): Promise<{ given: boolean }> =>
       ipcRenderer.invoke('consent:cloud:give', given)
   },
+  folder: {
+    pick: (): Promise<string | null> => ipcRenderer.invoke('folder:pick'),
+    validate: (path: string) => ipcRenderer.invoke('folder:validate', path),
+    list: () => ipcRenderer.invoke('folder:list'),
+    add: (path: string) => ipcRenderer.invoke('folder:add', path),
+    remove: (id: string): Promise<void> => ipcRenderer.invoke('folder:remove', id),
+    revalidate: (id: string) => ipcRenderer.invoke('folder:revalidate', id)
+  },
   app: {
     getVersion: (): Promise<string> => ipcRenderer.invoke('app:get-version'),
     getUserDataPath: (): Promise<string> => ipcRenderer.invoke('app:get-user-data-path'),
