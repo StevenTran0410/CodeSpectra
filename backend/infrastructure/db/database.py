@@ -130,6 +130,16 @@ _MIGRATIONS: list[dict[str, Any]] = [
             CREATE INDEX IF NOT EXISTS idx_snapshots_repo ON repo_snapshots(local_repo_id);
         """,
     },
+    {
+        "version": 7,
+        "description": "Add per-repository setup settings to local_repos",
+        "sql": """
+            ALTER TABLE local_repos ADD COLUMN sync_mode TEXT NOT NULL DEFAULT 'latest';
+            ALTER TABLE local_repos ADD COLUMN pinned_ref TEXT;
+            ALTER TABLE local_repos ADD COLUMN ignore_overrides TEXT NOT NULL DEFAULT '[]';
+            ALTER TABLE local_repos ADD COLUMN detect_submodules INTEGER NOT NULL DEFAULT 1;
+        """,
+    },
 ]
 
 TARGET_VERSION = len(_MIGRATIONS) - 1

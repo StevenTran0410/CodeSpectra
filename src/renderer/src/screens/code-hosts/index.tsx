@@ -13,6 +13,7 @@ import {
   ChevronDown,
   XCircle,
   Link,
+  Search,
   ArrowDownToLine,
   KeyRound,
   Check,
@@ -126,14 +127,17 @@ function ValidationPreview({
 function BranchPicker({ repo }: { repo: LocalRepo }) {
   const { branchesMap, loadingBranchesId, loadBranches, setBranch } = useLocalRepoStore()
   const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState('')
   const ref = useRef<HTMLDivElement>(null)
 
   const branches = branchesMap[repo.id]
+  const filtered = (branches ?? []).filter((b) => b.toLowerCase().includes(query.trim().toLowerCase()))
   const activeBranch = repo.selected_branch ?? repo.git_branch ?? 'HEAD'
   const isLoading = loadingBranchesId === repo.id
 
   const handleOpen = async () => {
-    if (!branches) await loadBranches(repo.id)
+    // Always refresh when opening to catch newly fetched remote branches
+    await loadBranches(repo.id)
     setOpen((v) => !v)
   }
 
@@ -169,8 +173,20 @@ function BranchPicker({ repo }: { repo: LocalRepo }) {
           <div className="px-3 py-2 text-xs text-zinc-500 font-medium border-b border-zinc-700">
             Select analysis branch
           </div>
+          <div className="px-2 py-2 border-b border-zinc-700">
+            <div className="relative">
+              <Search size={11} className="absolute left-2 top-1/2 -translate-y-1/2 text-zinc-600" />
+              <input
+                type="text"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search branch..."
+                className="w-full pl-7 pr-2 py-1.5 bg-zinc-900 border border-zinc-700 rounded text-xs text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-zinc-500"
+              />
+            </div>
+          </div>
           <div className="max-h-48 overflow-y-auto">
-            {branches.map((b) => (
+            {filtered.map((b) => (
               <button
                 key={b}
                 onClick={() => { setBranch(repo.id, b); setOpen(false) }}
@@ -188,8 +204,10 @@ function BranchPicker({ repo }: { repo: LocalRepo }) {
               </button>
             ))}
           </div>
-          {branches.length === 0 && (
-            <div className="px-3 py-4 text-xs text-zinc-500 text-center">No local branches found</div>
+          {filtered.length === 0 && (
+            <div className="px-3 py-4 text-xs text-zinc-500 text-center">
+              {branches.length === 0 ? 'No branches found' : 'No branch matches your search'}
+            </div>
           )}
         </div>
       )}

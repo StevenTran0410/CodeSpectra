@@ -48,18 +48,15 @@ def _run_sync(path: str, branch: str, env: dict) -> tuple[bool, str]:
         # fetch failed but may still work offline — just warn
         logger.warning(f"git fetch failed for {path}, trying local checkout")
 
-    out = run_git_sync(path, ["checkout", branch], env=env, timeout=30)
-    if out is None:
-        # checkout returns empty stdout on success — check returncode via run_git_sync returns None on error
-        pass  # checkout of already-current branch returns empty string, which we treat as ok
-
-    # subprocess directly to capture stderr on failure
-    result = subprocess.run(
-        ["git", "checkout", branch],
-        cwd=path, capture_output=True, text=True, timeout=30, env=env
-    )
-    if result.returncode != 0:
-        return False, result.stderr.strip()
+    current_branch = run_git_sync(path, ["rev-parse", "--abbrev-ref", "HEAD"], env=env, timeout=10)
+    # Skip checkout if already on target branch
+    if current_branch != branch:
+        result = subprocess.run(
+            ["git", "checkout", branch],
+            cwd=path, capture_output=True, text=True, timeout=30, env=env
+        )
+        if result.returncode != 0:
+            return False, result.stderr.strip()
 
     result = subprocess.run(
         ["git", "pull", "origin", branch],
@@ -75,7 +72,22 @@ def _run_sync(path: str, branch: str, env: dict) -> tuple[bool, str]:
 # Preflight
 # ──────────────────────────────────────────────────────────────────────────────
 
-async def _preflight(path: str, remote_url: str | None) -> None:
+def _dirty_files(path: str) -> list[str]:
+    result = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=path, capture_output=True, text=True, timeout=10
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        return []
+    files: list[str] = []
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if len(line) > 3:
+            files.append(line[3:])
+    return files
+
+
+async def _preflight(path: str, target_branch: str | None) -> None:
     """Raise ValueError with a user-friendly message if preconditions fail."""
     p = Path(path)
 
@@ -87,13 +99,20 @@ async def _preflight(path: str, remote_url: str | None) -> None:
     if not p.exists():
         return  # nothing more to check — clone will create it
 
-    # 2. Dirty working tree warning (don't block — just log)
-    result = subprocess.run(
-        ["git", "status", "--porcelain"],
-        cwd=str(p), capture_output=True, text=True, timeout=10
-    )
-    if result.returncode == 0 and result.stdout.strip():
-        logger.warning(f"Repo at {path} has uncommitted changes — they may be overwritten")
+    # 2. Dirty working tree check
+    dirty = _dirty_files(str(p))
+    if dirty:
+        current_branch = run_git_sync(str(p), ["rev-parse", "--abbrev-ref", "HEAD"], timeout=10)
+        # Block only when branch switch is needed; same-branch sync can proceed
+        if target_branch and current_branch and target_branch != current_branch:
+            preview = "\n".join(dirty[:5])
+            more = f"\n...and {len(dirty)-5} more file(s)" if len(dirty) > 5 else ""
+            raise ValueError(
+                "Cannot switch branch because the repository has uncommitted changes.\n"
+                "Commit or stash these files first:\n"
+                f"{preview}{more}"
+            )
+        logger.warning(f"Repo at {path} has uncommitted changes — syncing current branch only")
 
     # 3. Submodule detection (warn only)
     if (p / ".gitmodules").exists():
@@ -169,7 +188,7 @@ class SyncEngineService:
 
         async with path_lock.acquire(path):
             # 2. Preflight
-            await _preflight(path, remote_url)
+            await _preflight(path, branch)
 
             # 3. Create snapshot record (status = pending)
             snapshot = await _create_record(req.local_repo_id, branch, path, req.clone_policy)

@@ -5,8 +5,10 @@ from domain.local_repo.service import LocalRepoService
 from domain.local_repo.types import (
     AddLocalRepoRequest,
     CloneFromUrlRequest,
+    EstimateFileCountResponse,
     LocalRepo,
     SetBranchRequest,
+    UpdateRepoSettingsRequest,
     ValidateFolderRequest,
     ValidateFolderResponse,
 )
@@ -56,3 +58,13 @@ async def list_branches(repo_id: str) -> list[str]:
 @router.post("/{repo_id}/branch", response_model=LocalRepo)
 async def set_branch(repo_id: str, body: SetBranchRequest) -> LocalRepo:
     return await _service.set_branch(repo_id, body)
+
+
+@router.post("/{repo_id}/settings", response_model=LocalRepo)
+async def update_repo_settings(repo_id: str, body: UpdateRepoSettingsRequest) -> LocalRepo:
+    return await _service.update_settings(repo_id, body)
+
+
+@router.get("/{repo_id}/estimate-file-count", response_model=EstimateFileCountResponse)
+async def estimate_file_count(repo_id: str) -> EstimateFileCountResponse:
+    return await _service.estimate_file_count(repo_id)

@@ -51,6 +51,22 @@ export function registerFolderHandlers(client: BackendClient): void {
       client.post(`/api/local-repo/${id}/branch`, { branch })
   )
 
+  ipcMain.handle(
+    'folder:updateSettings',
+    (_event, id: string, settings: {
+      sync_mode: 'latest' | 'pinned'
+      pinned_ref: string | null
+      ignore_overrides: string[]
+      detect_submodules: boolean
+    }) =>
+      client.post(`/api/local-repo/${id}/settings`, settings)
+  )
+
+  ipcMain.handle(
+    'folder:estimateFileCount',
+    (_event, id: string) => client.get(`/api/local-repo/${id}/estimate-file-count`)
+  )
+
   /**
    * Clone a remote git URL.
    * Destination is auto-resolved to ~/CodeSpectra/repos/<repo-name>.
@@ -61,6 +77,20 @@ export function registerFolderHandlers(client: BackendClient): void {
     const destPath = path.join(app.getPath('home'), 'CodeSpectra', 'repos', repoName)
     return client.post('/api/local-repo/clone', { url, dest_path: destPath })
   })
+
+  ipcMain.handle(
+    'sync:prepare',
+    (_event, body: {
+      local_repo_id: string
+      branch?: string | null
+      clone_policy?: 'full' | 'shallow' | 'partial'
+    }) => client.post('/api/sync/prepare', body)
+  )
+
+  ipcMain.handle(
+    'sync:listForRepo',
+    (_event, repoId: string) => client.get(`/api/sync/repo/${repoId}`)
+  )
 
   // ── Git / SSH settings ────────────────────────────────────────────────────
   ipcMain.handle('git:getConfig', () => client.get('/api/app/git-config'))

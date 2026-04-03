@@ -41,7 +41,25 @@ const api = {
     revalidate: (id: string) => ipcRenderer.invoke('folder:revalidate', id),
     branches: (id: string): Promise<string[]> => ipcRenderer.invoke('folder:branches', id),
     setBranch: (id: string, branch: string) => ipcRenderer.invoke('folder:setBranch', id, branch),
+    updateSettings: (
+      id: string,
+      settings: {
+        sync_mode: 'latest' | 'pinned'
+        pinned_ref: string | null
+        ignore_overrides: string[]
+        detect_submodules: boolean
+      }
+    ) => ipcRenderer.invoke('folder:updateSettings', id, settings),
+    estimateFileCount: (id: string) => ipcRenderer.invoke('folder:estimateFileCount', id),
     cloneFromUrl: (url: string) => ipcRenderer.invoke('folder:cloneFromUrl', url)
+  },
+  sync: {
+    prepare: (body: {
+      local_repo_id: string
+      branch?: string | null
+      clone_policy?: 'full' | 'shallow' | 'partial'
+    }) => ipcRenderer.invoke('sync:prepare', body),
+    listForRepo: (repoId: string) => ipcRenderer.invoke('sync:listForRepo', repoId),
   },
   git: {
     getConfig: (): Promise<{ ssh_key_path: string | null }> =>
