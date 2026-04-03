@@ -26,7 +26,7 @@ export default function RepositoriesScreen(): React.ReactElement {
             description="Connect a code host and add repositories to get started."
             action={
               <span className="text-xs text-gray-500 bg-surface-overlay border border-surface-border px-3 py-1.5 rounded-md">
-                Coming in RPA-030
+                UI flow planned in RPA-036
               </span>
             }
           />
