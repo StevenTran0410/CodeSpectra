@@ -31,7 +31,7 @@ The analysis runs entirely on your machine when you use a local model. No code l
 └────────────┬─────────────────────┘
              │ HTTP (localhost)
 ┌────────────▼─────────────────────┐
-│   Python backend (FastAPI)       │  All analysis logic, LLM routing,
+│   Python/C++ backend (FastAPI)   │  All analysis logic, LLM routing,
 │                                  │  file indexing, report generation
 │   ├── domain/model_connector     │  Provider adapters (Ollama, LM Studio,
 │   │       ├── ollama             │  OpenAI, Anthropic, Gemini, DeepSeek)
