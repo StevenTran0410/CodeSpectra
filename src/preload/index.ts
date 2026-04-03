@@ -72,6 +72,17 @@ const api = {
     file: (snapshotId: string, relPath: string) =>
       ipcRenderer.invoke('manifest:file', snapshotId, relPath),
   },
+  repomap: {
+    build: (snapshotId: string, forceRebuild = true) =>
+      ipcRenderer.invoke('repomap:build', snapshotId, forceRebuild),
+    summary: (snapshotId: string) => ipcRenderer.invoke('repomap:summary', snapshotId),
+    symbols: (snapshotId: string, limit = 300, pathPrefix?: string) =>
+      ipcRenderer.invoke('repomap:symbols', snapshotId, limit, pathPrefix),
+    search: (snapshotId: string, q: string, limit = 120) =>
+      ipcRenderer.invoke('repomap:search', snapshotId, q, limit),
+    exportCsv: (snapshotId: string, excludeTests = true) =>
+      ipcRenderer.invoke('repomap:exportCsv', snapshotId, excludeTests),
+  },
   git: {
     getConfig: (): Promise<{ ssh_key_path: string | null }> =>
       ipcRenderer.invoke('git:getConfig'),

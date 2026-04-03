@@ -93,6 +93,41 @@ export interface ManifestFileContentResponse {
   truncated: boolean
 }
 
+export type SymbolKind =
+  | 'class'
+  | 'function'
+  | 'method'
+  | 'interface'
+  | 'enum'
+  | 'type'
+  | 'variable'
+  | 'module'
+
+export interface SymbolRecord {
+  id: string
+  snapshot_id: string
+  rel_path: string
+  language: string | null
+  name: string
+  kind: SymbolKind
+  line_start: number
+  line_end: number
+  signature: string | null
+  parent_name: string | null
+  extract_source: 'ast' | 'lexical'
+}
+
+export interface RepoMapSummary {
+  snapshot_id: string
+  total_symbols: number
+  files_indexed: number
+  parse_failures: number
+  extract_mode: 'lexical' | 'hybrid'
+  language_breakdown: Record<string, number>
+  kind_breakdown: Record<string, number>
+  generated_at: string
+}
+
 export interface ValidateFolderResponse {
   path: string
   name: string
@@ -208,6 +243,23 @@ declare global {
         }>
         tree: (snapshotId: string) => Promise<ManifestTreeResponse>
         file: (snapshotId: string, relPath: string) => Promise<ManifestFileContentResponse>
+      }
+      repomap: {
+        build: (snapshotId: string, forceRebuild?: boolean) => Promise<{ summary: RepoMapSummary }>
+        summary: (snapshotId: string) => Promise<RepoMapSummary>
+        symbols: (snapshotId: string, limit?: number, pathPrefix?: string) => Promise<{
+          snapshot_id: string
+          symbols: SymbolRecord[]
+        }>
+        search: (snapshotId: string, q: string, limit?: number) => Promise<{
+          snapshot_id: string
+          symbols: SymbolRecord[]
+        }>
+        exportCsv: (snapshotId: string, excludeTests?: boolean) => Promise<{
+          saved: boolean
+          file_path: string | null
+          row_count: number
+        }>
       }
       git: {
         getConfig: () => Promise<{ ssh_key_path: string | null }>

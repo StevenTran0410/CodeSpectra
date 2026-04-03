@@ -19,6 +19,7 @@ from api.job import router as job_router
 from api.local_repo import router as local_repo_router
 from api.manifest import router as manifest_router
 from api.provider import router as provider_router
+from api.repo_map import router as repo_map_router
 from api.sync import router as sync_router
 from api.workspace import router as workspace_router
 from domain.model_connector.errors import ProviderError, ProviderErrorCode
@@ -77,6 +78,7 @@ def create_app() -> FastAPI:
     app.include_router(local_repo_router, prefix="/api/local-repo")
     app.include_router(sync_router, prefix="/api/sync")
     app.include_router(manifest_router, prefix="/api/manifest")
+    app.include_router(repo_map_router, prefix="/api/repo-map")
     app.include_router(job_router, prefix="/api/job")
 
     @app.exception_handler(ProviderError)

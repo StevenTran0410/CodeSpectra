@@ -1,4 +1,5 @@
 import path from 'path'
+import { promises as fs } from 'fs'
 import { app, dialog, ipcMain } from 'electron'
 import type { BackendClient } from '../infrastructure/python-server/client'
 
@@ -118,6 +119,43 @@ export function registerFolderHandlers(client: BackendClient): void {
   ipcMain.handle('manifest:file', (_event, snapshotId: string, relPath: string) =>
     client.get(`/api/manifest/file/${snapshotId}?path=${encodeURIComponent(relPath)}`)
   )
+
+  ipcMain.handle('repomap:build', (_event, snapshotId: string, forceRebuild = true) =>
+    client.post('/api/repo-map/build', { snapshot_id: snapshotId, force_rebuild: forceRebuild })
+  )
+
+  ipcMain.handle('repomap:summary', (_event, snapshotId: string) =>
+    client.get(`/api/repo-map/summary/${snapshotId}`)
+  )
+
+  ipcMain.handle('repomap:symbols', (_event, snapshotId: string, limit = 300, pathPrefix?: string) =>
+    client.get(
+      `/api/repo-map/symbols/${snapshotId}?limit=${limit}${
+        pathPrefix ? `&path_prefix=${encodeURIComponent(pathPrefix)}` : ''
+      }`
+    )
+  )
+
+  ipcMain.handle('repomap:search', (_event, snapshotId: string, q: string, limit = 120) =>
+    client.get(`/api/repo-map/search/${snapshotId}?q=${encodeURIComponent(q)}&limit=${limit}`)
+  )
+
+  ipcMain.handle('repomap:exportCsv', async (_event, snapshotId: string, excludeTests = true) => {
+    const data = await client.get<{ snapshot_id: string; row_count: number; csv: string }>(
+      `/api/repo-map/export/${snapshotId}?exclude_tests=${excludeTests ? 'true' : 'false'}`
+    )
+    const defaultName = `codespectra-index-${snapshotId.slice(0, 8)}.csv`
+    const save = await dialog.showSaveDialog({
+      title: 'Save Deep Index CSV',
+      defaultPath: path.join(app.getPath('desktop'), defaultName),
+      filters: [{ name: 'CSV', extensions: ['csv'] }],
+    })
+    if (save.canceled || !save.filePath) {
+      return { saved: false, file_path: null, row_count: data.row_count }
+    }
+    await fs.writeFile(save.filePath, data.csv, 'utf-8')
+    return { saved: true, file_path: save.filePath, row_count: data.row_count }
+  })
 
   // ── Git / SSH settings ────────────────────────────────────────────────────
   ipcMain.handle('git:getConfig', () => client.get('/api/app/git-config'))
