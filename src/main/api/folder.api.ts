@@ -53,6 +53,12 @@ export function registerFolderHandlers(client: BackendClient): void {
   )
 
   ipcMain.handle(
+    'folder:setActiveSnapshot',
+    (_event, id: string, snapshotId: string | null) =>
+      client.post(`/api/local-repo/${id}/active-snapshot`, { snapshot_id: snapshotId })
+  )
+
+  ipcMain.handle(
     'folder:updateSettings',
     (_event, id: string, settings: {
       sync_mode: 'latest' | 'pinned'
@@ -91,6 +97,18 @@ export function registerFolderHandlers(client: BackendClient): void {
   ipcMain.handle(
     'sync:listForRepo',
     (_event, repoId: string) => client.get(`/api/sync/repo/${repoId}`)
+  )
+
+  ipcMain.handle('manifest:build', (_event, snapshotId: string) =>
+    client.post('/api/manifest/build', { snapshot_id: snapshotId })
+  )
+
+  ipcMain.handle('manifest:tree', (_event, snapshotId: string) =>
+    client.get(`/api/manifest/tree/${snapshotId}`)
+  )
+
+  ipcMain.handle('manifest:file', (_event, snapshotId: string, relPath: string) =>
+    client.get(`/api/manifest/file/${snapshotId}?path=${encodeURIComponent(relPath)}`)
   )
 
   // ── Git / SSH settings ────────────────────────────────────────────────────

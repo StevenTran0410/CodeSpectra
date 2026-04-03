@@ -28,6 +28,7 @@ class LocalRepo(BaseModel):
     git_remote_url: str | None
     has_size_warning: bool
     selected_branch: str | None   # user-chosen branch to analyze (None = use HEAD)
+    active_snapshot_id: str | None = None
     sync_mode: SyncMode = SyncMode.LATEST
     pinned_ref: str | None
     ignore_overrides: list[str] = Field(default_factory=list)
@@ -46,6 +47,10 @@ class SetBranchRequest(BaseModel):
         if not v:
             raise ValueError("branch cannot be empty")
         return v
+
+
+class SetActiveSnapshotRequest(BaseModel):
+    snapshot_id: str | None = None
 
 
 class UpdateRepoSettingsRequest(BaseModel):

@@ -1,13 +1,19 @@
 import React, { useEffect, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { AlertTriangle, CheckCircle2, FolderOpen, GitBranch, Loader2, RefreshCw } from 'lucide-react'
 import { EmptyState } from '../../components/ui/EmptyState'
 import { ErrorBanner } from '../../components/ui/ErrorBanner'
 import { LoadingRow } from '../../components/ui/LoadingRow'
-import type { ClonePolicy, EstimateFileCountResponse, RepoSnapshot } from '../../types/electron'
+import type {
+  ClonePolicy,
+  EstimateFileCountResponse,
+  RepoSnapshot,
+} from '../../types/electron'
 import { useLocalRepoStore } from '../../store/local-repo.store'
 import { useWorkspaceStore } from '../../store/workspace.store'
 
 export default function RepositoriesScreen(): React.ReactElement {
+  const navigate = useNavigate()
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId)
   const { repos, loading, error, load, clearError, loadBranches, branchesMap, setBranch } = useLocalRepoStore()
   const [selectedRepoId, setSelectedRepoId] = useState<string | null>(null)
@@ -20,7 +26,9 @@ export default function RepositoriesScreen(): React.ReactElement {
   const [saving, setSaving] = useState(false)
   const [syncing, setSyncing] = useState(false)
   const [snapshots, setSnapshots] = useState<RepoSnapshot[]>([])
+  const [selectedSnapshotId, setSelectedSnapshotId] = useState<string | null>(null)
   const [loadingSnapshots, setLoadingSnapshots] = useState(false)
+  const [selectingSnapshot, setSelectingSnapshot] = useState(false)
   const [screenError, setScreenError] = useState<string | null>(null)
   const [estimate, setEstimate] = useState<EstimateFileCountResponse | null>(null)
   const [estimating, setEstimating] = useState(false)
@@ -58,6 +66,8 @@ export default function RepositoriesScreen(): React.ReactElement {
       try {
         const rows = await window.api.sync.listForRepo(selectedRepoId)
         setSnapshots(rows)
+        const preferred = rows.find((x) => x.id === selectedRepo?.active_snapshot_id)?.id
+        setSelectedSnapshotId(preferred ?? rows[0]?.id ?? null)
       } catch (err) {
         setScreenError(err instanceof Error ? err.message : String(err))
       } finally {
@@ -65,7 +75,7 @@ export default function RepositoriesScreen(): React.ReactElement {
       }
     }
     run()
-  }, [selectedRepoId])
+  }, [selectedRepoId, selectedRepo?.active_snapshot_id])
 
   const hasSnapshot = snapshots.length > 0
   const branchChanged = !!selectedRepo && branch && branch !== (selectedRepo.selected_branch ?? selectedRepo.git_branch ?? '')
@@ -288,6 +298,7 @@ export default function RepositoriesScreen(): React.ReactElement {
                             })
                             const rows = await window.api.sync.listForRepo(selectedRepo.id)
                             setSnapshots(rows)
+                            setSelectedSnapshotId(rows[0]?.id ?? null)
                           } catch (err) {
                             setScreenError(err instanceof Error ? err.message : String(err))
                           } finally {
@@ -313,16 +324,56 @@ export default function RepositoriesScreen(): React.ReactElement {
                     ) : (
                       <div className="space-y-2">
                         {snapshots.map((s) => (
-                          <div key={s.id} className="flex items-center gap-2 text-xs border border-zinc-700 rounded-md px-3 py-2">
+                          <button
+                            key={s.id}
+                            onClick={() => setSelectedSnapshotId(s.id)}
+                            className={`w-full text-left flex items-center gap-2 text-xs border rounded-md px-3 py-2 ${
+                              selectedSnapshotId === s.id
+                                ? 'border-blue-500/40 bg-blue-500/10'
+                                : 'border-zinc-700 hover:border-zinc-600'
+                            }`}
+                          >
                             <CheckCircle2 size={12} className={s.status === 'ready' ? 'text-emerald-400' : 'text-zinc-600'} />
                             <span className="text-zinc-300">{s.branch ?? 'HEAD'}</span>
                             <span className="text-zinc-600">·</span>
                             <span className="font-mono text-zinc-400">{s.commit_hash ?? 'pending'}</span>
                             <span className="text-zinc-600">·</span>
                             <span className="text-zinc-500">{s.clone_policy}</span>
+                            {s.id === selectedRepo.active_snapshot_id && (
+                              <>
+                                <span className="text-zinc-600">·</span>
+                                <span className="text-emerald-400">active</span>
+                              </>
+                            )}
                             <span className="ml-auto text-zinc-600">{new Date(s.synced_at).toLocaleString()}</span>
-                          </div>
+                          </button>
                         ))}
+                      </div>
+                    )}
+                    {selectedSnapshotId && (
+                      <div className="mt-3 flex items-center gap-2">
+                        <button
+                          onClick={async () => {
+                            if (!selectedRepo || !selectedSnapshotId) return
+                            setSelectingSnapshot(true)
+                            setScreenError(null)
+                            try {
+                              await window.api.manifest.build(selectedSnapshotId)
+                              await window.api.folder.setActiveSnapshot(selectedRepo.id, selectedSnapshotId)
+                              await load()
+                              navigate(`/snapshot-viewer?repoId=${encodeURIComponent(selectedRepo.id)}&snapshotId=${encodeURIComponent(selectedSnapshotId)}`)
+                            } catch (err) {
+                              setScreenError(err instanceof Error ? err.message : String(err))
+                            } finally {
+                              setSelectingSnapshot(false)
+                            }
+                          }}
+                          disabled={selectingSnapshot}
+                          className="px-3 py-2 text-xs bg-indigo-600 hover:bg-indigo-500 text-white rounded-md flex items-center gap-1.5 disabled:opacity-50"
+                        >
+                          {selectingSnapshot && <Loader2 size={12} className="animate-spin" />}
+                          Select and open snapshot viewer
+                        </button>
                       </div>
                     )}
                   </div>

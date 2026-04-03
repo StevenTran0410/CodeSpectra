@@ -97,6 +97,7 @@ def _row_to_model(row) -> LocalRepo:
         git_remote_url=row["git_remote_url"],
         has_size_warning=bool(row["has_size_warning"]),
         selected_branch=row["selected_branch"],
+        active_snapshot_id=row["active_snapshot_id"],
         sync_mode=row["sync_mode"],
         pinned_ref=row["pinned_ref"],
         ignore_overrides=ignore_overrides,
@@ -273,6 +274,25 @@ class LocalRepoService:
         )
         await db.commit()
         logger.info(f"Set analysis branch to '{req.branch}' for repo {repo_id}")
+        return await self.get_by_id(repo_id)
+
+    async def set_active_snapshot(self, repo_id: str, snapshot_id: str | None) -> LocalRepo:
+        repo = await self.get_by_id(repo_id)
+        db = get_db()
+        if snapshot_id:
+            async with db.execute(
+                "SELECT 1 FROM repo_snapshots WHERE id=? AND local_repo_id=?",
+                (snapshot_id, repo_id),
+            ) as cur:
+                row = await cur.fetchone()
+            if not row:
+                raise ValueError("Snapshot does not belong to this repository")
+        await db.execute(
+            "UPDATE local_repos SET active_snapshot_id=? WHERE id=?",
+            (snapshot_id, repo.id),
+        )
+        await db.commit()
+        logger.info(f"Set active_snapshot_id={snapshot_id} for repo {repo_id}")
         return await self.get_by_id(repo_id)
 
     async def update_settings(self, repo_id: str, req: UpdateRepoSettingsRequest) -> LocalRepo:

@@ -10,9 +10,13 @@ export class BackendClient {
    *  FastAPI returns `{ "detail": "..." }` for 4xx errors — prefer that over raw text. */
   private async _errorMessage(res: Response): Promise<string> {
     try {
-      const json = await res.json()
-      if (typeof json?.detail === 'string') return json.detail
-      if (typeof json?.message === 'string') return json.message
+      const json: unknown = await res.json()
+      if (json && typeof json === 'object' && 'detail' in json && typeof (json as { detail: unknown }).detail === 'string') {
+        return (json as { detail: string }).detail
+      }
+      if (json && typeof json === 'object' && 'message' in json && typeof (json as { message: unknown }).message === 'string') {
+        return (json as { message: string }).message
+      }
       return JSON.stringify(json)
     } catch {
       return res.text().catch(() => res.statusText)

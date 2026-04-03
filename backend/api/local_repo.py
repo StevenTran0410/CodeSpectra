@@ -7,6 +7,7 @@ from domain.local_repo.types import (
     CloneFromUrlRequest,
     EstimateFileCountResponse,
     LocalRepo,
+    SetActiveSnapshotRequest,
     SetBranchRequest,
     UpdateRepoSettingsRequest,
     ValidateFolderRequest,
@@ -58,6 +59,11 @@ async def list_branches(repo_id: str, refresh: bool = False) -> list[str]:
 @router.post("/{repo_id}/branch", response_model=LocalRepo)
 async def set_branch(repo_id: str, body: SetBranchRequest) -> LocalRepo:
     return await _service.set_branch(repo_id, body)
+
+
+@router.post("/{repo_id}/active-snapshot", response_model=LocalRepo)
+async def set_active_snapshot(repo_id: str, body: SetActiveSnapshotRequest) -> LocalRepo:
+    return await _service.set_active_snapshot(repo_id, body.snapshot_id)
 
 
 @router.post("/{repo_id}/settings", response_model=LocalRepo)

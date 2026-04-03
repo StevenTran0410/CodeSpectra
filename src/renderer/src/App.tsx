@@ -8,6 +8,7 @@ const Home = lazy(() => import('./screens/home'))
 const ProvidersSetup = lazy(() => import('./screens/providers'))
 const CodeHostsSetup = lazy(() => import('./screens/code-hosts'))
 const RepositoriesScreen = lazy(() => import('./screens/repositories'))
+const SnapshotViewerScreen = lazy(() => import('./screens/snapshot-viewer'))
 const AnalysisRunScreen = lazy(() => import('./screens/analysis'))
 const ReportViewerScreen = lazy(() => import('./screens/reports'))
 const SettingsScreen = lazy(() => import('./screens/settings'))
@@ -33,6 +34,7 @@ export default function App(): React.ReactElement {
               <Route path="/providers" element={<ProvidersSetup />} />
               <Route path="/code-hosts" element={<CodeHostsSetup />} />
               <Route path="/repositories" element={<RepositoriesScreen />} />
+              <Route path="/snapshot-viewer" element={<SnapshotViewerScreen />} />
               <Route path="/analysis" element={<AnalysisRunScreen />} />
               <Route path="/reports" element={<ReportViewerScreen />} />
               <Route path="/settings" element={<SettingsScreen />} />
