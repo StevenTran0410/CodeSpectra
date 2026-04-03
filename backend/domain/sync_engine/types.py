@@ -26,6 +26,7 @@ class RepoSnapshot(BaseModel):
     status: SnapshotStatus
     error: str | None
     clone_policy: ClonePolicy
+    manual_ignores: list[str] = []
     synced_at: str
     created_at: str
 

@@ -1,5 +1,6 @@
 """SyncEngineService — clone, sync, and snapshot management."""
 import asyncio
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -124,6 +125,10 @@ async def _preflight(path: str, target_branch: str | None) -> None:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _row_to_snapshot(row) -> RepoSnapshot:
+    try:
+        manual_ignores = json.loads(row["manual_ignores"] or "[]")
+    except Exception:
+        manual_ignores = []
     return RepoSnapshot(
         id=row["id"],
         local_repo_id=row["local_repo_id"],
@@ -133,6 +138,7 @@ def _row_to_snapshot(row) -> RepoSnapshot:
         status=SnapshotStatus(row["status"]),
         error=row["error"],
         clone_policy=ClonePolicy(row["clone_policy"]),
+        manual_ignores=manual_ignores,
         synced_at=row["synced_at"],
         created_at=row["created_at"],
     )
@@ -146,10 +152,10 @@ async def _create_record(
     await get_db().execute(
         """INSERT INTO repo_snapshots
            (id, local_repo_id, branch, commit_hash, local_path, status, error,
-            clone_policy, synced_at, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            clone_policy, manual_ignores, synced_at, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (snap_id, local_repo_id, branch, None, local_path,
-         SnapshotStatus.PENDING.value, None, policy.value, now, now),
+         SnapshotStatus.PENDING.value, None, policy.value, "[]", now, now),
     )
     await get_db().commit()
     return await SyncEngineService().get_snapshot(snap_id)

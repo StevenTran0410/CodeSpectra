@@ -140,6 +140,38 @@ _MIGRATIONS: list[dict[str, Any]] = [
             ALTER TABLE local_repos ADD COLUMN detect_submodules INTEGER NOT NULL DEFAULT 1;
         """,
     },
+    {
+        "version": 8,
+        "description": "Add manifest_files table for file manifest and delta detection",
+        "sql": """
+            CREATE TABLE IF NOT EXISTS manifest_files (
+                id          TEXT PRIMARY KEY,
+                snapshot_id TEXT NOT NULL,
+                rel_path    TEXT NOT NULL,
+                language    TEXT,
+                category    TEXT NOT NULL,
+                size_bytes  INTEGER NOT NULL,
+                mtime_ns    INTEGER NOT NULL,
+                checksum    TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_manifest_snapshot ON manifest_files(snapshot_id);
+            CREATE INDEX IF NOT EXISTS idx_manifest_rel_path ON manifest_files(snapshot_id, rel_path);
+        """,
+    },
+    {
+        "version": 9,
+        "description": "Add active_snapshot_id to local_repos",
+        "sql": """
+            ALTER TABLE local_repos ADD COLUMN active_snapshot_id TEXT;
+        """,
+    },
+    {
+        "version": 10,
+        "description": "Add manual_ignores to repo_snapshots",
+        "sql": """
+            ALTER TABLE repo_snapshots ADD COLUMN manual_ignores TEXT NOT NULL DEFAULT '[]';
+        """,
+    },
 ]
 
 TARGET_VERSION = len(_MIGRATIONS) - 1

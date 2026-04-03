@@ -46,6 +46,7 @@ export interface LocalRepo {
   git_remote_url: string | null
   has_size_warning: boolean
   selected_branch: string | null // user-chosen analysis branch (null = use HEAD)
+  active_snapshot_id: string | null
   sync_mode: SyncMode
   pinned_ref: string | null
   ignore_overrides: string[]
@@ -63,6 +64,7 @@ export interface RepoSnapshot {
   status: 'pending' | 'syncing' | 'ready' | 'failed'
   error: string | null
   clone_policy: ClonePolicy
+  manual_ignores: string[]
   synced_at: string
   created_at: string
 }
@@ -72,6 +74,23 @@ export interface EstimateFileCountResponse {
   workspace_default_ignores: string[]
   repo_ignore_overrides: string[]
   effective_ignores: string[]
+}
+
+export interface ManifestTreeNode {
+  path: string
+  is_dir: boolean
+}
+
+export interface ManifestTreeResponse {
+  snapshot_id: string
+  nodes: ManifestTreeNode[]
+}
+
+export interface ManifestFileContentResponse {
+  snapshot_id: string
+  rel_path: string
+  content: string
+  truncated: boolean
 }
 
 export interface ValidateFolderResponse {
@@ -156,6 +175,7 @@ declare global {
         revalidate: (id: string) => Promise<LocalRepo>
         branches: (id: string, refresh?: boolean) => Promise<string[]>
         setBranch: (id: string, branch: string) => Promise<LocalRepo>
+        setActiveSnapshot: (id: string, snapshotId: string | null) => Promise<LocalRepo>
         updateSettings: (
           id: string,
           settings: {
@@ -175,6 +195,19 @@ declare global {
           clone_policy?: ClonePolicy
         }) => Promise<RepoSnapshot>
         listForRepo: (repoId: string) => Promise<RepoSnapshot[]>
+        getSnapshot: (snapshotId: string) => Promise<RepoSnapshot>
+      }
+      manifest: {
+        build: (snapshotId: string, manualIgnores?: string[]) => Promise<{
+          snapshot_id: string
+          total_files: number
+          new_files: number
+          changed_files: number
+          unchanged_files: number
+          ignored_files: number
+        }>
+        tree: (snapshotId: string) => Promise<ManifestTreeResponse>
+        file: (snapshotId: string, relPath: string) => Promise<ManifestFileContentResponse>
       }
       git: {
         getConfig: () => Promise<{ ssh_key_path: string | null }>

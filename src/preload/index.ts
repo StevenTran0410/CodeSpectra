@@ -42,6 +42,8 @@ const api = {
     branches: (id: string, refresh = false): Promise<string[]> =>
       ipcRenderer.invoke('folder:branches', id, refresh),
     setBranch: (id: string, branch: string) => ipcRenderer.invoke('folder:setBranch', id, branch),
+    setActiveSnapshot: (id: string, snapshotId: string | null) =>
+      ipcRenderer.invoke('folder:setActiveSnapshot', id, snapshotId),
     updateSettings: (
       id: string,
       settings: {
@@ -61,6 +63,14 @@ const api = {
       clone_policy?: 'full' | 'shallow' | 'partial'
     }) => ipcRenderer.invoke('sync:prepare', body),
     listForRepo: (repoId: string) => ipcRenderer.invoke('sync:listForRepo', repoId),
+    getSnapshot: (snapshotId: string) => ipcRenderer.invoke('sync:getSnapshot', snapshotId),
+  },
+  manifest: {
+    build: (snapshotId: string, manualIgnores?: string[]) =>
+      ipcRenderer.invoke('manifest:build', snapshotId, manualIgnores),
+    tree: (snapshotId: string) => ipcRenderer.invoke('manifest:tree', snapshotId),
+    file: (snapshotId: string, relPath: string) =>
+      ipcRenderer.invoke('manifest:file', snapshotId, relPath),
   },
   git: {
     getConfig: (): Promise<{ ssh_key_path: string | null }> =>
