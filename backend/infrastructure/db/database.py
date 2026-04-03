@@ -111,6 +111,25 @@ _MIGRATIONS: list[dict[str, Any]] = [
             CREATE INDEX IF NOT EXISTS idx_jobs_started_at ON jobs(started_at DESC);
         """,
     },
+    {
+        "version": 6,
+        "description": "Add repo_snapshots table for sync engine",
+        "sql": """
+            CREATE TABLE IF NOT EXISTS repo_snapshots (
+                id             TEXT PRIMARY KEY,
+                local_repo_id  TEXT NOT NULL,
+                branch         TEXT,
+                commit_hash    TEXT,
+                local_path     TEXT NOT NULL,
+                status         TEXT NOT NULL DEFAULT 'pending',
+                error          TEXT,
+                clone_policy   TEXT NOT NULL DEFAULT 'full',
+                synced_at      TEXT NOT NULL,
+                created_at     TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_snapshots_repo ON repo_snapshots(local_repo_id);
+        """,
+    },
 ]
 
 TARGET_VERSION = len(_MIGRATIONS) - 1

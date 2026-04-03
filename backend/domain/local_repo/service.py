@@ -1,11 +1,12 @@
 """LocalRepoService — path validation, git metadata reading, and CRUD."""
 import asyncio
 import os
-import subprocess
+import subprocess  # still used by clone_from_url
 from pathlib import Path
 
 from infrastructure.db.database import get_db
 from shared.errors import ConflictError, NotFoundError
+from shared.git_utils import is_ssh_url, list_branches, list_branches_sync, read_git_info, read_git_info_sync
 from shared.logger import logger
 from shared.utils import new_id, utc_now_iso
 
@@ -19,47 +20,11 @@ from .types import (
     ValidateFolderResponse,
 )
 
-def _is_ssh_url(url: str) -> bool:
-    return url.startswith("git@") or url.startswith("ssh://")
-
 
 # Directories that indicate the repo may be heavy to scan
 _SIZE_WARNING_DIRS = frozenset({"node_modules", ".venv", "venv", "env", "target", "build", "dist"})
 # If the root contains this many immediate entries, warn
 _ROOT_ENTRY_THRESHOLD = 200
-
-
-def _run_git(cwd: str, args: list[str]) -> str | None:
-    """Run a git sub-command synchronously (called inside asyncio.to_thread)."""
-    try:
-        result = subprocess.run(
-            ["git"] + args,
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        return result.stdout.strip() or None if result.returncode == 0 else None
-    except Exception:
-        return None
-
-
-def _read_git_info_sync(path: str) -> dict:
-    """Read branch, HEAD hash, remote URL (blocking — run in thread)."""
-    git_dir = Path(path) / ".git"
-    if not git_dir.exists():
-        return {"is_git_repo": False, "branch": None, "head_hash": None, "remote_url": None}
-
-    branch = _run_git(path, ["rev-parse", "--abbrev-ref", "HEAD"])
-    head = _run_git(path, ["rev-parse", "HEAD"])
-    remote = _run_git(path, ["remote", "get-url", "origin"])
-
-    return {
-        "is_git_repo": True,
-        "branch": branch,
-        "head_hash": head[:12] if head else None,
-        "remote_url": remote,
-    }
 
 
 def _check_size_warning_sync(path: str) -> tuple[bool, str | None]:
@@ -80,24 +45,8 @@ def _check_size_warning_sync(path: str) -> tuple[bool, str | None]:
     return False, None
 
 
-async def _read_git_info(path: str) -> dict:
-    return await asyncio.to_thread(_read_git_info_sync, path)
-
-
 async def _check_size_warning(path: str) -> tuple[bool, str | None]:
     return await asyncio.to_thread(_check_size_warning_sync, path)
-
-
-def _list_branches_sync(path: str) -> list[str]:
-    """List all local git branches (blocking — run in thread)."""
-    raw = _run_git(path, ["branch", "--format=%(refname:short)"])
-    if not raw:
-        return []
-    return [b.strip() for b in raw.splitlines() if b.strip()]
-
-
-async def _list_branches(path: str) -> list[str]:
-    return await asyncio.to_thread(_list_branches_sync, path)
 
 
 def _row_to_model(row) -> LocalRepo:
@@ -139,7 +88,7 @@ class LocalRepoService:
             )
 
         git_info, (size_warn, size_reason) = await asyncio.gather(
-            _read_git_info(req.path),
+            read_git_info(req.path),
             _check_size_warning(req.path),
         )
 
@@ -219,7 +168,7 @@ class LocalRepoService:
         repo = await self.get_by_id(repo_id)
         if not repo.is_git_repo:
             return []
-        return await _list_branches(repo.path)
+        return await list_branches(repo.path)
 
     async def set_branch(self, repo_id: str, req: SetBranchRequest) -> LocalRepo:
         """Persist the user's chosen analysis branch."""
@@ -228,7 +177,7 @@ class LocalRepoService:
             raise ValueError("Cannot set branch on a non-git folder")
 
         # Verify the branch actually exists locally
-        branches = await _list_branches(existing.path)
+        branches = await list_branches(existing.path)
         if branches and req.branch not in branches:
             raise ValueError(
                 f"Branch '{req.branch}' not found in local repo. "
@@ -280,7 +229,7 @@ class LocalRepoService:
 
         # Build environment — inject GIT_SSH_COMMAND for SSH URLs if a key is configured
         env = os.environ.copy()
-        if _is_ssh_url(req.url):
+        if is_ssh_url(req.url):
             db = get_db()
             async with db.execute(
                 "SELECT value FROM app_metadata WHERE key='git_ssh_key_path'"
