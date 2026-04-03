@@ -61,6 +61,10 @@ export default function SnapshotViewerScreen(): React.ReactElement {
   const [fileTruncated, setFileTruncated] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const [ignoredPaths, setIgnoredPaths] = useState<Set<string>>(new Set())
+  const [completing, setCompleting] = useState(false)
+  const [completeDone, setCompleteDone] = useState(false)
+  const [activating, setActivating] = useState(false)
 
   const tree = useMemo(() => buildTree(treeNodes), [treeNodes])
 
@@ -70,6 +74,11 @@ export default function SnapshotViewerScreen(): React.ReactElement {
       setLoadingTree(true)
       setError(null)
       try {
+        const snap = await window.api.sync.getSnapshot(snapshotId)
+        const restoredIgnores = snap.manual_ignores ?? []
+        setIgnoredPaths(new Set(restoredIgnores))
+        setCompleteDone(true)
+        await window.api.manifest.build(snapshotId, restoredIgnores)
         const res = await window.api.manifest.tree(snapshotId)
         setTreeNodes(res.nodes)
         const firstFile = res.nodes.find((n) => !n.is_dir)?.path ?? null
@@ -116,40 +125,83 @@ export default function SnapshotViewerScreen(): React.ReactElement {
     if (node.isDir) {
       return (
         <div key={node.path}>
-          <button
-            onClick={() => {
-              setExpanded((prev) => {
-                const next = new Set(prev)
-                if (next.has(node.path)) next.delete(node.path)
-                else next.add(node.path)
-                return next
-              })
-            }}
-            className="w-full flex items-center gap-1 text-xs px-2 py-1 text-zinc-300 hover:bg-zinc-800/80"
-            style={{ paddingLeft: `${8 + depth * 14}px` }}
-          >
-            {isOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-            <Folder size={12} className="text-zinc-400" />
-            <span className="truncate">{node.name}</span>
-          </button>
+          <div className="w-full flex items-center gap-1 text-xs px-2 py-1 text-zinc-300 hover:bg-zinc-800/80">
+            <button
+              onClick={() => {
+                setExpanded((prev) => {
+                  const next = new Set(prev)
+                  if (next.has(node.path)) next.delete(node.path)
+                  else next.add(node.path)
+                  return next
+                })
+              }}
+              className="inline-flex items-center gap-1 flex-1"
+              style={{ paddingLeft: `${8 + depth * 14}px` }}
+            >
+              {isOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+              <Folder size={12} className="text-zinc-400" />
+              <span className="truncate">{node.name}</span>
+            </button>
+            <button
+              onClick={() => {
+                setIgnoredPaths((prev) => {
+                  const next = new Set(prev)
+                  const key = `${node.path}/**`
+                  if (next.has(key)) next.delete(key)
+                  else next.add(key)
+                  return next
+                })
+                setCompleteDone(false)
+              }}
+              className={`px-1.5 py-0.5 rounded text-[10px] border ${
+                ignoredPaths.has(`${node.path}/**`)
+                  ? 'border-amber-400/50 text-amber-300'
+                  : 'border-zinc-700 text-zinc-500'
+              }`}
+            >
+              Ignore
+            </button>
+          </div>
           {isOpen && node.children.map((child) => renderNode(child, depth + 1))}
         </div>
       )
     }
 
     return (
-      <button
+      <div
         key={node.path}
-        onClick={() => setSelectedFilePath(node.path)}
         className={`w-full flex items-center gap-1 text-xs px-2 py-1 hover:bg-zinc-800/80 ${
           selectedFilePath === node.path ? 'bg-blue-500/15 text-blue-200' : 'text-zinc-300'
         }`}
-        style={{ paddingLeft: `${22 + depth * 14}px` }}
-        title={node.path}
       >
-        <FileText size={12} className="text-zinc-500" />
-        <span className="truncate">{node.name}</span>
-      </button>
+        <button
+          onClick={() => setSelectedFilePath(node.path)}
+          className="inline-flex items-center gap-1 flex-1"
+          style={{ paddingLeft: `${22 + depth * 14}px` }}
+          title={node.path}
+        >
+          <FileText size={12} className="text-zinc-500" />
+          <span className="truncate">{node.name}</span>
+        </button>
+        <button
+          onClick={() => {
+            setIgnoredPaths((prev) => {
+              const next = new Set(prev)
+              if (next.has(node.path)) next.delete(node.path)
+              else next.add(node.path)
+              return next
+            })
+            setCompleteDone(false)
+          }}
+          className={`px-1.5 py-0.5 rounded text-[10px] border ${
+            ignoredPaths.has(node.path)
+              ? 'border-amber-400/50 text-amber-300'
+              : 'border-zinc-700 text-zinc-500'
+          }`}
+        >
+          Ignore
+        </button>
+      </div>
     )
   }
 
@@ -165,18 +217,66 @@ export default function SnapshotViewerScreen(): React.ReactElement {
         {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
 
         <div className="flex items-center justify-between bg-zinc-900/60 border border-zinc-700 rounded-lg px-3 py-2">
-          <div className="text-xs text-zinc-400">
+          <div className="text-xs text-zinc-400 flex items-center gap-2">
             <span className="text-zinc-200">Repo:</span> <span className="font-mono">{repoId || '-'}</span>
             <span className="mx-2 text-zinc-600">|</span>
             <span className="text-zinc-200">Snapshot:</span> <span className="font-mono">{snapshotId || '-'}</span>
+            <span className="mx-2 text-zinc-600">|</span>
+            <span>Ignore selected: <span className="text-zinc-200">{ignoredPaths.size}</span></span>
+            {completeDone && <span className="text-emerald-400">Completed</span>}
           </div>
-          <button
-            onClick={() => navigate('/repositories')}
-            className="px-2.5 py-1.5 text-xs border border-zinc-700 rounded-md text-zinc-300 hover:border-zinc-600 inline-flex items-center gap-1"
-          >
-            <ArrowLeft size={12} />
-            Back
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={async () => {
+                if (!snapshotId) return
+                setCompleting(true)
+                setError(null)
+                try {
+                  await window.api.manifest.build(snapshotId, Array.from(ignoredPaths))
+                  const res = await window.api.manifest.tree(snapshotId)
+                  setTreeNodes(res.nodes)
+                  if (selectedFilePath && Array.from(ignoredPaths).some((p) => p === selectedFilePath || (p.endsWith('/**') && selectedFilePath.startsWith(p.slice(0, -3))))) {
+                    setSelectedFilePath(res.nodes.find((n) => !n.is_dir)?.path ?? null)
+                  }
+                  setCompleteDone(true)
+                } catch (err) {
+                  setError(err instanceof Error ? err.message : String(err))
+                } finally {
+                  setCompleting(false)
+                }
+              }}
+              disabled={completing}
+              className="px-2.5 py-1.5 text-xs border border-zinc-700 rounded-md text-zinc-300 hover:border-zinc-600 disabled:opacity-50"
+            >
+              {completing ? 'Completing...' : 'Complete'}
+            </button>
+            <button
+              onClick={async () => {
+                if (!repoId || !snapshotId) return
+                setActivating(true)
+                setError(null)
+                try {
+                  await window.api.folder.setActiveSnapshot(repoId, snapshotId)
+                  navigate(`/repositories?repoId=${encodeURIComponent(repoId)}`)
+                } catch (err) {
+                  setError(err instanceof Error ? err.message : String(err))
+                } finally {
+                  setActivating(false)
+                }
+              }}
+              disabled={!completeDone || activating}
+              className="px-2.5 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 rounded-md text-white disabled:opacity-50"
+            >
+              {activating ? 'Selecting...' : 'Select for index'}
+            </button>
+            <button
+              onClick={() => navigate('/repositories')}
+              className="px-2.5 py-1.5 text-xs border border-zinc-700 rounded-md text-zinc-300 hover:border-zinc-600 inline-flex items-center gap-1"
+            >
+              <ArrowLeft size={12} />
+              Back
+            </button>
+          </div>
         </div>
 
         <div className="grid grid-cols-12 gap-3 h-[calc(100%-3.25rem)]">

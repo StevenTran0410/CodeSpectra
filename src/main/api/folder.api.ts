@@ -99,8 +99,16 @@ export function registerFolderHandlers(client: BackendClient): void {
     (_event, repoId: string) => client.get(`/api/sync/repo/${repoId}`)
   )
 
-  ipcMain.handle('manifest:build', (_event, snapshotId: string) =>
-    client.post('/api/manifest/build', { snapshot_id: snapshotId })
+  ipcMain.handle(
+    'sync:getSnapshot',
+    (_event, snapshotId: string) => client.get(`/api/sync/snapshot/${snapshotId}`)
+  )
+
+  ipcMain.handle('manifest:build', (_event, snapshotId: string, manualIgnores?: string[]) =>
+    client.post('/api/manifest/build', {
+      snapshot_id: snapshotId,
+      ...(manualIgnores !== undefined ? { manual_ignores: manualIgnores } : {}),
+    })
   )
 
   ipcMain.handle('manifest:tree', (_event, snapshotId: string) =>

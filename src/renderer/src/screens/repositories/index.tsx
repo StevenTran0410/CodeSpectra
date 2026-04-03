@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { AlertTriangle, CheckCircle2, FolderOpen, GitBranch, Loader2, RefreshCw } from 'lucide-react'
 import { EmptyState } from '../../components/ui/EmptyState'
 import { ErrorBanner } from '../../components/ui/ErrorBanner'
@@ -14,6 +14,7 @@ import { useWorkspaceStore } from '../../store/workspace.store'
 
 export default function RepositoriesScreen(): React.ReactElement {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId)
   const { repos, loading, error, load, clearError, loadBranches, branchesMap, setBranch } = useLocalRepoStore()
   const [selectedRepoId, setSelectedRepoId] = useState<string | null>(null)
@@ -44,6 +45,14 @@ export default function RepositoriesScreen(): React.ReactElement {
   useEffect(() => {
     if (!selectedRepoId && repos.length > 0) setSelectedRepoId(repos[0].id)
   }, [repos, selectedRepoId])
+
+  useEffect(() => {
+    const repoIdFromQuery = searchParams.get('repoId')
+    if (!repoIdFromQuery) return
+    if (repos.some((r) => r.id === repoIdFromQuery)) {
+      setSelectedRepoId(repoIdFromQuery)
+    }
+  }, [repos, searchParams])
 
   useEffect(() => {
     if (!selectedRepo) return
@@ -358,9 +367,6 @@ export default function RepositoriesScreen(): React.ReactElement {
                             setSelectingSnapshot(true)
                             setScreenError(null)
                             try {
-                              await window.api.manifest.build(selectedSnapshotId)
-                              await window.api.folder.setActiveSnapshot(selectedRepo.id, selectedSnapshotId)
-                              await load()
                               navigate(`/snapshot-viewer?repoId=${encodeURIComponent(selectedRepo.id)}&snapshotId=${encodeURIComponent(selectedSnapshotId)}`)
                             } catch (err) {
                               setScreenError(err instanceof Error ? err.message : String(err))
@@ -372,7 +378,7 @@ export default function RepositoriesScreen(): React.ReactElement {
                           className="px-3 py-2 text-xs bg-indigo-600 hover:bg-indigo-500 text-white rounded-md flex items-center gap-1.5 disabled:opacity-50"
                         >
                           {selectingSnapshot && <Loader2 size={12} className="animate-spin" />}
-                          Select and open snapshot viewer
+                          Select
                         </button>
                       </div>
                     )}

@@ -63,9 +63,11 @@ const api = {
       clone_policy?: 'full' | 'shallow' | 'partial'
     }) => ipcRenderer.invoke('sync:prepare', body),
     listForRepo: (repoId: string) => ipcRenderer.invoke('sync:listForRepo', repoId),
+    getSnapshot: (snapshotId: string) => ipcRenderer.invoke('sync:getSnapshot', snapshotId),
   },
   manifest: {
-    build: (snapshotId: string) => ipcRenderer.invoke('manifest:build', snapshotId),
+    build: (snapshotId: string, manualIgnores?: string[]) =>
+      ipcRenderer.invoke('manifest:build', snapshotId, manualIgnores),
     tree: (snapshotId: string) => ipcRenderer.invoke('manifest:tree', snapshotId),
     file: (snapshotId: string, relPath: string) =>
       ipcRenderer.invoke('manifest:file', snapshotId, relPath),

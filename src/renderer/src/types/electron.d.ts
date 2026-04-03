@@ -64,6 +64,7 @@ export interface RepoSnapshot {
   status: 'pending' | 'syncing' | 'ready' | 'failed'
   error: string | null
   clone_policy: ClonePolicy
+  manual_ignores: string[]
   synced_at: string
   created_at: string
 }
@@ -194,9 +195,10 @@ declare global {
           clone_policy?: ClonePolicy
         }) => Promise<RepoSnapshot>
         listForRepo: (repoId: string) => Promise<RepoSnapshot[]>
+        getSnapshot: (snapshotId: string) => Promise<RepoSnapshot>
       }
       manifest: {
-        build: (snapshotId: string) => Promise<{
+        build: (snapshotId: string, manualIgnores?: string[]) => Promise<{
           snapshot_id: string
           total_files: number
           new_files: number

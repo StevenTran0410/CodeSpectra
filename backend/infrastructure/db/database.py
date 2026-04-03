@@ -165,6 +165,13 @@ _MIGRATIONS: list[dict[str, Any]] = [
             ALTER TABLE local_repos ADD COLUMN active_snapshot_id TEXT;
         """,
     },
+    {
+        "version": 10,
+        "description": "Add manual_ignores to repo_snapshots",
+        "sql": """
+            ALTER TABLE repo_snapshots ADD COLUMN manual_ignores TEXT NOT NULL DEFAULT '[]';
+        """,
+    },
 ]
 
 TARGET_VERSION = len(_MIGRATIONS) - 1

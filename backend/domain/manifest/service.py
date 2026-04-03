@@ -1,6 +1,7 @@
 """Manifest engine - file walk, ignore handling, language detect, classification, delta."""
 import fnmatch
 import hashlib
+import json
 import os
 from pathlib import Path
 
@@ -106,8 +107,8 @@ def _category(rel: str, path: Path) -> FileCategory:
     return FileCategory.OTHER
 
 
-def _compile_ignores(repo_ignores: list[str]) -> tuple[list[str], list[str]]:
-    effective = [*_DEFAULT_IGNORES, *repo_ignores]
+def _compile_ignores(repo_ignores: list[str], manual_ignores: list[str] | None = None) -> tuple[list[str], list[str]]:
+    effective = [*_DEFAULT_IGNORES, *repo_ignores, *(manual_ignores or [])]
     dir_prefixes = [p[:-3] for p in effective if p.endswith("/**")]
     return effective, dir_prefixes
 
@@ -141,7 +142,27 @@ class ManifestService:
             except Exception:
                 repo_ignores = []
 
-        pats, dir_prefixes = _compile_ignores(repo_ignores)
+        if req.manual_ignores is None:
+            try:
+                manual_ignores = json.loads(snap["manual_ignores"] or "[]")
+            except Exception:
+                manual_ignores = []
+        else:
+            manual_ignores = []
+            seen: set[str] = set()
+            for item in req.manual_ignores:
+                p = item.strip()
+                if not p or p in seen:
+                    continue
+                seen.add(p)
+                manual_ignores.append(p)
+
+        await db.execute(
+            "UPDATE repo_snapshots SET manual_ignores=? WHERE id=?",
+            (json.dumps(manual_ignores), req.snapshot_id),
+        )
+
+        pats, dir_prefixes = _compile_ignores(repo_ignores, manual_ignores)
 
         previous: dict[str, tuple[str, int, int]] = {}
         async with db.execute(

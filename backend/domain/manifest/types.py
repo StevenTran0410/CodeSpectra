@@ -30,6 +30,7 @@ class ManifestFile(BaseModel):
 
 class BuildManifestRequest(BaseModel):
     snapshot_id: str
+    manual_ignores: list[str] | None = None
 
 
 class BuildManifestResponse(BaseModel):
