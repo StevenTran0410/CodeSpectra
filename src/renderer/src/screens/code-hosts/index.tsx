@@ -562,7 +562,7 @@ export default function CodeHostsSetup(): React.ReactElement {
     <>
       <div className="screen-header flex items-center justify-between">
         <div>
-          <h1 className="screen-title">Code Hosts</h1>
+        <h1 className="screen-title">Code Hosts</h1>
           <p className="screen-subtitle">
             {repos.length > 0
               ? `${repos.length} repositor${repos.length !== 1 ? 'ies' : 'y'}`

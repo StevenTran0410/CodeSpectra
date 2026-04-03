@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse
 
 from api.app import router as app_router
 from api.consent import router as consent_router
+from api.job import router as job_router
 from api.local_repo import router as local_repo_router
 from api.provider import router as provider_router
 from api.workspace import router as workspace_router
@@ -72,6 +73,7 @@ def create_app() -> FastAPI:
     app.include_router(provider_router, prefix="/api/provider")
     app.include_router(consent_router, prefix="/api/consent")
     app.include_router(local_repo_router, prefix="/api/local-repo")
+    app.include_router(job_router, prefix="/api/job")
 
     @app.exception_handler(ProviderError)
     async def provider_error_handler(_req: Request, exc: ProviderError) -> JSONResponse:

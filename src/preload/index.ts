@@ -51,6 +51,12 @@ const api = {
     pickSshKey: (): Promise<string | null> =>
       ipcRenderer.invoke('git:pickSshKey'),
   },
+  job: {
+    get: (id: string) => ipcRenderer.invoke('job:get', id),
+    cancel: (id: string) => ipcRenderer.invoke('job:cancel', id),
+    listForRepo: (repoId: string) => ipcRenderer.invoke('job:listForRepo', repoId),
+    listRecent: () => ipcRenderer.invoke('job:listRecent'),
+  },
   app: {
     getVersion: (): Promise<string> => ipcRenderer.invoke('app:get-version'),
     getUserDataPath: (): Promise<string> => ipcRenderer.invoke('app:get-user-data-path'),

@@ -92,6 +92,25 @@ _MIGRATIONS: list[dict[str, Any]] = [
             );
         """,
     },
+    {
+        "version": 5,
+        "description": "Add jobs table for analysis pipeline tracking",
+        "sql": """
+            CREATE TABLE IF NOT EXISTS jobs (
+                id           TEXT PRIMARY KEY,
+                type         TEXT NOT NULL,
+                repo_id      TEXT,
+                status       TEXT NOT NULL DEFAULT 'pending',
+                steps        TEXT NOT NULL DEFAULT '{}',
+                current_step TEXT,
+                error        TEXT,
+                started_at   TEXT NOT NULL,
+                finished_at  TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_jobs_repo_id ON jobs(repo_id);
+            CREATE INDEX IF NOT EXISTS idx_jobs_started_at ON jobs(started_at DESC);
+        """,
+    },
 ]
 
 TARGET_VERSION = len(_MIGRATIONS) - 1

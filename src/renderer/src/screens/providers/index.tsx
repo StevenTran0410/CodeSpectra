@@ -434,7 +434,7 @@ function ProviderCard({ config }: { config: ProviderConfig }) {
         <span className="text-xs text-zinc-600">·</span>
         <span className="text-xs text-zinc-400">
           Context: <span className="text-zinc-300">{config.capabilities.max_context_tokens.toLocaleString()} tokens</span>
-        </span>
+            </span>
       </div>
 
       <div className="flex items-center gap-2">

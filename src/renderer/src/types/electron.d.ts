@@ -1,3 +1,28 @@
+// ── Job / Analysis pipeline ───────────────────────────────────────────────────
+
+export type JobStatus = 'pending' | 'running' | 'done' | 'failed' | 'cancelled'
+export type StepStatus = 'pending' | 'running' | 'done' | 'failed' | 'skipped'
+
+export interface StepState {
+  status: StepStatus
+  progress: number       // 0-100
+  message: string | null
+}
+
+export interface Job {
+  id: string
+  type: string
+  repo_id: string | null
+  status: JobStatus
+  steps: Record<string, StepState>
+  current_step: string | null
+  error: string | null
+  started_at: string
+  finished_at: string | null
+}
+
+// ── Workspace ─────────────────────────────────────────────────────────────────
+
 export interface Workspace {
   id: string
   name: string
@@ -111,6 +136,12 @@ declare global {
         getConfig: () => Promise<{ ssh_key_path: string | null }>
         setConfig: (sshKeyPath: string | null) => Promise<{ ssh_key_path: string | null }>
         pickSshKey: () => Promise<string | null>
+      }
+      job: {
+        get: (id: string) => Promise<Job>
+        cancel: (id: string) => Promise<Job>
+        listForRepo: (repoId: string) => Promise<Job[]>
+        listRecent: () => Promise<Job[]>
       }
       app: {
         getVersion: () => Promise<string>
