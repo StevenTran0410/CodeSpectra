@@ -1,3 +1,28 @@
+// ── Job / Analysis pipeline ───────────────────────────────────────────────────
+
+export type JobStatus = 'pending' | 'running' | 'done' | 'failed' | 'cancelled'
+export type StepStatus = 'pending' | 'running' | 'done' | 'failed' | 'skipped'
+
+export interface StepState {
+  status: StepStatus
+  progress: number       // 0-100
+  message: string | null
+}
+
+export interface Job {
+  id: string
+  type: string
+  repo_id: string | null
+  status: JobStatus
+  steps: Record<string, StepState>
+  current_step: string | null
+  error: string | null
+  started_at: string
+  finished_at: string | null
+}
+
+// ── Workspace ─────────────────────────────────────────────────────────────────
+
 export interface Workspace {
   id: string
   name: string
@@ -7,6 +32,8 @@ export interface Workspace {
 }
 
 export type RepoSourceType = 'github' | 'bitbucket' | 'local_folder'
+export type SyncMode = 'latest' | 'pinned'
+export type ClonePolicy = 'full' | 'shallow' | 'partial'
 
 export interface LocalRepo {
   id: string
@@ -19,8 +46,32 @@ export interface LocalRepo {
   git_remote_url: string | null
   has_size_warning: boolean
   selected_branch: string | null // user-chosen analysis branch (null = use HEAD)
+  sync_mode: SyncMode
+  pinned_ref: string | null
+  ignore_overrides: string[]
+  detect_submodules: boolean
   added_at: string
   last_validated_at: string
+}
+
+export interface RepoSnapshot {
+  id: string
+  local_repo_id: string
+  branch: string | null
+  commit_hash: string | null
+  local_path: string
+  status: 'pending' | 'syncing' | 'ready' | 'failed'
+  error: string | null
+  clone_policy: ClonePolicy
+  synced_at: string
+  created_at: string
+}
+
+export interface EstimateFileCountResponse {
+  estimated_file_count: number
+  workspace_default_ignores: string[]
+  repo_ignore_overrides: string[]
+  effective_ignores: string[]
 }
 
 export interface ValidateFolderResponse {
@@ -103,14 +154,38 @@ declare global {
         add: (path: string) => Promise<LocalRepo>
         remove: (id: string) => Promise<void>
         revalidate: (id: string) => Promise<LocalRepo>
-        branches: (id: string) => Promise<string[]>
+        branches: (id: string, refresh?: boolean) => Promise<string[]>
         setBranch: (id: string, branch: string) => Promise<LocalRepo>
+        updateSettings: (
+          id: string,
+          settings: {
+            sync_mode: SyncMode
+            pinned_ref: string | null
+            ignore_overrides: string[]
+            detect_submodules: boolean
+          }
+        ) => Promise<LocalRepo>
+        estimateFileCount: (id: string) => Promise<EstimateFileCountResponse>
         cloneFromUrl: (url: string) => Promise<LocalRepo>
+      }
+      sync: {
+        prepare: (body: {
+          local_repo_id: string
+          branch?: string | null
+          clone_policy?: ClonePolicy
+        }) => Promise<RepoSnapshot>
+        listForRepo: (repoId: string) => Promise<RepoSnapshot[]>
       }
       git: {
         getConfig: () => Promise<{ ssh_key_path: string | null }>
         setConfig: (sshKeyPath: string | null) => Promise<{ ssh_key_path: string | null }>
         pickSshKey: () => Promise<string | null>
+      }
+      job: {
+        get: (id: string) => Promise<Job>
+        cancel: (id: string) => Promise<Job>
+        listForRepo: (repoId: string) => Promise<Job[]>
+        listRecent: () => Promise<Job[]>
       }
       app: {
         getVersion: () => Promise<string>

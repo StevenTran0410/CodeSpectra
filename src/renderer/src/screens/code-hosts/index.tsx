@@ -13,10 +13,12 @@ import {
   ChevronDown,
   XCircle,
   Link,
+  Search,
   ArrowDownToLine,
   KeyRound,
   Check,
   X,
+  RotateCcw,
 } from 'lucide-react'
 import { useLocalRepoStore } from '../../store/local-repo.store'
 import { ErrorBanner } from '../../components/ui/ErrorBanner'
@@ -126,15 +128,22 @@ function ValidationPreview({
 function BranchPicker({ repo }: { repo: LocalRepo }) {
   const { branchesMap, loadingBranchesId, loadBranches, setBranch } = useLocalRepoStore()
   const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState('')
   const ref = useRef<HTMLDivElement>(null)
 
   const branches = branchesMap[repo.id]
+  const filtered = (branches ?? []).filter((b) => b.toLowerCase().includes(query.trim().toLowerCase()))
   const activeBranch = repo.selected_branch ?? repo.git_branch ?? 'HEAD'
   const isLoading = loadingBranchesId === repo.id
 
   const handleOpen = async () => {
-    if (!branches) await loadBranches(repo.id)
+    // Load once for fast UX; manual refresh button handles re-fetch.
+    if (!branches) await loadBranches(repo.id, false)
     setOpen((v) => !v)
+  }
+
+  const handleRefresh = async () => {
+    await loadBranches(repo.id, true)
   }
 
   useEffect(() => {
@@ -169,8 +178,29 @@ function BranchPicker({ repo }: { repo: LocalRepo }) {
           <div className="px-3 py-2 text-xs text-zinc-500 font-medium border-b border-zinc-700">
             Select analysis branch
           </div>
+          <div className="px-2 py-2 border-b border-zinc-700">
+            <div className="flex items-center gap-1.5">
+              <div className="relative flex-1">
+                <Search size={11} className="absolute left-2 top-1/2 -translate-y-1/2 text-zinc-600" />
+                <input
+                  type="text"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="Search branch..."
+                  className="w-full pl-7 pr-2 py-1.5 bg-zinc-900 border border-zinc-700 rounded text-xs text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-zinc-500"
+                />
+              </div>
+              <button
+                onClick={handleRefresh}
+                className="p-1.5 border border-zinc-700 rounded text-zinc-500 hover:text-zinc-300 hover:border-zinc-600 transition-colors"
+                title="Refresh branches from remote"
+              >
+                {isLoading ? <Loader2 size={11} className="animate-spin" /> : <RotateCcw size={11} />}
+              </button>
+            </div>
+          </div>
           <div className="max-h-48 overflow-y-auto">
-            {branches.map((b) => (
+            {filtered.map((b) => (
               <button
                 key={b}
                 onClick={() => { setBranch(repo.id, b); setOpen(false) }}
@@ -188,8 +218,10 @@ function BranchPicker({ repo }: { repo: LocalRepo }) {
               </button>
             ))}
           </div>
-          {branches.length === 0 && (
-            <div className="px-3 py-4 text-xs text-zinc-500 text-center">No local branches found</div>
+          {filtered.length === 0 && (
+            <div className="px-3 py-4 text-xs text-zinc-500 text-center">
+              {branches.length === 0 ? 'No branches found' : 'No branch matches your search'}
+            </div>
           )}
         </div>
       )}
@@ -562,7 +594,7 @@ export default function CodeHostsSetup(): React.ReactElement {
     <>
       <div className="screen-header flex items-center justify-between">
         <div>
-          <h1 className="screen-title">Code Hosts</h1>
+        <h1 className="screen-title">Code Hosts</h1>
           <p className="screen-subtitle">
             {repos.length > 0
               ? `${repos.length} repositor${repos.length !== 1 ? 'ies' : 'y'}`

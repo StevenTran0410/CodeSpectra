@@ -1,13 +1,18 @@
 """Types for local folder repositories."""
 from enum import Enum
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 
 class RepoSourceType(str, Enum):
     GITHUB = "github"
     BITBUCKET = "bitbucket"
     LOCAL_FOLDER = "local_folder"
+
+
+class SyncMode(str, Enum):
+    LATEST = "latest"   # always pull latest on selected branch
+    PINNED = "pinned"   # lock to pinned ref / commit SHA
 
 
 class LocalRepo(BaseModel):
@@ -23,6 +28,10 @@ class LocalRepo(BaseModel):
     git_remote_url: str | None
     has_size_warning: bool
     selected_branch: str | None   # user-chosen branch to analyze (None = use HEAD)
+    sync_mode: SyncMode = SyncMode.LATEST
+    pinned_ref: str | None
+    ignore_overrides: list[str] = Field(default_factory=list)
+    detect_submodules: bool = True
     added_at: str
     last_validated_at: str
 
@@ -37,6 +46,34 @@ class SetBranchRequest(BaseModel):
         if not v:
             raise ValueError("branch cannot be empty")
         return v
+
+
+class UpdateRepoSettingsRequest(BaseModel):
+    sync_mode: SyncMode = SyncMode.LATEST
+    pinned_ref: str | None = None
+    ignore_overrides: list[str] = Field(default_factory=list)
+    detect_submodules: bool = True
+
+    @field_validator("pinned_ref")
+    @classmethod
+    def normalize_pinned_ref(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip()
+        return v or None
+
+    @field_validator("ignore_overrides")
+    @classmethod
+    def normalize_ignore_overrides(cls, v: list[str]) -> list[str]:
+        out: list[str] = []
+        seen: set[str] = set()
+        for item in v:
+            p = item.strip()
+            if not p or p in seen:
+                continue
+            out.append(p)
+            seen.add(p)
+        return out
 
 
 class ValidateFolderRequest(BaseModel):
@@ -97,3 +134,10 @@ class CloneFromUrlRequest(BaseModel):
         if not v:
             raise ValueError("dest_path cannot be empty")
         return v
+
+
+class EstimateFileCountResponse(BaseModel):
+    estimated_file_count: int
+    workspace_default_ignores: list[str]
+    repo_ignore_overrides: list[str]
+    effective_ignores: list[str]

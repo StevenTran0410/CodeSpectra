@@ -58,8 +58,24 @@ function PrivacyBadge({ kind }: { kind: string }) {
 }
 
 function KindLabel({ kind }: { kind: string }) {
-  const label = kind === 'ollama' ? 'Ollama' : 'LM Studio'
-  const color = kind === 'ollama' ? 'text-violet-400 bg-violet-500/10 border-violet-500/20' : 'text-sky-400 bg-sky-500/10 border-sky-500/20'
+  const labels: Record<string, string> = {
+    ollama: 'Ollama',
+    lmstudio: 'LM Studio',
+    openai: 'OpenAI',
+    anthropic: 'Anthropic',
+    gemini: 'Gemini',
+    deepseek: 'DeepSeek',
+  }
+  const colors: Record<string, string> = {
+    ollama: 'text-violet-400 bg-violet-500/10 border-violet-500/20',
+    lmstudio: 'text-sky-400 bg-sky-500/10 border-sky-500/20',
+    openai: 'text-green-400 bg-green-500/10 border-green-500/20',
+    anthropic: 'text-orange-400 bg-orange-500/10 border-orange-500/20',
+    gemini: 'text-blue-400 bg-blue-500/10 border-blue-500/20',
+    deepseek: 'text-indigo-400 bg-indigo-500/10 border-indigo-500/20',
+  }
+  const label = labels[kind] ?? kind
+  const color = colors[kind] ?? 'text-zinc-400 bg-zinc-500/10 border-zinc-500/20'
   return (
     <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-mono border ${color}`}>
       {label}
@@ -434,7 +450,7 @@ function ProviderCard({ config }: { config: ProviderConfig }) {
         <span className="text-xs text-zinc-600">·</span>
         <span className="text-xs text-zinc-400">
           Context: <span className="text-zinc-300">{config.capabilities.max_context_tokens.toLocaleString()} tokens</span>
-        </span>
+            </span>
       </div>
 
       <div className="flex items-center gap-2">

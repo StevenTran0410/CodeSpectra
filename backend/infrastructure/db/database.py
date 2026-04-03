@@ -92,6 +92,54 @@ _MIGRATIONS: list[dict[str, Any]] = [
             );
         """,
     },
+    {
+        "version": 5,
+        "description": "Add jobs table for analysis pipeline tracking",
+        "sql": """
+            CREATE TABLE IF NOT EXISTS jobs (
+                id           TEXT PRIMARY KEY,
+                type         TEXT NOT NULL,
+                repo_id      TEXT,
+                status       TEXT NOT NULL DEFAULT 'pending',
+                steps        TEXT NOT NULL DEFAULT '{}',
+                current_step TEXT,
+                error        TEXT,
+                started_at   TEXT NOT NULL,
+                finished_at  TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_jobs_repo_id ON jobs(repo_id);
+            CREATE INDEX IF NOT EXISTS idx_jobs_started_at ON jobs(started_at DESC);
+        """,
+    },
+    {
+        "version": 6,
+        "description": "Add repo_snapshots table for sync engine",
+        "sql": """
+            CREATE TABLE IF NOT EXISTS repo_snapshots (
+                id             TEXT PRIMARY KEY,
+                local_repo_id  TEXT NOT NULL,
+                branch         TEXT,
+                commit_hash    TEXT,
+                local_path     TEXT NOT NULL,
+                status         TEXT NOT NULL DEFAULT 'pending',
+                error          TEXT,
+                clone_policy   TEXT NOT NULL DEFAULT 'full',
+                synced_at      TEXT NOT NULL,
+                created_at     TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_snapshots_repo ON repo_snapshots(local_repo_id);
+        """,
+    },
+    {
+        "version": 7,
+        "description": "Add per-repository setup settings to local_repos",
+        "sql": """
+            ALTER TABLE local_repos ADD COLUMN sync_mode TEXT NOT NULL DEFAULT 'latest';
+            ALTER TABLE local_repos ADD COLUMN pinned_ref TEXT;
+            ALTER TABLE local_repos ADD COLUMN ignore_overrides TEXT NOT NULL DEFAULT '[]';
+            ALTER TABLE local_repos ADD COLUMN detect_submodules INTEGER NOT NULL DEFAULT 1;
+        """,
+    },
 ]
 
 TARGET_VERSION = len(_MIGRATIONS) - 1
