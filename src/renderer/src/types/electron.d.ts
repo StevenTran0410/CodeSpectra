@@ -36,8 +36,9 @@ export interface ValidateFolderResponse {
   size_warning_reason: string | null
 }
 
+// ── Providers ─────────────────────────────────────────────────────────────────
+
 export type ProviderKind = 'ollama' | 'lmstudio' | 'openai' | 'anthropic' | 'gemini' | 'deepseek'
-export const CLOUD_KINDS: ReadonlySet<ProviderKind> = new Set(['openai', 'anthropic', 'gemini', 'deepseek'])
 
 export interface ProviderCapabilities {
   streaming: boolean
@@ -104,6 +105,12 @@ declare global {
         revalidate: (id: string) => Promise<LocalRepo>
         branches: (id: string) => Promise<string[]>
         setBranch: (id: string, branch: string) => Promise<LocalRepo>
+        cloneFromUrl: (url: string) => Promise<LocalRepo>
+      }
+      git: {
+        getConfig: () => Promise<{ ssh_key_path: string | null }>
+        setConfig: (sshKeyPath: string | null) => Promise<{ ssh_key_path: string | null }>
+        pickSshKey: () => Promise<string | null>
       }
       app: {
         getVersion: () => Promise<string>

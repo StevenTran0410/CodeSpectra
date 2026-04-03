@@ -25,6 +25,15 @@
     user-select: none;
   }
 
+  /* Allow text selection and normal input behaviour inside editable elements */
+  input,
+  textarea,
+  [contenteditable] {
+    user-select: text;
+    -webkit-user-select: text;
+    cursor: text;
+  }
+
   /* Scrollbars */
   ::-webkit-scrollbar {
     width: 6px;

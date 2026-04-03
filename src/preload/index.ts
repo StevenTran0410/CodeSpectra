@@ -4,7 +4,7 @@ import type {
   Workspace,
   ProviderConfig,
   CreateProviderRequest,
-  UpdateProviderRequest
+  UpdateProviderRequest,
 } from '../main/api/types'
 
 const api = {
@@ -40,7 +40,16 @@ const api = {
     remove: (id: string): Promise<void> => ipcRenderer.invoke('folder:remove', id),
     revalidate: (id: string) => ipcRenderer.invoke('folder:revalidate', id),
     branches: (id: string): Promise<string[]> => ipcRenderer.invoke('folder:branches', id),
-    setBranch: (id: string, branch: string) => ipcRenderer.invoke('folder:setBranch', id, branch)
+    setBranch: (id: string, branch: string) => ipcRenderer.invoke('folder:setBranch', id, branch),
+    cloneFromUrl: (url: string) => ipcRenderer.invoke('folder:cloneFromUrl', url)
+  },
+  git: {
+    getConfig: (): Promise<{ ssh_key_path: string | null }> =>
+      ipcRenderer.invoke('git:getConfig'),
+    setConfig: (sshKeyPath: string | null): Promise<{ ssh_key_path: string | null }> =>
+      ipcRenderer.invoke('git:setConfig', sshKeyPath),
+    pickSshKey: (): Promise<string | null> =>
+      ipcRenderer.invoke('git:pickSshKey'),
   },
   app: {
     getVersion: (): Promise<string> => ipcRenderer.invoke('app:get-version'),

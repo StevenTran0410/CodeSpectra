@@ -42,3 +42,12 @@ export interface UpdateProviderRequest {
   base_url?: string
   model_id?: string
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Git clone
+// ──────────────────────────────────────────────────────────────────────────────
+
+export interface CloneFromUrlRequest {
+  url: string
+  dest_path: string
+}

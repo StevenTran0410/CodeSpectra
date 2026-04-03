@@ -76,3 +76,24 @@ class AddLocalRepoRequest(BaseModel):
         if not v:
             raise ValueError("path cannot be empty")
         return v
+
+
+class CloneFromUrlRequest(BaseModel):
+    url: str
+    dest_path: str  # absolute path where the repo should be cloned
+
+    @field_validator("url")
+    @classmethod
+    def url_not_empty(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("url cannot be empty")
+        return v
+
+    @field_validator("dest_path")
+    @classmethod
+    def dest_not_empty(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("dest_path cannot be empty")
+        return v

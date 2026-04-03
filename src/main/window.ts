@@ -1,4 +1,4 @@
-import { BrowserWindow, session } from 'electron'
+import { BrowserWindow, Menu, session } from 'electron'
 import { is } from '@electron-toolkit/utils'
 import path from 'path'
 import { logger } from './shared/logger'
@@ -54,6 +54,19 @@ export function createMainWindow(): BrowserWindow {
 
   win.webContents.setWindowOpenHandler(() => {
     return { action: 'deny' }
+  })
+
+  // Right-click context menu for text inputs (copy / paste / cut / select all)
+  win.webContents.on('context-menu', (_event, params) => {
+    if (!params.isEditable && !params.selectionText) return
+    const menu = Menu.buildFromTemplate([
+      { role: 'cut',       enabled: params.editFlags.canCut,       label: 'Cut' },
+      { role: 'copy',      enabled: params.editFlags.canCopy,      label: 'Copy' },
+      { role: 'paste',     enabled: params.editFlags.canPaste,     label: 'Paste' },
+      { type: 'separator' },
+      { role: 'selectAll', enabled: params.editFlags.canSelectAll, label: 'Select All' },
+    ])
+    menu.popup({ window: win })
   })
 
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {

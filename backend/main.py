@@ -67,7 +67,7 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    app.include_router(app_router)
+    app.include_router(app_router, prefix="/api/app")
     app.include_router(workspace_router, prefix="/api/workspace")
     app.include_router(provider_router, prefix="/api/provider")
     app.include_router(consent_router, prefix="/api/consent")

@@ -1,22 +1,27 @@
 """LocalRepoService — path validation, git metadata reading, and CRUD."""
 import asyncio
+import os
 import subprocess
-import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 
 from infrastructure.db.database import get_db
 from shared.errors import ConflictError, NotFoundError
 from shared.logger import logger
+from shared.utils import new_id, utc_now_iso
 
 from .types import (
     AddLocalRepoRequest,
+    CloneFromUrlRequest,
     LocalRepo,
     RepoSourceType,
     SetBranchRequest,
     ValidateFolderRequest,
     ValidateFolderResponse,
 )
+
+def _is_ssh_url(url: str) -> bool:
+    return url.startswith("git@") or url.startswith("ssh://")
+
 
 # Directories that indicate the repo may be heavy to scan
 _SIZE_WARNING_DIRS = frozenset({"node_modules", ".venv", "venv", "env", "target", "build", "dist"})
@@ -161,8 +166,8 @@ class LocalRepoService:
             if await cur.fetchone():
                 raise ConflictError(f"Folder '{req.path}' is already added")
 
-        repo_id = str(uuid.uuid4())
-        now = datetime.now(timezone.utc).isoformat()
+        repo_id = new_id()
+        now = utc_now_iso()
 
         await db.execute(
             """INSERT INTO local_repos
@@ -243,7 +248,7 @@ class LocalRepoService:
         """Refresh git metadata for an existing local repo."""
         existing = await self.get_by_id(repo_id)
         validation = await self.validate(ValidateFolderRequest(path=existing.path))
-        now = datetime.now(timezone.utc).isoformat()
+        now = utc_now_iso()
         db = get_db()
         await db.execute(
             """UPDATE local_repos
@@ -263,6 +268,51 @@ class LocalRepoService:
         await db.commit()
         row = await self._fetch_row(repo_id)
         return _row_to_model(row)
+
+    async def clone_from_url(self, req: CloneFromUrlRequest) -> LocalRepo:
+        """Clone a remote git URL to dest_path, then register it as a local repo."""
+        dest = Path(req.dest_path)
+
+        if dest.exists():
+            raise ConflictError(f"Destination '{req.dest_path}' already exists")
+
+        dest.parent.mkdir(parents=True, exist_ok=True)
+
+        # Build environment — inject GIT_SSH_COMMAND for SSH URLs if a key is configured
+        env = os.environ.copy()
+        if _is_ssh_url(req.url):
+            db = get_db()
+            async with db.execute(
+                "SELECT value FROM app_metadata WHERE key='git_ssh_key_path'"
+            ) as cur:
+                row = await cur.fetchone()
+            ssh_key = row["value"] if row else None
+            if ssh_key:
+                env["GIT_SSH_COMMAND"] = (
+                    f'ssh -i "{ssh_key}" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new'
+                )
+
+        def _do_clone() -> subprocess.CompletedProcess:
+            return subprocess.run(
+                ["git", "clone", req.url, str(dest)],
+                capture_output=True,
+                text=True,
+                timeout=300,  # 5 min max
+                env=env,
+            )
+
+        result = await asyncio.to_thread(_do_clone)
+        if result.returncode != 0:
+            # Filter out the informational "Cloning into '...'" line — only keep actual errors
+            lines = [
+                ln for ln in (result.stderr or "").splitlines()
+                if ln.strip() and not ln.strip().startswith("Cloning into ")
+            ]
+            msg = "\n".join(lines).strip() or "git clone failed (unknown error)"
+            raise ValueError(msg)
+
+        logger.info(f"Cloned '{req.url}' → {req.dest_path}")
+        return await self.add(AddLocalRepoRequest(path=req.dest_path))
 
     async def _fetch_row(self, repo_id: str):
         db = get_db()
