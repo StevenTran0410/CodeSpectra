@@ -154,7 +154,7 @@ declare global {
         add: (path: string) => Promise<LocalRepo>
         remove: (id: string) => Promise<void>
         revalidate: (id: string) => Promise<LocalRepo>
-        branches: (id: string) => Promise<string[]>
+        branches: (id: string, refresh?: boolean) => Promise<string[]>
         setBranch: (id: string, branch: string) => Promise<LocalRepo>
         updateSettings: (
           id: string,

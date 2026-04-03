@@ -18,6 +18,7 @@ import {
   KeyRound,
   Check,
   X,
+  RotateCcw,
 } from 'lucide-react'
 import { useLocalRepoStore } from '../../store/local-repo.store'
 import { ErrorBanner } from '../../components/ui/ErrorBanner'
@@ -136,9 +137,13 @@ function BranchPicker({ repo }: { repo: LocalRepo }) {
   const isLoading = loadingBranchesId === repo.id
 
   const handleOpen = async () => {
-    // Always refresh when opening to catch newly fetched remote branches
-    await loadBranches(repo.id)
+    // Load once for fast UX; manual refresh button handles re-fetch.
+    if (!branches) await loadBranches(repo.id, false)
     setOpen((v) => !v)
+  }
+
+  const handleRefresh = async () => {
+    await loadBranches(repo.id, true)
   }
 
   useEffect(() => {
@@ -174,15 +179,24 @@ function BranchPicker({ repo }: { repo: LocalRepo }) {
             Select analysis branch
           </div>
           <div className="px-2 py-2 border-b border-zinc-700">
-            <div className="relative">
-              <Search size={11} className="absolute left-2 top-1/2 -translate-y-1/2 text-zinc-600" />
-              <input
-                type="text"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search branch..."
-                className="w-full pl-7 pr-2 py-1.5 bg-zinc-900 border border-zinc-700 rounded text-xs text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-zinc-500"
-              />
+            <div className="flex items-center gap-1.5">
+              <div className="relative flex-1">
+                <Search size={11} className="absolute left-2 top-1/2 -translate-y-1/2 text-zinc-600" />
+                <input
+                  type="text"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="Search branch..."
+                  className="w-full pl-7 pr-2 py-1.5 bg-zinc-900 border border-zinc-700 rounded text-xs text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-zinc-500"
+                />
+              </div>
+              <button
+                onClick={handleRefresh}
+                className="p-1.5 border border-zinc-700 rounded text-zinc-500 hover:text-zinc-300 hover:border-zinc-600 transition-colors"
+                title="Refresh branches from remote"
+              >
+                {isLoading ? <Loader2 size={11} className="animate-spin" /> : <RotateCcw size={11} />}
+              </button>
             </div>
           </div>
           <div className="max-h-48 overflow-y-auto">

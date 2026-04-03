@@ -51,8 +51,8 @@ async def revalidate_repo(repo_id: str) -> LocalRepo:
 
 
 @router.get("/{repo_id}/branches", response_model=list[str])
-async def list_branches(repo_id: str) -> list[str]:
-    return await _service.list_branches(repo_id)
+async def list_branches(repo_id: str, refresh: bool = False) -> list[str]:
+    return await _service.list_branches(repo_id, refresh=refresh)
 
 
 @router.post("/{repo_id}/branch", response_model=LocalRepo)

@@ -18,7 +18,7 @@ interface LocalRepoState {
   add: (path: string) => Promise<LocalRepo | null>
   remove: (id: string) => Promise<void>
   revalidate: (id: string) => Promise<void>
-  loadBranches: (id: string) => Promise<void>
+  loadBranches: (id: string, refresh?: boolean) => Promise<void>
   setBranch: (id: string, branch: string) => Promise<void>
   clearError: () => void
 }
@@ -92,10 +92,10 @@ export const useLocalRepoStore = create<LocalRepoState>((set, get) => ({
     }
   },
 
-  loadBranches: async (id: string) => {
+  loadBranches: async (id: string, refresh = false) => {
     set({ loadingBranchesId: id })
     try {
-      const branches = await window.api.folder.branches(id)
+      const branches = await window.api.folder.branches(id, refresh)
       set((s) => ({ branchesMap: { ...s.branchesMap, [id]: branches }, loadingBranchesId: null }))
     } catch (err) {
       set({ loadingBranchesId: null, error: String(err) })

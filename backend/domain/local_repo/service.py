@@ -239,15 +239,16 @@ class LocalRepoService:
 
         logger.info(f"Removed local repo {repo_id}")
 
-    async def list_branches(self, repo_id: str) -> list[str]:
-        """Return all local+remote branches for this repo, or [] if not git."""
+    async def list_branches(self, repo_id: str, refresh: bool = False) -> list[str]:
+        """Return branches. Refresh remote refs only when explicitly requested."""
         repo = await self.get_by_id(repo_id)
         if not repo.is_git_repo:
             return []
 
-        # Refresh remote refs first so dropdown includes latest remote branches.
-        env = await self._ssh_env_if_needed(repo.git_remote_url)
-        await run_git(repo.path, ["fetch", "--all", "--prune"], env=env, timeout=30)
+        if refresh:
+            # Optional on-demand refresh to avoid slow branch dropdown open.
+            env = await self._ssh_env_if_needed(repo.git_remote_url)
+            await run_git(repo.path, ["fetch", "--all", "--prune"], env=env, timeout=15)
 
         return await list_branches(repo.path)
 

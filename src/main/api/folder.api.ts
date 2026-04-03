@@ -42,7 +42,8 @@ export function registerFolderHandlers(client: BackendClient): void {
 
   ipcMain.handle(
     'folder:branches',
-    (_event, id: string): Promise<string[]> => client.get(`/api/local-repo/${id}/branches`)
+    (_event, id: string, refresh = false): Promise<string[]> =>
+      client.get(`/api/local-repo/${id}/branches?refresh=${refresh ? 'true' : 'false'}`)
   )
 
   ipcMain.handle(

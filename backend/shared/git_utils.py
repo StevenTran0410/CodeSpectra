@@ -48,30 +48,27 @@ def list_branches_sync(path: str) -> list[str]:
     - Local: refs/heads/*
     - Remote: refs/remotes/origin/* (excluding origin/HEAD)
     """
-    local_raw = run_git_sync(path, ["branch", "--format=%(refname:short)"]) or ""
-    remote_raw = run_git_sync(path, ["branch", "-r", "--format=%(refname:short)"]) or ""
-
+    # Single git call is faster than separate local/remote commands.
+    raw = run_git_sync(
+        path,
+        ["for-each-ref", "--format=%(refname:short)", "refs/heads", "refs/remotes/origin"],
+        timeout=8,
+    ) or ""
     names: list[str] = []
     seen: set[str] = set()
 
-    for line in local_raw.splitlines():
-        b = line.strip()
-        if not b:
+    for line in raw.splitlines():
+        ref = line.strip()
+        if not ref:
             continue
-        if b not in seen:
-            seen.add(b)
-            names.append(b)
-
-    for line in remote_raw.splitlines():
-        rb = line.strip()
-        if not rb or rb.endswith("/HEAD"):
+        if ref.endswith("/HEAD"):
             continue
-        # normalize "origin/feature-x" -> "feature-x"
-        if rb.startswith("origin/"):
-            rb = rb[len("origin/") :]
-        if rb and rb not in seen:
-            seen.add(rb)
-            names.append(rb)
+        # normalize remote name: "origin/feature-x" -> "feature-x"
+        if ref.startswith("origin/"):
+            ref = ref[len("origin/") :]
+        if ref and ref not in seen:
+            seen.add(ref)
+            names.append(ref)
 
     return names
 
