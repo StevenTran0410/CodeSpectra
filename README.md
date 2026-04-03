@@ -117,6 +117,8 @@ npm run dev:backend
 
 See [`COMMANDS.md`](./COMMANDS.md) for the full reference including build and troubleshooting.
 
+Deep indexing dependencies (`tree-sitter` + `tree-sitter-languages`) are installed by default with backend dependencies.
+
 ---
 
 ## Repository layout

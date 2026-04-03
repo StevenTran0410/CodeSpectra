@@ -67,6 +67,19 @@ npm run dev:backend
 Backend runs on `http://127.0.0.1:7868`.
 Interactive API docs available at `http://127.0.0.1:7868/docs`.
 
+### Tree-sitter / deep index dependency
+
+`tree-sitter` and `tree-sitter-languages` are now part of backend default dependencies.
+If your existing virtual environment was created before this change, run:
+
+```bash
+cd backend
+uv pip install -e .
+cd ..
+```
+
+For packaged builds (EXE), these dependencies are bundled with the backend environment/binary when you build from an up-to-date environment.
+
 ---
 
 ## Build
