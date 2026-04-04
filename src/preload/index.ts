@@ -64,6 +64,7 @@ const api = {
     }) => ipcRenderer.invoke('sync:prepare', body),
     listForRepo: (repoId: string) => ipcRenderer.invoke('sync:listForRepo', repoId),
     getSnapshot: (snapshotId: string) => ipcRenderer.invoke('sync:getSnapshot', snapshotId),
+    deleteSnapshot: (snapshotId: string): Promise<void> => ipcRenderer.invoke('sync:deleteSnapshot', snapshotId),
   },
   manifest: {
     build: (snapshotId: string, manualIgnores?: string[]) =>
@@ -71,6 +72,42 @@ const api = {
     tree: (snapshotId: string) => ipcRenderer.invoke('manifest:tree', snapshotId),
     file: (snapshotId: string, relPath: string) =>
       ipcRenderer.invoke('manifest:file', snapshotId, relPath),
+  },
+  repomap: {
+    build: (snapshotId: string, forceRebuild = true) =>
+      ipcRenderer.invoke('repomap:build', snapshotId, forceRebuild),
+    summary: (snapshotId: string) => ipcRenderer.invoke('repomap:summary', snapshotId),
+    symbols: (snapshotId: string, limit = 300, pathPrefix?: string) =>
+      ipcRenderer.invoke('repomap:symbols', snapshotId, limit, pathPrefix),
+    search: (snapshotId: string, q: string, limit = 120) =>
+      ipcRenderer.invoke('repomap:search', snapshotId, q, limit),
+    exportCsv: (snapshotId: string, excludeTests = true) =>
+      ipcRenderer.invoke('repomap:exportCsv', snapshotId, excludeTests),
+  },
+  graph: {
+    build: (snapshotId: string, forceRebuild = true) =>
+      ipcRenderer.invoke('graph:build', snapshotId, forceRebuild),
+    summary: (snapshotId: string) => ipcRenderer.invoke('graph:summary', snapshotId),
+    edges: (snapshotId: string, limit = 2000) => ipcRenderer.invoke('graph:edges', snapshotId, limit),
+    neighbors: (snapshotId: string, seedPath: string, hops = 1, limit = 300) =>
+      ipcRenderer.invoke('graph:neighbors', snapshotId, seedPath, hops, limit),
+  },
+  retrieval: {
+    buildIndex: (snapshotId: string, forceRebuild = true) =>
+      ipcRenderer.invoke('retrieval:buildIndex', snapshotId, forceRebuild),
+    retrieve: (body: {
+      snapshot_id: string
+      query: string
+      section: 'architecture' | 'conventions' | 'feature_map' | 'important_files' | 'glossary'
+      mode?: 'hybrid' | 'vectorless'
+      max_results?: number
+    }) => ipcRenderer.invoke('retrieval:retrieve', body),
+    compare: (body: {
+      snapshot_id: string
+      query: string
+      section: 'architecture' | 'conventions' | 'feature_map' | 'important_files' | 'glossary'
+      max_results?: number
+    }) => ipcRenderer.invoke('retrieval:compare', body),
   },
   git: {
     getConfig: (): Promise<{ ssh_key_path: string | null }> =>

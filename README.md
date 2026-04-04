@@ -93,6 +93,34 @@ Ingestion pipeline (file manifest, symbol extraction via Tree-sitter), structura
 - [uv](https://github.com/astral-sh/uv) (Python package manager)
 - Ollama or LM Studio running locally (optional — required for Strict Local mode)
 
+### Native C/C++ build prerequisites (for hotspot modules)
+
+If you only run the app, the list above is enough.
+
+If you want to build native Python extensions (C/C++ acceleration for indexing/graph hotspot), install this on Windows:
+
+- Visual Studio Build Tools (official download):
+  [https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2026](https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2026)
+- Workload: **Desktop development with C++**
+- Components: **MSVC v143**, **Windows 10/11 SDK**, **C++ CMake tools for Windows**
+
+After installation, open **Developer PowerShell for VS** and verify:
+
+```powershell
+cl
+where.exe cl
+```
+
+If `cl` shows Microsoft C/C++ compiler banner, your native toolchain is ready.
+
+Example detected path:
+
+`C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\VC\Tools\MSVC\14.50.35717\bin\Hostx86\x86\cl.exe`
+
+For production-native builds, prefer x64 toolchain shell (`Hostx64\x64`) instead of x86.
+
+Graph hotspot features (RPA-033) require the native module. This project does not use a pure-Python fallback for that path.
+
 ### Install and run
 
 ```bash
@@ -103,6 +131,9 @@ npm install
 cd backend
 uv venv .venv
 uv pip install -e ".[dev]"
+
+# Build native graph module (required for structural graph hotspot)
+python scripts/build_native_graph.py
 cd ..
 
 # Start the app (Electron + Python backend together)
@@ -116,6 +147,11 @@ npm run dev:backend
 ```
 
 See [`COMMANDS.md`](./COMMANDS.md) for the full reference including build and troubleshooting.
+
+Deep indexing dependencies (`tree-sitter` + `tree-sitter-languages`) are installed by default with backend dependencies.
+
+Local app state is stored under Electron `userData` (Windows default: `%APPDATA%\CodeSpectra\codespectra.db`).
+Managed cloned repositories are stored under `%USERPROFILE%\CodeSpectra\repos`.
 
 ---
 

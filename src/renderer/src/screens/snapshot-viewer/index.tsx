@@ -64,7 +64,10 @@ export default function SnapshotViewerScreen(): React.ReactElement {
   const [ignoredPaths, setIgnoredPaths] = useState<Set<string>>(new Set())
   const [completing, setCompleting] = useState(false)
   const [completeDone, setCompleteDone] = useState(false)
-  const [activating, setActivating] = useState(false)
+  const [focusedLine, setFocusedLine] = useState<number | null>(null)
+  const [showConfirmBuild, setShowConfirmBuild] = useState(false)
+  const [buildingIndex, setBuildingIndex] = useState(false)
+  const [buildProgress, setBuildProgress] = useState(0)
 
   const tree = useMemo(() => buildTree(treeNodes), [treeNodes])
 
@@ -175,7 +178,10 @@ export default function SnapshotViewerScreen(): React.ReactElement {
         }`}
       >
         <button
-          onClick={() => setSelectedFilePath(node.path)}
+          onClick={() => {
+            setSelectedFilePath(node.path)
+            setFocusedLine(null)
+          }}
           className="inline-flex items-center gap-1 flex-1"
           style={{ paddingLeft: `${22 + depth * 14}px` }}
           title={node.path}
@@ -251,23 +257,11 @@ export default function SnapshotViewerScreen(): React.ReactElement {
               {completing ? 'Completing...' : 'Complete'}
             </button>
             <button
-              onClick={async () => {
-                if (!repoId || !snapshotId) return
-                setActivating(true)
-                setError(null)
-                try {
-                  await window.api.folder.setActiveSnapshot(repoId, snapshotId)
-                  navigate(`/repositories?repoId=${encodeURIComponent(repoId)}`)
-                } catch (err) {
-                  setError(err instanceof Error ? err.message : String(err))
-                } finally {
-                  setActivating(false)
-                }
-              }}
-              disabled={!completeDone || activating}
+              onClick={() => setShowConfirmBuild(true)}
+              disabled={!completeDone || buildingIndex}
               className="px-2.5 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 rounded-md text-white disabled:opacity-50"
             >
-              {activating ? 'Selecting...' : 'Select for index'}
+              Select for index
             </button>
             <button
               onClick={() => navigate('/repositories')}
@@ -278,6 +272,19 @@ export default function SnapshotViewerScreen(): React.ReactElement {
             </button>
           </div>
         </div>
+
+        {buildingIndex && (
+          <div className="bg-zinc-900/60 border border-zinc-700 rounded-lg p-3 space-y-2">
+            <div className="text-xs text-zinc-300">Building deep index...</div>
+            <div className="w-full h-2 rounded bg-zinc-800 overflow-hidden">
+              <div
+                className="h-full bg-indigo-500 transition-all"
+                style={{ width: `${buildProgress}%` }}
+              />
+            </div>
+            <div className="text-[11px] text-zinc-500">{buildProgress}%</div>
+          </div>
+        )}
 
         <div className="grid grid-cols-12 gap-3 h-[calc(100%-3.25rem)]">
           <div className="col-span-4 border border-zinc-700 rounded-md overflow-auto bg-zinc-900/40">
@@ -313,12 +320,22 @@ export default function SnapshotViewerScreen(): React.ReactElement {
                 <div className="grid grid-cols-[56px_1fr] gap-3">
                   <pre className="text-right text-zinc-600 select-none">
                     {lines.map((_line, i) => (
-                      <div key={`ln-${i + 1}`}>{i + 1}</div>
+                      <div
+                        key={`ln-${i + 1}`}
+                        className={focusedLine === i + 1 ? 'bg-amber-500/15 text-amber-300' : ''}
+                      >
+                        {i + 1}
+                      </div>
                     ))}
                   </pre>
                   <pre className="text-zinc-200 whitespace-pre overflow-x-auto">
                     {lines.map((line, i) => (
-                      <div key={`lc-${i + 1}`}>{line || ' '}</div>
+                      <div
+                        key={`lc-${i + 1}`}
+                        className={focusedLine === i + 1 ? 'bg-amber-500/15' : ''}
+                      >
+                        {line || ' '}
+                      </div>
                     ))}
                   </pre>
                 </div>
@@ -329,6 +346,50 @@ export default function SnapshotViewerScreen(): React.ReactElement {
           </div>
         </div>
       </div>
+      {showConfirmBuild && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center">
+          <div className="w-[26rem] rounded-lg border border-zinc-700 bg-zinc-900 p-4 space-y-3">
+            <div className="text-sm font-semibold text-zinc-100">Start building deep index?</div>
+            <div className="text-xs text-zinc-400">
+              Choosing <span className="text-zinc-200">Yes</span> will activate this snapshot and build index.
+            </div>
+            <div className="flex items-center justify-end gap-2">
+              <button
+                onClick={() => setShowConfirmBuild(false)}
+                className="px-3 py-1.5 text-xs border border-zinc-700 rounded-md text-zinc-300 hover:border-zinc-600"
+              >
+                No
+              </button>
+              <button
+                onClick={async () => {
+                  if (!repoId || !snapshotId) return
+                  setShowConfirmBuild(false)
+                  setBuildingIndex(true)
+                  setBuildProgress(0)
+                  setError(null)
+                  const timer = setInterval(() => {
+                    setBuildProgress((p) => (p >= 90 ? p : p + 6))
+                  }, 250)
+                  try {
+                    await window.api.folder.setActiveSnapshot(repoId, snapshotId)
+                    await window.api.repomap.build(snapshotId, true)
+                    setBuildProgress(100)
+                    navigate(`/index-overview?repoId=${encodeURIComponent(repoId)}&snapshotId=${encodeURIComponent(snapshotId)}`)
+                  } catch (err) {
+                    setError(err instanceof Error ? err.message : String(err))
+                  } finally {
+                    clearInterval(timer)
+                    setBuildingIndex(false)
+                  }
+                }}
+                className="px-3 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 rounded-md text-white"
+              >
+                Yes
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   )
 }

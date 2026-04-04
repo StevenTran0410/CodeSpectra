@@ -24,3 +24,8 @@ async def get_snapshot(snapshot_id: str) -> RepoSnapshot:
 @router.get("/repo/{repo_id}", response_model=list[RepoSnapshot])
 async def list_snapshots(repo_id: str, limit: int = 20) -> list[RepoSnapshot]:
     return await _service.list_for_repo(repo_id, limit)
+
+
+@router.delete("/snapshot/{snapshot_id}", status_code=204)
+async def delete_snapshot(snapshot_id: str) -> None:
+    await _service.delete_snapshot(snapshot_id)
