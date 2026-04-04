@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { AlertTriangle, CheckCircle2, FolderOpen, GitBranch, Loader2, RefreshCw } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, FolderOpen, GitBranch, Loader2, RefreshCw, Trash2 } from 'lucide-react'
 import { EmptyState } from '../../components/ui/EmptyState'
 import { ErrorBanner } from '../../components/ui/ErrorBanner'
 import { LoadingRow } from '../../components/ui/LoadingRow'
@@ -26,10 +26,13 @@ export default function RepositoriesScreen(): React.ReactElement {
   const [clonePolicy, setClonePolicy] = useState<ClonePolicy>('full')
   const [saving, setSaving] = useState(false)
   const [syncing, setSyncing] = useState(false)
+  const [syncProgress, setSyncProgress] = useState(0)
   const [snapshots, setSnapshots] = useState<RepoSnapshot[]>([])
   const [selectedSnapshotId, setSelectedSnapshotId] = useState<string | null>(null)
   const [loadingSnapshots, setLoadingSnapshots] = useState(false)
   const [selectingSnapshot, setSelectingSnapshot] = useState(false)
+  const [deletingSnapshot, setDeletingSnapshot] = useState(false)
+  const [confirmDeleteSnapshotId, setConfirmDeleteSnapshotId] = useState<string | null>(null)
   const [screenError, setScreenError] = useState<string | null>(null)
   const [estimate, setEstimate] = useState<EstimateFileCountResponse | null>(null)
   const [estimating, setEstimating] = useState(false)
@@ -88,6 +91,10 @@ export default function RepositoriesScreen(): React.ReactElement {
 
   const hasSnapshot = snapshots.length > 0
   const branchChanged = !!selectedRepo && branch && branch !== (selectedRepo.selected_branch ?? selectedRepo.git_branch ?? '')
+  const selectedSnapshot = useMemo(
+    () => snapshots.find((s) => s.id === selectedSnapshotId) ?? null,
+    [snapshots, selectedSnapshotId],
+  )
 
   return (
     <>
@@ -145,12 +152,12 @@ export default function RepositoriesScreen(): React.ReactElement {
                       <span className="text-xs text-zinc-500">{selectedRepo.name}</span>
                     </div>
 
-                    <div className="grid grid-cols-2 gap-3">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                       <div>
                         <label className="text-xs text-zinc-400 mb-1 block">Branch / ref</label>
                         <div className="flex gap-2">
                           <select
-                            className="flex-1 bg-zinc-900 border border-zinc-700 rounded-md px-2 py-2 text-sm text-zinc-100"
+                            className="min-w-0 flex-1 bg-zinc-900 border border-zinc-700 rounded-md px-2 py-2 text-sm text-zinc-100"
                             value={branch}
                             onChange={(e) => setBranchLocal(e.target.value)}
                           >
@@ -170,7 +177,7 @@ export default function RepositoriesScreen(): React.ReactElement {
                       <div>
                         <label className="text-xs text-zinc-400 mb-1 block">Clone policy</label>
                         <select
-                          className="w-full bg-zinc-900 border border-zinc-700 rounded-md px-2 py-2 text-sm text-zinc-100"
+                          className="min-w-0 w-full bg-zinc-900 border border-zinc-700 rounded-md px-2 py-2 text-sm text-zinc-100"
                           value={clonePolicy}
                           onChange={(e) => setClonePolicy(e.target.value as ClonePolicy)}
                         >
@@ -181,7 +188,7 @@ export default function RepositoriesScreen(): React.ReactElement {
                       </div>
                     </div>
 
-                    <div className="grid grid-cols-2 gap-3">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                       <div>
                         <label className="text-xs text-zinc-400 mb-1 block">Sync mode</label>
                         <select
@@ -240,7 +247,7 @@ export default function RepositoriesScreen(): React.ReactElement {
                       </div>
                     )}
 
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <button
                         onClick={async () => {
                           if (!selectedRepo) return
@@ -298,28 +305,54 @@ export default function RepositoriesScreen(): React.ReactElement {
                             return
                           }
                           setSyncing(true)
+                          setSyncProgress(8)
                           setScreenError(null)
+                          const progressTimer = setInterval(() => {
+                            setSyncProgress((p) => (p >= 92 ? p : p + 4))
+                          }, 450)
                           try {
-                            await window.api.sync.prepare({
+                            const created = await window.api.sync.prepare({
                               local_repo_id: selectedRepo.id,
                               branch: syncMode === 'pinned' ? (pinnedRef.trim() || branch || null) : (branch || null),
                               clone_policy: clonePolicy,
                             })
-                            const rows = await window.api.sync.listForRepo(selectedRepo.id)
-                            setSnapshots(rows)
-                            setSelectedSnapshotId(rows[0]?.id ?? null)
+                            setSelectedSnapshotId(created.id)
+
+                            // Poll snapshot until it reaches final status to avoid "frozen spinner" UX.
+                            for (let i = 0; i < 300; i += 1) {
+                              const rows = await window.api.sync.listForRepo(selectedRepo.id)
+                              setSnapshots(rows)
+                              const current = rows.find((s) => s.id === created.id)
+                              if (!current) break
+                              if (current.status === 'pending') setSyncProgress((p) => Math.max(p, 25))
+                              if (current.status === 'syncing') setSyncProgress((p) => Math.max(p, 70))
+                              if (current.status === 'ready') break
+                              if (current.status === 'failed') {
+                                throw new Error(current.error ?? 'Snapshot prepare failed')
+                              }
+                              await new Promise((resolve) => setTimeout(resolve, 700))
+                            }
+                            setSyncProgress(100)
                           } catch (err) {
                             setScreenError(err instanceof Error ? err.message : String(err))
                           } finally {
+                            clearInterval(progressTimer)
+                            setTimeout(() => setSyncProgress(0), 350)
                             setSyncing(false)
                           }
                         }}
                         disabled={syncing}
                         className="px-3 py-2 text-xs bg-emerald-600 hover:bg-emerald-500 text-white rounded-md flex items-center gap-1.5 disabled:opacity-50"
                       >
-                        {syncing ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
-                        Prepare snapshot
+                        {syncing ? <RefreshCw size={12} /> : <RefreshCw size={12} />}
+                        {syncing ? 'Preparing...' : 'Prepare snapshot'}
                       </button>
+                      <div className="w-48 h-2 bg-zinc-800 border border-zinc-700 rounded overflow-hidden">
+                        <div
+                          className="h-full bg-emerald-500 transition-all duration-300"
+                          style={{ width: `${syncProgress}%` }}
+                        />
+                      </div>
                     </div>
                   </div>
 
@@ -364,6 +397,7 @@ export default function RepositoriesScreen(): React.ReactElement {
                         <button
                           onClick={async () => {
                             if (!selectedRepo || !selectedSnapshotId) return
+                            if (selectedSnapshot?.status !== 'ready') return
                             setSelectingSnapshot(true)
                             setScreenError(null)
                             try {
@@ -374,11 +408,22 @@ export default function RepositoriesScreen(): React.ReactElement {
                               setSelectingSnapshot(false)
                             }
                           }}
-                          disabled={selectingSnapshot}
+                          disabled={selectingSnapshot || selectedSnapshot?.status !== 'ready'}
                           className="px-3 py-2 text-xs bg-indigo-600 hover:bg-indigo-500 text-white rounded-md flex items-center gap-1.5 disabled:opacity-50"
                         >
                           {selectingSnapshot && <Loader2 size={12} className="animate-spin" />}
-                          Select
+                          {selectedSnapshot?.status === 'ready' ? 'Select' : 'Waiting for ready...'}
+                        </button>
+                        <button
+                          onClick={async () => {
+                            if (!selectedRepo || !selectedSnapshotId) return
+                            setConfirmDeleteSnapshotId(selectedSnapshotId)
+                          }}
+                          disabled={deletingSnapshot}
+                          className="px-3 py-2 text-xs border border-rose-700/60 text-rose-300 rounded-md hover:border-rose-500 disabled:opacity-50 inline-flex items-center gap-1.5"
+                        >
+                          {deletingSnapshot ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+                          Delete snapshot
                         </button>
                       </div>
                     )}
@@ -389,6 +434,49 @@ export default function RepositoriesScreen(): React.ReactElement {
           </div>
         )}
       </div>
+      {confirmDeleteSnapshotId && (
+        <div className="fixed inset-0 z-50 bg-black/55 flex items-center justify-center p-4">
+          <div className="w-full max-w-md rounded-lg border border-zinc-700 bg-zinc-900 p-4 space-y-3">
+            <div className="text-sm font-semibold text-zinc-100">Delete snapshot?</div>
+            <div className="text-xs text-zinc-400">
+              This will remove the snapshot and related index artifacts (manifest, symbols, graph).
+            </div>
+            <div className="text-[11px] text-zinc-500 font-mono break-all">{confirmDeleteSnapshotId}</div>
+            <div className="flex items-center justify-end gap-2">
+              <button
+                onClick={() => setConfirmDeleteSnapshotId(null)}
+                disabled={deletingSnapshot}
+                className="px-3 py-1.5 text-xs border border-zinc-700 rounded-md text-zinc-300 hover:border-zinc-600 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={async () => {
+                  if (!selectedRepo || !confirmDeleteSnapshotId) return
+                  setDeletingSnapshot(true)
+                  setScreenError(null)
+                  try {
+                    await window.api.sync.deleteSnapshot(confirmDeleteSnapshotId)
+                    const rows = await window.api.sync.listForRepo(selectedRepo.id)
+                    setSnapshots(rows)
+                    setSelectedSnapshotId(rows[0]?.id ?? null)
+                    await load()
+                    setConfirmDeleteSnapshotId(null)
+                  } catch (err) {
+                    setScreenError(err instanceof Error ? err.message : String(err))
+                  } finally {
+                    setDeletingSnapshot(false)
+                  }
+                }}
+                disabled={deletingSnapshot}
+                className="px-3 py-1.5 text-xs bg-rose-600 hover:bg-rose-500 rounded-md text-white disabled:opacity-50"
+              >
+                {deletingSnapshot ? 'Deleting...' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   )
 }

@@ -212,6 +212,63 @@ _MIGRATIONS: list[dict[str, Any]] = [
             ALTER TABLE code_symbols ADD COLUMN extract_source TEXT NOT NULL DEFAULT 'lexical';
         """,
     },
+    {
+        "version": 13,
+        "description": "Add structural graph tables for RPA-033",
+        "sql": """
+            CREATE TABLE IF NOT EXISTS structural_graph_edges (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                snapshot_id TEXT NOT NULL,
+                src_path    TEXT NOT NULL,
+                dst_path    TEXT NOT NULL,
+                edge_type   TEXT NOT NULL,
+                is_external INTEGER NOT NULL DEFAULT 0,
+                created_at  TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_graph_edges_snapshot ON structural_graph_edges(snapshot_id);
+            CREATE INDEX IF NOT EXISTS idx_graph_edges_src ON structural_graph_edges(snapshot_id, src_path);
+
+            CREATE TABLE IF NOT EXISTS structural_graph_summaries (
+                snapshot_id        TEXT PRIMARY KEY,
+                total_nodes        INTEGER NOT NULL,
+                total_edges        INTEGER NOT NULL,
+                external_edges     INTEGER NOT NULL,
+                entrypoints        TEXT NOT NULL DEFAULT '[]',
+                top_central_files  TEXT NOT NULL DEFAULT '[]',
+                generated_at       TEXT NOT NULL,
+                native_toolchain   TEXT
+            );
+        """,
+    },
+    {
+        "version": 14,
+        "description": "Add retrieval chunk/index tables for RPA-034",
+        "sql": """
+            CREATE TABLE IF NOT EXISTS retrieval_chunks (
+                id             TEXT PRIMARY KEY,
+                snapshot_id    TEXT NOT NULL,
+                rel_path       TEXT NOT NULL,
+                language       TEXT,
+                category       TEXT NOT NULL,
+                chunk_index    INTEGER NOT NULL,
+                content        TEXT NOT NULL,
+                token_estimate INTEGER NOT NULL,
+                created_at     TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_retrieval_chunks_snapshot ON retrieval_chunks(snapshot_id);
+            CREATE INDEX IF NOT EXISTS idx_retrieval_chunks_path ON retrieval_chunks(snapshot_id, rel_path);
+
+            CREATE TABLE IF NOT EXISTS retrieval_indexes (
+                id              TEXT PRIMARY KEY,
+                snapshot_id     TEXT NOT NULL,
+                rel_path        TEXT NOT NULL,
+                chunk_index     INTEGER NOT NULL,
+                lexical_preview TEXT NOT NULL,
+                created_at      TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_retrieval_index_snapshot ON retrieval_indexes(snapshot_id);
+        """,
+    },
 ]
 
 TARGET_VERSION = len(_MIGRATIONS) - 1

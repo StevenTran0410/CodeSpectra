@@ -14,6 +14,8 @@ from shared.utils import new_id, utc_now_iso
 from . import lock as path_lock
 from .types import ClonePolicy, PrepareSnapshotRequest, RepoSnapshot, SnapshotStatus
 
+_BACKGROUND_SYNC_TASKS: set[asyncio.Task] = set()
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Helpers
@@ -175,10 +177,53 @@ async def _update_status(snap_id: str, status: SnapshotStatus, commit_hash: str 
 # ──────────────────────────────────────────────────────────────────────────────
 
 class SyncEngineService:
+    async def _run_prepare_task(
+        self,
+        snapshot_id: str,
+        path: str,
+        remote_url: str | None,
+        branch: str | None,
+        clone_policy: ClonePolicy,
+    ) -> None:
+        try:
+            async with path_lock.acquire(path):
+                await _update_status(snapshot_id, SnapshotStatus.SYNCING)
+
+                if not (Path(path) / ".git").exists():
+                    if not remote_url:
+                        raise ValueError("No remote URL - cannot clone a folder with no git remote")
+                    env = await _get_ssh_env() if is_ssh_url(remote_url) else os.environ.copy()
+
+                    def _do_clone():
+                        return _run_clone(remote_url, path, clone_policy, env)
+
+                    result = await asyncio.to_thread(_do_clone)
+                    if result.returncode != 0:
+                        lines = [
+                            ln for ln in result.stderr.splitlines()
+                            if ln.strip() and not ln.startswith("Cloning into")
+                        ]
+                        raise ValueError("\n".join(lines) or "git clone failed")
+                    logger.info(f"Cloned '{remote_url}' -> {path}")
+                else:
+                    if branch:
+                        env = await _get_ssh_env() if is_ssh_url(remote_url or "") else os.environ.copy()
+                        ok, err = await asyncio.to_thread(_run_sync, path, branch, env)
+                        if not ok:
+                            raise ValueError(f"git sync failed: {err}")
+                    logger.info(f"Synced repo at {path} to branch '{branch}'")
+
+                git_info = await read_git_info(path)
+                commit_hash = git_info.get("head_hash")
+                await _update_status(snapshot_id, SnapshotStatus.READY, commit_hash=commit_hash)
+                logger.info(f"Snapshot {snapshot_id} ready at {commit_hash}")
+        except Exception as e:
+            await _update_status(snapshot_id, SnapshotStatus.FAILED, error=str(e))
+            logger.error(f"Snapshot {snapshot_id} failed: {e}")
+
     async def prepare_snapshot(self, req: PrepareSnapshotRequest) -> RepoSnapshot:
         """
-        Main entry point. Clones (if not present) or syncs (if already cloned),
-        captures exact commit hash, and returns a ready RepoSnapshot.
+        Kick off clone/sync in background and return snapshot immediately.
         """
         # 1. Load local repo record
         async with get_db().execute(
@@ -192,52 +237,37 @@ class SyncEngineService:
         remote_url = repo_row["git_remote_url"]
         branch = req.branch or repo_row["selected_branch"] or repo_row["git_branch"]
 
-        async with path_lock.acquire(path):
-            # 2. Preflight
-            await _preflight(path, branch)
+        # 2. Guard against parallel prepare on same repo
+        async with get_db().execute(
+            """
+            SELECT id FROM repo_snapshots
+            WHERE local_repo_id=? AND status IN (?, ?)
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (req.local_repo_id, SnapshotStatus.PENDING.value, SnapshotStatus.SYNCING.value),
+        ) as cur:
+            running = await cur.fetchone()
+        if running is not None:
+            raise ValueError("A snapshot prepare is already running for this repository")
 
-            # 3. Create snapshot record (status = pending)
-            snapshot = await _create_record(req.local_repo_id, branch, path, req.clone_policy)
+        # 3. Preflight and create pending snapshot
+        await _preflight(path, branch)
+        snapshot = await _create_record(req.local_repo_id, branch, path, req.clone_policy)
 
-            try:
-                await _update_status(snapshot.id, SnapshotStatus.SYNCING)
-
-                if not (Path(path) / ".git").exists():
-                    # ── Clone ──────────────────────────────────────────────
-                    if not remote_url:
-                        raise ValueError("No remote URL — cannot clone a folder with no git remote")
-                    env = await _get_ssh_env() if is_ssh_url(remote_url) else os.environ.copy()
-
-                    def _do_clone():
-                        return _run_clone(remote_url, path, req.clone_policy, env)
-
-                    result = await asyncio.to_thread(_do_clone)
-                    if result.returncode != 0:
-                        lines = [ln for ln in result.stderr.splitlines()
-                                 if ln.strip() and not ln.startswith("Cloning into")]
-                        raise ValueError("\n".join(lines) or "git clone failed")
-                    logger.info(f"Cloned '{remote_url}' → {path}")
-                else:
-                    # ── Sync ──────────────────────────────────────────────
-                    if branch:
-                        env = await _get_ssh_env() if is_ssh_url(remote_url or "") else os.environ.copy()
-                        ok, err = await asyncio.to_thread(_run_sync, path, branch, env)
-                        if not ok:
-                            raise ValueError(f"git sync failed: {err}")
-                    logger.info(f"Synced repo at {path} to branch '{branch}'")
-
-                # 4. Capture commit hash
-                git_info = await read_git_info(path)
-                commit_hash = git_info.get("head_hash")
-
-                await _update_status(snapshot.id, SnapshotStatus.READY, commit_hash=commit_hash)
-                logger.info(f"Snapshot {snapshot.id} ready at {commit_hash}")
-
-            except Exception as e:
-                await _update_status(snapshot.id, SnapshotStatus.FAILED, error=str(e))
-                raise
-
-        return await self.get_snapshot(snapshot.id)
+        # 4. Run actual sync in background
+        task = asyncio.create_task(
+            self._run_prepare_task(
+                snapshot_id=snapshot.id,
+                path=path,
+                remote_url=remote_url,
+                branch=branch,
+                clone_policy=req.clone_policy,
+            )
+        )
+        _BACKGROUND_SYNC_TASKS.add(task)
+        task.add_done_callback(lambda t: _BACKGROUND_SYNC_TASKS.discard(t))
+        return snapshot
 
     async def get_snapshot(self, snapshot_id: str) -> RepoSnapshot:
         async with get_db().execute(
@@ -255,3 +285,38 @@ class SyncEngineService:
         ) as cur:
             rows = await cur.fetchall()
         return [_row_to_snapshot(r) for r in rows]
+
+    async def delete_snapshot(self, snapshot_id: str) -> None:
+        db = get_db()
+        async with db.execute("SELECT * FROM repo_snapshots WHERE id=?", (snapshot_id,)) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            raise NotFoundError("RepoSnapshot", snapshot_id)
+
+        repo_id = row["local_repo_id"]
+        path = row["local_path"]
+
+        # Guard concurrent sync activity on same working tree path.
+        async with path_lock.acquire(path):
+            # If this snapshot is active for its repo, clear active pointer first.
+            await db.execute(
+                """
+                UPDATE local_repos
+                SET active_snapshot_id=NULL
+                WHERE id=? AND active_snapshot_id=?
+                """,
+                (repo_id, snapshot_id),
+            )
+
+            # Remove all index artifacts bound to this snapshot.
+            await db.execute("DELETE FROM manifest_files WHERE snapshot_id=?", (snapshot_id,))
+            await db.execute("DELETE FROM code_symbols WHERE snapshot_id=?", (snapshot_id,))
+            await db.execute("DELETE FROM repo_maps WHERE snapshot_id=?", (snapshot_id,))
+            await db.execute("DELETE FROM structural_graph_edges WHERE snapshot_id=?", (snapshot_id,))
+            await db.execute("DELETE FROM structural_graph_summaries WHERE snapshot_id=?", (snapshot_id,))
+
+            # Finally remove snapshot record.
+            await db.execute("DELETE FROM repo_snapshots WHERE id=?", (snapshot_id,))
+            await db.commit()
+
+        logger.info(f"Deleted snapshot {snapshot_id} and related artifacts")

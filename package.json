@@ -12,8 +12,10 @@
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json"
   },
   "dependencies": {
+    "@dagrejs/dagre": "^3.0.0",
     "@electron-toolkit/preload": "^3.0.0",
     "@electron-toolkit/utils": "^3.0.0",
+    "@xyflow/react": "^12.10.2",
     "electron-log": "^5.2.0",
     "lucide-react": "^0.441.0",
     "react": "^18.3.1",

@@ -128,6 +128,79 @@ export interface RepoMapSummary {
   generated_at: string
 }
 
+export interface GraphNodeScore {
+  rel_path: string
+  indegree: number
+  outdegree: number
+  score: number
+}
+
+export interface StructuralGraphSummary {
+  snapshot_id: string
+  total_nodes: number
+  total_edges: number
+  external_edges: number
+  entrypoints: string[]
+  top_central_files: GraphNodeScore[]
+  generated_at: string
+  native_toolchain: string | null
+}
+
+export interface GraphEdge {
+  snapshot_id: string
+  src_path: string
+  dst_path: string
+  edge_type: string
+  is_external: boolean
+}
+
+export interface GraphNeighborsResponse {
+  snapshot_id: string
+  seed_path: string
+  hops: number
+  nodes: string[]
+  edges: GraphEdge[]
+}
+
+export type RetrievalMode = 'hybrid' | 'vectorless'
+export type RetrievalSection =
+  | 'architecture'
+  | 'conventions'
+  | 'feature_map'
+  | 'important_files'
+  | 'glossary'
+
+export interface RetrievalEvidence {
+  chunk_id: string
+  rel_path: string
+  chunk_index: number
+  reason_codes: string[]
+  score: number
+  token_estimate: number
+  excerpt: string
+}
+
+export interface RetrievalBundle {
+  snapshot_id: string
+  mode: RetrievalMode
+  section: RetrievalSection
+  query: string
+  budget_tokens: number
+  used_tokens: number
+  evidences: RetrievalEvidence[]
+}
+
+export interface RetrievalCompareResponse {
+  snapshot_id: string
+  section: RetrievalSection
+  query: string
+  baseline: RetrievalBundle
+  vectorless: RetrievalBundle
+  precision_at_5_delta: number
+  evidence_hit_rate_delta: number
+  token_cost_delta: number
+}
+
 export interface ValidateFolderResponse {
   path: string
   name: string
@@ -231,6 +304,7 @@ declare global {
         }) => Promise<RepoSnapshot>
         listForRepo: (repoId: string) => Promise<RepoSnapshot[]>
         getSnapshot: (snapshotId: string) => Promise<RepoSnapshot>
+        deleteSnapshot: (snapshotId: string) => Promise<void>
       }
       manifest: {
         build: (snapshotId: string, manualIgnores?: string[]) => Promise<{
@@ -260,6 +334,41 @@ declare global {
           file_path: string | null
           row_count: number
         }>
+      }
+      graph: {
+        build: (snapshotId: string, forceRebuild?: boolean) => Promise<{ summary: StructuralGraphSummary }>
+        summary: (snapshotId: string) => Promise<StructuralGraphSummary | null>
+        edges: (snapshotId: string, limit?: number) => Promise<{
+          snapshot_id: string
+          edges: GraphEdge[]
+        }>
+        neighbors: (
+          snapshotId: string,
+          seedPath: string,
+          hops?: number,
+          limit?: number
+        ) => Promise<GraphNeighborsResponse>
+      }
+      retrieval: {
+        buildIndex: (snapshotId: string, forceRebuild?: boolean) => Promise<{
+          snapshot_id: string
+          chunk_count: number
+          files_indexed: number
+          generated_at: string
+        }>
+        retrieve: (body: {
+          snapshot_id: string
+          query: string
+          section: RetrievalSection
+          mode?: RetrievalMode
+          max_results?: number
+        }) => Promise<RetrievalBundle>
+        compare: (body: {
+          snapshot_id: string
+          query: string
+          section: RetrievalSection
+          max_results?: number
+        }) => Promise<RetrievalCompareResponse>
       }
       git: {
         getConfig: () => Promise<{ ssh_key_path: string | null }>

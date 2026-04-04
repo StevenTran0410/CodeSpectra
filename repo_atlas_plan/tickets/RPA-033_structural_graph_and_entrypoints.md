@@ -28,6 +28,7 @@ A repo map only tells you “what exists.” To understand “what connects to w
 * Node types should be normalized: file, symbol, config, entrypoint, external dependency.
 * Centrality metrics can be highly useful for the “do not touch this file casually” layer.
 * Add graph-backed navigation hooks for retrieval (neighbor expansion / boundary-aware traversal) so RPA-034 can test vectorless retrieval paths without rewriting the core index.
+* Future-dev UX note: upgrade graph visualization to graph-DB style circular nodes/edges (interactive canvas) instead of text/link list; prioritize readability for medium-large repos.
 
 ## 5) Breakdown subtasks
 

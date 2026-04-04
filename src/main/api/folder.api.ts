@@ -105,6 +105,11 @@ export function registerFolderHandlers(client: BackendClient): void {
     (_event, snapshotId: string) => client.get(`/api/sync/snapshot/${snapshotId}`)
   )
 
+  ipcMain.handle(
+    'sync:deleteSnapshot',
+    (_event, snapshotId: string) => client.del(`/api/sync/snapshot/${snapshotId}`)
+  )
+
   ipcMain.handle('manifest:build', (_event, snapshotId: string, manualIgnores?: string[]) =>
     client.post('/api/manifest/build', {
       snapshot_id: snapshotId,
@@ -156,6 +161,57 @@ export function registerFolderHandlers(client: BackendClient): void {
     await fs.writeFile(save.filePath, data.csv, 'utf-8')
     return { saved: true, file_path: save.filePath, row_count: data.row_count }
   })
+
+  ipcMain.handle('graph:build', (_event, snapshotId: string, forceRebuild = true) =>
+    client.post('/api/graph/build', { snapshot_id: snapshotId, force_rebuild: forceRebuild })
+  )
+
+  ipcMain.handle('graph:summary', async (_event, snapshotId: string) => {
+    try {
+      return await client.get(`/api/graph/summary/${snapshotId}`)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase()
+      if (msg.includes('not found')) {
+        return null
+      }
+      throw err
+    }
+  })
+
+  ipcMain.handle('graph:edges', (_event, snapshotId: string, limit = 2000) =>
+    client.get(`/api/graph/edges/${snapshotId}?limit=${limit}`)
+  )
+
+  ipcMain.handle('graph:neighbors', (_event, snapshotId: string, seedPath: string, hops = 1, limit = 300) =>
+    client.get(
+      `/api/graph/neighbors/${snapshotId}?path=${encodeURIComponent(seedPath)}&hops=${hops}&limit=${limit}`
+    )
+  )
+
+  ipcMain.handle('retrieval:buildIndex', (_event, snapshotId: string, forceRebuild = true) =>
+    client.post('/api/retrieval/build-index', { snapshot_id: snapshotId, force_rebuild: forceRebuild })
+  )
+
+  ipcMain.handle(
+    'retrieval:retrieve',
+    (_event, body: {
+      snapshot_id: string
+      query: string
+      section: 'architecture' | 'conventions' | 'feature_map' | 'important_files' | 'glossary'
+      mode?: 'hybrid' | 'vectorless'
+      max_results?: number
+    }) => client.post('/api/retrieval/retrieve', body)
+  )
+
+  ipcMain.handle(
+    'retrieval:compare',
+    (_event, body: {
+      snapshot_id: string
+      query: string
+      section: 'architecture' | 'conventions' | 'feature_map' | 'important_files' | 'glossary'
+      max_results?: number
+    }) => client.post('/api/retrieval/compare', body)
+  )
 
   // ── Git / SSH settings ────────────────────────────────────────────────────
   ipcMain.handle('git:getConfig', () => client.get('/api/app/git-config'))
