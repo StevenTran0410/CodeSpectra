@@ -43,7 +43,10 @@ async def clone_repo(body: CloneFromUrlRequest) -> LocalRepo:
 
 @router.delete("/{repo_id}", status_code=204)
 async def remove_repo(repo_id: str) -> None:
-    await _service.remove(repo_id)
+    try:
+        await _service.remove(repo_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.post("/{repo_id}/revalidate", response_model=LocalRepo)

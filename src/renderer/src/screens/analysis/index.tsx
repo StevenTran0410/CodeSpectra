@@ -60,8 +60,16 @@ export default function AnalysisRunScreen(): React.ReactElement {
   }, [loadRepos, loadProviders, loadHistory])
 
   useEffect(() => {
-    if (!repoId && repos.length > 0) setRepoId(repos[0].id)
-  }, [repoId, repos])
+    if (repos.length === 0) {
+      if (repoId) setRepoId('')
+      if (snapshotId) setSnapshotId('')
+      return
+    }
+    if (!repoId || !repos.some((r) => r.id === repoId)) {
+      setRepoId(repos[0].id)
+      setSnapshotId('')
+    }
+  }, [repoId, repos, snapshotId])
 
   useEffect(() => {
     if (!providerId && providers.length > 0) {

@@ -11,6 +11,8 @@ from shared.git_utils import is_ssh_url, read_git_info, run_git_sync
 from shared.logger import logger
 from shared.utils import new_id, utc_now_iso
 
+from domain.snapshot_cleanup import delete_snapshot_artifacts
+
 from . import lock as path_lock
 from .types import ClonePolicy, PrepareSnapshotRequest, RepoSnapshot, SnapshotStatus
 
@@ -328,14 +330,7 @@ class SyncEngineService:
             )
 
             # Remove all index artifacts bound to this snapshot.
-            await db.execute("DELETE FROM manifest_files WHERE snapshot_id=?", (snapshot_id,))
-            await db.execute("DELETE FROM code_symbols WHERE snapshot_id=?", (snapshot_id,))
-            await db.execute("DELETE FROM repo_maps WHERE snapshot_id=?", (snapshot_id,))
-            await db.execute("DELETE FROM structural_graph_edges WHERE snapshot_id=?", (snapshot_id,))
-            await db.execute("DELETE FROM structural_graph_summaries WHERE snapshot_id=?", (snapshot_id,))
-            await db.execute("DELETE FROM retrieval_chunks WHERE snapshot_id=?", (snapshot_id,))
-            await db.execute("DELETE FROM retrieval_indexes WHERE snapshot_id=?", (snapshot_id,))
-            await db.execute("DELETE FROM analysis_reports WHERE snapshot_id=?", (snapshot_id,))
+            await delete_snapshot_artifacts(snapshot_id)
 
             # Finally remove snapshot record.
             await db.execute("DELETE FROM repo_snapshots WHERE id=?", (snapshot_id,))
