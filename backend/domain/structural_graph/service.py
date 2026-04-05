@@ -9,6 +9,7 @@ from pathlib import Path
 
 from infrastructure.db.database import get_db
 from shared.errors import NotFoundError
+from shared.sql_queries import SQL_SELECT_MANIFEST_FILES_BY_SNAPSHOT
 from shared.toolchain import detect_cpp_toolchain
 from shared.utils import read_utf8_lenient, utc_now_iso
 
@@ -117,15 +118,7 @@ class StructuralGraphService:
             await db.execute("DELETE FROM structural_graph_edges WHERE snapshot_id=?", (req.snapshot_id,))
             await db.execute("DELETE FROM structural_graph_summaries WHERE snapshot_id=?", (req.snapshot_id,))
 
-        async with db.execute(
-            """
-            SELECT rel_path, language, category
-            FROM manifest_files
-            WHERE snapshot_id=?
-            ORDER BY rel_path ASC
-            """,
-            (req.snapshot_id,),
-        ) as cur:
+        async with db.execute(SQL_SELECT_MANIFEST_FILES_BY_SNAPSHOT, (req.snapshot_id,)) as cur:
             files = await cur.fetchall()
 
         file_set = {r["rel_path"] for r in files}

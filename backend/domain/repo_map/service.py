@@ -7,6 +7,7 @@ from typing import Any
 
 from infrastructure.db.database import get_db
 from shared.errors import NotFoundError
+from shared.sql_queries import SQL_SELECT_MANIFEST_FILES_BY_SNAPSHOT
 from shared.utils import new_id, read_utf8_lenient, utc_now_iso
 
 from .types import (
@@ -263,7 +264,7 @@ class RepoMapService:
             await db.execute("DELETE FROM code_symbols WHERE snapshot_id=?", (req.snapshot_id,))
 
         async with db.execute(
-            "SELECT rel_path, language, category FROM manifest_files WHERE snapshot_id=? ORDER BY rel_path ASC",
+            SQL_SELECT_MANIFEST_FILES_BY_SNAPSHOT,
             (req.snapshot_id,),
         ) as cur:
             files = await cur.fetchall()
