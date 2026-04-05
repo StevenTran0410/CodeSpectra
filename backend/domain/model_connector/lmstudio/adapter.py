@@ -34,7 +34,7 @@ class LMStudioAdapter(LocalAdapterBase):
         payload = {
             "model": self.config.model_id,
             "messages": [m.model_dump() for m in request.messages],
-            "max_tokens": request.max_tokens,
+            "max_completion_tokens": request.max_completion_tokens,
             "temperature": request.temperature,
         }
         try:

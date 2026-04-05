@@ -45,7 +45,7 @@ class AnthropicAdapter(CloudAdapterBase):
         ]
         payload: dict = {
             "model": self.config.model_id,
-            "max_tokens": request.max_tokens,
+            "max_completion_tokens": request.max_completion_tokens,
             "messages": user_messages,
         }
         if system_parts:
@@ -81,7 +81,7 @@ class AnthropicAdapter(CloudAdapterBase):
             return False, "No API key configured", None
         payload = {
             "model": _TEST_MODEL,
-            "max_tokens": 1,
+            "max_completion_tokens": 1,
             "messages": [{"role": "user", "content": "hi"}],
         }
         try:

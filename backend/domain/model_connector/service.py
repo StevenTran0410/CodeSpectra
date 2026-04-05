@@ -195,7 +195,21 @@ class ProviderConfigService:
             config = config.model_copy(update={"model_id": request.model_id})
         adapter = _get_adapter(config)
         try:
-            return await adapter.chat(request)
+            try:
+                return await adapter.chat(request)
+            except ProviderError as e:
+                # Some providers/models reject non-default temperature values.
+                # Retry once with temperature=1.0 to avoid hard failure for agent runs.
+                msg = (e.message or "").lower()
+                if request.temperature != 1.0 and "temperature" in msg:
+                    logger.warning(
+                        "Provider %s rejected temperature=%s; retry with temperature=1.0",
+                        request.provider_id,
+                        request.temperature,
+                    )
+                    retry_req = request.model_copy(update={"temperature": 1.0})
+                    return await adapter.chat(retry_req)
+                raise
         finally:
             await adapter.aclose()
 

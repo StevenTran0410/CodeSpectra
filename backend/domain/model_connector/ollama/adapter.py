@@ -32,7 +32,7 @@ class OllamaAdapter(LocalAdapterBase):
             "stream": False,
             "options": {
                 "temperature": request.temperature,
-                "num_predict": request.max_tokens,
+                "num_predict": request.max_completion_tokens,
             },
         }
         try:

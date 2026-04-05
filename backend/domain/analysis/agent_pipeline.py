@@ -72,7 +72,7 @@ class BaseLLMAgent:
         model_id: str,
         system_prompt: str,
         user_prompt: str,
-        max_tokens: int = 900,
+        max_completion_tokens: int = 900,
     ) -> dict[str, Any]:
         res = await self._providers.chat(
             ChatRequest(
@@ -82,7 +82,7 @@ class BaseLLMAgent:
                     ChatMessage(role="system", content=system_prompt),
                     ChatMessage(role="user", content=user_prompt),
                 ],
-                max_tokens=max_tokens,
+                max_completion_tokens=max_completion_tokens,
                 temperature=0.2,
                 stream=False,
             )
@@ -212,7 +212,7 @@ class EvidenceAuditorComposerAgent(BaseLLMAgent):
                 model_id=model_id,
                 system_prompt=AUDITOR_SYSTEM,
                 user_prompt=json.dumps(payload, ensure_ascii=True),
-                max_tokens=1200,
+                max_completion_tokens=1200,
             )
             sections = data.get("sections", [])
             conf = data.get("confidence_summary", {})

@@ -12,12 +12,7 @@ from domain.model_connector.service import ProviderConfigService
 from domain.repo_map.service import RepoMapService
 from domain.repo_map.types import BuildRepoMapRequest
 from domain.retrieval.service import RetrievalService
-from domain.retrieval.types import (
-    BuildRetrievalIndexRequest,
-    RetrievalMode,
-    RetrievalSection,
-    RetrieveRequest,
-)
+from domain.retrieval.types import BuildRetrievalIndexRequest
 from domain.structural_graph.service import StructuralGraphService
 from domain.structural_graph.types import BuildGraphRequest
 from infrastructure.db.database import get_db
@@ -26,6 +21,7 @@ from shared.logger import logger
 from shared.utils import new_id, utc_now_iso
 
 from .agent_pipeline import AnalysisAgentPipeline
+from .orchestrator import RunDirectorAgent
 from .types import (
     AnalysisEstimateResponse,
     AnalysisReport,
@@ -47,6 +43,7 @@ class AnalysisService:
         self._retrieval = RetrievalService()
         self._provider = ProviderConfigService()
         self._agents = AnalysisAgentPipeline(self._provider)
+        self._director = RunDirectorAgent(self._provider, self._retrieval, self._agents)
 
     async def estimate(self, repo_id: str, snapshot_id: str) -> AnalysisEstimateResponse:
         async with get_db().execute(
@@ -260,63 +257,15 @@ class AnalysisService:
                 if await _cancelled():
                     return
 
-            await self._jobs.update_step(job_id, StepName.GENERATE.value, 30, "Retrieving section contexts")
-            architecture = await self._retrieval.retrieve(
-                RetrieveRequest(
-                    snapshot_id=req.snapshot_id,
-                    query="system architecture layers entrypoints modules integrations",
-                    section=RetrievalSection.ARCHITECTURE,
-                    mode=RetrievalMode.HYBRID,
-                    max_results=20,
-                )
-            )
-            conventions = await self._retrieval.retrieve(
-                RetrieveRequest(
-                    snapshot_id=req.snapshot_id,
-                    query="coding conventions naming error handling dependency style",
-                    section=RetrievalSection.CONVENTIONS,
-                    mode=RetrievalMode.HYBRID,
-                    max_results=20,
-                )
-            )
-            feature_map = await self._retrieval.retrieve(
-                RetrieveRequest(
-                    snapshot_id=req.snapshot_id,
-                    query="feature map functionality modules services data flow",
-                    section=RetrievalSection.FEATURE_MAP,
-                    mode=RetrievalMode.HYBRID,
-                    max_results=20,
-                )
-            )
-            important = await self._retrieval.retrieve(
-                RetrieveRequest(
-                    snapshot_id=req.snapshot_id,
-                    query="important files entrypoint backbone central files",
-                    section=RetrievalSection.IMPORTANT_FILES,
-                    mode=RetrievalMode.VECTORLESS,
-                    max_results=20,
-                )
-            )
-            risk = await self._retrieval.retrieve(
-                RetrieveRequest(
-                    snapshot_id=req.snapshot_id,
-                    query="risk complexity hotspot TODO FIXME circular import",
-                    section=RetrievalSection.IMPORTANT_FILES,
-                    mode=RetrievalMode.VECTORLESS,
-                    max_results=20,
-                )
-            )
+            await self._jobs.update_step(job_id, StepName.GENERATE.value, 30, "Director planning + broker retrieval")
             if await _cancelled():
                 return
-            await self._jobs.update_step(job_id, StepName.GENERATE.value, 70, "Running Haystack agent pipeline")
-            report = await self._agents.run(
+            await self._jobs.update_step(job_id, StepName.GENERATE.value, 70, "Running LLM power agents")
+            report = await self._director.run(
                 provider_id=req.provider_id,
                 model_id=req.model_id,
-                architecture=architecture,
-                important=important,
-                conventions=conventions,
-                feature_map=feature_map,
-                risk=risk,
+                snapshot_id=req.snapshot_id,
+                scan_mode=req.scan_mode.value,
             )
             if await _cancelled():
                 return
