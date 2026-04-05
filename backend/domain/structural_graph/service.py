@@ -10,7 +10,7 @@ from pathlib import Path
 from infrastructure.db.database import get_db
 from shared.errors import NotFoundError
 from shared.toolchain import detect_cpp_toolchain
-from shared.utils import utc_now_iso
+from shared.utils import read_utf8_lenient, utc_now_iso
 
 from .types import (
     BuildGraphRequest,
@@ -101,13 +101,6 @@ def _extract_ts_js_imports(content: str) -> list[str]:
     return out
 
 
-def _read_text(path: Path) -> str:
-    try:
-        return path.read_text(encoding="utf-8", errors="ignore")
-    except Exception:
-        return ""
-
-
 class StructuralGraphService:
     async def build(self, req: BuildGraphRequest) -> BuildGraphResponse:
         db = get_db()
@@ -157,7 +150,7 @@ class StructuralGraphService:
             if not src.exists() or not src.is_file():
                 continue
 
-            content = _read_text(src)
+            content = read_utf8_lenient(src)
             if not content:
                 continue
 

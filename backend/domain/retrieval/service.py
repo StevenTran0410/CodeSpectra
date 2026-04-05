@@ -7,7 +7,7 @@ from pathlib import Path
 
 from infrastructure.db.database import get_db
 from shared.errors import NotFoundError
-from shared.utils import new_id, utc_now_iso
+from shared.utils import new_id, read_utf8_lenient, utc_now_iso
 
 from .types import (
     BuildRetrievalIndexRequest,
@@ -128,7 +128,7 @@ class RetrievalService:
             p = root / rel_path
             if not p.exists() or not p.is_file():
                 continue
-            text = p.read_text(encoding="utf-8", errors="ignore")
+            text = read_utf8_lenient(p)
             text = _normalize_text(text)
             if not text:
                 continue

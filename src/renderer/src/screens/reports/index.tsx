@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import type { AnalysisReport, AnalysisReportSummary } from '../../types/electron'
 import { ErrorBanner } from '../../components/ui/ErrorBanner'
+import { toErrorMessage } from '../../lib/errors'
 
 export default function ReportViewerScreen(): React.ReactElement {
   const [params] = useSearchParams()
@@ -23,7 +24,7 @@ export default function ReportViewerScreen(): React.ReactElement {
         setReports(list)
         setSelectedReportId(reportIdInUrl || list[0]?.id || '')
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err))
+        setError(toErrorMessage(err))
       } finally {
         setLoading(false)
       }
@@ -41,7 +42,7 @@ export default function ReportViewerScreen(): React.ReactElement {
         const out = await window.api.analysis.getReport(selectedReportId)
         setReport(out)
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err))
+        setError(toErrorMessage(err))
       }
     }
     run()

@@ -23,6 +23,7 @@ import {
 import { useLocalRepoStore } from '../../store/local-repo.store'
 import { ErrorBanner } from '../../components/ui/ErrorBanner'
 import { LoadingRow } from '../../components/ui/LoadingRow'
+import { toErrorMessage } from '../../lib/errors'
 import type { LocalRepo, ValidateFolderResponse } from '../../types/electron'
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -391,7 +392,7 @@ function CloneFromUrlPanel({ onClose, onCloned }: { onClose: () => void; onClone
       onCloned()
       onClose()
     } catch (err) {
-      setCloneError(err instanceof Error ? err.message : String(err))
+      setCloneError(toErrorMessage(err))
     } finally {
       setCloning(false)
     }

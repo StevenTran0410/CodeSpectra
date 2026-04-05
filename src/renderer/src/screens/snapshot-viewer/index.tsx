@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { ArrowLeft, ChevronDown, ChevronRight, FileText, Folder, Loader2 } from 'lucide-react'
 import type { ManifestTreeNode } from '../../types/electron'
 import { ErrorBanner } from '../../components/ui/ErrorBanner'
+import { toErrorMessage } from '../../lib/errors'
 
 type TreeNode = {
   name: string
@@ -93,7 +94,7 @@ export default function SnapshotViewerScreen(): React.ReactElement {
         }
         setExpanded(defaults)
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err))
+        setError(toErrorMessage(err))
       } finally {
         setLoadingTree(false)
       }
@@ -115,7 +116,7 @@ export default function SnapshotViewerScreen(): React.ReactElement {
         setFileContent(res.content)
         setFileTruncated(res.truncated)
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err))
+        setError(toErrorMessage(err))
       } finally {
         setLoadingFile(false)
       }
@@ -246,7 +247,7 @@ export default function SnapshotViewerScreen(): React.ReactElement {
                   }
                   setCompleteDone(true)
                 } catch (err) {
-                  setError(err instanceof Error ? err.message : String(err))
+                  setError(toErrorMessage(err))
                 } finally {
                   setCompleting(false)
                 }
@@ -376,7 +377,7 @@ export default function SnapshotViewerScreen(): React.ReactElement {
                     setBuildProgress(100)
                     navigate(`/index-overview?repoId=${encodeURIComponent(repoId)}&snapshotId=${encodeURIComponent(snapshotId)}`)
                   } catch (err) {
-                    setError(err instanceof Error ? err.message : String(err))
+                    setError(toErrorMessage(err))
                   } finally {
                     clearInterval(timer)
                     setBuildingIndex(false)

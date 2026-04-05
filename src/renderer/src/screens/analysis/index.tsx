@@ -3,6 +3,7 @@ import { Loader2 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { ErrorBanner } from '../../components/ui/ErrorBanner'
 import { JobProgressPanel } from '../../components/ui/JobProgressPanel'
+import { toErrorMessage } from '../../lib/errors'
 import { useJobStore } from '../../store/job.store'
 import { useLocalRepoStore } from '../../store/local-repo.store'
 import { useProviderStore } from '../../store/provider.store'
@@ -80,7 +81,7 @@ export default function AnalysisRunScreen(): React.ReactElement {
         return ready?.id || rows[0]?.id || ''
       })
     }
-    run().catch((e) => setError(e instanceof Error ? e.message : String(e)))
+    run().catch((e) => setError(toErrorMessage(e)))
   }, [repoId])
 
   useEffect(() => {
@@ -270,7 +271,7 @@ export default function AnalysisRunScreen(): React.ReactElement {
                   })
                   startPolling(job.id)
                 } catch (err) {
-                  setError(err instanceof Error ? err.message : String(err))
+                  setError(toErrorMessage(err))
                 } finally {
                   setStarting(false)
                 }
