@@ -77,10 +77,44 @@ The Electron main process is intentionally thin — it spawns the Python server,
 | RPA-021 | Providers | Ollama adapter + LM Studio adapter, test connection, model listing, error mapping |
 | RPA-022 | Providers | OpenAI, Anthropic, Gemini, DeepSeek adapters; BYOK consent flow; API key masking |
 | RPA-025 | Code Hosts | Local folder import — native folder picker, git metadata reader, branch picker, size warnings |
+| RPA-030 | Sync Engine | Clone/sync engine with branch-aware snapshot prep, dirty-tree safeguards, clone policies |
+| RPA-031 | Indexing | File manifest, ignore engine, language detection, file classification, delta detection |
+| RPA-032 | Repo Map | Symbol extraction (AST + lexical fallback), symbol search, CSV export |
+| RPA-033 | Structural Graph | Import graph, centrality/entrypoint hints, neighbor expansion, native hotspot module path |
+| RPA-034 | Retrieval | Chunking + lexical index, hybrid/vectorless retrieval, section budgets, A/B compare metrics |
+| RPA-035 | Analysis | LLM-powered multi-agent analysis pipeline with per-provider/per-model execution |
+| RPA-036 | Snapshot UX | Repository setup/snapshot flow, prepare/delete behavior, snapshot reliability fixes |
+| RPA-043 | Reports | Report persistence, list/detail viewer flow, delete with warning + "do not show again" |
 
 ### In progress / next
 
-Ingestion pipeline (file manifest, symbol extraction via Tree-sitter), structural graph, analysis generation, and report viewer.
+- Improve prompt quality and evidence policies per analysis agent for stronger report precision.
+- Add richer section-level diagnostics (token usage, retrieval traces, agent reasoning metadata).
+- Continue UI polish for graph/report readability and large-repo performance.
+
+---
+
+## Analysis pipeline (current)
+
+Current report generation is LLM-driven and split into dedicated agents:
+
+- **Run Director Agent**: plans section order and retrieval depth (`max_results`) per run.
+- **Retrieval Broker Agent**: generates section-specific retrieval queries and gathers/merges evidence bundles from RAG index.
+- **Structure Intelligence Agent**: writes architecture + important-files onboarding section.
+- **Convention Intelligence Agent**: writes conventions / style / inconsistencies section.
+- **Domain & Risk Intelligence Agent**: writes feature map + risk section.
+- **Evidence Auditor & Composer Agent**: normalizes claims, removes weak statements, composes final report JSON.
+
+Implementation location:
+- `backend/domain/analysis/orchestrator.py`
+- `backend/domain/analysis/retrieval_broker.py`
+- `backend/domain/analysis/agent_pipeline.py`
+- `backend/domain/analysis/prompts.py`
+
+Notes:
+- Agents run on the provider/model selected by the user at analysis start.
+- Retrieval context is mandatory input for each section agent.
+- Provider compatibility guard is included (e.g., temperature retry fallback for stricter models).
 
 ---
 
