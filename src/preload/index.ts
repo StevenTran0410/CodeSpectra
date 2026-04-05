@@ -126,6 +126,14 @@ const api = {
       ipcRenderer.invoke('analysis:getReport', reportId),
     getReportByJob: (jobId: string) =>
       ipcRenderer.invoke('analysis:getReportByJob', jobId),
+    deleteReport: (reportId: string) =>
+      ipcRenderer.invoke('analysis:deleteReport', reportId),
+    // backward-compat typo alias
+    deleteRepot: (reportId: string) =>
+      ipcRenderer.invoke('analysis:deleteRepot', reportId),
+    // lowercase alias for ad-hoc console calls
+    deleterepot: (reportId: string) =>
+      ipcRenderer.invoke('analysis:deleteRepot', reportId),
   },
   git: {
     getConfig: (): Promise<{ ssh_key_path: string | null }> =>

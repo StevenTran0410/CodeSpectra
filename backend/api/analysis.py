@@ -40,3 +40,8 @@ async def get_report(report_id: str) -> AnalysisReport:
 @router.get("/report-by-job/{job_id}", response_model=AnalysisReport)
 async def get_report_by_job(job_id: str) -> AnalysisReport:
     return await _service.get_report_by_job(job_id)
+
+
+@router.delete("/reports/{report_id}", status_code=204)
+async def delete_report(report_id: str) -> None:
+    return await _service.delete_report(report_id)

@@ -13,7 +13,7 @@ from .gemini.adapter import GeminiAdapter
 from .lmstudio.adapter import LMStudioAdapter
 from .ollama.adapter import OllamaAdapter
 from .openai.adapter import OpenAIAdapter
-from .types import ProviderCapabilities, ProviderConfig, ProviderKind
+from .types import ChatRequest, ChatResponse, ProviderCapabilities, ProviderConfig, ProviderKind
 
 
 class TestConnectionResult:
@@ -185,6 +185,17 @@ class ProviderConfigService:
         adapter = _get_adapter(config)
         try:
             return await adapter.list_models()
+        finally:
+            await adapter.aclose()
+
+    async def chat(self, request: ChatRequest) -> ChatResponse:
+        """Route a chat request to selected provider (with optional model override)."""
+        config = await self._get_by_id_full(request.provider_id)
+        if request.model_id:
+            config = config.model_copy(update={"model_id": request.model_id})
+        adapter = _get_adapter(config)
+        try:
+            return await adapter.chat(request)
         finally:
             await adapter.aclose()
 

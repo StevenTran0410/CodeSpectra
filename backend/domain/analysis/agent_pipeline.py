@@ -1,12 +1,21 @@
-"""Haystack-based analysis agent pipeline."""
+"""LLM-powered analysis agent pipeline."""
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any
 
-from haystack import Pipeline, component
-
+from domain.model_connector.service import ProviderConfigService
+from domain.model_connector.types import ChatMessage, ChatRequest
 from domain.retrieval.types import RetrievalBundle
+
+from .prompts import (
+    AUDITOR_SYSTEM,
+    CONVENTION_SYSTEM,
+    DOMAIN_RISK_SYSTEM,
+    STRUCTURE_SYSTEM,
+    render_bundle,
+)
 
 
 @dataclass
@@ -18,7 +27,7 @@ class SectionDraft:
     blind_spots: list[str]
 
 
-def _top_files(bundle: RetrievalBundle, n: int = 6) -> list[str]:
+def _top_files(bundle: RetrievalBundle, n: int = 8) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
     for e in bundle.evidences:
@@ -31,68 +40,197 @@ def _top_files(bundle: RetrievalBundle, n: int = 6) -> list[str]:
     return out
 
 
-@component
-class StructureIntelligenceAgent:
-    @component.output_types(draft=SectionDraft)
-    def run(self, architecture: RetrievalBundle, important: RetrievalBundle) -> dict[str, SectionDraft]:
-        files = _top_files(architecture, 5) + [f for f in _top_files(important, 5) if f not in _top_files(architecture, 5)]
-        confidence = "high" if architecture.evidences else "low"
-        return {
-            "draft": SectionDraft(
-                section="A/B/C/G/H",
-                content="Structure/architecture draft synthesized from retrieval evidence.",
-                confidence=confidence,
-                evidence_files=files[:8],
-                blind_spots=[] if files else ["No architecture evidence returned"],
-            )
-        }
+def _normalize_conf(v: str) -> str:
+    t = (v or "").strip().lower()
+    if t in {"high", "medium", "low"}:
+        return t
+    return "medium"
 
 
-@component
-class ConventionIntelligenceAgent:
-    @component.output_types(draft=SectionDraft)
-    def run(self, conventions: RetrievalBundle) -> dict[str, SectionDraft]:
-        files = _top_files(conventions, 8)
-        confidence = "medium" if len(files) >= 3 else "low"
-        return {
-            "draft": SectionDraft(
-                section="D/E",
-                content="Conventions/negative-rule draft inferred from evidence.",
-                confidence=confidence,
-                evidence_files=files,
-                blind_spots=[] if files else ["Insufficient convention evidence"],
-            )
-        }
+def _fallback_section(section: str, bundles: list[RetrievalBundle], reason: str) -> SectionDraft:
+    files: list[str] = []
+    for b in bundles:
+        for f in _top_files(b, 8):
+            if f not in files:
+                files.append(f)
+    return SectionDraft(
+        section=section,
+        content=f"Agent fallback output. Reason: {reason}",
+        confidence="low",
+        evidence_files=files[:8],
+        blind_spots=[reason],
+    )
 
 
-@component
-class DomainRiskIntelligenceAgent:
-    @component.output_types(draft=SectionDraft)
-    def run(self, feature_map: RetrievalBundle, risk: RetrievalBundle) -> dict[str, SectionDraft]:
-        files = _top_files(feature_map, 5) + [f for f in _top_files(risk, 5) if f not in _top_files(feature_map, 5)]
-        confidence = "medium" if risk.evidences else "low"
-        return {
-            "draft": SectionDraft(
-                section="F/I/J",
-                content="Feature/domain/risk draft synthesized from retrieval evidence.",
-                confidence=confidence,
-                evidence_files=files[:8],
-                blind_spots=[] if files else ["No risk/feature evidence available"],
-            )
-        }
+class BaseLLMAgent:
+    def __init__(self, provider_service: ProviderConfigService) -> None:
+        self._providers = provider_service
 
-
-@component
-class EvidenceAuditorComposerAgent:
-    @component.output_types(report=dict)
-    def run(
+    async def _chat_json(
         self,
+        provider_id: str,
+        model_id: str,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int = 900,
+    ) -> dict[str, Any]:
+        res = await self._providers.chat(
+            ChatRequest(
+                provider_id=provider_id,
+                model_id=model_id,
+                messages=[
+                    ChatMessage(role="system", content=system_prompt),
+                    ChatMessage(role="user", content=user_prompt),
+                ],
+                max_tokens=max_tokens,
+                temperature=0.2,
+                stream=False,
+            )
+        )
+        text = (res.content or "").strip()
+        # tolerate fenced JSON from weaker models
+        if text.startswith("```"):
+            text = text.strip("`")
+            if text.startswith("json"):
+                text = text[4:].strip()
+        return json.loads(text)
+
+
+class StructureIntelligenceAgent(BaseLLMAgent):
+    async def run(
+        self,
+        provider_id: str,
+        model_id: str,
+        architecture: RetrievalBundle,
+        important: RetrievalBundle,
+    ) -> SectionDraft:
+        files = _top_files(architecture, 8)
+        for f in _top_files(important, 8):
+            if f not in files:
+                files.append(f)
+        prompt = (
+            "Task: produce section A/B/C/G/H for onboarding.\n\n"
+            f"Architecture evidence:\n{render_bundle(architecture)}\n\n"
+            f"Important-files evidence:\n{render_bundle(important)}\n"
+        )
+        try:
+            data = await self._chat_json(provider_id, model_id, STRUCTURE_SYSTEM, prompt)
+            return SectionDraft(
+                section="A/B/C/G/H",
+                content=str(data.get("content", "")).strip() or "No content.",
+                confidence=_normalize_conf(str(data.get("confidence", "medium"))),
+                evidence_files=[
+                    f for f in data.get("evidence_files", []) if isinstance(f, str)
+                ][:8] or files[:8],
+                blind_spots=[
+                    b for b in data.get("blind_spots", []) if isinstance(b, str)
+                ][:8],
+            )
+        except Exception as e:
+            return _fallback_section("A/B/C/G/H", [architecture, important], str(e))
+
+
+class ConventionIntelligenceAgent(BaseLLMAgent):
+    async def run(
+        self,
+        provider_id: str,
+        model_id: str,
+        conventions: RetrievalBundle,
+    ) -> SectionDraft:
+        prompt = (
+            "Task: produce section D/E for onboarding.\n\n"
+            f"Conventions evidence:\n{render_bundle(conventions)}\n"
+        )
+        try:
+            data = await self._chat_json(provider_id, model_id, CONVENTION_SYSTEM, prompt)
+            return SectionDraft(
+                section="D/E",
+                content=str(data.get("content", "")).strip() or "No content.",
+                confidence=_normalize_conf(str(data.get("confidence", "medium"))),
+                evidence_files=[
+                    f for f in data.get("evidence_files", []) if isinstance(f, str)
+                ][:8] or _top_files(conventions, 8),
+                blind_spots=[
+                    b for b in data.get("blind_spots", []) if isinstance(b, str)
+                ][:8],
+            )
+        except Exception as e:
+            return _fallback_section("D/E", [conventions], str(e))
+
+
+class DomainRiskIntelligenceAgent(BaseLLMAgent):
+    async def run(
+        self,
+        provider_id: str,
+        model_id: str,
+        feature_map: RetrievalBundle,
+        risk: RetrievalBundle,
+    ) -> SectionDraft:
+        prompt = (
+            "Task: produce section F/I/J for onboarding.\n\n"
+            f"Feature-map evidence:\n{render_bundle(feature_map)}\n\n"
+            f"Risk evidence:\n{render_bundle(risk)}\n"
+        )
+        try:
+            data = await self._chat_json(provider_id, model_id, DOMAIN_RISK_SYSTEM, prompt)
+            files = _top_files(feature_map, 8)
+            for f in _top_files(risk, 8):
+                if f not in files:
+                    files.append(f)
+            return SectionDraft(
+                section="F/I/J",
+                content=str(data.get("content", "")).strip() or "No content.",
+                confidence=_normalize_conf(str(data.get("confidence", "medium"))),
+                evidence_files=[
+                    f for f in data.get("evidence_files", []) if isinstance(f, str)
+                ][:8] or files[:8],
+                blind_spots=[
+                    b for b in data.get("blind_spots", []) if isinstance(b, str)
+                ][:8],
+            )
+        except Exception as e:
+            return _fallback_section("F/I/J", [feature_map, risk], str(e))
+
+
+class EvidenceAuditorComposerAgent(BaseLLMAgent):
+    async def run(
+        self,
+        provider_id: str,
+        model_id: str,
         structure: SectionDraft,
         conventions: SectionDraft,
         domain_risk: SectionDraft,
-    ) -> dict[str, dict[str, Any]]:
+    ) -> dict[str, Any]:
+        payload = {
+            "structure": structure.__dict__,
+            "conventions": conventions.__dict__,
+            "domain_risk": domain_risk.__dict__,
+        }
+        try:
+            data = await self._chat_json(
+                provider_id=provider_id,
+                model_id=model_id,
+                system_prompt=AUDITOR_SYSTEM,
+                user_prompt=json.dumps(payload, ensure_ascii=True),
+                max_tokens=1200,
+            )
+            sections = data.get("sections", [])
+            conf = data.get("confidence_summary", {})
+            if isinstance(sections, list) and isinstance(conf, dict):
+                return {
+                    "sections": sections,
+                    "confidence_summary": {
+                        "high": int(conf.get("high", 0)),
+                        "medium": int(conf.get("medium", 0)),
+                        "low": int(conf.get("low", 0)),
+                    },
+                }
+        except Exception:
+            pass
+
+        # fallback deterministic composition
         sections = [structure, conventions, domain_risk]
-        report = {
+        return {
             "sections": [
                 {
                     "section": s.section,
@@ -109,45 +247,28 @@ class EvidenceAuditorComposerAgent:
                 "low": sum(1 for s in sections if s.confidence == "low"),
             },
         }
-        return {"report": report}
 
 
 class AnalysisAgentPipeline:
-    """Thin wrapper so analysis runtime can call a deterministic Haystack graph."""
+    """Async LLM-powered multi-agent pipeline."""
 
-    def __init__(self) -> None:
-        p = Pipeline()
-        p.add_component("structure_agent", StructureIntelligenceAgent())
-        p.add_component("convention_agent", ConventionIntelligenceAgent())
-        p.add_component("domain_risk_agent", DomainRiskIntelligenceAgent())
-        p.add_component("auditor_composer", EvidenceAuditorComposerAgent())
+    def __init__(self, provider_service: ProviderConfigService) -> None:
+        self._structure = StructureIntelligenceAgent(provider_service)
+        self._convention = ConventionIntelligenceAgent(provider_service)
+        self._domain_risk = DomainRiskIntelligenceAgent(provider_service)
+        self._auditor = EvidenceAuditorComposerAgent(provider_service)
 
-        p.connect("structure_agent.draft", "auditor_composer.structure")
-        p.connect("convention_agent.draft", "auditor_composer.conventions")
-        p.connect("domain_risk_agent.draft", "auditor_composer.domain_risk")
-        self._pipeline = p
-
-    def run(
+    async def run(
         self,
+        provider_id: str,
+        model_id: str,
         architecture: RetrievalBundle,
         important: RetrievalBundle,
         conventions: RetrievalBundle,
         feature_map: RetrievalBundle,
         risk: RetrievalBundle,
     ) -> dict[str, Any]:
-        out = self._pipeline.run(
-            {
-                "structure_agent": {
-                    "architecture": architecture,
-                    "important": important,
-                },
-                "convention_agent": {
-                    "conventions": conventions,
-                },
-                "domain_risk_agent": {
-                    "feature_map": feature_map,
-                    "risk": risk,
-                },
-            }
-        )
-        return out["auditor_composer"]["report"]
+        structure = await self._structure.run(provider_id, model_id, architecture, important)
+        conv = await self._convention.run(provider_id, model_id, conventions)
+        dom = await self._domain_risk.run(provider_id, model_id, feature_map, risk)
+        return await self._auditor.run(provider_id, model_id, structure, conv, dom)

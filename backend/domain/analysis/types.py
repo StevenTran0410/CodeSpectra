@@ -34,7 +34,9 @@ class AnalysisReportSummary(BaseModel):
     id: str
     job_id: str
     repo_id: str
+    repo_name: str | None = None
     snapshot_id: str
+    branch: str | None = None
     provider_id: str
     model_id: str
     scan_mode: ScanMode

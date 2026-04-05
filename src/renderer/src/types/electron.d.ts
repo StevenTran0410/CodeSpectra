@@ -87,7 +87,9 @@ export interface AnalysisReportSummary {
   id: string
   job_id: string
   repo_id: string
+  repo_name: string | null
   snapshot_id: string
+  branch: string | null
   provider_id: string
   model_id: string
   scan_mode: 'quick' | 'full'
@@ -420,6 +422,9 @@ declare global {
         listReports: (repoId?: string, limit?: number) => Promise<AnalysisReportSummary[]>
         getReport: (reportId: string) => Promise<AnalysisReport>
         getReportByJob: (jobId: string) => Promise<AnalysisReport>
+        deleteReport: (reportId: string) => Promise<void>
+        deleteRepot: (reportId: string) => Promise<void>
+        deleterepot: (reportId: string) => Promise<void>
       }
       git: {
         getConfig: () => Promise<{ ssh_key_path: string | null }>

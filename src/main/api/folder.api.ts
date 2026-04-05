@@ -247,6 +247,17 @@ export function registerFolderHandlers(client: BackendClient): void {
     (_event, jobId: string) => client.get(`/api/analysis/report-by-job/${jobId}`)
   )
 
+  ipcMain.handle(
+    'analysis:deleteReport',
+    (_event, reportId: string) => client.del(`/api/analysis/reports/${reportId}`)
+  )
+
+  // backward-compat typo alias used by some renderer builds
+  ipcMain.handle(
+    'analysis:deleteRepot',
+    (_event, reportId: string) => client.del(`/api/analysis/reports/${reportId}`)
+  )
+
   // ── Git / SSH settings ────────────────────────────────────────────────────
   ipcMain.handle('git:getConfig', () => client.get('/api/app/git-config'))
 

@@ -8,6 +8,7 @@ from domain.job.service import JobService
 from domain.job.types import CreateJobRequest, StepName
 from domain.manifest.service import ManifestService
 from domain.manifest.types import BuildManifestRequest
+from domain.model_connector.service import ProviderConfigService
 from domain.repo_map.service import RepoMapService
 from domain.repo_map.types import BuildRepoMapRequest
 from domain.retrieval.service import RetrievalService
@@ -44,7 +45,8 @@ class AnalysisService:
         self._repo_map = RepoMapService()
         self._graph = StructuralGraphService()
         self._retrieval = RetrievalService()
-        self._agents = AnalysisAgentPipeline()
+        self._provider = ProviderConfigService()
+        self._agents = AnalysisAgentPipeline(self._provider)
 
     async def estimate(self, repo_id: str, snapshot_id: str) -> AnalysisEstimateResponse:
         async with get_db().execute(
@@ -68,10 +70,16 @@ class AnalysisService:
         if repo_id:
             async with db.execute(
                 """
-                SELECT id, job_id, repo_id, snapshot_id, provider_id, model_id, scan_mode, privacy_mode, created_at
-                FROM analysis_reports
-                WHERE repo_id=?
-                ORDER BY created_at DESC
+                SELECT
+                    ar.id, ar.job_id, ar.repo_id, ar.snapshot_id, ar.provider_id, ar.model_id,
+                    ar.scan_mode, ar.privacy_mode, ar.created_at,
+                    COALESCE(lr.name, ar.repo_id) as repo_name,
+                    COALESCE(rs.branch, lr.selected_branch, lr.git_branch, 'unknown') as branch
+                FROM analysis_reports ar
+                LEFT JOIN local_repos lr ON lr.id = ar.repo_id
+                LEFT JOIN repo_snapshots rs ON rs.id = ar.snapshot_id
+                WHERE ar.repo_id=?
+                ORDER BY ar.created_at DESC
                 LIMIT ?
                 """,
                 (repo_id, safe_limit),
@@ -80,9 +88,15 @@ class AnalysisService:
         else:
             async with db.execute(
                 """
-                SELECT id, job_id, repo_id, snapshot_id, provider_id, model_id, scan_mode, privacy_mode, created_at
-                FROM analysis_reports
-                ORDER BY created_at DESC
+                SELECT
+                    ar.id, ar.job_id, ar.repo_id, ar.snapshot_id, ar.provider_id, ar.model_id,
+                    ar.scan_mode, ar.privacy_mode, ar.created_at,
+                    COALESCE(lr.name, ar.repo_id) as repo_name,
+                    COALESCE(rs.branch, lr.selected_branch, lr.git_branch, 'unknown') as branch
+                FROM analysis_reports ar
+                LEFT JOIN local_repos lr ON lr.id = ar.repo_id
+                LEFT JOIN repo_snapshots rs ON rs.id = ar.snapshot_id
+                ORDER BY ar.created_at DESC
                 LIMIT ?
                 """,
                 (safe_limit,),
@@ -93,7 +107,9 @@ class AnalysisService:
                 id=r["id"],
                 job_id=r["job_id"],
                 repo_id=r["repo_id"],
+                repo_name=r["repo_name"],
                 snapshot_id=r["snapshot_id"],
+                branch=r["branch"],
                 provider_id=r["provider_id"],
                 model_id=r["model_id"],
                 scan_mode=ScanMode(r["scan_mode"]),
@@ -106,9 +122,15 @@ class AnalysisService:
     async def get_report(self, report_id: str) -> AnalysisReport:
         async with get_db().execute(
             """
-            SELECT id, job_id, repo_id, snapshot_id, provider_id, model_id, scan_mode, privacy_mode, report_json, created_at
-            FROM analysis_reports
-            WHERE id=?
+            SELECT
+                ar.id, ar.job_id, ar.repo_id, ar.snapshot_id, ar.provider_id, ar.model_id,
+                ar.scan_mode, ar.privacy_mode, ar.report_json, ar.created_at,
+                COALESCE(lr.name, ar.repo_id) as repo_name,
+                COALESCE(rs.branch, lr.selected_branch, lr.git_branch, 'unknown') as branch
+            FROM analysis_reports ar
+            LEFT JOIN local_repos lr ON lr.id = ar.repo_id
+            LEFT JOIN repo_snapshots rs ON rs.id = ar.snapshot_id
+            WHERE ar.id=?
             """,
             (report_id,),
         ) as cur:
@@ -120,7 +142,9 @@ class AnalysisService:
                 id=row["id"],
                 job_id=row["job_id"],
                 repo_id=row["repo_id"],
+                repo_name=row["repo_name"],
                 snapshot_id=row["snapshot_id"],
+                branch=row["branch"],
                 provider_id=row["provider_id"],
                 model_id=row["model_id"],
                 scan_mode=ScanMode(row["scan_mode"]),
@@ -145,6 +169,13 @@ class AnalysisService:
         if row is None:
             raise NotFoundError("AnalysisReportByJob", job_id)
         return await self.get_report(row["id"])
+
+    async def delete_report(self, report_id: str) -> None:
+        db = get_db()
+        async with db.execute("DELETE FROM analysis_reports WHERE id=?", (report_id,)) as cur:
+            if cur.rowcount == 0:
+                raise NotFoundError("AnalysisReport", report_id)
+        await db.commit()
 
     async def start(self, req: StartAnalysisRequest):
         async with get_db().execute("SELECT 1 FROM local_repos WHERE id=?", (req.repo_id,)) as cur:
@@ -278,7 +309,9 @@ class AnalysisService:
             if await _cancelled():
                 return
             await self._jobs.update_step(job_id, StepName.GENERATE.value, 70, "Running Haystack agent pipeline")
-            report = self._agents.run(
+            report = await self._agents.run(
+                provider_id=req.provider_id,
+                model_id=req.model_id,
                 architecture=architecture,
                 important=important,
                 conventions=conventions,
