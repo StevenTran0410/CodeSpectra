@@ -34,6 +34,14 @@ _WORKSPACE_DEFAULT_IGNORES = [".git/**", "node_modules/**", ".venv/**", "venv/**
 _ROOT_ENTRY_THRESHOLD = 200
 
 
+def _normalize_repo_path(path: str) -> str:
+    """Canonicalize user path so add/remove checks are stable on Windows."""
+    try:
+        return str(Path(path).resolve())
+    except Exception:
+        return str(Path(path).absolute())
+
+
 def _check_size_warning_sync(path: str) -> tuple[bool, str | None]:
     """Quick check for large-repo indicators (blocking — run in thread)."""
     p = Path(path)
@@ -164,14 +172,15 @@ class LocalRepoService:
         )
 
     async def add(self, req: AddLocalRepoRequest) -> LocalRepo:
-        validation = await self.validate(ValidateFolderRequest(path=req.path))
+        normalized_path = _normalize_repo_path(req.path)
+        validation = await self.validate(ValidateFolderRequest(path=normalized_path))
         if not validation.exists or not validation.is_directory:
-            raise ValueError(f"Path '{req.path}' is not a valid directory")
+            raise ValueError(f"Path '{normalized_path}' is not a valid directory")
 
         db = get_db()
-        async with db.execute("SELECT 1 FROM local_repos WHERE path = ?", (req.path,)) as cur:
+        async with db.execute("SELECT 1 FROM local_repos WHERE path = ?", (normalized_path,)) as cur:
             if await cur.fetchone():
-                raise ConflictError(f"Folder '{req.path}' is already added")
+                raise ConflictError(f"Folder '{normalized_path}' is already added")
 
         repo_id = new_id()
         now = utc_now_iso()
@@ -185,7 +194,7 @@ class LocalRepoService:
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 repo_id,
-                req.path,
+                normalized_path,
                 validation.name,
                 RepoSourceType.LOCAL_FOLDER.value,
                 int(validation.is_git_repo),
@@ -221,6 +230,27 @@ class LocalRepoService:
     async def remove(self, repo_id: str) -> None:
         db = get_db()
         repo = await self.get_by_id(repo_id)
+        async with db.execute(
+            "SELECT id FROM repo_snapshots WHERE local_repo_id=?",
+            (repo_id,),
+        ) as cur:
+            snapshot_rows = await cur.fetchall()
+        snapshot_ids = [r["id"] for r in snapshot_rows]
+
+        for snapshot_id in snapshot_ids:
+            await db.execute("DELETE FROM manifest_files WHERE snapshot_id=?", (snapshot_id,))
+            await db.execute("DELETE FROM code_symbols WHERE snapshot_id=?", (snapshot_id,))
+            await db.execute("DELETE FROM repo_maps WHERE snapshot_id=?", (snapshot_id,))
+            await db.execute("DELETE FROM structural_graph_edges WHERE snapshot_id=?", (snapshot_id,))
+            await db.execute("DELETE FROM structural_graph_summaries WHERE snapshot_id=?", (snapshot_id,))
+            await db.execute("DELETE FROM retrieval_chunks WHERE snapshot_id=?", (snapshot_id,))
+            await db.execute("DELETE FROM retrieval_indexes WHERE snapshot_id=?", (snapshot_id,))
+            await db.execute("DELETE FROM analysis_reports WHERE snapshot_id=?", (snapshot_id,))
+
+        await db.execute("DELETE FROM repo_snapshots WHERE local_repo_id=?", (repo_id,))
+        await db.execute("DELETE FROM analysis_reports WHERE repo_id=?", (repo_id,))
+        await db.execute("DELETE FROM jobs WHERE repo_id=?", (repo_id,))
+
         async with db.execute("DELETE FROM local_repos WHERE id = ?", (repo_id,)) as cur:
             if cur.rowcount == 0:
                 raise NotFoundError("LocalRepo", repo_id)
