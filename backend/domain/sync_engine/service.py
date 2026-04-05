@@ -11,6 +11,8 @@ from shared.git_utils import is_ssh_url, read_git_info, run_git_sync
 from shared.logger import logger
 from shared.utils import new_id, utc_now_iso
 
+from domain.snapshot_cleanup import delete_snapshot_artifacts
+
 from . import lock as path_lock
 from .types import ClonePolicy, PrepareSnapshotRequest, RepoSnapshot, SnapshotStatus
 
@@ -191,7 +193,10 @@ class SyncEngineService:
 
                 if not (Path(path) / ".git").exists():
                     if not remote_url:
-                        raise ValueError("No remote URL - cannot clone a folder with no git remote")
+                        # Non-git local folder flow: snapshot is a filesystem point-in-time marker.
+                        await _update_status(snapshot_id, SnapshotStatus.READY, commit_hash=None)
+                        logger.info(f"Snapshot {snapshot_id} ready (non-git folder)")
+                        return
                     env = await _get_ssh_env() if is_ssh_url(remote_url) else os.environ.copy()
 
                     def _do_clone():
@@ -235,7 +240,23 @@ class SyncEngineService:
 
         path = repo_row["path"]
         remote_url = repo_row["git_remote_url"]
+        is_git_repo = bool(repo_row["is_git_repo"])
         branch = req.branch or repo_row["selected_branch"] or repo_row["git_branch"]
+        if not is_git_repo:
+            branch = None
+
+        if is_git_repo and Path(path).exists():
+            dirty = _dirty_files(path)
+            current_branch = run_git_sync(path, ["rev-parse", "--abbrev-ref", "HEAD"], timeout=10)
+            if dirty and branch and current_branch and branch != current_branch:
+                logger.warning(
+                    "Repo %s has uncommitted changes; fallback to current branch '%s' "
+                    "instead of switching to '%s'",
+                    path,
+                    current_branch,
+                    branch,
+                )
+                branch = current_branch
 
         # 2. Guard against parallel prepare on same repo
         async with get_db().execute(
@@ -309,11 +330,7 @@ class SyncEngineService:
             )
 
             # Remove all index artifacts bound to this snapshot.
-            await db.execute("DELETE FROM manifest_files WHERE snapshot_id=?", (snapshot_id,))
-            await db.execute("DELETE FROM code_symbols WHERE snapshot_id=?", (snapshot_id,))
-            await db.execute("DELETE FROM repo_maps WHERE snapshot_id=?", (snapshot_id,))
-            await db.execute("DELETE FROM structural_graph_edges WHERE snapshot_id=?", (snapshot_id,))
-            await db.execute("DELETE FROM structural_graph_summaries WHERE snapshot_id=?", (snapshot_id,))
+            await delete_snapshot_artifacts(snapshot_id)
 
             # Finally remove snapshot record.
             await db.execute("DELETE FROM repo_snapshots WHERE id=?", (snapshot_id,))

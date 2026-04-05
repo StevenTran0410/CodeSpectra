@@ -269,6 +269,27 @@ _MIGRATIONS: list[dict[str, Any]] = [
             CREATE INDEX IF NOT EXISTS idx_retrieval_index_snapshot ON retrieval_indexes(snapshot_id);
         """,
     },
+    {
+        "version": 15,
+        "description": "Add analysis_reports table for generated report artifacts",
+        "sql": """
+            CREATE TABLE IF NOT EXISTS analysis_reports (
+                id            TEXT PRIMARY KEY,
+                job_id        TEXT NOT NULL,
+                repo_id       TEXT NOT NULL,
+                snapshot_id   TEXT NOT NULL,
+                provider_id   TEXT NOT NULL,
+                model_id      TEXT NOT NULL,
+                scan_mode     TEXT NOT NULL,
+                privacy_mode  TEXT NOT NULL,
+                report_json   TEXT NOT NULL,
+                created_at    TEXT NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_analysis_reports_job_id ON analysis_reports(job_id);
+            CREATE INDEX IF NOT EXISTS idx_analysis_reports_repo ON analysis_reports(repo_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_analysis_reports_snapshot ON analysis_reports(snapshot_id, created_at DESC);
+        """,
+    },
 ]
 
 TARGET_VERSION = len(_MIGRATIONS) - 1

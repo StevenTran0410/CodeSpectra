@@ -213,6 +213,51 @@ export function registerFolderHandlers(client: BackendClient): void {
     }) => client.post('/api/retrieval/compare', body)
   )
 
+  ipcMain.handle(
+    'analysis:estimate',
+    (_event, repoId: string, snapshotId: string) =>
+      client.get(`/api/analysis/estimate/${repoId}/${snapshotId}`)
+  )
+
+  ipcMain.handle(
+    'analysis:start',
+    (_event, body: {
+      repo_id: string
+      snapshot_id: string
+      scan_mode: 'quick' | 'full'
+      privacy_mode: 'strict_local' | 'byok_cloud'
+      provider_id: string
+      model_id: string
+    }) => client.post('/api/analysis/start', body)
+  )
+
+  ipcMain.handle(
+    'analysis:listReports',
+    (_event, repoId?: string, limit = 30) =>
+      client.get(`/api/analysis/reports?${repoId ? `repo_id=${encodeURIComponent(repoId)}&` : ''}limit=${limit}`)
+  )
+
+  ipcMain.handle(
+    'analysis:getReport',
+    (_event, reportId: string) => client.get(`/api/analysis/reports/${reportId}`)
+  )
+
+  ipcMain.handle(
+    'analysis:getReportByJob',
+    (_event, jobId: string) => client.get(`/api/analysis/report-by-job/${jobId}`)
+  )
+
+  ipcMain.handle(
+    'analysis:deleteReport',
+    (_event, reportId: string) => client.del(`/api/analysis/reports/${reportId}`)
+  )
+
+  // backward-compat typo alias used by some renderer builds
+  ipcMain.handle(
+    'analysis:deleteRepot',
+    (_event, reportId: string) => client.del(`/api/analysis/reports/${reportId}`)
+  )
+
   // ── Git / SSH settings ────────────────────────────────────────────────────
   ipcMain.handle('git:getConfig', () => client.get('/api/app/git-config'))
 

@@ -4,6 +4,7 @@ import fnmatch
 import json
 import os
 import shutil
+import stat
 import subprocess  # still used by clone_from_url
 from pathlib import Path
 
@@ -12,6 +13,8 @@ from shared.errors import ConflictError, NotFoundError
 from shared.git_utils import is_ssh_url, list_branches, read_git_info, run_git
 from shared.logger import logger
 from shared.utils import new_id, utc_now_iso
+
+from domain.snapshot_cleanup import delete_repo_artifacts
 
 from .types import (
     AddLocalRepoRequest,
@@ -32,6 +35,44 @@ _SIZE_WARNING_DIRS = frozenset({"node_modules", ".venv", "venv", "env", "target"
 _WORKSPACE_DEFAULT_IGNORES = [".git/**", "node_modules/**", ".venv/**", "venv/**", "dist/**", "build/**", "target/**"]
 # If the root contains this many immediate entries, warn
 _ROOT_ENTRY_THRESHOLD = 200
+
+
+def _normalize_repo_path(path: str) -> str:
+    """Canonicalize user path so add/remove checks are stable on Windows."""
+    try:
+        return str(Path(path).resolve())
+    except Exception:
+        return str(Path(path).absolute())
+
+
+def _is_under_path(path: Path, root: Path) -> bool:
+    """Robust Windows-safe containment check."""
+    try:
+        p = str(path.resolve())
+        r = str(root.resolve())
+        return os.path.commonpath([p, r]) == r
+    except Exception:
+        return False
+
+
+def _remove_tree_strict(path: Path) -> None:
+    """Delete folder/file strictly (handles read-only files on Windows)."""
+    if not path.exists():
+        return
+    if path.is_file() or path.is_symlink():
+        path.unlink(missing_ok=True)
+        return
+
+    def _onerror(func, target, _exc_info):
+        try:
+            os.chmod(target, stat.S_IWRITE)
+            func(target)
+        except Exception:
+            pass
+
+    shutil.rmtree(path, onerror=_onerror)
+    if path.exists():
+        raise ValueError(f"Cannot delete managed clone folder: {path}")
 
 
 def _check_size_warning_sync(path: str) -> tuple[bool, str | None]:
@@ -164,14 +205,15 @@ class LocalRepoService:
         )
 
     async def add(self, req: AddLocalRepoRequest) -> LocalRepo:
-        validation = await self.validate(ValidateFolderRequest(path=req.path))
+        normalized_path = _normalize_repo_path(req.path)
+        validation = await self.validate(ValidateFolderRequest(path=normalized_path))
         if not validation.exists or not validation.is_directory:
-            raise ValueError(f"Path '{req.path}' is not a valid directory")
+            raise ValueError(f"Path '{normalized_path}' is not a valid directory")
 
         db = get_db()
-        async with db.execute("SELECT 1 FROM local_repos WHERE path = ?", (req.path,)) as cur:
+        async with db.execute("SELECT 1 FROM local_repos WHERE path = ?", (normalized_path,)) as cur:
             if await cur.fetchone():
-                raise ConflictError(f"Folder '{req.path}' is already added")
+                raise ConflictError(f"Folder '{normalized_path}' is already added")
 
         repo_id = new_id()
         now = utc_now_iso()
@@ -185,7 +227,7 @@ class LocalRepoService:
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 repo_id,
-                req.path,
+                normalized_path,
                 validation.name,
                 RepoSourceType.LOCAL_FOLDER.value,
                 int(validation.is_git_repo),
@@ -221,22 +263,20 @@ class LocalRepoService:
     async def remove(self, repo_id: str) -> None:
         db = get_db()
         repo = await self.get_by_id(repo_id)
+        await delete_repo_artifacts(repo_id)
+
+        # If this path is inside CodeSpectra-managed clone root, delete it from disk first.
+        # For managed clones, deletion is strict to avoid silent leftovers causing clone conflicts.
+        managed_root = Path.home() / "CodeSpectra" / "repos"
+        repo_path = Path(repo.path)
+        if _is_under_path(repo_path, managed_root):
+            _remove_tree_strict(repo_path)
+            logger.info(f"Deleted managed clone folder: {repo_path}")
+
         async with db.execute("DELETE FROM local_repos WHERE id = ?", (repo_id,)) as cur:
             if cur.rowcount == 0:
                 raise NotFoundError("LocalRepo", repo_id)
         await db.commit()
-
-        # If this path is inside CodeSpectra-managed clone root, remove it from disk too.
-        # We do NOT delete arbitrary user folders outside managed clone storage.
-        managed_root = Path.home() / "CodeSpectra" / "repos"
-        try:
-            repo_path = Path(repo.path).resolve()
-            if managed_root.resolve() in repo_path.parents and repo_path.exists():
-                shutil.rmtree(repo_path, ignore_errors=True)
-                logger.info(f"Deleted managed clone folder: {repo_path}")
-        except Exception:
-            # Non-fatal: DB delete already succeeded.
-            logger.warning(f"Failed to delete repo folder on disk: {repo.path}")
 
         logger.info(f"Removed local repo {repo_id}")
 
@@ -356,7 +396,13 @@ class LocalRepoService:
 
     async def clone_from_url(self, req: CloneFromUrlRequest) -> LocalRepo:
         """Clone a remote git URL to dest_path, then register it as a local repo."""
-        dest = Path(req.dest_path)
+        normalized_dest_path = _normalize_repo_path(req.dest_path)
+        dest = Path(normalized_dest_path)
+
+        if dest.exists():
+            if dest.is_dir() and not any(dest.iterdir()):
+                # stale empty folder from previous failed delete/clone
+                dest.rmdir()
 
         if dest.exists():
             # If destination is already a git repo with same remote, reuse it.
@@ -364,18 +410,21 @@ class LocalRepoService:
             if git_info.get("is_git_repo"):
                 remote = await run_git(str(dest), ["remote", "get-url", "origin"], timeout=10)
                 if remote and remote.rstrip("/") == req.url.rstrip("/"):
-                    logger.info(f"Destination already contains same repo, reusing: {req.dest_path}")
+                    logger.info(f"Destination already contains same repo, reusing: {normalized_dest_path}")
                     try:
-                        return await self.add(AddLocalRepoRequest(path=req.dest_path))
+                        return await self.add(AddLocalRepoRequest(path=normalized_dest_path))
                     except ConflictError:
                         # Already registered in DB, return existing row by path
                         db = get_db()
-                        async with db.execute("SELECT id FROM local_repos WHERE path = ?", (req.dest_path,)) as cur:
+                        async with db.execute(
+                            "SELECT id FROM local_repos WHERE path = ?",
+                            (normalized_dest_path,),
+                        ) as cur:
                             row = await cur.fetchone()
                         if row:
                             return await self.get_by_id(row["id"])
             raise ConflictError(
-                f"Destination '{req.dest_path}' already exists. Remove it first or choose another repo URL."
+                f"Destination '{normalized_dest_path}' already exists. Remove it first or choose another repo URL."
             )
 
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -405,8 +454,8 @@ class LocalRepoService:
             msg = "\n".join(lines).strip() or "git clone failed (unknown error)"
             raise ValueError(msg)
 
-        logger.info(f"Cloned '{req.url}' → {req.dest_path}")
-        return await self.add(AddLocalRepoRequest(path=req.dest_path))
+        logger.info(f"Cloned '{req.url}' → {normalized_dest_path}")
+        return await self.add(AddLocalRepoRequest(path=normalized_dest_path))
 
     async def _fetch_row(self, repo_id: str):
         db = get_db()

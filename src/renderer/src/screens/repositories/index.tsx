@@ -4,6 +4,7 @@ import { AlertTriangle, CheckCircle2, FolderOpen, GitBranch, Loader2, RefreshCw,
 import { EmptyState } from '../../components/ui/EmptyState'
 import { ErrorBanner } from '../../components/ui/ErrorBanner'
 import { LoadingRow } from '../../components/ui/LoadingRow'
+import { toErrorMessage } from '../../lib/errors'
 import type {
   ClonePolicy,
   EstimateFileCountResponse,
@@ -81,7 +82,7 @@ export default function RepositoriesScreen(): React.ReactElement {
         const preferred = rows.find((x) => x.id === selectedRepo?.active_snapshot_id)?.id
         setSelectedSnapshotId(preferred ?? rows[0]?.id ?? null)
       } catch (err) {
-        setScreenError(err instanceof Error ? err.message : String(err))
+        setScreenError(toErrorMessage(err))
       } finally {
         setLoadingSnapshots(false)
       }
@@ -267,7 +268,7 @@ export default function RepositoriesScreen(): React.ReactElement {
                             })
                             await load()
                           } catch (err) {
-                            setScreenError(err instanceof Error ? err.message : String(err))
+                            setScreenError(toErrorMessage(err))
                           } finally {
                             setSaving(false)
                           }
@@ -287,7 +288,7 @@ export default function RepositoriesScreen(): React.ReactElement {
                             const v = await window.api.folder.estimateFileCount(selectedRepo.id)
                             setEstimate(v)
                           } catch (err) {
-                            setScreenError(err instanceof Error ? err.message : String(err))
+                            setScreenError(toErrorMessage(err))
                           } finally {
                             setEstimating(false)
                           }
@@ -334,7 +335,7 @@ export default function RepositoriesScreen(): React.ReactElement {
                             }
                             setSyncProgress(100)
                           } catch (err) {
-                            setScreenError(err instanceof Error ? err.message : String(err))
+                            setScreenError(toErrorMessage(err))
                           } finally {
                             clearInterval(progressTimer)
                             setTimeout(() => setSyncProgress(0), 350)
@@ -403,7 +404,7 @@ export default function RepositoriesScreen(): React.ReactElement {
                             try {
                               navigate(`/snapshot-viewer?repoId=${encodeURIComponent(selectedRepo.id)}&snapshotId=${encodeURIComponent(selectedSnapshotId)}`)
                             } catch (err) {
-                              setScreenError(err instanceof Error ? err.message : String(err))
+                              setScreenError(toErrorMessage(err))
                             } finally {
                               setSelectingSnapshot(false)
                             }
@@ -463,7 +464,7 @@ export default function RepositoriesScreen(): React.ReactElement {
                     await load()
                     setConfirmDeleteSnapshotId(null)
                   } catch (err) {
-                    setScreenError(err instanceof Error ? err.message : String(err))
+                    setScreenError(toErrorMessage(err))
                   } finally {
                     setDeletingSnapshot(false)
                   }

@@ -109,6 +109,32 @@ const api = {
       max_results?: number
     }) => ipcRenderer.invoke('retrieval:compare', body),
   },
+  analysis: {
+    estimate: (repoId: string, snapshotId: string) =>
+      ipcRenderer.invoke('analysis:estimate', repoId, snapshotId),
+    start: (body: {
+      repo_id: string
+      snapshot_id: string
+      scan_mode: 'quick' | 'full'
+      privacy_mode: 'strict_local' | 'byok_cloud'
+      provider_id: string
+      model_id: string
+    }) => ipcRenderer.invoke('analysis:start', body),
+    listReports: (repoId?: string, limit = 30) =>
+      ipcRenderer.invoke('analysis:listReports', repoId, limit),
+    getReport: (reportId: string) =>
+      ipcRenderer.invoke('analysis:getReport', reportId),
+    getReportByJob: (jobId: string) =>
+      ipcRenderer.invoke('analysis:getReportByJob', jobId),
+    deleteReport: (reportId: string) =>
+      ipcRenderer.invoke('analysis:deleteReport', reportId),
+    // backward-compat typo alias
+    deleteRepot: (reportId: string) =>
+      ipcRenderer.invoke('analysis:deleteRepot', reportId),
+    // lowercase alias for ad-hoc console calls
+    deleterepot: (reportId: string) =>
+      ipcRenderer.invoke('analysis:deleteRepot', reportId),
+  },
   git: {
     getConfig: (): Promise<{ ssh_key_path: string | null }> =>
       ipcRenderer.invoke('git:getConfig'),

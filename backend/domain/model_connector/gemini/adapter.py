@@ -53,12 +53,17 @@ class GeminiAdapter(CloudAdapterBase):
                 role = "user" if msg.role == "user" else "model"
                 contents.append({"role": role, "parts": [{"text": msg.content}]})
 
+        generation_config: dict = {
+            "maxOutputTokens": request.max_tokens,
+        }
+        # Some Gemini models only allow default temperature=1.
+        # Keep request temperature only when it is effectively default.
+        if abs(float(request.temperature) - 1.0) < 1e-9:
+            generation_config["temperature"] = 1.0
+
         payload: dict = {
             "contents": contents,
-            "generationConfig": {
-                "maxOutputTokens": request.max_tokens,
-                "temperature": request.temperature,
-            },
+            "generationConfig": generation_config,
         }
         if system_parts:
             payload["systemInstruction"] = {"parts": system_parts}

@@ -21,6 +21,7 @@ import type {
   SymbolRecord,
 } from '../../types/electron'
 import { ErrorBanner } from '../../components/ui/ErrorBanner'
+import { toErrorMessage } from '../../lib/errors'
 
 export default function IndexOverviewScreen(): React.ReactElement {
   const MAX_RENDER_NODES = 180
@@ -74,7 +75,7 @@ export default function IndexOverviewScreen(): React.ReactElement {
         const g = await window.api.graph.summary(snapshotId)
         setGraphSummary(g)
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err))
+        setError(toErrorMessage(err))
       } finally {
         setLoading(false)
       }
@@ -250,7 +251,7 @@ export default function IndexOverviewScreen(): React.ReactElement {
                     setSuccess(`CSV saved: ${out.file_path} (${out.row_count} rows)`)
                   }
                 } catch (err) {
-                  setError(err instanceof Error ? err.message : String(err))
+                  setError(toErrorMessage(err))
                 } finally {
                   setSavingCsv(false)
                 }
@@ -310,7 +311,7 @@ export default function IndexOverviewScreen(): React.ReactElement {
                       setGraphSummary(out.summary)
                       setSuccess('Structural graph built successfully')
                     } catch (err) {
-                      setError(err instanceof Error ? err.message : String(err))
+                      setError(toErrorMessage(err))
                     } finally {
                       setBuildingGraph(false)
                     }
@@ -392,7 +393,7 @@ export default function IndexOverviewScreen(): React.ReactElement {
                             setGraphModalNodes(res.nodes)
                             setGraphModalEdges(res.edges)
                           } catch (err) {
-                            setError(err instanceof Error ? err.message : String(err))
+                            setError(toErrorMessage(err))
                           } finally {
                             setLoadingNeighbors(false)
                             setGraphModalLoading(false)
@@ -557,7 +558,7 @@ export default function IndexOverviewScreen(): React.ReactElement {
                       })
                       setRetrievalBundle(out)
                     } catch (err) {
-                      setError(err instanceof Error ? err.message : String(err))
+                      setError(toErrorMessage(err))
                     } finally {
                       setRetrievalBusy(false)
                     }
@@ -583,7 +584,7 @@ export default function IndexOverviewScreen(): React.ReactElement {
                       })
                       setRetrievalCompare(out)
                     } catch (err) {
-                      setError(err instanceof Error ? err.message : String(err))
+                      setError(toErrorMessage(err))
                     } finally {
                       setRetrievalBusy(false)
                     }

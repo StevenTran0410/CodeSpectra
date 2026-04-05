@@ -7,7 +7,8 @@ from typing import Any
 
 from infrastructure.db.database import get_db
 from shared.errors import NotFoundError
-from shared.utils import new_id, utc_now_iso
+from shared.sql_queries import SQL_SELECT_MANIFEST_FILES_BY_SNAPSHOT
+from shared.utils import new_id, read_utf8_lenient, utc_now_iso
 
 from .types import (
     BuildRepoMapRequest,
@@ -52,13 +53,6 @@ _RE_JAVA_METHOD = re.compile(
     r"^\s*(?:public|private|protected)?\s*(?:static\s+)?[A-Za-z0-9_<>\[\]]+\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(",
     re.MULTILINE,
 )
-
-
-def _safe_read_text(path: Path) -> str:
-    try:
-        return path.read_text(encoding="utf-8", errors="ignore")
-    except Exception:
-        return ""
 
 
 class _PythonSymbolVisitor(ast.NodeVisitor):
@@ -270,7 +264,7 @@ class RepoMapService:
             await db.execute("DELETE FROM code_symbols WHERE snapshot_id=?", (req.snapshot_id,))
 
         async with db.execute(
-            "SELECT rel_path, language, category FROM manifest_files WHERE snapshot_id=? ORDER BY rel_path ASC",
+            SQL_SELECT_MANIFEST_FILES_BY_SNAPSHOT,
             (req.snapshot_id,),
         ) as cur:
             files = await cur.fetchall()
@@ -294,7 +288,7 @@ class RepoMapService:
             file_path = (root / rel_path).resolve()
             if not file_path.exists() or not file_path.is_file():
                 continue
-            content = _safe_read_text(file_path)
+            content = read_utf8_lenient(file_path)
             if not content:
                 continue
 

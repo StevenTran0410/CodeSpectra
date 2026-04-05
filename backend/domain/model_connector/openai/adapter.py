@@ -9,7 +9,7 @@ from shared.logger import logger
 # Chat-capable models returned by /v1/models that we surface to the user
 _CHAT_MODEL_PREFIXES = ("gpt-", "o1", "o3", "chatgpt-")
 
-MODEL_PRESETS = [
+OPENAI_MODEL_PRESETS = [
     "gpt-4o",
     "gpt-4o-mini",
     "gpt-4-turbo",
@@ -19,6 +19,9 @@ MODEL_PRESETS = [
 
 
 class OpenAIAdapter(CloudAdapterBase):
+    CHAT_MODEL_PREFIXES: tuple[str, ...] | None = _CHAT_MODEL_PREFIXES
+    MODEL_PRESETS: list[str] = OPENAI_MODEL_PRESETS
+
     def __init__(self, config: ProviderConfig) -> None:
         super().__init__(config, base_url="https://api.openai.com")
 
@@ -33,9 +36,12 @@ class OpenAIAdapter(CloudAdapterBase):
             models = [
                 m["id"]
                 for m in data.get("data", [])
-                if any(m["id"].startswith(p) for p in _CHAT_MODEL_PREFIXES)
+                if (
+                    self.CHAT_MODEL_PREFIXES is None
+                    or any(m["id"].startswith(p) for p in self.CHAT_MODEL_PREFIXES)
+                )
             ]
-            return sorted(models) or MODEL_PRESETS
+            return sorted(models) or self.MODEL_PRESETS
         except httpx.ConnectError as e:
             raise self._map_connect_error(e) from e
         except httpx.TimeoutException as e:
@@ -49,11 +55,11 @@ class OpenAIAdapter(CloudAdapterBase):
         payload = {
             "model": self.config.model_id,
             "messages": [m.model_dump() for m in request.messages],
-            "max_tokens": request.max_tokens,
+            "max_completion_tokens": request.max_completion_tokens,
             "temperature": request.temperature,
         }
         try:
-            logger.debug(f"OpenAI chat: model={self.config.model_id}")
+            logger.debug(f"{self.config.kind.value} chat: model={self.config.model_id}")
             res = await self._client.post("/v1/chat/completions", json=payload, headers=self._auth())
             res.raise_for_status()
             data = res.json()

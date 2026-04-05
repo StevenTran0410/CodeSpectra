@@ -13,7 +13,7 @@ from .gemini.adapter import GeminiAdapter
 from .lmstudio.adapter import LMStudioAdapter
 from .ollama.adapter import OllamaAdapter
 from .openai.adapter import OpenAIAdapter
-from .types import ProviderCapabilities, ProviderConfig, ProviderKind
+from .types import ChatRequest, ChatResponse, ProviderCapabilities, ProviderConfig, ProviderKind
 
 
 class TestConnectionResult:
@@ -185,6 +185,31 @@ class ProviderConfigService:
         adapter = _get_adapter(config)
         try:
             return await adapter.list_models()
+        finally:
+            await adapter.aclose()
+
+    async def chat(self, request: ChatRequest) -> ChatResponse:
+        """Route a chat request to selected provider (with optional model override)."""
+        config = await self._get_by_id_full(request.provider_id)
+        if request.model_id:
+            config = config.model_copy(update={"model_id": request.model_id})
+        adapter = _get_adapter(config)
+        try:
+            try:
+                return await adapter.chat(request)
+            except ProviderError as e:
+                # Some providers/models reject non-default temperature values.
+                # Retry once with temperature=1.0 to avoid hard failure for agent runs.
+                msg = (e.message or "").lower()
+                if request.temperature != 1.0 and "temperature" in msg:
+                    logger.warning(
+                        "Provider %s rejected temperature=%s; retry with temperature=1.0",
+                        request.provider_id,
+                        request.temperature,
+                    )
+                    retry_req = request.model_copy(update={"temperature": 1.0})
+                    return await adapter.chat(retry_req)
+                raise
         finally:
             await adapter.aclose()
 

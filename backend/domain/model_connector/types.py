@@ -48,8 +48,9 @@ class ChatMessage(BaseModel):
 
 class ChatRequest(BaseModel):
     provider_id: str
+    model_id: str | None = None
     messages: list[ChatMessage]
-    max_tokens: int = 2048
+    max_completion_tokens: int = 2048
     temperature: float = 0.2
     stream: bool = False
 
