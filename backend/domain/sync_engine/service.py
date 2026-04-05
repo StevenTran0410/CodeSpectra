@@ -314,6 +314,9 @@ class SyncEngineService:
             await db.execute("DELETE FROM repo_maps WHERE snapshot_id=?", (snapshot_id,))
             await db.execute("DELETE FROM structural_graph_edges WHERE snapshot_id=?", (snapshot_id,))
             await db.execute("DELETE FROM structural_graph_summaries WHERE snapshot_id=?", (snapshot_id,))
+            await db.execute("DELETE FROM retrieval_chunks WHERE snapshot_id=?", (snapshot_id,))
+            await db.execute("DELETE FROM retrieval_indexes WHERE snapshot_id=?", (snapshot_id,))
+            await db.execute("DELETE FROM analysis_reports WHERE snapshot_id=?", (snapshot_id,))
 
             # Finally remove snapshot record.
             await db.execute("DELETE FROM repo_snapshots WHERE id=?", (snapshot_id,))

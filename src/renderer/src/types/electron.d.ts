@@ -76,6 +76,43 @@ export interface EstimateFileCountResponse {
   effective_ignores: string[]
 }
 
+export interface AnalysisEstimateResponse {
+  repo_id: string
+  snapshot_id: string
+  file_count: number
+  estimated_tokens: number
+}
+
+export interface AnalysisReportSummary {
+  id: string
+  job_id: string
+  repo_id: string
+  snapshot_id: string
+  provider_id: string
+  model_id: string
+  scan_mode: 'quick' | 'full'
+  privacy_mode: 'strict_local' | 'byok_cloud'
+  created_at: string
+}
+
+export interface AnalysisReport {
+  summary: AnalysisReportSummary
+  report: {
+    sections?: Array<{
+      section: string
+      content: string
+      confidence: 'high' | 'medium' | 'low' | string
+      evidence_files: string[]
+      blind_spots: string[]
+    }>
+    confidence_summary?: {
+      high: number
+      medium: number
+      low: number
+    }
+  }
+}
+
 export interface ManifestTreeNode {
   path: string
   is_dir: boolean
@@ -369,6 +406,20 @@ declare global {
           section: RetrievalSection
           max_results?: number
         }) => Promise<RetrievalCompareResponse>
+      }
+      analysis: {
+        estimate: (repoId: string, snapshotId: string) => Promise<AnalysisEstimateResponse>
+        start: (body: {
+          repo_id: string
+          snapshot_id: string
+          scan_mode: 'quick' | 'full'
+          privacy_mode: 'strict_local' | 'byok_cloud'
+          provider_id: string
+          model_id: string
+        }) => Promise<Job>
+        listReports: (repoId?: string, limit?: number) => Promise<AnalysisReportSummary[]>
+        getReport: (reportId: string) => Promise<AnalysisReport>
+        getReportByJob: (jobId: string) => Promise<AnalysisReport>
       }
       git: {
         getConfig: () => Promise<{ ssh_key_path: string | null }>
