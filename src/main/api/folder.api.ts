@@ -252,6 +252,22 @@ export function registerFolderHandlers(client: BackendClient): void {
     (_event, reportId: string) => client.del(`/api/analysis/reports/${reportId}`)
   )
 
+  ipcMain.handle('analysis:exportReportMarkdown', async (_event, reportId: string) => {
+    const data = await client.get<{ report_id: string; default_name: string; markdown: string }>(
+      `/api/analysis/reports/${reportId}/markdown`
+    )
+    const save = await dialog.showSaveDialog({
+      title: 'Save Analysis Report Markdown',
+      defaultPath: path.join(app.getPath('desktop'), data.default_name),
+      filters: [{ name: 'Markdown', extensions: ['md'] }],
+    })
+    if (save.canceled || !save.filePath) {
+      return { saved: false, file_path: null }
+    }
+    await fs.writeFile(save.filePath, data.markdown, 'utf-8')
+    return { saved: true, file_path: save.filePath }
+  })
+
   // backward-compat typo alias used by some renderer builds
   ipcMain.handle(
     'analysis:deleteRepot',

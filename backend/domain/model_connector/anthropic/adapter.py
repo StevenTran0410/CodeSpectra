@@ -43,13 +43,20 @@ class AnthropicAdapter(CloudAdapterBase):
             for m in request.messages
             if m.role != "system"
         ]
+        # Anthropic has no native json_mode; prefilling the assistant turn with "{"
+        # forces the model to continue producing a JSON object.
+        if request.json_mode:
+            user_messages.append({"role": "assistant", "content": "{"})
         payload: dict = {
             "model": self.config.model_id,
-            "max_completion_tokens": request.max_completion_tokens,
+            "max_tokens": request.max_completion_tokens,
             "messages": user_messages,
         }
         if system_parts:
             payload["system"] = "\n\n".join(system_parts)
+        # Anthropic supports temperature 0.0–1.0; omit when None to use model default.
+        if request.temperature is not None:
+            payload["temperature"] = min(max(request.temperature, 0.0), 1.0)
 
         try:
             logger.debug(f"Anthropic chat: model={self.config.model_id}")
@@ -58,6 +65,9 @@ class AnthropicAdapter(CloudAdapterBase):
             data = res.json()
             content_blocks = data.get("content", [])
             text = " ".join(b.get("text", "") for b in content_blocks if b.get("type") == "text")
+            # Re-attach the prefilled "{" since Anthropic returns only the continuation
+            if request.json_mode and text and not text.lstrip().startswith("{"):
+                text = "{" + text
             usage = data.get("usage", {})
             return ChatResponse(
                 provider_id=self.config.id,

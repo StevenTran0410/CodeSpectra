@@ -51,13 +51,28 @@ class OpenAIAdapter(CloudAdapterBase):
         except Exception as e:
             raise ProviderError(self._code_unknown(), str(e), provider_id=self.config.id) from e
 
-    async def chat(self, request: ChatRequest) -> ChatResponse:
-        payload = {
+    # Models that reject any explicit temperature value — must omit it from the payload.
+    # GPT-5 series and reasoning models (o1/o3/o4) only accept their built-in default.
+    _NO_TEMPERATURE_PREFIXES = ("o1", "o3", "o4", "gpt-5")
+
+    def _build_payload(self, request: ChatRequest) -> dict:
+        payload: dict = {
             "model": self.config.model_id,
             "messages": [m.model_dump() for m in request.messages],
             "max_completion_tokens": request.max_completion_tokens,
-            "temperature": request.temperature,
         }
+        mid = (self.config.model_id or "").lower()
+        model_rejects_temp = any(mid.startswith(p) for p in self._NO_TEMPERATURE_PREFIXES)
+        if request.temperature is not None and not model_rejects_temp:
+            payload["temperature"] = request.temperature
+        # json_object mode is supported by gpt-4o, gpt-4-turbo, gpt-3.5-turbo-1106+
+        # but NOT by o1/o3/o4/gpt-5 reasoning models.
+        if request.json_mode and not model_rejects_temp:
+            payload["response_format"] = {"type": "json_object"}
+        return payload
+
+    async def chat(self, request: ChatRequest) -> ChatResponse:
+        payload = self._build_payload(request)
         try:
             logger.debug(f"{self.config.kind.value} chat: model={self.config.model_id}")
             res = await self._client.post("/v1/chat/completions", json=payload, headers=self._auth())

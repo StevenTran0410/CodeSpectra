@@ -189,7 +189,12 @@ class ProviderConfigService:
             await adapter.aclose()
 
     async def chat(self, request: ChatRequest) -> ChatResponse:
-        """Route a chat request to selected provider (with optional model override)."""
+        """Route a chat request to the correct provider adapter.
+
+        If the provider rejects the temperature value, automatically retry once
+        with temperature=None (let the model use its built-in default).
+        This handles models like o1, o3, gpt-5 that only accept their default temp.
+        """
         config = await self._get_by_id_full(request.provider_id)
         if request.model_id:
             config = config.model_copy(update={"model_id": request.model_id})
@@ -198,17 +203,15 @@ class ProviderConfigService:
             try:
                 return await adapter.chat(request)
             except ProviderError as e:
-                # Some providers/models reject non-default temperature values.
-                # Retry once with temperature=1.0 to avoid hard failure for agent runs.
                 msg = (e.message or "").lower()
-                if request.temperature != 1.0 and "temperature" in msg:
+                if request.temperature is not None and "temperature" in msg:
                     logger.warning(
-                        "Provider %s rejected temperature=%s; retry with temperature=1.0",
+                        "Provider %s/%s rejected temperature=%s — retrying without temperature",
                         request.provider_id,
+                        config.model_id,
                         request.temperature,
                     )
-                    retry_req = request.model_copy(update={"temperature": 1.0})
-                    return await adapter.chat(retry_req)
+                    return await adapter.chat(request.model_copy(update={"temperature": None}))
                 raise
         finally:
             await adapter.aclose()

@@ -31,12 +31,15 @@ class LMStudioAdapter(LocalAdapterBase):
             raise self._map_unknown(e) from e
 
     async def chat(self, request: ChatRequest) -> ChatResponse:
-        payload = {
+        payload: dict = {
             "model": self.config.model_id,
             "messages": [m.model_dump() for m in request.messages],
             "max_completion_tokens": request.max_completion_tokens,
-            "temperature": request.temperature,
         }
+        if request.temperature is not None:
+            payload["temperature"] = request.temperature
+        if request.json_mode:
+            payload["response_format"] = {"type": "json_object"}
         try:
             logger.debug(f"LM Studio chat: model={self.config.model_id}")
             res = await self._client.post("/v1/chat/completions", json=payload)

@@ -39,6 +39,10 @@ _DEFAULT_QUERIES: dict[str, list[str]] = {
         "risk complexity hotspot TODO FIXME circular import",
         "technical debt fragile coupling bottleneck unsafe patterns",
     ],
+    "glossary": [
+        "domain terms business vocabulary entities events statuses",
+        "docs comments tests config names that reveal business language",
+    ],
 }
 
 _SECTION_SOURCE: dict[str, RetrievalSection] = {
@@ -47,6 +51,7 @@ _SECTION_SOURCE: dict[str, RetrievalSection] = {
     "feature_map": RetrievalSection.FEATURE_MAP,
     "important_files": RetrievalSection.IMPORTANT_FILES,
     "risk": RetrievalSection.IMPORTANT_FILES,
+    "glossary": RetrievalSection.GLOSSARY,
 }
 
 
@@ -57,11 +62,12 @@ class RetrievalContext:
     feature_map: RetrievalBundle
     important: RetrievalBundle
     risk: RetrievalBundle
+    glossary: RetrievalBundle
     queries: dict[str, list[str]]
 
 
 def _normalize_section_order(order: list[str]) -> list[str]:
-    valid = ["architecture", "conventions", "feature_map", "important_files", "risk"]
+    valid = ["architecture", "conventions", "feature_map", "important_files", "glossary", "risk"]
     seen: set[str] = set()
     out: list[str] = []
     for item in order:
@@ -215,6 +221,7 @@ class RetrievalBrokerAgent:
             conventions=section_bundles["conventions"],
             feature_map=section_bundles["feature_map"],
             important=section_bundles["important_files"],
+            glossary=section_bundles["glossary"],
             risk=section_bundles["risk"],
             queries=query_map,
         )

@@ -26,15 +26,17 @@ class OllamaAdapter(LocalAdapterBase):
             raise self._map_unknown(e) from e
 
     async def chat(self, request: ChatRequest) -> ChatResponse:
-        payload = {
+        options: dict = {"num_predict": request.max_completion_tokens}
+        if request.temperature is not None:
+            options["temperature"] = request.temperature
+        payload: dict = {
             "model": self.config.model_id,
             "messages": [m.model_dump() for m in request.messages],
             "stream": False,
-            "options": {
-                "temperature": request.temperature,
-                "num_predict": request.max_completion_tokens,
-            },
+            "options": options,
         }
+        if request.json_mode:
+            payload["format"] = "json"
         try:
             logger.debug(f"Ollama chat: model={self.config.model_id}")
             res = await self._client.post("/api/chat", json=payload)
