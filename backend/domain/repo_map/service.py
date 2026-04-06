@@ -67,121 +67,96 @@ def _ts_parse(content: str, lang: Any) -> Any | None:
 
 
 def _node_name(node: Any) -> str | None:
-    """Extract the text of the 'name' field child, decoded as str."""
     try:
         n = node.child_by_field_name("name")
-        if n and n.text:
-            return n.text.decode("utf-8", errors="ignore").strip()
+        return n.text.decode("utf-8", errors="ignore").strip() if n and n.text else None
     except Exception:
-        pass
-    return None
+        return None
+
+
+def _node_text(node: Any) -> str | None:
+    try:
+        return node.text.decode("utf-8", errors="ignore").strip() if node and node.text else None
+    except Exception:
+        return None
 
 
 def _lines(node: Any) -> tuple[int, int]:
     return node.start_point[0] + 1, node.end_point[0] + 1
 
 
+def _emit(out: list[_Symbol], node: Any, kind: SymbolKind, parent: str | None = None) -> str | None:
+    """Emit a symbol if the node has a name field. Returns the name or None."""
+    name = _node_name(node)
+    if name:
+        s, e = _lines(node)
+        out.append((name, kind, s, e, None, parent, ExtractSource.AST))
+    return name
+
+
 # ── Language-specific tree-sitter walkers ─────────────────────────────────────
 
 def _walk_python_ts(root: Any) -> list[_Symbol]:
-    """Walk tree-sitter Python AST (fallback only; prefer stdlib ast module)."""
     out: list[_Symbol] = []
-
-    def walk(node: Any, class_stack: list[str]) -> None:
-        if node.type == "decorated_definition":
+    def walk(node: Any, cs: list[str]) -> None:
+        t = node.type
+        if t == "decorated_definition":
             for ch in node.children:
                 if ch.type in ("function_definition", "class_definition"):
-                    walk(ch, class_stack)
+                    walk(ch, cs)
             return
-        if node.type == "function_definition":
-            name = _node_name(node)
+        if t == "function_definition":
+            _emit(out, node, SymbolKind.METHOD if cs else SymbolKind.FUNCTION, cs[-1] if cs else None)
+        elif t == "class_definition":
+            name = _emit(out, node, SymbolKind.CLASS, cs[-1] if cs else None)
             if name:
-                s, e = _lines(node)
-                kind = SymbolKind.METHOD if class_stack else SymbolKind.FUNCTION
-                out.append((name, kind, s, e, None, class_stack[-1] if class_stack else None, ExtractSource.AST))
-            for ch in node.children:
-                walk(ch, class_stack)
-        elif node.type == "class_definition":
-            name = _node_name(node)
-            if name:
-                s, e = _lines(node)
-                out.append((name, SymbolKind.CLASS, s, e, None, class_stack[-1] if class_stack else None, ExtractSource.AST))
-                new_stack = [*class_stack, name]
-                for ch in node.children:
-                    walk(ch, new_stack)
-        else:
-            for ch in node.children:
-                walk(ch, class_stack)
-
+                for ch in node.children: walk(ch, [*cs, name])
+                return
+        for ch in node.children: walk(ch, cs)
     walk(root, [])
     return out
 
 
+# Flat dispatch: node_type → (kind, inherits_parent)
+_JS_FLAT: dict[str, tuple[SymbolKind, bool]] = {
+    "function_declaration":           (SymbolKind.FUNCTION,   True),
+    "generator_function_declaration": (SymbolKind.FUNCTION,   True),
+    "function_expression":            (SymbolKind.FUNCTION,   True),
+    "method_definition":              (SymbolKind.METHOD,     True),
+    "method_signature":               (SymbolKind.METHOD,     True),
+    "enum_declaration":               (SymbolKind.ENUM,       False),
+}
+_TS_ONLY_FLAT: dict[str, tuple[SymbolKind, bool]] = {
+    "interface_declaration":  (SymbolKind.INTERFACE, False),
+    "type_alias_declaration": (SymbolKind.TYPE,      False),
+}
+
+
 def _walk_js_ts(root: Any, is_ts: bool = False) -> list[_Symbol]:
     out: list[_Symbol] = []
+    flat = {**_JS_FLAT, **(_TS_ONLY_FLAT if is_ts else {})}
 
-    _DEF_NODES = {
-        "function_declaration": SymbolKind.FUNCTION,
-        "generator_function_declaration": SymbolKind.FUNCTION,
-        "function_expression": SymbolKind.FUNCTION,
-    }
-    _CLASS_NODES = {"class_declaration", "class"}
-    _IFACE_NODES = {"interface_declaration"} if is_ts else set()
-    _TYPE_NODES = {"type_alias_declaration"} if is_ts else set()
-    _ENUM_NODES = {"enum_declaration"}
-    _METHOD_NODES = {"method_definition", "method_signature"}
-
-    def walk(node: Any, class_stack: list[str]) -> None:
+    def walk(node: Any, cs: list[str]) -> None:
         t = node.type
-        if t in _DEF_NODES:
-            name = _node_name(node)
+        if t in flat:
+            kind, inherit = flat[t]
+            _emit(out, node, kind, cs[-1] if cs and inherit else None)
+        elif t in ("class_declaration", "class"):
+            name = _emit(out, node, SymbolKind.CLASS)
             if name:
-                s, e = _lines(node)
-                out.append((name, _DEF_NODES[t], s, e, None, class_stack[-1] if class_stack else None, ExtractSource.AST))
-        elif t in _CLASS_NODES:
-            name = _node_name(node)
-            if name:
-                s, e = _lines(node)
-                out.append((name, SymbolKind.CLASS, s, e, None, None, ExtractSource.AST))
-                for ch in node.children:
-                    walk(ch, [*class_stack, name])
+                for ch in node.children: walk(ch, [*cs, name])
                 return
-        elif t in _IFACE_NODES:
-            name = _node_name(node)
-            if name:
-                s, e = _lines(node)
-                out.append((name, SymbolKind.INTERFACE, s, e, None, None, ExtractSource.AST))
-        elif t in _TYPE_NODES:
-            name = _node_name(node)
-            if name:
-                s, e = _lines(node)
-                out.append((name, SymbolKind.TYPE, s, e, None, None, ExtractSource.AST))
-        elif t in _ENUM_NODES:
-            name = _node_name(node)
-            if name:
-                s, e = _lines(node)
-                out.append((name, SymbolKind.ENUM, s, e, None, None, ExtractSource.AST))
-        elif t in _METHOD_NODES:
-            name = _node_name(node)
-            if name:
-                s, e = _lines(node)
-                out.append((name, SymbolKind.METHOD, s, e, None, class_stack[-1] if class_stack else None, ExtractSource.AST))
         elif t == "lexical_declaration":
-            # Arrow functions: const foo = async (x) => ...
             for ch in node.children:
                 if ch.type == "variable_declarator":
-                    var_name_node = ch.child_by_field_name("name")
                     val = ch.child_by_field_name("value")
-                    if var_name_node and val and val.type in ("arrow_function", "function_expression"):
-                        try:
-                            vname = var_name_node.text.decode("utf-8", errors="ignore").strip()
-                            if vname:
-                                s, e = _lines(ch)
-                                out.append((vname, SymbolKind.FUNCTION, s, e, None, class_stack[-1] if class_stack else None, ExtractSource.AST))
-                        except Exception:
-                            pass
-        for ch in node.children:
-            walk(ch, class_stack)
+                    if val and val.type in ("arrow_function", "function_expression"):
+                        vn = ch.child_by_field_name("name")
+                        name = _node_text(vn)
+                        if name:
+                            s, e = _lines(ch)
+                            out.append((name, SymbolKind.FUNCTION, s, e, None, cs[-1] if cs else None, ExtractSource.AST))
+        for ch in node.children: walk(ch, cs)
 
     walk(root, [])
     return out
@@ -190,203 +165,127 @@ def _walk_js_ts(root: Any, is_ts: bool = False) -> list[_Symbol]:
 def _walk_go(root: Any) -> list[_Symbol]:
     out: list[_Symbol] = []
     for node in root.children:
-        if node.type == "function_declaration":
-            name = _node_name(node)
-            if name:
-                s, e = _lines(node)
-                out.append((name, SymbolKind.FUNCTION, s, e, None, None, ExtractSource.AST))
-        elif node.type == "method_declaration":
-            name_node = node.child_by_field_name("name")
-            recv = node.child_by_field_name("receiver")
+        t = node.type
+        if t == "function_declaration":
+            _emit(out, node, SymbolKind.FUNCTION)
+        elif t == "method_declaration":
+            name = _node_text(node.child_by_field_name("name"))
             recv_type = None
+            recv = node.child_by_field_name("receiver")
             if recv:
-                # Extract receiver type name
                 for ch in recv.children:
                     if ch.type == "parameter_declaration":
                         for tc in ch.children:
                             if tc.type in ("type_identifier", "pointer_type"):
-                                try:
-                                    recv_type = tc.text.decode("utf-8", errors="ignore").strip().lstrip("*")
-                                except Exception:
-                                    pass
-            if name_node:
-                try:
-                    name = name_node.text.decode("utf-8", errors="ignore").strip()
-                    s, e = _lines(node)
-                    out.append((name, SymbolKind.METHOD, s, e, None, recv_type, ExtractSource.AST))
-                except Exception:
-                    pass
-        elif node.type == "type_declaration":
+                                recv_type = (_node_text(tc) or "").lstrip("*") or None
+            if name:
+                s, e = _lines(node)
+                out.append((name, SymbolKind.METHOD, s, e, None, recv_type, ExtractSource.AST))
+        elif t == "type_declaration":
             for ch in node.children:
                 if ch.type == "type_spec":
                     name = _node_name(ch)
-                    if not name:
-                        continue
-                    body_type = ch.child_by_field_name("type")
+                    if not name: continue
+                    body = ch.child_by_field_name("type")
+                    kind = (SymbolKind.CLASS if body and body.type == "struct_type" else
+                            SymbolKind.INTERFACE if body and body.type == "interface_type" else
+                            SymbolKind.TYPE)
                     s, e = _lines(ch)
-                    if body_type and body_type.type == "struct_type":
-                        out.append((name, SymbolKind.CLASS, s, e, None, None, ExtractSource.AST))
-                    elif body_type and body_type.type == "interface_type":
-                        out.append((name, SymbolKind.INTERFACE, s, e, None, None, ExtractSource.AST))
-                    else:
-                        out.append((name, SymbolKind.TYPE, s, e, None, None, ExtractSource.AST))
+                    out.append((name, kind, s, e, None, None, ExtractSource.AST))
     return out
 
 
 def _walk_java(root: Any) -> list[_Symbol]:
     out: list[_Symbol] = []
-
-    def walk(node: Any, class_stack: list[str]) -> None:
+    def walk(node: Any, cs: list[str]) -> None:
         t = node.type
         if t == "class_declaration":
-            name = _node_name(node)
+            name = _emit(out, node, SymbolKind.CLASS, cs[-1] if cs else None)
             if name:
-                s, e = _lines(node)
-                out.append((name, SymbolKind.CLASS, s, e, None, class_stack[-1] if class_stack else None, ExtractSource.AST))
-                for ch in node.children:
-                    walk(ch, [*class_stack, name])
+                for ch in node.children: walk(ch, [*cs, name])
                 return
         elif t == "interface_declaration":
-            name = _node_name(node)
-            if name:
-                s, e = _lines(node)
-                out.append((name, SymbolKind.INTERFACE, s, e, None, None, ExtractSource.AST))
+            _emit(out, node, SymbolKind.INTERFACE)
         elif t == "enum_declaration":
-            name = _node_name(node)
-            if name:
-                s, e = _lines(node)
-                out.append((name, SymbolKind.ENUM, s, e, None, None, ExtractSource.AST))
+            _emit(out, node, SymbolKind.ENUM)
         elif t in ("method_declaration", "constructor_declaration"):
-            name = _node_name(node)
-            if name:
-                s, e = _lines(node)
-                out.append((name, SymbolKind.METHOD, s, e, None, class_stack[-1] if class_stack else None, ExtractSource.AST))
-        for ch in node.children:
-            walk(ch, class_stack)
-
+            _emit(out, node, SymbolKind.METHOD, cs[-1] if cs else None)
+        for ch in node.children: walk(ch, cs)
     walk(root, [])
     return out
 
 
+_RUST_FLAT: dict[str, SymbolKind] = {
+    "struct_item": SymbolKind.CLASS,
+    "enum_item":   SymbolKind.ENUM,
+    "trait_item":  SymbolKind.INTERFACE,
+    "type_item":   SymbolKind.TYPE,
+}
+
+
 def _walk_rust(root: Any) -> list[_Symbol]:
     out: list[_Symbol] = []
-
-    def walk(node: Any, impl_type: str | None = None) -> None:
+    def walk(node: Any, impl_ctx: str | None = None) -> None:
         t = node.type
         if t == "function_item":
-            name = _node_name(node)
-            if name:
-                s, e = _lines(node)
-                kind = SymbolKind.METHOD if impl_type else SymbolKind.FUNCTION
-                out.append((name, kind, s, e, None, impl_type, ExtractSource.AST))
-        elif t == "struct_item":
-            name = _node_name(node)
-            if name:
-                s, e = _lines(node)
-                out.append((name, SymbolKind.CLASS, s, e, None, None, ExtractSource.AST))
-        elif t == "enum_item":
-            name = _node_name(node)
-            if name:
-                s, e = _lines(node)
-                out.append((name, SymbolKind.ENUM, s, e, None, None, ExtractSource.AST))
-        elif t == "trait_item":
-            name = _node_name(node)
-            if name:
-                s, e = _lines(node)
-                out.append((name, SymbolKind.INTERFACE, s, e, None, None, ExtractSource.AST))
+            _emit(out, node, SymbolKind.METHOD if impl_ctx else SymbolKind.FUNCTION, impl_ctx)
+        elif t in _RUST_FLAT:
+            _emit(out, node, _RUST_FLAT[t])
         elif t == "impl_item":
-            type_node = node.child_by_field_name("type")
-            try:
-                impl_name = type_node.text.decode("utf-8", errors="ignore").strip() if type_node else None
-            except Exception:
-                impl_name = None
-            for ch in node.children:
-                walk(ch, impl_type=impl_name)
+            impl_name = _node_text(node.child_by_field_name("type"))
+            for ch in node.children: walk(ch, impl_ctx=impl_name)
             return
-        elif t == "type_item":
-            name = _node_name(node)
-            if name:
-                s, e = _lines(node)
-                out.append((name, SymbolKind.TYPE, s, e, None, None, ExtractSource.AST))
-        for ch in node.children:
-            walk(ch, impl_type)
-
+        for ch in node.children: walk(ch, impl_ctx)
     walk(root)
     return out
+
+
+def _resolve_c_decl_name(node: Any) -> str | None:
+    """Unwrap nested C/C++ declarators to find the function name."""
+    if node is None: return None
+    if node.type == "identifier": return _node_text(node)
+    if node.type in ("function_declarator", "pointer_declarator", "reference_declarator",
+                     "abstract_reference_declarator", "scoped_identifier"):
+        inner = node.child_by_field_name("declarator")
+        if inner: return _resolve_c_decl_name(inner)
+        for ch in node.children:
+            result = _resolve_c_decl_name(ch)
+            if result: return result
+    return None
 
 
 def _walk_c_cpp(root: Any, is_cpp: bool = False) -> list[_Symbol]:
     out: list[_Symbol] = []
-
     def walk(node: Any) -> None:
         t = node.type
         if t == "function_definition":
-            # C/C++ function_definition has a declarator field
-            decl = node.child_by_field_name("declarator")
-            name = _resolve_c_declarator_name(decl)
+            name = _resolve_c_decl_name(node.child_by_field_name("declarator"))
             if name:
                 s, e = _lines(node)
                 out.append((name, SymbolKind.FUNCTION, s, e, None, None, ExtractSource.AST))
         elif t in ("struct_specifier", "union_specifier"):
-            name = _node_name(node)
-            if name:
-                s, e = _lines(node)
-                out.append((name, SymbolKind.CLASS, s, e, None, None, ExtractSource.AST))
-        elif is_cpp and t == "class_specifier":
-            name = _node_name(node)
-            if name:
-                s, e = _lines(node)
-                out.append((name, SymbolKind.CLASS, s, e, None, None, ExtractSource.AST))
-                for ch in node.children:
-                    walk(ch)
-                return
+            _emit(out, node, SymbolKind.CLASS)
         elif t == "enum_specifier":
-            name = _node_name(node)
+            _emit(out, node, SymbolKind.ENUM)
+        elif is_cpp and t == "class_specifier":
+            name = _emit(out, node, SymbolKind.CLASS)
             if name:
-                s, e = _lines(node)
-                out.append((name, SymbolKind.ENUM, s, e, None, None, ExtractSource.AST))
+                for ch in node.children: walk(ch)
+                return
         elif t == "type_definition":
             for ch in node.children:
                 if ch.type == "type_identifier":
-                    try:
-                        tname = ch.text.decode("utf-8", errors="ignore").strip()
-                        if tname:
-                            s, e = _lines(node)
-                            out.append((tname, SymbolKind.TYPE, s, e, None, None, ExtractSource.AST))
-                    except Exception:
-                        pass
+                    tname = _node_text(ch)
+                    if tname:
+                        s, e = _lines(node)
+                        out.append((tname, SymbolKind.TYPE, s, e, None, None, ExtractSource.AST))
                     break
-        for ch in node.children:
-            walk(ch)
-
+        for ch in node.children: walk(ch)
     walk(root)
     return out
 
 
-def _resolve_c_declarator_name(node: Any) -> str | None:
-    """Recursively unwrap nested declarators to find the innermost identifier name."""
-    if node is None:
-        return None
-    t = node.type
-    if t == "identifier":
-        try:
-            return node.text.decode("utf-8", errors="ignore").strip()
-        except Exception:
-            return None
-    if t in ("function_declarator", "pointer_declarator", "reference_declarator",
-              "abstract_reference_declarator", "scoped_identifier"):
-        inner = node.child_by_field_name("declarator")
-        if inner:
-            return _resolve_c_declarator_name(inner)
-        # fallback: first child that is an identifier or nested declarator
-        for ch in node.children:
-            result = _resolve_c_declarator_name(ch)
-            if result:
-                return result
-    return None
-
-
-# ── Cached language objects (loaded once per process) ─────────────────────────
+# ── Cached language objects + dispatcher ──────────────────────────────────────
 
 _TS_CACHE: dict[str, Any] = {}
 
@@ -397,11 +296,24 @@ def _get_ts_lang(name: str) -> Any | None:
     return _TS_CACHE[name]
 
 
-# ── Dispatcher ────────────────────────────────────────────────────────────────
+_WALKERS: dict[str, Any] = {
+    "python":     lambda root: _walk_python_ts(root),
+    "javascript": lambda root: _walk_js_ts(root, is_ts=False),
+    "typescript": lambda root: _walk_js_ts(root, is_ts=True),
+    "go":         _walk_go,
+    "java":       _walk_java,
+    "rust":       _walk_rust,
+    "c":          lambda root: _walk_c_cpp(root, is_cpp=False),
+    "cpp":        lambda root: _walk_c_cpp(root, is_cpp=True),
+    "c++":        lambda root: _walk_c_cpp(root, is_cpp=True),
+}
+
 
 def _extract_symbols_treesitter(content: str, language: str) -> list[_Symbol]:
-    """Extract symbols using tree-sitter (new API). Returns empty list on failure."""
     low = (language or "").lower()
+    walker = _WALKERS.get(low)
+    if walker is None:
+        return []
     lang_obj = _get_ts_lang(low)
     if lang_obj is None:
         return []
@@ -409,25 +321,10 @@ def _extract_symbols_treesitter(content: str, language: str) -> list[_Symbol]:
     if root is None:
         return []
     try:
-        if low == "python":
-            return _walk_python_ts(root)
-        if low in ("javascript",):
-            return _walk_js_ts(root, is_ts=False)
-        if low == "typescript":
-            return _walk_js_ts(root, is_ts=True)
-        if low == "go":
-            return _walk_go(root)
-        if low == "java":
-            return _walk_java(root)
-        if low == "rust":
-            return _walk_rust(root)
-        if low == "c":
-            return _walk_c_cpp(root, is_cpp=False)
-        if low in ("cpp", "c++"):
-            return _walk_c_cpp(root, is_cpp=True)
+        return walker(root)
     except Exception as exc:
         logger.warning("tree-sitter extraction failed for %s: %s", language, exc)
-    return []
+        return []
 
 
 # ── Legacy regex fallback (kept for unsupported languages) ────────────────────
