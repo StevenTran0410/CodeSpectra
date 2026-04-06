@@ -21,7 +21,7 @@ app.whenReady().then(async () => {
     logger.info(`CodeSpectra ${app.getVersion()} — starting Python backend...`)
     const client = await startPythonServer()
 
-    registerAppHandlers()
+    registerAppHandlers(client)
     registerWorkspaceHandlers(client)
     registerProviderHandlers(client)
     registerConsentHandlers(client)

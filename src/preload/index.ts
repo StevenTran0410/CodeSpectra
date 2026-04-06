@@ -154,7 +154,8 @@ const api = {
   app: {
     getVersion: (): Promise<string> => ipcRenderer.invoke('app:get-version'),
     getUserDataPath: (): Promise<string> => ipcRenderer.invoke('app:get-user-data-path'),
-    getLogsPath: (): Promise<string> => ipcRenderer.invoke('app:get-logs-path')
+    getLogsPath: (): Promise<string> => ipcRenderer.invoke('app:get-logs-path'),
+    getDiagnostics: () => ipcRenderer.invoke('app:get-diagnostics')
   }
 }
 
