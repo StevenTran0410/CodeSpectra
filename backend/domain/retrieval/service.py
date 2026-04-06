@@ -25,11 +25,15 @@ _WS = re.compile(r"\s+")
 _WORD = re.compile(r"[A-Za-z0-9_]+")
 
 _SECTION_BUDGETS: dict[RetrievalSection, int] = {
-    RetrievalSection.ARCHITECTURE: 2600,
-    RetrievalSection.CONVENTIONS: 1900,
-    RetrievalSection.FEATURE_MAP: 2600,
-    RetrievalSection.IMPORTANT_FILES: 2200,
-    RetrievalSection.GLOSSARY: 1600,
+    # Increased from ~2K to 6-10K.
+    # Modern LLMs: 128K-200K context; even local 8B models have 8K+.
+    # Cursor sends 8K-20K code tokens per query — our old 2600 was severe under-use.
+    # Budget here = tokens reserved for evidence only (system prompt + user preamble add ~800 on top).
+    RetrievalSection.ARCHITECTURE: 10_000,
+    RetrievalSection.CONVENTIONS: 7_000,
+    RetrievalSection.FEATURE_MAP: 10_000,
+    RetrievalSection.IMPORTANT_FILES: 8_000,
+    RetrievalSection.GLOSSARY: 5_000,
 }
 
 _SECTION_CATEGORY_HINTS: dict[RetrievalSection, set[str]] = {
@@ -62,6 +66,36 @@ def _chunk_size_for(category: str, language: str | None) -> int:
     return 1300
 
 
+_BRACE_LANGS = {"javascript", "typescript", "java", "cpp", "c", "go", "rust", "csharp", "kotlin", "swift", "scala"}
+
+
+def _ends_mid_function(content: str, language: str | None) -> bool:
+    """Return True if the chunk likely ends in the middle of a function/class body.
+
+    For brace languages: unbalanced { > } means we're still inside a block.
+    For Python: a def/class whose body indentation never returned to col-0.
+    For unknown: fall back to brace counting.
+    """
+    if not content.strip():
+        return False
+
+    if (language or "").lower() in _BRACE_LANGS:
+        return content.count("{") > content.count("}")
+
+    if (language or "").lower() == "python":
+        lines = content.splitlines()
+        non_empty = [l for l in lines if l.strip()]
+        if not non_empty:
+            return False
+        has_def = any(re.match(r"[ \t]*(def |class |async def )", l) for l in lines)
+        last = non_empty[-1]
+        # If the last line is still indented and the chunk has a def/class, likely mid-body
+        return has_def and (last.startswith(" ") or last.startswith("\t"))
+
+    # Default: brace balance
+    return content.count("{") > content.count("}")
+
+
 def _split_chunks(text: str, target_size: int) -> list[str]:
     clean = text.replace("\r\n", "\n")
     if len(clean) <= target_size:
@@ -89,6 +123,39 @@ def _query_terms(q: str) -> list[str]:
         seen.add(t)
         out.append(t)
     return out
+
+
+def _maybe_expand_to_boundary(
+    ev: RetrievalEvidence,
+    chunk_lookup: dict[tuple[str, int], dict],
+) -> RetrievalEvidence:
+    """If the chunk ends mid-function, append the next adjacent chunk once.
+
+    Rules:
+    - Expand at most ONE hop — we never chain expansions.
+    - If the next chunk exists and merging completes (or partially completes) the
+      function, we include it. Even if the next chunk starts another function, we
+      stop there (don't expand further).
+    """
+    cur_row = chunk_lookup.get((ev.rel_path, ev.chunk_index))
+    language = cur_row["language"] if cur_row is not None else None
+    if not _ends_mid_function(ev.excerpt, language):
+        return ev
+
+    next_row = chunk_lookup.get((ev.rel_path, ev.chunk_index + 1))
+    if next_row is None or not next_row["content"]:
+        return ev  # No adjacent chunk available
+
+    merged = ev.excerpt + "\n" + (next_row["content"] or "")
+    return RetrievalEvidence(
+        chunk_id=ev.chunk_id,
+        rel_path=ev.rel_path,
+        chunk_index=ev.chunk_index,
+        reason_codes=[*ev.reason_codes, "boundary-expanded"],
+        score=ev.score,
+        token_estimate=_token_estimate(merged),
+        excerpt=merged,
+    )
 
 
 class RetrievalService:
@@ -258,11 +325,16 @@ class RetrievalService:
                 reason_codes=reason_codes,
                 score=score,
                 token_estimate=int(r["token_estimate"] or _token_estimate(content)),
-                excerpt=(content[:360] + "...") if len(content) > 360 else content,
+                excerpt=content,  # full chunk content — render_bundle truncates for LLM prompt
             )
             scored.append((score, ev))
 
         scored.sort(key=lambda x: (-x[0], x[1].rel_path, x[1].chunk_index))
+
+        # Build a lookup for adjacent-chunk expansion: (rel_path, chunk_index) -> row
+        chunk_lookup: dict[tuple[str, int], dict] = {
+            (r["rel_path"], r["chunk_index"]): r for r in rows
+        }
 
         used = 0
         picked: list[RetrievalEvidence] = []
@@ -272,6 +344,14 @@ class RetrievalService:
                 break
             if used + ev.token_estimate > budget:
                 continue
+
+            # Expand chunk to function boundary if needed (at most one hop).
+            ev = _maybe_expand_to_boundary(ev, chunk_lookup)
+
+            # Re-check budget after potential expansion
+            if used + ev.token_estimate > budget:
+                continue
+
             picked.append(ev)
             used += ev.token_estimate
 

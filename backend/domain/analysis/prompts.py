@@ -198,17 +198,26 @@ Required output schema:
 {_JSON_ENFORCEMENT}"""
 
 
-def render_bundle(bundle: RetrievalBundle, limit: int = 14) -> str:
+def render_bundle(bundle: RetrievalBundle, limit: int = 28, excerpt_chars: int = 1500) -> str:
+    """Render retrieval bundle as LLM context.
+
+    limit: max evidence items to include (default 28 — budgets now 5K-10K tokens).
+    excerpt_chars: max chars per chunk sent to LLM. 1500 chars ≈ 375 tokens.
+      boundary-expanded chunks may be ~3000 chars (two merged chunks); they are
+      allowed through up to 3000 chars to preserve the full function body.
+    """
     parts: list[str] = []
     for i, ev in enumerate(bundle.evidences[:limit], start=1):
-        excerpt = (ev.excerpt or "").strip().replace("\n", " ")
-        if len(excerpt) > 360:
-            excerpt = excerpt[:360].rstrip() + "..."
+        excerpt = (ev.excerpt or "").strip()
+        # Boundary-expanded chunks get twice the room so the merged function is intact
+        cap = excerpt_chars * 2 if "boundary-expanded" in ev.reason_codes else excerpt_chars
+        if len(excerpt) > cap:
+            excerpt = excerpt[:cap].rstrip() + "..."
         parts.append(
             f"[{i}] file={ev.rel_path} chunk={ev.chunk_index} score={ev.score:.3f} "
-            f"reasons={','.join(ev.reason_codes)} tokens={ev.token_estimate}\nexcerpt: {excerpt}"
+            f"reasons={','.join(ev.reason_codes)}\n{excerpt}"
         )
-    return "\n\n".join(parts) if parts else "No evidence returned."
+    return "\n\n---\n\n".join(parts) if parts else "No evidence returned."
 
 
 def build_director_user_prompt(snapshot_id: str, scan_mode: str) -> str:

@@ -235,6 +235,8 @@ class StructuralGraphService:
             row = await cur.fetchone()
         if row is None:
             raise NotFoundError("StructuralGraphSummary", snapshot_id)
+        # Always return live toolchain status — DB value is stale if module was
+        # built after the graph was last computed.
         return StructuralGraphSummary(
             snapshot_id=row["snapshot_id"],
             total_nodes=row["total_nodes"],
@@ -243,7 +245,7 @@ class StructuralGraphService:
             entrypoints=json.loads(row["entrypoints"] or "[]"),
             top_central_files=[GraphNodeScore(**x) for x in json.loads(row["top_central_files"] or "[]")],
             generated_at=row["generated_at"],
-            native_toolchain=row["native_toolchain"],
+            native_toolchain=detect_cpp_toolchain(),
         )
 
     async def edges(self, snapshot_id: str, limit: int = 2000) -> GraphEdgesResponse:
