@@ -86,7 +86,7 @@ class AgentG(BaseTypedAgent):
                 AGENT_G_SYSTEM,
                 user_prompt,
                 AGENT_G_SCHEMA_STR,
-                max_completion_tokens=900,
+                max_completion_tokens=2000,
             )
             slot_keys = (
                 "entrypoint",

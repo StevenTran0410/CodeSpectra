@@ -121,6 +121,7 @@ class RunDirectorAgent:
         model_id: str,
         snapshot_id: str,
         scan_mode: str,
+        repo_name: str = "",
     ) -> dict[str, Any]:
         plan = await self._plan(provider_id, model_id, snapshot_id, scan_mode)
 
@@ -176,6 +177,7 @@ class RunDirectorAgent:
             static_convention=static_conv,
             static_risk=static_risk,
             snapshot_id=snapshot_id,
+            repo_name=repo_name,
             graph_summary=graph_summary,
         )
         report["orchestration"] = {

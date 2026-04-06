@@ -87,7 +87,7 @@ class AgentJ(BaseTypedAgent):
                 AGENT_J_SYSTEM,
                 user_prompt,
                 AGENT_J_SCHEMA_STR,
-                max_completion_tokens=1400,
+                max_completion_tokens=3000,
             )
             raw_findings = data.get("findings")
             findings: list[dict[str, Any]] = []

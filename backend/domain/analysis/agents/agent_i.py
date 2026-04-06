@@ -52,7 +52,7 @@ class AgentI(BaseTypedAgent):
                 AGENT_I_SYSTEM,
                 user_prompt,
                 AGENT_I_SCHEMA_STR,
-                max_completion_tokens=1200,
+                max_completion_tokens=3000,
             )
             raw_terms = data.get("terms")
             terms: list[dict[str, Any]] = []

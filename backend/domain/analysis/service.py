@@ -42,73 +42,159 @@ def _slug(s: str) -> str:
     return out or "report"
 
 
+def _section_footer(s: dict, lines: list[str]) -> None:
+    """Append evidence files + blind spots footer shared by all sections."""
+    evidences = s.get("evidence_files", [])
+    if isinstance(evidences, list) and evidences:
+        lines.append("")
+        lines.append("**Evidence files:** " + ", ".join(f"`{f}`" for f in evidences[:20]))
+    blind = s.get("blind_spots", [])
+    if isinstance(blind, list) and blind:
+        lines.append("")
+        lines.append("**Blind spots:** " + "; ".join(str(b) for b in blind[:10]))
+    conf = s.get("confidence", "")
+    if conf:
+        lines.append(f"\n_Confidence: {conf}_")
+
+
+def _render_section_a(s: dict, lines: list[str]) -> None:
+    lines += [
+        "## A — Project Identity Card", "",
+        f"**Repo:** {s.get('repo_name', '')}  ",
+        f"**Domain:** {s.get('domain', '')}  ",
+        f"**Runtime type:** `{s.get('runtime_type', '')}`  ",
+        "",
+        f"**Purpose:** {s.get('purpose', '')}",
+        "",
+        f"**Business context:** {s.get('business_context', '')}",
+        "",
+    ]
+    stack = s.get("tech_stack", [])
+    if stack:
+        lines.append("**Tech stack:** " + ", ".join(f"`{t}`" for t in stack))
+    _section_footer(s, lines)
+    lines.append("")
+
+
+def _render_section_g(s: dict, lines: list[str]) -> None:
+    lines += ["## G — Important Files Radar", ""]
+    slots = ["entrypoint", "backbone", "critical_config", "highest_centrality",
+             "most_dangerous_to_touch", "read_first"]
+    labels = {
+        "entrypoint": "Entrypoint",
+        "backbone": "Backbone",
+        "critical_config": "Critical config",
+        "highest_centrality": "Highest centrality",
+        "most_dangerous_to_touch": "Most dangerous to touch",
+        "read_first": "Read first",
+    }
+    for slot in slots:
+        v = s.get(slot)
+        if isinstance(v, dict):
+            lines.append(f"- **{labels[slot]}:** `{v.get('file', '')}` — {v.get('reason', '')}")
+    other = s.get("other_important", [])
+    if isinstance(other, list) and other:
+        lines.append("")
+        lines.append("**Other important files:**")
+        for item in other[:10]:
+            if isinstance(item, dict):
+                lines.append(f"  - `{item.get('file', '')}` — {item.get('reason', '')}")
+    _section_footer(s, lines)
+    lines.append("")
+
+
+def _render_section_i(s: dict, lines: list[str]) -> None:
+    lines += ["## I — Glossary / Domain Terms", ""]
+    terms = s.get("terms", [])
+    if isinstance(terms, list) and terms:
+        lines.append("| Term | Definition | Evidence |")
+        lines.append("|---|---|---|")
+        for t in terms[:40]:
+            if not isinstance(t, dict):
+                continue
+            evs = t.get("evidence_files", [])
+            ev_str = ", ".join(f"`{e}`" for e in evs[:2]) if isinstance(evs, list) else ""
+            lines.append(f"| **{t.get('term', '')}** | {t.get('definition', '')} | {ev_str} |")
+    _section_footer(s, lines)
+    lines.append("")
+
+
+def _render_section_j(s: dict, lines: list[str]) -> None:
+    lines += ["## J — Risk / Complexity / Unknowns", ""]
+    summary = s.get("summary", "")
+    if summary:
+        lines += [summary, ""]
+    findings = s.get("findings", [])
+    if isinstance(findings, list) and findings:
+        for sev in ("high", "medium", "low"):
+            group = [f for f in findings if isinstance(f, dict) and f.get("severity") == sev]
+            if not group:
+                continue
+            lines.append(f"### {sev.upper()} severity ({len(group)})")
+            for f in group:
+                lines.append(f"- **[{f.get('category', '')}]** {f.get('title', '')}")
+                rationale = f.get("rationale", "")
+                if rationale:
+                    lines.append(f"  {rationale}")
+                ev = f.get("evidence", [])
+                if isinstance(ev, list) and ev:
+                    lines.append("  Evidence: " + ", ".join(f"`{e}`" for e in ev[:3]))
+            lines.append("")
+    _section_footer(s, lines)
+    lines.append("")
+
+
+_SECTION_RENDERERS = {
+    "A": _render_section_a,
+    "G": _render_section_g,
+    "I": _render_section_i,
+    "J": _render_section_j,
+}
+
+_SECTION_ORDER = ["A", "G", "I", "J", "B", "C", "D", "E", "F", "H", "K"]
+
+
 def _render_report_markdown(report: AnalysisReport) -> str:
     summary = report.summary
-    sections = report.report.get("sections", []) if isinstance(report.report, dict) else []
-    conf = report.report.get("confidence_summary", {}) if isinstance(report.report, dict) else {}
+    raw = report.report if isinstance(report.report, dict) else {}
 
     lines: list[str] = [
-        f"# CodeSpectra Analysis Report",
+        "# CodeSpectra Analysis Report",
         "",
-        f"- Report ID: `{summary.id}`",
-        f"- Job ID: `{summary.job_id}`",
-        f"- Repo: `{summary.repo_name or summary.repo_id}`",
-        f"- Branch: `{summary.branch or 'unknown'}`",
-        f"- Model: `{summary.model_id}`",
-        f"- Scan mode: `{summary.scan_mode.value}`",
-        f"- Privacy mode: `{summary.privacy_mode.value}`",
-        f"- Created at: `{summary.created_at}`",
-        "",
-        "## Confidence Summary",
-        "",
-        f"- High: {int(conf.get('high', 0))}",
-        f"- Medium: {int(conf.get('medium', 0))}",
-        f"- Low: {int(conf.get('low', 0))}",
+        f"- **Report ID:** `{summary.id}`",
+        f"- **Repo:** {summary.repo_name or summary.repo_id}",
+        f"- **Branch:** {summary.branch or 'unknown'}",
+        f"- **Model:** `{summary.model_id}`",
+        f"- **Scan mode:** {summary.scan_mode.value}",
+        f"- **Created at:** {summary.created_at}",
         "",
     ]
 
-    for i, s in enumerate(sections, start=1):
-        if not isinstance(s, dict):
-            continue
-        section_id = str(s.get("section", "")).strip() or f"section-{i}"
-        confidence = str(s.get("confidence", "unknown")).strip()
-        content = str(s.get("content", "")).strip()
-        lines.extend(
-            [
-                f"## {i}. {section_id}",
-                "",
-                f"- Confidence: `{confidence}`",
-                "",
-                content if content else "_No content_",
-                "",
-            ]
-        )
-
-        details = s.get("details")
-        if isinstance(details, dict) and details:
-            lines.extend(["### Structured Details", ""])
-            for k, v in details.items():
-                lines.append(f"- **{k}**:")
-                if isinstance(v, list):
-                    for item in v[:20]:
-                        lines.append(f"  - {item}")
-                else:
-                    lines.append(f"  - {v}")
-            lines.append("")
-
-        evidences = s.get("evidence_files", [])
-        if isinstance(evidences, list) and evidences:
-            lines.extend(["### Evidence Files", ""])
-            for f in evidences[:30]:
-                lines.append(f"- `{f}`")
-            lines.append("")
-
-        blind = s.get("blind_spots", [])
-        if isinstance(blind, list) and blind:
-            lines.extend(["### Blind Spots", ""])
-            for b in blind[:20]:
-                lines.append(f"- {b}")
-            lines.append("")
+    sections_v2 = raw.get("sections_v2")
+    if isinstance(sections_v2, dict) and sections_v2:
+        for letter in _SECTION_ORDER:
+            sec = sections_v2.get(letter)
+            if not isinstance(sec, dict) or "error" in sec:
+                continue
+            renderer = _SECTION_RENDERERS.get(letter)
+            if renderer:
+                renderer(sec, lines)
+            else:
+                # Generic fallback for sections without a dedicated renderer (B–K added later)
+                lines.append(f"## {letter} — (section)")
+                lines.append("")
+                for k, v in sec.items():
+                    if k in ("confidence", "evidence_files", "blind_spots"):
+                        continue
+                    if isinstance(v, list):
+                        lines.append(f"**{k}:** " + ", ".join(str(i) for i in v[:20]))
+                    else:
+                        lines.append(f"**{k}:** {v}")
+                _section_footer(sec, lines)
+                lines.append("")
+    else:
+        lines.append("_No analysis section data found. Re-run analysis to generate sections._")
+        lines.append("")
 
     return "\n".join(lines).rstrip() + "\n"
 
@@ -265,7 +351,7 @@ class AnalysisService:
         )
 
     async def start(self, req: StartAnalysisRequest):
-        async with get_db().execute("SELECT 1 FROM local_repos WHERE id=?", (req.repo_id,)) as cur:
+        async with get_db().execute("SELECT name FROM local_repos WHERE id=?", (req.repo_id,)) as cur:
             repo = await cur.fetchone()
         if repo is None:
             raise NotFoundError("LocalRepo", req.repo_id)
@@ -297,12 +383,13 @@ class AnalysisService:
             CreateJobRequest(type="analysis", repo_id=req.repo_id, steps=steps)
         )
 
-        task = asyncio.create_task(self._run(job.id, req))
+        repo_name = str(repo["name"] or "") if repo else ""
+        task = asyncio.create_task(self._run(job.id, req, repo_name))
         _bg_tasks.add(task)
         task.add_done_callback(lambda t: _bg_tasks.discard(t))
         return job
 
-    async def _run(self, job_id: str, req: StartAnalysisRequest) -> None:
+    async def _run(self, job_id: str, req: StartAnalysisRequest, repo_name: str = "") -> None:
         try:
             await self._jobs.start(job_id)
 
@@ -356,6 +443,7 @@ class AnalysisService:
                 model_id=req.model_id,
                 snapshot_id=req.snapshot_id,
                 scan_mode=req.scan_mode.value,
+                repo_name=repo_name,
             )
             if await _cancelled():
                 return

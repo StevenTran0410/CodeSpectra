@@ -538,6 +538,7 @@ class AnalysisAgentPipeline:
         static_risk: RiskReport | None = None,
         *,
         snapshot_id: str = "",
+        repo_name: str = "",
         graph_summary: StructuralGraphSummary | None = None,
     ) -> dict[str, Any]:
         structure = await self._structure.run(provider_id, model_id, architecture, important)
@@ -556,7 +557,7 @@ class AnalysisAgentPipeline:
             assert self._agent_g is not None
             assert self._agent_i is not None
             assert self._agent_j is not None
-            sections_v2["A"] = await self._agent_a.run(provider_id, model_id, snapshot_id)
+            sections_v2["A"] = await self._agent_a.run(provider_id, model_id, snapshot_id, repo_name)
             sections_v2["G"] = await self._agent_g.run(
                 provider_id, model_id, snapshot_id, graph_summary
             )
