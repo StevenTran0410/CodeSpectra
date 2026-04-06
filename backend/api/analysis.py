@@ -5,6 +5,7 @@ from domain.analysis.service import AnalysisService
 from domain.analysis.types import (
     AnalysisEstimateResponse,
     AnalysisReport,
+    AnalysisReportMarkdownResponse,
     AnalysisReportSummary,
     StartAnalysisRequest,
 )
@@ -45,3 +46,8 @@ async def get_report_by_job(job_id: str) -> AnalysisReport:
 @router.delete("/reports/{report_id}", status_code=204)
 async def delete_report(report_id: str) -> None:
     return await _service.delete_report(report_id)
+
+
+@router.get("/reports/{report_id}/markdown", response_model=AnalysisReportMarkdownResponse)
+async def export_report_markdown(report_id: str) -> AnalysisReportMarkdownResponse:
+    return await _service.export_report_markdown(report_id)

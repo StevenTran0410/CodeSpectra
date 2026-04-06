@@ -35,12 +35,13 @@ def _safe_json(s: str) -> dict[str, Any]:
 
 def _default_plan() -> DirectorPlan:
     return DirectorPlan(
-        section_order=["architecture", "important_files", "feature_map", "conventions", "risk"],
+        section_order=["architecture", "important_files", "feature_map", "glossary", "conventions", "risk"],
         max_results={
             "architecture": 24,
             "conventions": 18,
             "feature_map": 22,
             "important_files": 20,
+            "glossary": 16,
             "risk": 20,
         },
         notes="default plan",
@@ -92,7 +93,7 @@ class RunDirectorAgent:
             section_order = [
                 s
                 for s in section_order
-                if s in {"architecture", "conventions", "feature_map", "important_files", "risk"}
+                if s in {"architecture", "conventions", "feature_map", "important_files", "glossary", "risk"}
             ] or fallback.section_order
 
             raw_max = data.get("max_results", {})
@@ -129,6 +130,7 @@ class RunDirectorAgent:
             important=ctx.important,
             conventions=ctx.conventions,
             feature_map=ctx.feature_map,
+            glossary=ctx.glossary,
             risk=ctx.risk,
         )
         report["orchestration"] = {

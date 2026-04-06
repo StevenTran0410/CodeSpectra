@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 
 from domain.job.service import JobService
 from domain.job.types import CreateJobRequest, StepName
@@ -25,6 +26,7 @@ from .orchestrator import RunDirectorAgent
 from .types import (
     AnalysisEstimateResponse,
     AnalysisReport,
+    AnalysisReportMarkdownResponse,
     AnalysisReportSummary,
     PrivacyMode,
     ScanMode,
@@ -32,6 +34,83 @@ from .types import (
 )
 
 _bg_tasks: set[asyncio.Task] = set()
+
+
+def _slug(s: str) -> str:
+    out = re.sub(r"[^a-zA-Z0-9._-]+", "-", (s or "").strip())
+    out = out.strip("-._")
+    return out or "report"
+
+
+def _render_report_markdown(report: AnalysisReport) -> str:
+    summary = report.summary
+    sections = report.report.get("sections", []) if isinstance(report.report, dict) else []
+    conf = report.report.get("confidence_summary", {}) if isinstance(report.report, dict) else {}
+
+    lines: list[str] = [
+        f"# CodeSpectra Analysis Report",
+        "",
+        f"- Report ID: `{summary.id}`",
+        f"- Job ID: `{summary.job_id}`",
+        f"- Repo: `{summary.repo_name or summary.repo_id}`",
+        f"- Branch: `{summary.branch or 'unknown'}`",
+        f"- Model: `{summary.model_id}`",
+        f"- Scan mode: `{summary.scan_mode.value}`",
+        f"- Privacy mode: `{summary.privacy_mode.value}`",
+        f"- Created at: `{summary.created_at}`",
+        "",
+        "## Confidence Summary",
+        "",
+        f"- High: {int(conf.get('high', 0))}",
+        f"- Medium: {int(conf.get('medium', 0))}",
+        f"- Low: {int(conf.get('low', 0))}",
+        "",
+    ]
+
+    for i, s in enumerate(sections, start=1):
+        if not isinstance(s, dict):
+            continue
+        section_id = str(s.get("section", "")).strip() or f"section-{i}"
+        confidence = str(s.get("confidence", "unknown")).strip()
+        content = str(s.get("content", "")).strip()
+        lines.extend(
+            [
+                f"## {i}. {section_id}",
+                "",
+                f"- Confidence: `{confidence}`",
+                "",
+                content if content else "_No content_",
+                "",
+            ]
+        )
+
+        details = s.get("details")
+        if isinstance(details, dict) and details:
+            lines.extend(["### Structured Details", ""])
+            for k, v in details.items():
+                lines.append(f"- **{k}**:")
+                if isinstance(v, list):
+                    for item in v[:20]:
+                        lines.append(f"  - {item}")
+                else:
+                    lines.append(f"  - {v}")
+            lines.append("")
+
+        evidences = s.get("evidence_files", [])
+        if isinstance(evidences, list) and evidences:
+            lines.extend(["### Evidence Files", ""])
+            for f in evidences[:30]:
+                lines.append(f"- `{f}`")
+            lines.append("")
+
+        blind = s.get("blind_spots", [])
+        if isinstance(blind, list) and blind:
+            lines.extend(["### Blind Spots", ""])
+            for b in blind[:20]:
+                lines.append(f"- {b}")
+            lines.append("")
+
+    return "\n".join(lines).rstrip() + "\n"
 
 
 class AnalysisService:
@@ -173,6 +252,15 @@ class AnalysisService:
             if cur.rowcount == 0:
                 raise NotFoundError("AnalysisReport", report_id)
         await db.commit()
+
+    async def export_report_markdown(self, report_id: str) -> AnalysisReportMarkdownResponse:
+        rep = await self.get_report(report_id)
+        default_name = f"codespectra-report-{_slug(rep.summary.repo_name or rep.summary.repo_id)}-{report_id[:8]}.md"
+        return AnalysisReportMarkdownResponse(
+            report_id=report_id,
+            default_name=default_name,
+            markdown=_render_report_markdown(rep),
+        )
 
     async def start(self, req: StartAnalysisRequest):
         async with get_db().execute("SELECT 1 FROM local_repos WHERE id=?", (req.repo_id,)) as cur:

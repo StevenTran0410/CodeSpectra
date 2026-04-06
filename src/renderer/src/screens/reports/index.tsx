@@ -16,6 +16,43 @@ const SECTION_AGENT: Record<string, string> = {
   'F/I/J': 'Domain & Risk Intelligence Agent',
 }
 
+function stringifyStructuredItem(item: unknown): string {
+  if (typeof item === 'string') return item
+  if (item && typeof item === 'object') {
+    const parts = Object.entries(item as Record<string, unknown>)
+      .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : String(v)}`)
+    return parts.join(' | ')
+  }
+  return String(item)
+}
+
+function renderDetails(details: unknown): React.ReactElement | null {
+  if (!details || typeof details !== 'object') return null
+  const entries = Object.entries(details as Record<string, unknown>)
+    .filter(([, v]) => v !== null && v !== undefined)
+  if (entries.length === 0) return null
+  return (
+    <div className="space-y-2 rounded-md border border-zinc-800 bg-zinc-900/40 p-2">
+      {entries.map(([key, value]) => (
+        <div key={key} className="space-y-1">
+          <div className="text-[11px] uppercase tracking-wide text-zinc-500">{key.replaceAll('_', ' ')}</div>
+          {Array.isArray(value) ? (
+            <div className="space-y-1">
+              {value.slice(0, 8).map((item, idx) => (
+                <div key={`${key}-${idx}`} className="text-xs text-zinc-300 leading-5">
+                  - {stringifyStructuredItem(item)}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-xs text-zinc-300 leading-5">{stringifyStructuredItem(value)}</div>
+          )}
+        </div>
+      ))}
+    </div>
+  )
+}
+
 export default function ReportViewerScreen(): React.ReactElement {
   const navigate = useNavigate()
   const [params] = useSearchParams()
@@ -28,7 +65,9 @@ export default function ReportViewerScreen(): React.ReactElement {
   const [report, setReport] = useState<AnalysisReport | null>(null)
   const [loading, setLoading] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  const [exportingMd, setExportingMd] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [success, setSuccess] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [hideDeleteWarning, setHideDeleteWarning] = useState(
     localStorage.getItem('reports.deleteWarningHidden') === '1'
@@ -73,6 +112,23 @@ export default function ReportViewerScreen(): React.ReactElement {
     }
   }
 
+  const exportMarkdown = async () => {
+    if (!report) return
+    setExportingMd(true)
+    setError(null)
+    setSuccess(null)
+    try {
+      const out = await window.api.analysis.exportReportMarkdown(report.summary.id)
+      if (out.saved && out.file_path) {
+        setSuccess(`Markdown saved: ${out.file_path}`)
+      }
+    } catch (err) {
+      setError(toErrorMessage(err))
+    } finally {
+      setExportingMd(false)
+    }
+  }
+
   useEffect(() => {
     void refreshList()
   }, [repoId, reportIdInUrl])
@@ -109,6 +165,11 @@ export default function ReportViewerScreen(): React.ReactElement {
       </div>
       <div className="h-[calc(100vh-10rem)] overflow-y-auto p-4 space-y-3">
         {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
+        {success && (
+          <div className="rounded-md border border-emerald-800/60 bg-emerald-950/30 px-3 py-2 text-xs text-emerald-300">
+            {success}
+          </div>
+        )}
 
         {!isDetailMode ? (
           <div className="bg-zinc-900/60 border border-zinc-700 rounded-xl p-3 space-y-2">
@@ -176,6 +237,13 @@ export default function ReportViewerScreen(): React.ReactElement {
                       Back
                     </button>
                     <button
+                      onClick={() => { void exportMarkdown() }}
+                      disabled={exportingMd}
+                      className="px-2 py-1 text-[11px] border border-indigo-700 text-indigo-300 rounded hover:border-indigo-500 disabled:opacity-50"
+                    >
+                      {exportingMd ? 'Exporting...' : 'Export .md'}
+                    </button>
+                    <button
                       onClick={() => {
                         if (hideDeleteWarning) {
                           void deleteSelectedReport()
@@ -208,6 +276,7 @@ export default function ReportViewerScreen(): React.ReactElement {
                         <span className="ml-2 text-xs text-zinc-500">· {s.confidence}</span>
                       </div>
                       <div className="text-xs text-emerald-400">{SECTION_AGENT[s.section] ?? 'Evidence Auditor & Composer Agent'}</div>
+                      {renderDetails((s as { details?: unknown }).details)}
                       <div className="text-sm text-zinc-300 whitespace-pre-wrap leading-6">{s.content}</div>
                       {s.evidence_files.length > 0 && (
                         <div className="space-y-1">

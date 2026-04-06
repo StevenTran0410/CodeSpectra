@@ -51,7 +51,14 @@ class ChatRequest(BaseModel):
     model_id: str | None = None
     messages: list[ChatMessage]
     max_completion_tokens: int = 2048
-    temperature: float = 0.2
+    # None = omit temperature from payload entirely (use provider/model default).
+    # Required for models that reject any explicit temperature (o1, o3, gpt-5, etc.)
+    temperature: float | None = 0.2
+    # When True each adapter enables its native JSON-output mode:
+    # OpenAI → response_format=json_object, Gemini → responseMimeType=application/json,
+    # Ollama → format=json, LM Studio → response_format=json_object,
+    # Anthropic → prefill assistant turn with "{"
+    json_mode: bool = False
     stream: bool = False
 
 

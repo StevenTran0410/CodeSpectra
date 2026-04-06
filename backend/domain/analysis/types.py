@@ -48,3 +48,8 @@ class AnalysisReport(BaseModel):
     summary: AnalysisReportSummary
     report: dict
 
+
+class AnalysisReportMarkdownResponse(BaseModel):
+    report_id: str
+    default_name: str
+    markdown: str

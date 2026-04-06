@@ -106,6 +106,7 @@ export interface AnalysisReport {
       confidence: 'high' | 'medium' | 'low' | string
       evidence_files: string[]
       blind_spots: string[]
+      details?: Record<string, unknown>
     }>
     confidence_summary?: {
       high: number
@@ -423,6 +424,10 @@ declare global {
         getReport: (reportId: string) => Promise<AnalysisReport>
         getReportByJob: (jobId: string) => Promise<AnalysisReport>
         deleteReport: (reportId: string) => Promise<void>
+        exportReportMarkdown: (reportId: string) => Promise<{
+          saved: boolean
+          file_path: string | null
+        }>
         deleteRepot: (reportId: string) => Promise<void>
         deleterepot: (reportId: string) => Promise<void>
       }

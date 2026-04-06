@@ -128,6 +128,8 @@ const api = {
       ipcRenderer.invoke('analysis:getReportByJob', jobId),
     deleteReport: (reportId: string) =>
       ipcRenderer.invoke('analysis:deleteReport', reportId),
+    exportReportMarkdown: (reportId: string) =>
+      ipcRenderer.invoke('analysis:exportReportMarkdown', reportId),
     // backward-compat typo alias
     deleteRepot: (reportId: string) =>
       ipcRenderer.invoke('analysis:deleteRepot', reportId),
