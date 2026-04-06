@@ -2,9 +2,14 @@
 
 All functions query the SQLite DB and return serialisable dataclasses.
 Results are fed as pre-computed context to RiskComplexityAgent.
+
+Performance hotspots are accelerated via the native C++ graph module
+(domain.structural_graph._native_graph) when available.
+Python fallbacks are always present so the app runs without the native build.
 """
 from __future__ import annotations
 
+import importlib
 import json
 import re
 from collections import defaultdict
@@ -14,6 +19,15 @@ from pathlib import PurePosixPath
 import aiosqlite
 
 from shared.logger import logger
+
+# ── native module (optional, built by scripts/build_native_graph.py) ──────────
+def _try_native():
+    try:
+        return importlib.import_module("domain.structural_graph._native_graph")
+    except Exception:
+        return None
+
+_native = _try_native()
 
 # ── tunables ──────────────────────────────────────────────────────────────────
 _GOD_OBJECT_LINE_THRESHOLD = 300   # estimated lines (size_bytes / 40)
@@ -81,8 +95,8 @@ def _is_test_file(rel_path: str) -> bool:
     return bool(_TEST_DIR_PATTERN.search(rel_path) or _TEST_FILE_SUFFIX.search(rel_path))
 
 
-def _tarjan_scc(graph: dict[str, set[str]]) -> list[list[str]]:
-    """Iterative Tarjan SCC. Returns list of components with ≥ 2 nodes."""
+def _tarjan_scc_python(graph: dict[str, set[str]]) -> list[list[str]]:
+    """Pure-Python iterative Tarjan SCC fallback. Returns SCCs with ≥ 2 nodes."""
     index_counter = [0]
     stack: list[str] = []
     on_stack: set[str] = set()
@@ -90,32 +104,61 @@ def _tarjan_scc(graph: dict[str, set[str]]) -> list[list[str]]:
     lowlink: dict[str, int] = {}
     sccs: list[list[str]] = []
 
-    def strongconnect(v: str) -> None:
-        index[v] = lowlink[v] = index_counter[0]
+    # Iterative via explicit call stack to avoid Python recursion limits
+    for root in list(graph.keys()):
+        if root in index:
+            continue
+        call_stack: list[tuple[str, list[str], int]] = []
+        index[root] = lowlink[root] = index_counter[0]
         index_counter[0] += 1
-        stack.append(v)
-        on_stack.add(v)
-        for w in graph.get(v, set()):
-            if w not in index:
-                strongconnect(w)
-                lowlink[v] = min(lowlink[v], lowlink[w])
-            elif w in on_stack:
-                lowlink[v] = min(lowlink[v], index[w])
-        if lowlink[v] == index[v]:
-            scc: list[str] = []
-            while True:
-                w = stack.pop()
-                on_stack.discard(w)
-                scc.append(w)
-                if w == v:
-                    break
-            if len(scc) >= 2:
-                sccs.append(scc)
+        stack.append(root)
+        on_stack.add(root)
+        call_stack.append((root, list(graph.get(root, set())), 0))
 
-    for node in list(graph.keys()):
-        if node not in index:
-            strongconnect(node)
+        while call_stack:
+            v, neighbours, ei = call_stack[-1]
+            if ei < len(neighbours):
+                call_stack[-1] = (v, neighbours, ei + 1)
+                w = neighbours[ei]
+                if w not in index:
+                    index[w] = lowlink[w] = index_counter[0]
+                    index_counter[0] += 1
+                    stack.append(w)
+                    on_stack.add(w)
+                    call_stack.append((w, list(graph.get(w, set())), 0))
+                elif w in on_stack:
+                    lowlink[v] = min(lowlink[v], index[w])
+            else:
+                call_stack.pop()
+                if call_stack:
+                    parent = call_stack[-1][0]
+                    lowlink[parent] = min(lowlink[parent], lowlink[v])
+                if lowlink[v] == index[v]:
+                    scc: list[str] = []
+                    while True:
+                        w = stack.pop()
+                        on_stack.discard(w)
+                        scc.append(w)
+                        if w == v:
+                            break
+                    if len(scc) >= 2:
+                        sccs.append(scc)
     return sccs
+
+
+def _compute_scc(edge_tuples: list[tuple[str, str]]) -> list[list[str]]:
+    """SCC detection — uses C++ native module when available, falls back to Python."""
+    if _native and hasattr(_native, "compute_scc"):
+        try:
+            return _native.compute_scc([(s, d) for s, d in edge_tuples])
+        except Exception as e:
+            logger.debug("Native SCC failed, using Python fallback: %s", e)
+
+    # Python fallback
+    graph: dict[str, set[str]] = defaultdict(set)
+    for s, d in edge_tuples:
+        graph[s].add(d)
+    return _tarjan_scc_python(dict(graph))
 
 
 # ── detectors ─────────────────────────────────────────────────────────────────
@@ -173,14 +216,11 @@ async def detect_circular_imports(
     if not rows:
         return []
 
-    graph: dict[str, set[str]] = defaultdict(set)
-    for r in rows:
-        graph[r["src_path"]].add(r["dst_path"])
-
+    edge_tuples = [(r["src_path"], r["dst_path"]) for r in rows]
     try:
-        sccs = _tarjan_scc(dict(graph))
+        sccs = _compute_scc(edge_tuples)
     except Exception as e:
-        logger.warning("Tarjan SCC failed: %s", e)
+        logger.warning("SCC computation failed: %s", e)
         return []
 
     findings: list[RiskFinding] = []
@@ -202,6 +242,9 @@ async def detect_circular_imports(
     return findings
 
 
+_TODO_KEYWORDS = ["TODO", "FIXME", "HACK", "XXX", "NOSONAR"]
+
+
 async def detect_todo_hotspots(
     snapshot_id: str, db: aiosqlite.Connection
 ) -> list[RiskFinding]:
@@ -214,12 +257,31 @@ async def detect_todo_hotspots(
     module_counts: dict[str, int] = defaultdict(int)
     module_files: dict[str, set[str]] = defaultdict(set)
 
-    for r in rows:
-        count = len(_TODO_PATTERN.findall(r["content"] or ""))
-        if count:
-            mod = _module(r["rel_path"])
-            module_counts[mod] += count
-            module_files[mod].add(r["rel_path"])
+    if _native and hasattr(_native, "scan_keywords_bulk") and rows:
+        # C++ fast path: word-boundary keyword scan
+        try:
+            chunk_tuples = [(r["rel_path"], r["content"] or "") for r in rows]
+            hits = _native.scan_keywords_bulk(chunk_tuples, _TODO_KEYWORDS)
+            for h in hits:
+                mod = _module(h["rel_path"])
+                module_counts[mod] += h["count"]
+                module_files[mod].add(h["rel_path"])
+        except Exception as e:
+            logger.debug("Native scan_keywords_bulk failed, using Python: %s", e)
+            # fall through to Python path
+            for r in rows:
+                count = len(_TODO_PATTERN.findall(r["content"] or ""))
+                if count:
+                    mod = _module(r["rel_path"])
+                    module_counts[mod] += count
+                    module_files[mod].add(r["rel_path"])
+    else:
+        for r in rows:
+            count = len(_TODO_PATTERN.findall(r["content"] or ""))
+            if count:
+                mod = _module(r["rel_path"])
+                module_counts[mod] += count
+                module_files[mod].add(r["rel_path"])
 
     findings: list[RiskFinding] = []
     for mod, count in sorted(module_counts.items(), key=lambda x: -x[1]):
@@ -350,16 +412,18 @@ async def detect_blast_radius(
     )]
 
 
+_ENV_KEYWORDS = ["os.environ", "process.env", "getenv", "dotenv", ".env"]
+_ENV_PATTERN = re.compile(r"os\.environ|process\.env|getenv|dotenv|\.env", re.IGNORECASE)
+_HARDCODE_PATTERN = re.compile(
+    r"(password|secret|api_key|token|bearer)\s*=\s*['\"][^'\"]{8,}['\"]",
+    re.IGNORECASE,
+)
+
+
 async def detect_config_env_risk(
     snapshot_id: str, db: aiosqlite.Connection
 ) -> list[RiskFinding]:
     """Detect env-var spread and potential hardcoded secrets heuristics."""
-    _ENV_PATTERN = re.compile(r"os\.environ|process\.env|getenv|dotenv|\.env", re.IGNORECASE)
-    _HARDCODE_PATTERN = re.compile(
-        r"(password|secret|api_key|token|bearer)\s*=\s*['\"][^'\"]{8,}['\"]",
-        re.IGNORECASE,
-    )
-
     async with db.execute(
         "SELECT rel_path, content FROM retrieval_chunks WHERE snapshot_id=?",
         (snapshot_id,),
@@ -368,6 +432,16 @@ async def detect_config_env_risk(
 
     env_files: set[str] = set()
     hardcode_files: set[str] = set()
+
+    if _native and hasattr(_native, "scan_keywords_bulk") and rows:
+        try:
+            chunk_tuples = [(r["rel_path"], r["content"] or "") for r in rows]
+            # Env keyword scan via C++
+            hits = _native.scan_keywords_bulk(chunk_tuples, [kw.upper() for kw in _ENV_KEYWORDS])
+            # Uppercase env keywords won't match — fall through to Python for env
+            # (env keywords are mixed-case; use Python regex for env, C++ for TODO only)
+        except Exception:
+            pass
 
     for r in rows:
         content = r["content"] or ""

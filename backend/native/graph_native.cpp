@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <numeric>
 #include <queue>
 #include <string>
 #include <unordered_map>
@@ -186,8 +187,160 @@ py::dict expand_neighbors(
     return out;
 }
 
+// ── Tarjan SCC ───────────────────────────────────────────────────────────────
+// Returns all strongly-connected components with ≥ 2 nodes (circular import candidates).
+// Input:  edge_tuples — list of (src:str, dst:str) tuples (internal edges only)
+// Output: list of lists of str (each SCC sorted, result sorted by size desc)
+py::list compute_scc(const py::list& edge_tuples) {
+    // Build string → int ID mapping
+    std::unordered_map<std::string, int> id_of;
+    std::vector<std::string>             id_name;
+    id_of.reserve(edge_tuples.size() * 2 + 64);
+
+    auto intern = [&](const std::string& s) -> int {
+        auto it = id_of.find(s);
+        if (it != id_of.end()) return it->second;
+        int id = static_cast<int>(id_name.size());
+        id_of[s] = id;
+        id_name.push_back(s);
+        return id;
+    };
+
+    // Collect directed edges (src → dst)
+    struct DirEdge { int src, dst; };
+    std::vector<DirEdge> edges;
+    edges.reserve(edge_tuples.size());
+    for (const auto& item : edge_tuples) {
+        auto t = py::cast<py::tuple>(item);
+        if (t.size() < 2) continue;
+        int s = intern(py::cast<std::string>(t[0]));
+        int d = intern(py::cast<std::string>(t[1]));
+        if (s != d) edges.push_back({s, d});
+    }
+
+    int N = static_cast<int>(id_name.size());
+    if (N == 0) return py::list{};
+
+    // Adjacency list
+    std::vector<std::vector<int>> adj(N);
+    for (const auto& e : edges) adj[e.src].push_back(e.dst);
+
+    // Iterative Tarjan
+    std::vector<int> index(N, -1), lowlink(N, 0), comp(N, -1);
+    std::vector<bool> on_stack(N, false);
+    std::vector<int> stk;
+    stk.reserve(N);
+    int timer = 0;
+    std::vector<std::vector<int>> sccs;
+
+    // explicit call stack to avoid C++ stack overflow on deep graphs
+    struct Frame { int v, ei; };
+    std::vector<Frame> call_stack;
+    call_stack.reserve(N);
+
+    for (int root = 0; root < N; ++root) {
+        if (index[root] != -1) continue;
+        call_stack.push_back({root, 0});
+        index[root] = lowlink[root] = timer++;
+        stk.push_back(root);
+        on_stack[root] = true;
+
+        while (!call_stack.empty()) {
+            auto& [v, ei] = call_stack.back();
+            if (ei < static_cast<int>(adj[v].size())) {
+                int w = adj[v][ei++];
+                if (index[w] == -1) {
+                    index[w] = lowlink[w] = timer++;
+                    stk.push_back(w);
+                    on_stack[w] = true;
+                    call_stack.push_back({w, 0});
+                } else if (on_stack[w]) {
+                    lowlink[v] = std::min(lowlink[v], index[w]);
+                }
+            } else {
+                // Done with v
+                call_stack.pop_back();
+                if (!call_stack.empty()) {
+                    int parent = call_stack.back().v;
+                    lowlink[parent] = std::min(lowlink[parent], lowlink[v]);
+                }
+                if (lowlink[v] == index[v]) {
+                    std::vector<int> scc;
+                    while (true) {
+                        int w = stk.back(); stk.pop_back();
+                        on_stack[w] = false;
+                        comp[w] = static_cast<int>(sccs.size());
+                        scc.push_back(w);
+                        if (w == v) break;
+                    }
+                    if (scc.size() >= 2) sccs.push_back(std::move(scc));
+                }
+            }
+        }
+    }
+
+    // Sort each SCC by name, then sort SCCs by size (largest first)
+    std::sort(sccs.begin(), sccs.end(), [](const auto& a, const auto& b) {
+        return a.size() > b.size();
+    });
+
+    py::list out;
+    for (const auto& scc : sccs) {
+        std::vector<std::string> names;
+        names.reserve(scc.size());
+        for (int id : scc) names.push_back(id_name[id]);
+        std::sort(names.begin(), names.end());
+        out.append(names);
+    }
+    return out;
+}
+
+// ── Bulk keyword scanner ──────────────────────────────────────────────────────
+// For each (rel_path, content) pair, counts occurrences of any keyword in the list.
+// Returns a list of {rel_path, count} dicts — only entries where count > 0.
+// keywords: list of plain strings (case-sensitive exact substring match).
+// Use uppercase keywords; caller is responsible for case normalisation if needed.
+py::list scan_keywords_bulk(const py::list& chunks, const py::list& keywords) {
+    // Pre-build keyword list
+    std::vector<std::string> kws;
+    kws.reserve(keywords.size());
+    for (const auto& k : keywords) kws.push_back(py::cast<std::string>(k));
+
+    py::list out;
+    for (const auto& chunk : chunks) {
+        auto t = py::cast<py::tuple>(chunk);
+        if (t.size() < 2) continue;
+        std::string rel_path = py::cast<std::string>(t[0]);
+        std::string content  = py::cast<std::string>(t[1]);
+
+        int total = 0;
+        for (const auto& kw : kws) {
+            std::size_t pos = 0;
+            while ((pos = content.find(kw, pos)) != std::string::npos) {
+                // Word-boundary check: preceding and following char must not be alnum/_
+                bool pre_ok = (pos == 0) || (!std::isalnum(static_cast<unsigned char>(content[pos - 1]))
+                                             && content[pos - 1] != '_');
+                bool suf_ok = (pos + kw.size() >= content.size())
+                              || (!std::isalnum(static_cast<unsigned char>(content[pos + kw.size()]))
+                                  && content[pos + kw.size()] != '_');
+                if (pre_ok && suf_ok) ++total;
+                pos += kw.size();
+            }
+        }
+        if (total > 0) {
+            py::dict d;
+            d["rel_path"] = rel_path;
+            d["count"]    = total;
+            out.append(d);
+        }
+    }
+    return out;
+}
+
 PYBIND11_MODULE(_native_graph, m) {
     m.doc() = "Native graph hotspot module for CodeSpectra";
-    m.def("compute_scores", &compute_scores, "Compute graph centrality score list");
-    m.def("expand_neighbors", &expand_neighbors, "Expand graph neighborhood");
+    m.def("compute_scores",      &compute_scores,      "Compute graph centrality score list");
+    m.def("expand_neighbors",    &expand_neighbors,    "Expand graph neighborhood");
+    m.def("compute_scc",         &compute_scc,         "Tarjan SCC — returns circular import cycles (size >= 2)");
+    m.def("scan_keywords_bulk",  &scan_keywords_bulk,  "Bulk keyword scanner — word-boundary aware, returns [{rel_path, count}]");
 }
