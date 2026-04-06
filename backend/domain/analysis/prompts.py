@@ -104,12 +104,18 @@ Required output schema:
 
 CONVENTION_SYSTEM = f"""\
 You are Convention Intelligence Agent.
-Analyze the provided code evidence and produce sections D/E:
-D) Coding conventions, naming patterns, module organisation style the team follows
-E) Violations, inconsistencies, and areas with no clear convention
+You receive both static analysis findings (pre-computed) and RAG evidence excerpts.
+Produce sections D/E:
+D) Observed coding conventions — naming, module structure, folder roles, DI style, error handling
+E) Hidden rules / anti-patterns — violations, inconsistencies, forbidden imports, suspected undocumented rules
 
-Fill "content" with a readable multi-paragraph summary.
-If evidence is thin, lower confidence and list blind spots — do NOT fabricate conventions.
+Instructions:
+- USE the static signals as ground truth for patterns that already have numeric backing
+- USE the code excerpts to add nuance, examples, and catch things static analysis missed
+- Produce actionable observations a new developer would immediately find valuable
+- Keep "content" as readable paragraphs, not bullet soup
+- If a convention is observed in < 3 files, mark it "suspected rule", not "observed rule"
+- Do NOT invent conventions not supported by evidence
 
 Required output schema:
 {SECTION_JSON_SCHEMA}
@@ -126,6 +132,41 @@ J) Risk hotspots — files/areas that are complex, fragile, or have high blast r
 Fill "content" with a readable multi-paragraph summary.
 Fill "details" with the exact structure below — no other shape accepted:
 {DOMAIN_RISK_DETAILS_SCHEMA}
+
+Required output schema:
+{SECTION_JSON_SCHEMA}
+
+{_JSON_ENFORCEMENT}"""
+
+RISK_DETAILS_SCHEMA = """\
+{
+  "risk_findings": [
+    {
+      "category": "god_object|circular_import|todo_hotspot|test_gap|blast_radius|config_risk",
+      "severity": "high|medium|low",
+      "title": "short title",
+      "rationale": "why this is risky",
+      "evidence": ["path/to/file.py"]
+    }
+  ],
+  "summary": "2-3 sentence executive summary of the risk profile"
+}"""
+
+RISK_COMPLEXITY_SYSTEM = f"""\
+You are Risk & Complexity Intelligence Agent.
+You receive pre-computed static risk findings and supporting code evidence.
+Produce section J: Risk / Complexity / Unknowns
+
+Instructions:
+- The static findings are FACTS — do not contradict them, only add narrative and nuance
+- Group findings by severity: high → medium → low
+- For each finding, explain WHY it matters to a developer joining the team today
+- Distinguish "certain" (e.g. file is 800 lines) from "suspected" (e.g. possible circular import)
+- Keep "content" as readable paragraphs a tech lead would nod at
+- Cap at ~6 most important findings if there are many — prioritise high severity
+
+Fill "details" with the exact structure below:
+{RISK_DETAILS_SCHEMA}
 
 Required output schema:
 {SECTION_JSON_SCHEMA}
@@ -157,17 +198,26 @@ Required output schema:
 {_JSON_ENFORCEMENT}"""
 
 
-def render_bundle(bundle: RetrievalBundle, limit: int = 14) -> str:
+def render_bundle(bundle: RetrievalBundle, limit: int = 28, excerpt_chars: int = 1500) -> str:
+    """Render retrieval bundle as LLM context.
+
+    limit: max evidence items to include (default 28 — budgets now 5K-10K tokens).
+    excerpt_chars: max chars per chunk sent to LLM. 1500 chars ≈ 375 tokens.
+      boundary-expanded chunks may be ~3000 chars (two merged chunks); they are
+      allowed through up to 3000 chars to preserve the full function body.
+    """
     parts: list[str] = []
     for i, ev in enumerate(bundle.evidences[:limit], start=1):
-        excerpt = (ev.excerpt or "").strip().replace("\n", " ")
-        if len(excerpt) > 360:
-            excerpt = excerpt[:360].rstrip() + "..."
+        excerpt = (ev.excerpt or "").strip()
+        # Boundary-expanded chunks get twice the room so the merged function is intact
+        cap = excerpt_chars * 2 if "boundary-expanded" in ev.reason_codes else excerpt_chars
+        if len(excerpt) > cap:
+            excerpt = excerpt[:cap].rstrip() + "..."
         parts.append(
             f"[{i}] file={ev.rel_path} chunk={ev.chunk_index} score={ev.score:.3f} "
-            f"reasons={','.join(ev.reason_codes)} tokens={ev.token_estimate}\nexcerpt: {excerpt}"
+            f"reasons={','.join(ev.reason_codes)}\n{excerpt}"
         )
-    return "\n\n".join(parts) if parts else "No evidence returned."
+    return "\n\n---\n\n".join(parts) if parts else "No evidence returned."
 
 
 def build_director_user_prompt(snapshot_id: str, scan_mode: str) -> str:

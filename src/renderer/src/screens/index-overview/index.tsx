@@ -23,6 +23,61 @@ import type {
 import { ErrorBanner } from '../../components/ui/ErrorBanner'
 import { toErrorMessage } from '../../lib/errors'
 
+function RetrievalResultPanel({
+  deduped,
+  totalChunks,
+  mode,
+  usedTokens,
+  budgetTokens,
+}: {
+  deduped: Array<{ rel_path: string; chunk_index: number; reason_codes: string[]; score: number; token_estimate: number; excerpt: string }>
+  totalChunks: number
+  mode: string
+  usedTokens: number
+  budgetTokens: number
+}): React.ReactElement {
+  const [expanded, setExpanded] = React.useState<string | null>(null)
+  return (
+    <div className="text-[11px] text-zinc-500 border border-zinc-800 rounded-md p-2 space-y-1.5">
+      <div className="flex items-center gap-2 flex-wrap">
+        <span>mode=<span className="text-zinc-300">{mode}</span></span>
+        <span className="text-zinc-700">|</span>
+        <span>tokens=<span className="text-zinc-300">{usedTokens}/{budgetTokens}</span></span>
+        <span className="text-zinc-700">|</span>
+        <span><span className="text-zinc-300">{deduped.length}</span> unique files</span>
+        <span className="text-zinc-600">({totalChunks} chunks scored, best chunk per file shown)</span>
+      </div>
+      <div className="max-h-80 overflow-y-auto space-y-1 pr-1">
+        {deduped.map((e) => {
+          const key = e.rel_path
+          const isOpen = expanded === key
+          return (
+            <div key={key} className="border border-zinc-800 rounded">
+              <button
+                className="w-full text-left px-2 py-1 flex items-center gap-1.5 hover:bg-zinc-800/40 transition-colors"
+                onClick={() => setExpanded(isOpen ? null : key)}
+              >
+                <span className={`shrink-0 text-[9px] transition-transform ${isOpen ? 'rotate-90' : ''}`}>▶</span>
+                <span className="text-zinc-300 font-mono truncate flex-1">{e.rel_path}</span>
+                <span className="shrink-0 text-zinc-600 font-mono">chunk#{e.chunk_index}</span>
+                <span className="shrink-0 text-zinc-700 mx-1">|</span>
+                <span className="shrink-0 text-zinc-500 font-mono truncate max-w-[160px]">{e.reason_codes.join(',')}</span>
+                <span className="shrink-0 text-zinc-700 mx-1">|</span>
+                <span className="shrink-0 text-zinc-400 font-mono">{e.token_estimate} tok</span>
+              </button>
+              {isOpen && (
+                <pre className="mx-2 mb-2 p-2 bg-zinc-950 border border-zinc-800 rounded text-[10px] text-zinc-300 font-mono whitespace-pre-wrap break-all max-h-48 overflow-y-auto leading-4">
+                  {e.excerpt || '(no excerpt)'}
+                </pre>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 export default function IndexOverviewScreen(): React.ReactElement {
   const MAX_RENDER_NODES = 180
   const MAX_RENDER_EDGES = 320
@@ -300,7 +355,7 @@ export default function IndexOverviewScreen(): React.ReactElement {
 
             <div className="bg-zinc-900/60 border border-zinc-700 rounded-lg p-3 space-y-2">
               <div className="flex items-center justify-between">
-                <div className="text-xs font-semibold text-zinc-100">Structural Graph (RPA-033)</div>
+                <div className="text-xs font-semibold text-zinc-100">Structural Graph</div>
                 <button
                   onClick={async () => {
                     if (!snapshotId) return
@@ -335,7 +390,10 @@ export default function IndexOverviewScreen(): React.ReactElement {
                       External: <span className="text-zinc-200">{graphSummary.external_edges}</span>
                     </div>
                     <div className="bg-zinc-950 border border-zinc-800 rounded-md px-2 py-1.5 text-xs text-zinc-400">
-                      Toolchain: <span className="text-zinc-200">{graphSummary.native_toolchain ?? 'not detected'}</span>
+                      Native:{' '}
+                      <span className={graphSummary.native_toolchain ? 'text-green-400' : 'text-yellow-400'}>
+                        {graphSummary.native_toolchain ?? 'not detected'}
+                      </span>
                     </div>
                   </div>
                   <div className="text-[11px] text-zinc-500">
@@ -499,19 +557,21 @@ export default function IndexOverviewScreen(): React.ReactElement {
                 </div>
                 {searching && <Loader2 size={13} className="animate-spin text-zinc-500" />}
               </div>
-              {(hits.length > 0 ? hits : symbols).slice(0, 120).map((s) => (
-                <div key={s.id} className="text-[11px] text-zinc-400 font-mono border-b border-zinc-800 py-1">
-                  <span className="text-zinc-200">{s.name}</span>
-                  <span className="mx-2 text-zinc-600">·</span>
-                  <span>{s.kind}/{s.extract_source}</span>
-                  <span className="mx-2 text-zinc-600">·</span>
-                  <span>{s.rel_path}:{s.line_start}</span>
-                </div>
-              ))}
+              <div className="max-h-56 overflow-y-auto pr-1">
+                {(hits.length > 0 ? hits : symbols).slice(0, 120).map((s) => (
+                  <div key={s.id} className="text-[11px] text-zinc-400 font-mono border-b border-zinc-800 py-1">
+                    <span className="text-zinc-200">{s.name}</span>
+                    <span className="mx-2 text-zinc-600">·</span>
+                    <span>{s.kind}/{s.extract_source}</span>
+                    <span className="mx-2 text-zinc-600">·</span>
+                    <span>{s.rel_path}:{s.line_start}</span>
+                  </div>
+                ))}
+              </div>
             </div>
 
             <div className="bg-zinc-900/60 border border-zinc-700 rounded-lg p-3 space-y-2">
-              <div className="text-xs font-semibold text-zinc-100">Retrieval Debug (RPA-034)</div>
+              <div className="text-xs font-semibold text-zinc-100">Retrieval Debug</div>
               <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
                 <input
                   value={retrievalQuery}
@@ -595,28 +655,24 @@ export default function IndexOverviewScreen(): React.ReactElement {
                   {retrievalBusy ? 'Comparing...' : 'A/B compare'}
                 </button>
               </div>
-              {retrievalBundle && (
-                <div className="text-[11px] text-zinc-500 border border-zinc-800 rounded-md p-2 space-y-1">
-                  <div>
-                    mode=<span className="text-zinc-300">{retrievalBundle.mode}</span>
-                    <span className="mx-2 text-zinc-700">|</span>
-                    tokens=<span className="text-zinc-300">{retrievalBundle.used_tokens}/{retrievalBundle.budget_tokens}</span>
-                    <span className="mx-2 text-zinc-700">|</span>
-                    evidences=<span className="text-zinc-300">{retrievalBundle.evidences.length}</span>
-                  </div>
-                  <div className="max-h-36 overflow-auto space-y-1">
-                    {retrievalBundle.evidences.slice(0, 40).map((e) => (
-                      <div key={e.chunk_id} className="font-mono">
-                        <span className="text-zinc-300">{e.rel_path}</span>
-                        <span className="mx-2 text-zinc-700">|</span>
-                        <span>{e.reason_codes.join(',')}</span>
-                        <span className="mx-2 text-zinc-700">|</span>
-                        <span>tok:{e.token_estimate}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
+              {retrievalBundle && (() => {
+                // Dedupe: keep best-scoring chunk per file
+                const seen = new Map<string, typeof retrievalBundle.evidences[0]>()
+                for (const e of retrievalBundle.evidences) {
+                  const prev = seen.get(e.rel_path)
+                  if (!prev || e.score > prev.score) seen.set(e.rel_path, e)
+                }
+                const deduped = Array.from(seen.values()).sort((a, b) => b.score - a.score)
+                return (
+                  <RetrievalResultPanel
+                    deduped={deduped}
+                    totalChunks={retrievalBundle.evidences.length}
+                    mode={retrievalBundle.mode}
+                    usedTokens={retrievalBundle.used_tokens}
+                    budgetTokens={retrievalBundle.budget_tokens}
+                  />
+                )
+              })()}
               {retrievalCompare && (
                 <div className="text-[11px] text-zinc-500 border border-zinc-800 rounded-md p-2">
                   delta p@5: <span className="text-zinc-300">{retrievalCompare.precision_at_5_delta.toFixed(3)}</span>

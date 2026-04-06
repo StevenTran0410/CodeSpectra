@@ -446,6 +446,15 @@ declare global {
         getVersion: () => Promise<string>
         getUserDataPath: () => Promise<string>
         getLogsPath: () => Promise<string>
+        getDiagnostics: () => Promise<{
+          python_version: string
+          native_module_loaded: boolean
+          native_functions: Array<{
+            name: string
+            available: boolean
+            description: string
+          }>
+        }>
       }
     }
   }

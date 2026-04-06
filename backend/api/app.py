@@ -1,4 +1,6 @@
+import importlib
 import importlib.metadata
+import sys
 
 from fastapi import APIRouter
 from pydantic import BaseModel
@@ -34,6 +36,48 @@ async def get_git_config() -> GitConfig:
     ) as cur:
         row = await cur.fetchone()
     return GitConfig(ssh_key_path=row["value"] if row else None)
+
+
+class NativeFunction(BaseModel):
+    name: str
+    available: bool
+    description: str
+
+
+class DiagnosticsResponse(BaseModel):
+    python_version: str
+    native_module_loaded: bool
+    native_functions: list[NativeFunction]
+
+
+@router.get("/diagnostics", response_model=DiagnosticsResponse)
+async def get_diagnostics() -> DiagnosticsResponse:
+    _NATIVE_FUNCTIONS = [
+        ("compute_scores",     "Graph centrality scoring (in-degree × 3 + out-degree sort)"),
+        ("expand_neighbors",   "BFS graph neighborhood expansion for graph viewer"),
+        ("compute_scc",        "Tarjan SCC — circular import cycle detection"),
+        ("scan_keywords_bulk", "Bulk word-boundary keyword scan (TODO/FIXME hotspots)"),
+    ]
+    try:
+        mod = importlib.import_module("domain.structural_graph._native_graph")
+        loaded = True
+    except Exception:
+        mod = None
+        loaded = False
+
+    funcs = [
+        NativeFunction(
+            name=name,
+            available=loaded and hasattr(mod, name),
+            description=desc,
+        )
+        for name, desc in _NATIVE_FUNCTIONS
+    ]
+    return DiagnosticsResponse(
+        python_version=sys.version.split()[0],
+        native_module_loaded=loaded,
+        native_functions=funcs,
+    )
 
 
 @router.put("/git-config", response_model=GitConfig)
