@@ -6,14 +6,89 @@ import { toErrorMessage } from '../../lib/errors'
 
 const SECTION_LABELS: Record<string, string> = {
   'A/B/C/G/H': 'Structure, Architecture, Important Files',
-  'D/E': 'Conventions and Negative Rules',
-  'F/I/J': 'Feature Map, Domain Terms, Risks',
+  'D/E': 'Conventions and Anti-Patterns',
+  'F/I/J': 'Feature Map, Domain Terms, Glossary',
+  'J': 'Risk, Complexity & Hotspots',
 }
 
 const SECTION_AGENT: Record<string, string> = {
   'A/B/C/G/H': 'Structure Intelligence Agent',
   'D/E': 'Convention Intelligence Agent',
   'F/I/J': 'Domain & Risk Intelligence Agent',
+  'J': 'Risk & Complexity Agent',
+}
+
+const SEVERITY_COLORS: Record<string, string> = {
+  high: 'text-red-400 bg-red-900/20 border-red-800',
+  medium: 'text-yellow-400 bg-yellow-900/20 border-yellow-800',
+  low: 'text-zinc-400 bg-zinc-800/40 border-zinc-700',
+}
+
+const SEVERITY_DOT: Record<string, string> = {
+  high: 'bg-red-500',
+  medium: 'bg-yellow-500',
+  low: 'bg-zinc-500',
+}
+
+function RiskFindingsCard({ findings }: { findings: unknown[] }): React.ReactElement | null {
+  if (!Array.isArray(findings) || findings.length === 0) return null
+  const grouped: Record<string, unknown[]> = { high: [], medium: [], low: [] }
+  for (const f of findings as Record<string, unknown>[]) {
+    const sev = String(f.severity ?? 'low')
+    if (grouped[sev]) grouped[sev].push(f)
+    else grouped.low.push(f)
+  }
+  return (
+    <div className="space-y-3">
+      {(['high', 'medium', 'low'] as const).map((sev) => {
+        const items = grouped[sev] as Record<string, unknown>[]
+        if (items.length === 0) return null
+        return (
+          <div key={sev}>
+            <div className={`mb-1 text-[11px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded inline-flex items-center gap-1.5 ${SEVERITY_COLORS[sev]}`}>
+              <span className={`inline-block w-1.5 h-1.5 rounded-full ${SEVERITY_DOT[sev]}`} />
+              {sev} ({items.length})
+            </div>
+            <div className="space-y-1.5 mt-1">
+              {items.map((f, i) => (
+                <div key={i} className={`rounded border p-2 text-xs ${SEVERITY_COLORS[sev]}`}>
+                  <div className="font-medium">{String(f.title ?? '')}</div>
+                  <div className="mt-0.5 text-zinc-400 leading-5">{String(f.rationale ?? '')}</div>
+                  {Array.isArray(f.evidence) && f.evidence.length > 0 && (
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      {(f.evidence as string[]).slice(0, 3).map((ev, j) => (
+                        <span key={j} className="rounded bg-zinc-800 px-1.5 py-0.5 font-mono text-[10px] text-zinc-300">{ev}</span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function ConventionSignalsCard({ signals }: { signals: unknown[] }): React.ReactElement | null {
+  if (!Array.isArray(signals) || signals.length === 0) return null
+  return (
+    <div className="space-y-1.5">
+      {(signals as Record<string, unknown>[]).slice(0, 10).map((s, i) => (
+        <div key={i} className="rounded border border-zinc-800 bg-zinc-900/40 p-2 text-xs">
+          <div className="flex items-center gap-2">
+            <span className={`rounded px-1.5 py-0.5 text-[10px] font-mono ${
+              s.confidence === 'high' ? 'bg-emerald-900/40 text-emerald-400' :
+              s.confidence === 'medium' ? 'bg-blue-900/30 text-blue-400' : 'bg-zinc-800 text-zinc-400'
+            }`}>{String(s.confidence ?? 'medium')}</span>
+            <span className="font-medium text-zinc-200">{String(s.title ?? '')}</span>
+          </div>
+          <div className="mt-0.5 text-zinc-400 leading-5">{String(s.description ?? '')}</div>
+        </div>
+      ))}
+    </div>
+  )
 }
 
 function stringifyStructuredItem(item: unknown): string {
@@ -28,27 +103,47 @@ function stringifyStructuredItem(item: unknown): string {
 
 function renderDetails(details: unknown): React.ReactElement | null {
   if (!details || typeof details !== 'object') return null
-  const entries = Object.entries(details as Record<string, unknown>)
-    .filter(([, v]) => v !== null && v !== undefined)
+  const d = details as Record<string, unknown>
+  const entries = Object.entries(d).filter(([, v]) => v !== null && v !== undefined)
   if (entries.length === 0) return null
   return (
-    <div className="space-y-2 rounded-md border border-zinc-800 bg-zinc-900/40 p-2">
-      {entries.map(([key, value]) => (
-        <div key={key} className="space-y-1">
-          <div className="text-[11px] uppercase tracking-wide text-zinc-500">{key.replaceAll('_', ' ')}</div>
-          {Array.isArray(value) ? (
-            <div className="space-y-1">
-              {value.slice(0, 8).map((item, idx) => (
-                <div key={`${key}-${idx}`} className="text-xs text-zinc-300 leading-5">
-                  - {stringifyStructuredItem(item)}
-                </div>
-              ))}
+    <div className="space-y-3 rounded-md border border-zinc-800 bg-zinc-900/40 p-2">
+      {entries.map(([key, value]) => {
+        // Specialized renderers
+        if (key === 'risk_findings' && Array.isArray(value)) {
+          return (
+            <div key={key} className="space-y-1">
+              <div className="text-[11px] uppercase tracking-wide text-zinc-500">Risk Findings</div>
+              <RiskFindingsCard findings={value} />
             </div>
-          ) : (
-            <div className="text-xs text-zinc-300 leading-5">{stringifyStructuredItem(value)}</div>
-          )}
-        </div>
-      ))}
+          )
+        }
+        if (key === 'convention_signals' && Array.isArray(value)) {
+          return (
+            <div key={key} className="space-y-1">
+              <div className="text-[11px] uppercase tracking-wide text-zinc-500">Convention Signals</div>
+              <ConventionSignalsCard signals={value} />
+            </div>
+          )
+        }
+        // Generic renderer
+        return (
+          <div key={key} className="space-y-1">
+            <div className="text-[11px] uppercase tracking-wide text-zinc-500">{key.replaceAll('_', ' ')}</div>
+            {Array.isArray(value) ? (
+              <div className="space-y-1">
+                {value.slice(0, 8).map((item, idx) => (
+                  <div key={`${key}-${idx}`} className="text-xs text-zinc-300 leading-5">
+                    - {stringifyStructuredItem(item)}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-xs text-zinc-300 leading-5">{stringifyStructuredItem(value)}</div>
+            )}
+          </div>
+        )
+      })}
     </div>
   )
 }

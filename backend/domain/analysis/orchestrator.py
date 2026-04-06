@@ -8,10 +8,14 @@ from typing import Any
 from domain.model_connector.service import ProviderConfigService
 from domain.model_connector.types import ChatMessage, ChatRequest
 from domain.retrieval.service import RetrievalService
+from infrastructure.db.database import get_db
+from shared.logger import logger
 
 from .agent_pipeline import AnalysisAgentPipeline
 from .prompts import DIRECTOR_SYSTEM, build_director_user_prompt
 from .retrieval_broker import RetrievalBrokerAgent
+from .static_convention import run_convention_analysis
+from .static_risk import run_risk_analysis
 
 
 @dataclass
@@ -115,6 +119,29 @@ class RunDirectorAgent:
         scan_mode: str,
     ) -> dict[str, Any]:
         plan = await self._plan(provider_id, model_id, snapshot_id, scan_mode)
+
+        # Run static analysis in parallel with retrieval planning
+        db = get_db()
+        static_risk = None
+        static_conv = None
+        try:
+            static_risk = await run_risk_analysis(snapshot_id, db)
+            logger.info(
+                "Static risk analysis: %d findings for snapshot %s",
+                len(static_risk.findings), snapshot_id,
+            )
+        except Exception as e:
+            logger.warning("Static risk analysis failed: %s", e)
+
+        try:
+            static_conv = await run_convention_analysis(snapshot_id, db)
+            logger.info(
+                "Static convention analysis: %d signals for snapshot %s",
+                len(static_conv.signals), snapshot_id,
+            )
+        except Exception as e:
+            logger.warning("Static convention analysis failed: %s", e)
+
         ctx = await self._broker.collect(
             snapshot_id=snapshot_id,
             provider_id=provider_id,
@@ -132,6 +159,8 @@ class RunDirectorAgent:
             feature_map=ctx.feature_map,
             glossary=ctx.glossary,
             risk=ctx.risk,
+            static_convention=static_conv,
+            static_risk=static_risk,
         )
         report["orchestration"] = {
             "director": {

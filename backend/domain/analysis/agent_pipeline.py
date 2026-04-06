@@ -16,9 +16,12 @@ from .prompts import (
     AUDITOR_SYSTEM,
     CONVENTION_SYSTEM,
     DOMAIN_RISK_SYSTEM,
+    RISK_COMPLEXITY_SYSTEM,
     STRUCTURE_SYSTEM,
     render_bundle,
 )
+from .static_convention import ConventionReport
+from .static_risk import RiskReport
 
 # Sentences indicating the model produced a refusal / meta-comment instead of content.
 _META_PATTERNS = re.compile(
@@ -288,20 +291,26 @@ class ConventionIntelligenceAgent(BaseLLMAgent):
         provider_id: str,
         model_id: str,
         conventions: RetrievalBundle,
+        static_findings: ConventionReport | None = None,
     ) -> SectionDraft:
+        static_ctx = static_findings.as_context_text() if static_findings else "No static convention data."
         prompt = (
             "Task: produce section D/E for onboarding report.\n\n"
-            f"Conventions evidence:\n{render_bundle(conventions)}\n"
+            f"Pre-computed convention signals (ground truth):\n{static_ctx}\n\n"
+            f"Code evidence excerpts:\n{render_bundle(conventions)}\n"
         )
         try:
             data = await self._chat_json(
                 provider_id, model_id, CONVENTION_SYSTEM, prompt,
-                max_completion_tokens=1100,
+                max_completion_tokens=1200,
             )
             content = str(data.get("content", "")).strip()
             details = data.get("details")
             if not isinstance(details, dict):
                 details = {}
+            # Enrich details with static signals for UI rendering
+            if static_findings and static_findings.signals:
+                details["convention_signals"] = static_findings.to_dict()["signals"][:12]
             return SectionDraft(
                 section="D/E",
                 content=content or "No content generated.",
@@ -315,7 +324,10 @@ class ConventionIntelligenceAgent(BaseLLMAgent):
                 details=details,
             )
         except Exception as e:
-            return _fallback_section("D/E", [conventions], str(e))
+            draft = _fallback_section("D/E", [conventions], str(e))
+            if static_findings and static_findings.signals:
+                draft.details = {"convention_signals": static_findings.to_dict()["signals"][:12]}
+            return draft
 
 
 class DomainRiskIntelligenceAgent(BaseLLMAgent):
@@ -367,36 +379,78 @@ class DomainRiskIntelligenceAgent(BaseLLMAgent):
             return draft
 
 
+def _heuristic_details_risk(risk_report: RiskReport | None) -> dict[str, Any]:
+    if not risk_report or not risk_report.findings:
+        return {"risk_findings": [], "summary": "No static risk data available."}
+    return risk_report.to_dict() | {"summary": "Static risk analysis — re-run for LLM narrative."}
+
+
+class RiskComplexityAgent(BaseLLMAgent):
+    async def run(
+        self,
+        provider_id: str,
+        model_id: str,
+        risk_bundle: RetrievalBundle,
+        static_risk: RiskReport | None = None,
+    ) -> SectionDraft:
+        static_ctx = static_risk.as_context_text() if static_risk else "No static risk data."
+        prompt = (
+            "Task: produce section J (Risk / Complexity / Unknowns) for onboarding report.\n\n"
+            f"Pre-computed static risk findings (ground truth):\n{static_ctx}\n\n"
+            f"Supporting code evidence:\n{render_bundle(risk_bundle)}\n"
+        )
+        try:
+            data = await self._chat_json(
+                provider_id, model_id, RISK_COMPLEXITY_SYSTEM, prompt,
+                max_completion_tokens=1400,
+            )
+            content = str(data.get("content", "")).strip()
+            details = data.get("details")
+            if not isinstance(details, dict) or not details:
+                details = _heuristic_details_risk(static_risk)
+            elif static_risk and static_risk.findings:
+                # Always embed the static findings in details for UI rendering
+                if "risk_findings" not in details or not details["risk_findings"]:
+                    details["risk_findings"] = static_risk.to_dict()["findings"][:10]
+            return SectionDraft(
+                section="J",
+                content=content or "No content generated.",
+                confidence=_normalize_conf(str(data.get("confidence", "medium"))),
+                evidence_files=[
+                    f for f in data.get("evidence_files", []) if isinstance(f, str)
+                ][:8] or _top_files(risk_bundle, 8),
+                blind_spots=[
+                    b for b in data.get("blind_spots", []) if isinstance(b, str)
+                ][:8],
+                details=details,
+            )
+        except Exception as e:
+            draft = _fallback_section("J", [risk_bundle], str(e))
+            draft.details = _heuristic_details_risk(static_risk)
+            return draft
+
+
 class EvidenceAuditorComposerAgent(BaseLLMAgent):
     async def run(
         self,
         provider_id: str,
         model_id: str,
-        structure: SectionDraft,
-        conventions: SectionDraft,
-        domain_risk: SectionDraft,
+        drafts: list[SectionDraft],
     ) -> dict[str, Any]:
-        payload = {
-            "structure": {k: v for k, v in structure.__dict__.items()},
-            "conventions": {k: v for k, v in conventions.__dict__.items()},
-            "domain_risk": {k: v for k, v in domain_risk.__dict__.items()},
-        }
+        payload = {d.section: {k: v for k, v in d.__dict__.items()} for d in drafts}
         try:
             data = await self._chat_json(
                 provider_id=provider_id,
                 model_id=model_id,
                 system_prompt=AUDITOR_SYSTEM,
                 user_prompt=json.dumps(payload, ensure_ascii=True),
-                max_completion_tokens=1600,
+                max_completion_tokens=1800,
             )
             raw_sections = data.get("sections", [])
             conf = data.get("confidence_summary", {})
             if isinstance(raw_sections, list) and isinstance(conf, dict):
-                details_by_section = {
-                    structure.section: structure.details or {},
-                    conventions.section: conventions.details or {},
-                    domain_risk.section: domain_risk.details or {},
-                }
+                details_by_section = {d.section: d.details or {} for d in drafts}
+                orig_by_section = {d.section: d for d in drafts}
                 normalized: list[dict[str, Any]] = []
                 for s in raw_sections:
                     if not isinstance(s, dict):
@@ -406,12 +460,7 @@ class EvidenceAuditorComposerAgent(BaseLLMAgent):
                         continue
                     content = str(s.get("content", "")).strip()
                     if _is_meta_content(content):
-                        # pull content from the original draft instead
-                        orig = {
-                            structure.section: structure,
-                            conventions.section: conventions,
-                            domain_risk.section: domain_risk,
-                        }.get(sid)
+                        orig = orig_by_section.get(sid)
                         if orig:
                             s["content"] = orig.content
                     if not isinstance(s.get("details"), dict) or not s["details"]:
@@ -429,8 +478,7 @@ class EvidenceAuditorComposerAgent(BaseLLMAgent):
         except Exception:
             pass
 
-        # Deterministic fallback — always produces a valid report
-        sections = [structure, conventions, domain_risk]
+        # Deterministic fallback
         return {
             "sections": [
                 {
@@ -441,12 +489,12 @@ class EvidenceAuditorComposerAgent(BaseLLMAgent):
                     "blind_spots": s.blind_spots,
                     "details": s.details or {},
                 }
-                for s in sections
+                for s in drafts
             ],
             "confidence_summary": {
-                "high": sum(1 for s in sections if s.confidence == "high"),
-                "medium": sum(1 for s in sections if s.confidence == "medium"),
-                "low": sum(1 for s in sections if s.confidence == "low"),
+                "high": sum(1 for s in drafts if s.confidence == "high"),
+                "medium": sum(1 for s in drafts if s.confidence == "medium"),
+                "low": sum(1 for s in drafts if s.confidence == "low"),
             },
         }
 
@@ -456,6 +504,7 @@ class AnalysisAgentPipeline:
         self._structure = StructureIntelligenceAgent(provider_service)
         self._convention = ConventionIntelligenceAgent(provider_service)
         self._domain_risk = DomainRiskIntelligenceAgent(provider_service)
+        self._risk_complexity = RiskComplexityAgent(provider_service)
         self._auditor = EvidenceAuditorComposerAgent(provider_service)
 
     async def run(
@@ -468,8 +517,15 @@ class AnalysisAgentPipeline:
         feature_map: RetrievalBundle,
         glossary: RetrievalBundle,
         risk: RetrievalBundle,
+        static_convention: ConventionReport | None = None,
+        static_risk: RiskReport | None = None,
     ) -> dict[str, Any]:
         structure = await self._structure.run(provider_id, model_id, architecture, important)
-        conv = await self._convention.run(provider_id, model_id, conventions)
+        conv = await self._convention.run(
+            provider_id, model_id, conventions, static_findings=static_convention
+        )
         dom = await self._domain_risk.run(provider_id, model_id, feature_map, glossary, risk)
-        return await self._auditor.run(provider_id, model_id, structure, conv, dom)
+        risk_sec = await self._risk_complexity.run(
+            provider_id, model_id, risk, static_risk=static_risk
+        )
+        return await self._auditor.run(provider_id, model_id, [structure, conv, dom, risk_sec])
