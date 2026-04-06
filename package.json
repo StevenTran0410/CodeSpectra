@@ -9,7 +9,10 @@
     "dev:backend": "python backend/main.py --port 7868",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json",
+    "package:win": "electron-vite build && electron-builder --win --x64",
+    "package:mac": "electron-vite build && electron-builder --mac",
+    "package:linux": "electron-vite build && electron-builder --linux"
   },
   "dependencies": {
     "@dagrejs/dagre": "^3.0.0",
@@ -39,24 +42,52 @@
   "build": {
     "appId": "com.codespectra.app",
     "productName": "CodeSpectra",
+    "copyright": "Copyright © 2025 CodeSpectra",
     "directories": {
-      "output": "release"
+      "output": "release",
+      "buildResources": "build-resources"
     },
+    "asar": true,
     "files": [
       "out/**/*",
-      "backend/**/*"
+      "!out/**/*.map"
     ],
     "extraResources": [
       {
         "from": "backend",
-        "to": "backend"
+        "to": "backend",
+        "filter": [
+          "**/*",
+          "!**/.venv/**",
+          "!**/__pycache__/**",
+          "!**/*.pyc",
+          "!**/*.pyo",
+          "!**/.pytest_cache/**",
+          "!**/node_modules/**",
+          "!**/*.egg-info/**",
+          "!**/dist/**",
+          "!**/build/**"
+        ]
       }
     ],
     "win": {
-      "target": "nsis"
+      "target": [{ "target": "nsis", "arch": ["x64"] }],
+      "requestedExecutionLevel": "asInvoker"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
     },
     "mac": {
-      "target": "dmg"
+      "target": [{ "target": "dmg", "arch": ["x64", "arm64"] }],
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false
+    },
+    "linux": {
+      "target": [{ "target": "AppImage", "arch": ["x64"] }],
+      "category": "Development"
     }
   }
 }

@@ -52,8 +52,37 @@ export function createMainWindow(): BrowserWindow {
     if (is.dev) win.webContents.openDevTools({ mode: 'right' })
   })
 
-  win.webContents.setWindowOpenHandler(() => {
-    return { action: 'deny' }
+  // Block all new windows (popups, target="_blank", window.open)
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+
+  // Block navigation away from the app bundle — prevents renderer-initiated
+  // open-redirect attacks (e.g. a malicious repo with an HTML file that tries
+  // to redirect to a remote URL).
+  const isLocalUrl = (url: string): boolean => {
+    try {
+      const { protocol, hostname } = new URL(url)
+      return (
+        protocol === 'file:' ||
+        ((protocol === 'http:' || protocol === 'https:') &&
+          (hostname === 'localhost' || hostname === '127.0.0.1'))
+      )
+    } catch {
+      return false
+    }
+  }
+
+  win.webContents.on('will-navigate', (event, url) => {
+    if (!isLocalUrl(url)) {
+      event.preventDefault()
+      logger.warn(`Blocked navigation to external URL: ${url}`)
+    }
+  })
+
+  win.webContents.on('will-redirect', (event, url) => {
+    if (!isLocalUrl(url)) {
+      event.preventDefault()
+      logger.warn(`Blocked redirect to external URL: ${url}`)
+    }
   })
 
   // Right-click context menu for text inputs (copy / paste / cut / select all)
