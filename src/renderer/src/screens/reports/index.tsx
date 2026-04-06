@@ -1,152 +1,13 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import type { AnalysisReport, AnalysisReportSummary } from '../../types/electron'
+import type { SectionA, SectionG, SectionI, SectionJ } from '../../types/analysis'
 import { ErrorBanner } from '../../components/ui/ErrorBanner'
 import { toErrorMessage } from '../../lib/errors'
-
-const SECTION_LABELS: Record<string, string> = {
-  'A/B/C/G/H': 'Structure, Architecture, Important Files',
-  'D/E': 'Conventions and Anti-Patterns',
-  'F/I/J': 'Feature Map, Domain Terms, Glossary',
-  'J': 'Risk, Complexity & Hotspots',
-}
-
-const SECTION_AGENT: Record<string, string> = {
-  'A/B/C/G/H': 'Structure Intelligence Agent',
-  'D/E': 'Convention Intelligence Agent',
-  'F/I/J': 'Domain & Risk Intelligence Agent',
-  'J': 'Risk & Complexity Agent',
-}
-
-const SEVERITY_COLORS: Record<string, string> = {
-  high: 'text-red-400 bg-red-900/20 border-red-800',
-  medium: 'text-yellow-400 bg-yellow-900/20 border-yellow-800',
-  low: 'text-zinc-400 bg-zinc-800/40 border-zinc-700',
-}
-
-const SEVERITY_DOT: Record<string, string> = {
-  high: 'bg-red-500',
-  medium: 'bg-yellow-500',
-  low: 'bg-zinc-500',
-}
-
-function RiskFindingsCard({ findings }: { findings: unknown[] }): React.ReactElement | null {
-  if (!Array.isArray(findings) || findings.length === 0) return null
-  const grouped: Record<string, unknown[]> = { high: [], medium: [], low: [] }
-  for (const f of findings as Record<string, unknown>[]) {
-    const sev = String(f.severity ?? 'low')
-    if (grouped[sev]) grouped[sev].push(f)
-    else grouped.low.push(f)
-  }
-  return (
-    <div className="space-y-3">
-      {(['high', 'medium', 'low'] as const).map((sev) => {
-        const items = grouped[sev] as Record<string, unknown>[]
-        if (items.length === 0) return null
-        return (
-          <div key={sev}>
-            <div className={`mb-1 text-[11px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded inline-flex items-center gap-1.5 ${SEVERITY_COLORS[sev]}`}>
-              <span className={`inline-block w-1.5 h-1.5 rounded-full ${SEVERITY_DOT[sev]}`} />
-              {sev} ({items.length})
-            </div>
-            <div className="space-y-1.5 mt-1">
-              {items.map((f, i) => (
-                <div key={i} className={`rounded border p-2 text-xs ${SEVERITY_COLORS[sev]}`}>
-                  <div className="font-medium">{String(f.title ?? '')}</div>
-                  <div className="mt-0.5 text-zinc-400 leading-5">{String(f.rationale ?? '')}</div>
-                  {Array.isArray(f.evidence) && f.evidence.length > 0 && (
-                    <div className="mt-1 flex flex-wrap gap-1">
-                      {(f.evidence as string[]).slice(0, 3).map((ev, j) => (
-                        <span key={j} className="rounded bg-zinc-800 px-1.5 py-0.5 font-mono text-[10px] text-zinc-300">{ev}</span>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-        )
-      })}
-    </div>
-  )
-}
-
-function ConventionSignalsCard({ signals }: { signals: unknown[] }): React.ReactElement | null {
-  if (!Array.isArray(signals) || signals.length === 0) return null
-  return (
-    <div className="space-y-1.5">
-      {(signals as Record<string, unknown>[]).slice(0, 10).map((s, i) => (
-        <div key={i} className="rounded border border-zinc-800 bg-zinc-900/40 p-2 text-xs">
-          <div className="flex items-center gap-2">
-            <span className={`rounded px-1.5 py-0.5 text-[10px] font-mono ${
-              s.confidence === 'high' ? 'bg-emerald-900/40 text-emerald-400' :
-              s.confidence === 'medium' ? 'bg-blue-900/30 text-blue-400' : 'bg-zinc-800 text-zinc-400'
-            }`}>{String(s.confidence ?? 'medium')}</span>
-            <span className="font-medium text-zinc-200">{String(s.title ?? '')}</span>
-          </div>
-          <div className="mt-0.5 text-zinc-400 leading-5">{String(s.description ?? '')}</div>
-        </div>
-      ))}
-    </div>
-  )
-}
-
-function stringifyStructuredItem(item: unknown): string {
-  if (typeof item === 'string') return item
-  if (item && typeof item === 'object') {
-    const parts = Object.entries(item as Record<string, unknown>)
-      .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : String(v)}`)
-    return parts.join(' | ')
-  }
-  return String(item)
-}
-
-function renderDetails(details: unknown): React.ReactElement | null {
-  if (!details || typeof details !== 'object') return null
-  const d = details as Record<string, unknown>
-  const entries = Object.entries(d).filter(([, v]) => v !== null && v !== undefined)
-  if (entries.length === 0) return null
-  return (
-    <div className="space-y-3 rounded-md border border-zinc-800 bg-zinc-900/40 p-2">
-      {entries.map(([key, value]) => {
-        // Specialized renderers
-        if (key === 'risk_findings' && Array.isArray(value)) {
-          return (
-            <div key={key} className="space-y-1">
-              <div className="text-[11px] uppercase tracking-wide text-zinc-500">Risk Findings</div>
-              <RiskFindingsCard findings={value} />
-            </div>
-          )
-        }
-        if (key === 'convention_signals' && Array.isArray(value)) {
-          return (
-            <div key={key} className="space-y-1">
-              <div className="text-[11px] uppercase tracking-wide text-zinc-500">Convention Signals</div>
-              <ConventionSignalsCard signals={value} />
-            </div>
-          )
-        }
-        // Generic renderer
-        return (
-          <div key={key} className="space-y-1">
-            <div className="text-[11px] uppercase tracking-wide text-zinc-500">{key.replaceAll('_', ' ')}</div>
-            {Array.isArray(value) ? (
-              <div className="space-y-1">
-                {value.slice(0, 8).map((item, idx) => (
-                  <div key={`${key}-${idx}`} className="text-xs text-zinc-300 leading-5">
-                    - {stringifyStructuredItem(item)}
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="text-xs text-zinc-300 leading-5">{stringifyStructuredItem(value)}</div>
-            )}
-          </div>
-        )
-      })}
-    </div>
-  )
-}
+import SectionCardA from './components/SectionCardA'
+import SectionCardG from './components/SectionCardG'
+import SectionCardI from './components/SectionCardI'
+import SectionCardJ from './components/SectionCardJ'
 
 export default function ReportViewerScreen(): React.ReactElement {
   const navigate = useNavigate()
@@ -249,8 +110,20 @@ export default function ReportViewerScreen(): React.ReactElement {
     run()
   }, [isDetailMode, selectedReportId, reportIdInUrl])
 
-  const sections = useMemo(() => report?.report.sections ?? [], [report])
-  const confidence = report?.report.confidence_summary
+  const sectionsV2 = useMemo(() => {
+    const raw = report?.report as Record<string, unknown> | undefined
+    const v2 = raw?.sections_v2
+    return v2 && typeof v2 === 'object' ? (v2 as Record<string, unknown>) : null
+  }, [report])
+
+  const v2Ok = (letter: string): boolean => {
+    if (!sectionsV2)
+      return false
+    const block = sectionsV2[letter]
+    if (!block || typeof block !== 'object')
+      return false
+    return !('error' in block)
+  }
 
   return (
     <>
@@ -353,44 +226,18 @@ export default function ReportViewerScreen(): React.ReactElement {
                     </button>
                   </div>
                 </div>
-                {confidence && (
-                  <div className="text-xs text-zinc-400">
-                    confidence - high: <span className="text-zinc-200">{confidence.high}</span>
-                    <span className="mx-2 text-zinc-700">|</span>
-                    medium: <span className="text-zinc-200">{confidence.medium}</span>
-                    <span className="mx-2 text-zinc-700">|</span>
-                    low: <span className="text-zinc-200">{confidence.low}</span>
+                {sectionsV2 ? (
+                  <div className="space-y-2">
+                    {v2Ok('A') && <SectionCardA data={sectionsV2.A as SectionA} />}
+                    {v2Ok('G') && <SectionCardG data={sectionsV2.G as SectionG} />}
+                    {v2Ok('I') && <SectionCardI data={sectionsV2.I as SectionI} />}
+                    {v2Ok('J') && <SectionCardJ data={sectionsV2.J as SectionJ} />}
+                  </div>
+                ) : (
+                  <div className="text-xs text-zinc-500 py-4 text-center">
+                    No analysis sections found. Re-run analysis to generate section data.
                   </div>
                 )}
-                <div className="space-y-2 max-h-[64vh] overflow-auto pr-1">
-                  {sections.map((s, i) => (
-                    <div key={`${s.section}-${i}`} className="rounded-md border border-zinc-800 bg-zinc-950 p-3 space-y-2">
-                      <div className="text-sm text-zinc-100">
-                        {SECTION_LABELS[s.section] ?? s.section}
-                        <span className="ml-2 text-xs text-zinc-500">({s.section})</span>
-                        <span className="ml-2 text-xs text-zinc-500">· {s.confidence}</span>
-                      </div>
-                      <div className="text-xs text-emerald-400">{SECTION_AGENT[s.section] ?? 'Evidence Auditor & Composer Agent'}</div>
-                      {renderDetails((s as { details?: unknown }).details)}
-                      <div className="text-sm text-zinc-300 whitespace-pre-wrap leading-6">{s.content}</div>
-                      {s.evidence_files.length > 0 && (
-                        <div className="space-y-1">
-                          <div className="text-xs text-zinc-500">Evidence files</div>
-                          <div className="space-y-1">
-                            {s.evidence_files.slice(0, 8).map((f) => (
-                              <div key={f} className="text-xs font-mono text-zinc-400 break-all">{f}</div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                      {s.blind_spots.length > 0 && (
-                        <div className="text-xs text-amber-400">
-                          Blind spots: {s.blind_spots.join(', ')}
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
               </>
             ) : (
               <div className="text-xs text-zinc-500">Loading report...</div>
