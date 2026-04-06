@@ -23,6 +23,61 @@ import type {
 import { ErrorBanner } from '../../components/ui/ErrorBanner'
 import { toErrorMessage } from '../../lib/errors'
 
+function RetrievalResultPanel({
+  deduped,
+  totalChunks,
+  mode,
+  usedTokens,
+  budgetTokens,
+}: {
+  deduped: Array<{ rel_path: string; chunk_index: number; reason_codes: string[]; score: number; token_estimate: number; excerpt: string }>
+  totalChunks: number
+  mode: string
+  usedTokens: number
+  budgetTokens: number
+}): React.ReactElement {
+  const [expanded, setExpanded] = React.useState<string | null>(null)
+  return (
+    <div className="text-[11px] text-zinc-500 border border-zinc-800 rounded-md p-2 space-y-1.5">
+      <div className="flex items-center gap-2 flex-wrap">
+        <span>mode=<span className="text-zinc-300">{mode}</span></span>
+        <span className="text-zinc-700">|</span>
+        <span>tokens=<span className="text-zinc-300">{usedTokens}/{budgetTokens}</span></span>
+        <span className="text-zinc-700">|</span>
+        <span><span className="text-zinc-300">{deduped.length}</span> unique files</span>
+        <span className="text-zinc-600">({totalChunks} chunks scored, best chunk per file shown)</span>
+      </div>
+      <div className="max-h-80 overflow-y-auto space-y-1 pr-1">
+        {deduped.map((e) => {
+          const key = e.rel_path
+          const isOpen = expanded === key
+          return (
+            <div key={key} className="border border-zinc-800 rounded">
+              <button
+                className="w-full text-left px-2 py-1 flex items-center gap-1.5 hover:bg-zinc-800/40 transition-colors"
+                onClick={() => setExpanded(isOpen ? null : key)}
+              >
+                <span className={`shrink-0 text-[9px] transition-transform ${isOpen ? 'rotate-90' : ''}`}>▶</span>
+                <span className="text-zinc-300 font-mono truncate flex-1">{e.rel_path}</span>
+                <span className="shrink-0 text-zinc-600 font-mono">chunk#{e.chunk_index}</span>
+                <span className="shrink-0 text-zinc-700 mx-1">|</span>
+                <span className="shrink-0 text-zinc-500 font-mono truncate max-w-[160px]">{e.reason_codes.join(',')}</span>
+                <span className="shrink-0 text-zinc-700 mx-1">|</span>
+                <span className="shrink-0 text-zinc-400 font-mono">{e.token_estimate} tok</span>
+              </button>
+              {isOpen && (
+                <pre className="mx-2 mb-2 p-2 bg-zinc-950 border border-zinc-800 rounded text-[10px] text-zinc-300 font-mono whitespace-pre-wrap break-all max-h-48 overflow-y-auto leading-4">
+                  {e.excerpt || '(no excerpt)'}
+                </pre>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 export default function IndexOverviewScreen(): React.ReactElement {
   const MAX_RENDER_NODES = 180
   const MAX_RENDER_EDGES = 320
@@ -609,27 +664,13 @@ export default function IndexOverviewScreen(): React.ReactElement {
                 }
                 const deduped = Array.from(seen.values()).sort((a, b) => b.score - a.score)
                 return (
-                  <div className="text-[11px] text-zinc-500 border border-zinc-800 rounded-md p-2 space-y-1">
-                    <div>
-                      mode=<span className="text-zinc-300">{retrievalBundle.mode}</span>
-                      <span className="mx-2 text-zinc-700">|</span>
-                      tokens=<span className="text-zinc-300">{retrievalBundle.used_tokens}/{retrievalBundle.budget_tokens}</span>
-                      <span className="mx-2 text-zinc-700">|</span>
-                      evidences=<span className="text-zinc-300">{deduped.length}</span>
-                      <span className="text-zinc-600"> ({retrievalBundle.evidences.length} chunks → {deduped.length} unique files)</span>
-                    </div>
-                    <div className="max-h-48 overflow-y-auto space-y-0.5">
-                      {deduped.map((e) => (
-                        <div key={e.rel_path} className="font-mono flex items-baseline gap-1.5">
-                          <span className="text-zinc-300 truncate max-w-[240px]">{e.rel_path}</span>
-                          <span className="text-zinc-600 shrink-0">|</span>
-                          <span className="text-zinc-500 shrink-0 truncate max-w-[180px]">{e.reason_codes.join(',')}</span>
-                          <span className="text-zinc-600 shrink-0">|</span>
-                          <span className="text-zinc-500 shrink-0">tok:{e.token_estimate}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
+                  <RetrievalResultPanel
+                    deduped={deduped}
+                    totalChunks={retrievalBundle.evidences.length}
+                    mode={retrievalBundle.mode}
+                    usedTokens={retrievalBundle.used_tokens}
+                    budgetTokens={retrievalBundle.budget_tokens}
+                  />
                 )
               })()}
               {retrievalCompare && (
