@@ -1,8 +1,14 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import type { AnalysisReport, AnalysisReportSummary } from '../../types/electron'
+import type { SectionA, SectionG, SectionI, SectionJ } from '../../types/analysis'
 import { ErrorBanner } from '../../components/ui/ErrorBanner'
 import { toErrorMessage } from '../../lib/errors'
+import SectionCardA from './components/SectionCardA'
+import SectionCardG from './components/SectionCardG'
+import SectionCardI from './components/SectionCardI'
+import SectionCardJ from './components/SectionCardJ'
+import { SEVERITY_COLORS, SEVERITY_DOT } from './constants'
 
 const SECTION_LABELS: Record<string, string> = {
   'A/B/C/G/H': 'Structure, Architecture, Important Files',
@@ -16,18 +22,6 @@ const SECTION_AGENT: Record<string, string> = {
   'D/E': 'Convention Intelligence Agent',
   'F/I/J': 'Domain & Risk Intelligence Agent',
   'J': 'Risk & Complexity Agent',
-}
-
-const SEVERITY_COLORS: Record<string, string> = {
-  high: 'text-red-400 bg-red-900/20 border-red-800',
-  medium: 'text-yellow-400 bg-yellow-900/20 border-yellow-800',
-  low: 'text-zinc-400 bg-zinc-800/40 border-zinc-700',
-}
-
-const SEVERITY_DOT: Record<string, string> = {
-  high: 'bg-red-500',
-  medium: 'bg-yellow-500',
-  low: 'bg-zinc-500',
 }
 
 function RiskFindingsCard({ findings }: { findings: unknown[] }): React.ReactElement | null {
@@ -251,6 +245,20 @@ export default function ReportViewerScreen(): React.ReactElement {
 
   const sections = useMemo(() => report?.report.sections ?? [], [report])
   const confidence = report?.report.confidence_summary
+  const sectionsV2 = useMemo(() => {
+    const raw = report?.report as Record<string, unknown> | undefined
+    const v2 = raw?.sections_v2
+    return v2 && typeof v2 === 'object' ? (v2 as Record<string, unknown>) : null
+  }, [report])
+
+  const v2Ok = (letter: string): boolean => {
+    if (!sectionsV2)
+      return false
+    const block = sectionsV2[letter]
+    if (!block || typeof block !== 'object')
+      return false
+    return !('error' in block)
+  }
 
   return (
     <>
@@ -360,6 +368,23 @@ export default function ReportViewerScreen(): React.ReactElement {
                     medium: <span className="text-zinc-200">{confidence.medium}</span>
                     <span className="mx-2 text-zinc-700">|</span>
                     low: <span className="text-zinc-200">{confidence.low}</span>
+                  </div>
+                )}
+                {sectionsV2 && (
+                  <div className="sections-v2 space-y-2">
+                    <h3 className="text-sm font-semibold text-zinc-200">Analysis Sections (Wave 1)</h3>
+                    {v2Ok('A') && (
+                      <SectionCardA data={sectionsV2.A as SectionA} />
+                    )}
+                    {v2Ok('G') && (
+                      <SectionCardG data={sectionsV2.G as SectionG} />
+                    )}
+                    {v2Ok('I') && (
+                      <SectionCardI data={sectionsV2.I as SectionI} />
+                    )}
+                    {v2Ok('J') && (
+                      <SectionCardJ data={sectionsV2.J as SectionJ} />
+                    )}
                   </div>
                 )}
                 <div className="space-y-2 max-h-[64vh] overflow-auto pr-1">

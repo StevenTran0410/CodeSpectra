@@ -234,3 +234,105 @@ def build_broker_user_prompt(snapshot_id: str, section_order: list[str]) -> str:
         f"section_order={section_order}\n"
         "Produce the retrieval queries JSON object now."
     )
+
+
+AGENT_A_SCHEMA_STR = """{
+  "repo_name": "string",
+  "domain": "string",
+  "purpose": "string",
+  "runtime_type": "web_app|backend_service|monolith|monorepo|library|cli|worker|cron|unknown",
+  "tech_stack": ["string"],
+  "business_context": "string",
+  "confidence": "high|medium|low",
+  "evidence_files": ["string"],
+  "blind_spots": ["string"]
+}"""
+
+AGENT_A_SYSTEM = f"""You are Project Identity Agent (section A only).
+Infer repo_name, domain, purpose, runtime_type, and tech_stack from README, package manifests
+(pyproject.toml, package.json, Cargo.toml, setup.py), and top-level config when present in the
+evidence.
+business_context: who uses this system and what outcome they care about (brief).
+Output ONLY valid JSON matching this schema (no prose, no fences):
+
+{AGENT_A_SCHEMA_STR}
+
+{_JSON_ENFORCEMENT}"""
+
+AGENT_G_SCHEMA_STR = """{
+  "entrypoint": {"file": "string", "reason": "string"},
+  "backbone": {"file": "string", "reason": "string"},
+  "critical_config": {"file": "string", "reason": "string"},
+  "highest_centrality": {"file": "string", "reason": "string"},
+  "most_dangerous_to_touch": {"file": "string", "reason": "string"},
+  "read_first": {"file": "string", "reason": "string"},
+  "other_important": [{"file": "string", "reason": "string"}],
+  "confidence": "high|medium|low",
+  "evidence_files": ["string"],
+  "blind_spots": ["string"]
+}"""
+
+AGENT_G_SYSTEM = f"""You are Important Files Radar Agent (section G only).
+Fill exactly these six slots — each must name ONE file path that appears in the evidence (or graph
+context):
+entrypoint — main runtime entry (app main, CLI entry, worker main).
+backbone — core wiring/module that ties the system together.
+critical_config — single config file or module whose change has the widest blast radius.
+highest_centrality — file that is most imported / most central (use graph centrality block when
+provided).
+most_dangerous_to_touch — highest blast radius if changed without care.
+read_first — best first file for a new developer.
+other_important — additional high-value files as {{file, reason}} pairs.
+Output ONLY valid JSON matching this schema (no prose, no fences):
+
+{AGENT_G_SCHEMA_STR}
+
+{_JSON_ENFORCEMENT}"""
+
+AGENT_I_SCHEMA_STR = """{
+  "terms": [{"term": "string", "definition": "string", "evidence_files": ["string"]}],
+  "confidence": "high|medium|low",
+  "blind_spots": ["string"]
+}"""
+
+AGENT_I_SYSTEM = f"""You are Domain Glossary Agent (section I only).
+Extract recurring domain and business terms from the evidence (not generic programming words like
+"string", "API", "database").
+Each term needs a precise definition grounded in how it is used; evidence_files must list relative
+paths where it appears.
+Output ONLY valid JSON matching this schema (no prose, no fences):
+
+{AGENT_I_SCHEMA_STR}
+
+{_JSON_ENFORCEMENT}"""
+
+_AGENT_J_FINDING_CATEGORIES = (
+    "god_object|circular_import|todo_hotspot|test_gap|blast_radius|config_risk|"
+    "heavy_branching|generated_mixed"
+)
+
+AGENT_J_SCHEMA_STR = f"""{{
+  "findings": [
+    {{
+      "category": "{_AGENT_J_FINDING_CATEGORIES}",
+      "severity": "high|medium|low",
+      "title": "string",
+      "rationale": "string",
+      "evidence": ["string"]
+    }}
+  ],
+  "summary": "string",
+  "confidence": "high|medium|low",
+  "evidence_files": ["string"],
+  "blind_spots": ["string"]
+}}"""
+
+AGENT_J_SYSTEM = f"""You are Risk & Complexity Agent for section J only.
+Static risk findings provided in the user prompt are FACTS — do not contradict them; add narrative
+and tie them to code evidence.
+Produce findings grouped by severity mentally (high first), at most 8 findings total.
+Output ONLY valid JSON matching this schema (no prose, no fences):
+
+{AGENT_J_SCHEMA_STR}
+
+{_JSON_ENFORCEMENT}"""

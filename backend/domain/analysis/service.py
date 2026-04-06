@@ -121,8 +121,10 @@ class AnalysisService:
         self._graph = StructuralGraphService()
         self._retrieval = RetrievalService()
         self._provider = ProviderConfigService()
-        self._agents = AnalysisAgentPipeline(self._provider)
-        self._director = RunDirectorAgent(self._provider, self._retrieval, self._agents)
+        self._agents = AnalysisAgentPipeline(self._provider, self._retrieval)
+        self._director = RunDirectorAgent(
+            self._provider, self._retrieval, self._agents, self._graph
+        )
 
     async def estimate(self, repo_id: str, snapshot_id: str) -> AnalysisEstimateResponse:
         async with get_db().execute(

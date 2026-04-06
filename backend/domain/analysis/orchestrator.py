@@ -8,6 +8,8 @@ from typing import Any
 from domain.model_connector.service import ProviderConfigService
 from domain.model_connector.types import ChatMessage, ChatRequest
 from domain.retrieval.service import RetrievalService
+from domain.structural_graph.service import StructuralGraphService
+from domain.structural_graph.types import StructuralGraphSummary
 from infrastructure.db.database import get_db
 from shared.logger import logger
 
@@ -58,10 +60,12 @@ class RunDirectorAgent:
         providers: ProviderConfigService,
         retrieval: RetrievalService,
         pipeline: AnalysisAgentPipeline,
+        graph: StructuralGraphService,
     ) -> None:
         self._providers = providers
         self._pipeline = pipeline
         self._broker = RetrievalBrokerAgent(retrieval, providers)
+        self._graph = graph
 
     async def _plan(
         self,
@@ -142,6 +146,16 @@ class RunDirectorAgent:
         except Exception as e:
             logger.warning("Static convention analysis failed: %s", e)
 
+        graph_summary: StructuralGraphSummary | None = None
+        try:
+            graph_summary = await self._graph.summary(snapshot_id)
+            logger.info(
+                "Graph summary: %d central files",
+                len(graph_summary.top_central_files) if graph_summary else 0,
+            )
+        except Exception as e:
+            logger.warning("Graph summary failed: %s", e)
+
         ctx = await self._broker.collect(
             snapshot_id=snapshot_id,
             provider_id=provider_id,
@@ -161,6 +175,8 @@ class RunDirectorAgent:
             risk=ctx.risk,
             static_convention=static_conv,
             static_risk=static_risk,
+            snapshot_id=snapshot_id,
+            graph_summary=graph_summary,
         )
         report["orchestration"] = {
             "director": {

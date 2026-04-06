@@ -9,7 +9,9 @@ from typing import Any
 
 from domain.model_connector.service import ProviderConfigService
 from domain.model_connector.types import ChatMessage, ChatRequest
+from domain.retrieval.service import RetrievalService
 from domain.retrieval.types import RetrievalBundle
+from domain.structural_graph.types import StructuralGraphSummary
 from shared.logger import logger
 
 from .prompts import (
@@ -500,12 +502,27 @@ class EvidenceAuditorComposerAgent(BaseLLMAgent):
 
 
 class AnalysisAgentPipeline:
-    def __init__(self, provider_service: ProviderConfigService) -> None:
+    def __init__(
+        self,
+        provider_service: ProviderConfigService,
+        retrieval_service: RetrievalService | None = None,
+    ) -> None:
         self._structure = StructureIntelligenceAgent(provider_service)
         self._convention = ConventionIntelligenceAgent(provider_service)
         self._domain_risk = DomainRiskIntelligenceAgent(provider_service)
         self._risk_complexity = RiskComplexityAgent(provider_service)
         self._auditor = EvidenceAuditorComposerAgent(provider_service)
+        self._agent_a = None
+        self._agent_g = None
+        self._agent_i = None
+        self._agent_j = None
+        if retrieval_service is not None:
+            from .agents import AgentA, AgentG, AgentI, AgentJ
+
+            self._agent_a = AgentA(provider_service, retrieval_service)
+            self._agent_g = AgentG(provider_service, retrieval_service)
+            self._agent_i = AgentI(provider_service, retrieval_service)
+            self._agent_j = AgentJ(provider_service, retrieval_service)
 
     async def run(
         self,
@@ -519,6 +536,9 @@ class AnalysisAgentPipeline:
         risk: RetrievalBundle,
         static_convention: ConventionReport | None = None,
         static_risk: RiskReport | None = None,
+        *,
+        snapshot_id: str = "",
+        graph_summary: StructuralGraphSummary | None = None,
     ) -> dict[str, Any]:
         structure = await self._structure.run(provider_id, model_id, architecture, important)
         conv = await self._convention.run(
@@ -528,4 +548,20 @@ class AnalysisAgentPipeline:
         risk_sec = await self._risk_complexity.run(
             provider_id, model_id, risk, static_risk=static_risk
         )
-        return await self._auditor.run(provider_id, model_id, [structure, conv, dom, risk_sec])
+        auditor_result = await self._auditor.run(
+            provider_id, model_id, [structure, conv, dom, risk_sec]
+        )
+        sections_v2: dict[str, Any] = {}
+        if self._agent_a and snapshot_id:
+            assert self._agent_g is not None
+            assert self._agent_i is not None
+            assert self._agent_j is not None
+            sections_v2["A"] = await self._agent_a.run(provider_id, model_id, snapshot_id)
+            sections_v2["G"] = await self._agent_g.run(
+                provider_id, model_id, snapshot_id, graph_summary
+            )
+            sections_v2["I"] = await self._agent_i.run(provider_id, model_id, snapshot_id)
+            sections_v2["J"] = await self._agent_j.run(
+                provider_id, model_id, snapshot_id, static_risk
+            )
+        return {**auditor_result, "sections_v2": sections_v2}
