@@ -103,7 +103,7 @@ class AgentC(BaseTypedAgent):
                 AGENT_C_SYSTEM,
                 user_prompt,
                 AGENT_C_SCHEMA_STR,
-                max_completion_tokens=2000,
+                max_completion_tokens=16000,
             )
             raw_folders = data.get("folders")
             folders: list[dict[str, str]] = []

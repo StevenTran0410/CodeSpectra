@@ -103,7 +103,7 @@ class AgentH(BaseTypedAgent):
                 AGENT_H_SYSTEM,
                 user_prompt,
                 AGENT_H_SCHEMA_STR,
-                max_completion_tokens=2000,
+                max_completion_tokens=16000,
             )
             raw_steps = data.get("steps")
             steps: list[dict[str, Any]] = []

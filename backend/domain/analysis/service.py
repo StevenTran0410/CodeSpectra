@@ -434,7 +434,7 @@ class AnalysisService:
                 if await _cancelled():
                     return
 
-            await self._jobs.update_step(job_id, StepName.GENERATE.value, 30, "Director planning + broker retrieval")
+            await self._jobs.update_step(job_id, StepName.GENERATE.value, 30, "Running analysis agents")
             if await _cancelled():
                 return
             await self._jobs.update_step(job_id, StepName.GENERATE.value, 70, "Running LLM power agents")

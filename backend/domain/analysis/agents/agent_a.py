@@ -159,7 +159,7 @@ class AgentA(BaseTypedAgent):
                 AGENT_A_SYSTEM,
                 user_prompt,
                 AGENT_A_SCHEMA_STR,
-                max_completion_tokens=2000,
+                max_completion_tokens=16000,
             )
             for key in ("repo_name", "domain", "purpose", "runtime_type", "business_context"):
                 data[key] = str(data.get(key, "") or "")

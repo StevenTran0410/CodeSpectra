@@ -76,7 +76,7 @@ class AgentB(BaseTypedAgent):
                 AGENT_B_SYSTEM,
                 user_prompt,
                 AGENT_B_SCHEMA_STR,
-                max_completion_tokens=3000,
+                max_completion_tokens=16000,
             )
             for key in (
                 "main_layers",
