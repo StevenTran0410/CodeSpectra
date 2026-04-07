@@ -276,7 +276,9 @@ class AnalysisService:
             estimated_tokens=est_tokens,
         )
 
-    async def list_reports(self, repo_id: str | None = None, limit: int = 30) -> list[AnalysisReportSummary]:
+    async def list_reports(
+        self, repo_id: str | None = None, limit: int = 30
+    ) -> list[AnalysisReportSummary]:
         db = get_db()
         safe_limit = max(1, min(limit, 200))
         if repo_id:
@@ -400,7 +402,8 @@ class AnalysisService:
 
     async def export_report_markdown(self, report_id: str) -> AnalysisReportMarkdownResponse:
         rep = await self.get_report(report_id)
-        default_name = f"codespectra-report-{_slug(rep.summary.repo_name or rep.summary.repo_id)}-{report_id[:8]}.md"
+        slug = _slug(rep.summary.repo_name or rep.summary.repo_id)
+        default_name = f"codespectra-report-{slug}-{report_id[:8]}.md"
         return AnalysisReportMarkdownResponse(
             report_id=report_id,
             default_name=default_name,
@@ -408,11 +411,15 @@ class AnalysisService:
         )
 
     async def start(self, req: StartAnalysisRequest):
-        async with get_db().execute("SELECT name FROM local_repos WHERE id=?", (req.repo_id,)) as cur:
+        async with get_db().execute(
+            "SELECT name FROM local_repos WHERE id=?", (req.repo_id,)
+        ) as cur:
             repo = await cur.fetchone()
         if repo is None:
             raise NotFoundError("LocalRepo", req.repo_id)
-        async with get_db().execute("SELECT 1 FROM repo_snapshots WHERE id=?", (req.snapshot_id,)) as cur:
+        async with get_db().execute(
+            "SELECT 1 FROM repo_snapshots WHERE id=?", (req.snapshot_id,)
+        ) as cur:
             snap = await cur.fetchone()
         if snap is None:
             raise NotFoundError("RepoSnapshot", req.snapshot_id)
@@ -487,38 +494,54 @@ class AnalysisService:
             await self._jobs.update_step(job_id, StepName.MANIFEST.value, 100, "Manifest ready")
 
             await self._jobs.update_step(job_id, StepName.PARSE.value, 10, "Extracting symbols")
-            await self._repo_map.build(BuildRepoMapRequest(snapshot_id=req.snapshot_id, force_rebuild=True))
+            await self._repo_map.build(
+                BuildRepoMapRequest(snapshot_id=req.snapshot_id, force_rebuild=True)
+            )
             if await _cancelled():
                 return
             await self._jobs.update_step(job_id, StepName.PARSE.value, 100, "Repo map ready")
 
-            await self._jobs.update_step(job_id, StepName.GRAPH.value, 15, "Building structural graph")
-            await self._graph.build(BuildGraphRequest(snapshot_id=req.snapshot_id, force_rebuild=True))
+            await self._jobs.update_step(
+                job_id, StepName.GRAPH.value, 15, "Building structural graph"
+            )
+            await self._graph.build(
+                BuildGraphRequest(snapshot_id=req.snapshot_id, force_rebuild=True)
+            )
             if await _cancelled():
                 return
             await self._jobs.update_step(job_id, StepName.GRAPH.value, 100, "Graph ready")
 
             if req.scan_mode == ScanMode.FULL:
-                await self._jobs.update_step(job_id, StepName.EMBED.value, 20, "Building retrieval index")
+                await self._jobs.update_step(
+                    job_id, StepName.EMBED.value, 20, "Building retrieval index"
+                )
                 await self._retrieval.build_index(
                     BuildRetrievalIndexRequest(snapshot_id=req.snapshot_id, force_rebuild=True)
                 )
                 if await _cancelled():
                     return
-                await self._jobs.update_step(job_id, StepName.EMBED.value, 100, "Retrieval index ready")
+                await self._jobs.update_step(
+                    job_id, StepName.EMBED.value, 100, "Retrieval index ready"
+                )
 
             if req.scan_mode != ScanMode.FULL:
-                await self._jobs.update_step(job_id, StepName.GENERATE.value, 20, "Preparing retrieval index")
+                await self._jobs.update_step(
+                    job_id, StepName.GENERATE.value, 20, "Preparing retrieval index"
+                )
                 await self._retrieval.build_index(
                     BuildRetrievalIndexRequest(snapshot_id=req.snapshot_id, force_rebuild=False)
                 )
                 if await _cancelled():
                     return
 
-            await self._jobs.update_step(job_id, StepName.GENERATE.value, 30, "Running analysis agents")
+            await self._jobs.update_step(
+                job_id, StepName.GENERATE.value, 30, "Running analysis agents"
+            )
             if await _cancelled():
                 return
-            await self._jobs.update_step(job_id, StepName.GENERATE.value, 70, "Running LLM power agents")
+            await self._jobs.update_step(
+                job_id, StepName.GENERATE.value, 70, "Running LLM power agents"
+            )
             report = await self._director.run(
                 provider_id=req.provider_id,
                 model_id=req.model_id,
@@ -531,14 +554,18 @@ class AnalysisService:
                 return
             await self._jobs.update_step(job_id, StepName.GENERATE.value, 100, "Sections generated")
 
-            await self._jobs.update_step(job_id, StepName.EXPORT.value, 60, "Assembling report artifact")
+            await self._jobs.update_step(
+                job_id, StepName.EXPORT.value, 60, "Assembling report artifact"
+            )
             sections_out = report.get("sections")
             n_sec = len(sections_out) if isinstance(sections_out, dict) else 0
             logger.info(f"[analysis:{job_id}] report_sections={n_sec}")
             await get_db().execute(
                 """
-                INSERT INTO analysis_reports
-                (id, job_id, repo_id, snapshot_id, provider_id, model_id, scan_mode, privacy_mode, report_json, created_at)
+                INSERT INTO analysis_reports (
+                    id, job_id, repo_id, snapshot_id, provider_id, model_id,
+                    scan_mode, privacy_mode, report_json, created_at
+                )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
