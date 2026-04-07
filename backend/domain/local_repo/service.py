@@ -45,6 +45,16 @@ def _normalize_repo_path(path: str) -> str:
         return str(Path(path).absolute())
 
 
+def _detect_source_type(url: str) -> RepoSourceType:
+    """Infer repo host from a git URL (HTTPS or SSH) for display purposes."""
+    u = url.lower()
+    if "github.com" in u:
+        return RepoSourceType.GITHUB
+    if "bitbucket.org" in u:
+        return RepoSourceType.BITBUCKET
+    return RepoSourceType.LOCAL_FOLDER
+
+
 def _is_under_path(path: Path, root: Path) -> bool:
     """Robust Windows-safe containment check."""
     try:
@@ -204,7 +214,11 @@ class LocalRepoService:
             size_warning_reason=size_reason,
         )
 
-    async def add(self, req: AddLocalRepoRequest) -> LocalRepo:
+    async def add(
+        self,
+        req: AddLocalRepoRequest,
+        source_type: RepoSourceType = RepoSourceType.LOCAL_FOLDER,
+    ) -> LocalRepo:
         normalized_path = _normalize_repo_path(req.path)
         validation = await self.validate(ValidateFolderRequest(path=normalized_path))
         if not validation.exists or not validation.is_directory:
@@ -229,7 +243,7 @@ class LocalRepoService:
                 repo_id,
                 normalized_path,
                 validation.name,
-                RepoSourceType.LOCAL_FOLDER.value,
+                source_type.value,
                 int(validation.is_git_repo),
                 validation.git_branch,
                 validation.git_head_hash,
@@ -455,7 +469,10 @@ class LocalRepoService:
             raise ValueError(msg)
 
         logger.info(f"Cloned '{req.url}' → {normalized_dest_path}")
-        return await self.add(AddLocalRepoRequest(path=normalized_dest_path))
+        return await self.add(
+            AddLocalRepoRequest(path=normalized_dest_path),
+            source_type=_detect_source_type(req.url),
+        )
 
     async def _fetch_row(self, repo_id: str):
         db = get_db()

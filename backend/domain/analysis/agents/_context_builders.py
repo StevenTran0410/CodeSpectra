@@ -1,10 +1,30 @@
-"""Typed context assembly for convention / risk / cross-agent hints (RPA-055)."""
+"""Typed context assembly helpers shared across section agents."""
 from __future__ import annotations
 
 from typing import Any
 
+from infrastructure.db.database import get_db
+
 from ..static_convention import ConventionReport
 from ..static_risk import RiskReport
+
+
+async def fetch_folder_tree(snapshot_id: str, max_files: int = 60) -> str:
+    """Compact top-level file listing from manifest_files for a snapshot."""
+    db = get_db()
+    rows = []
+    try:
+        async with db.execute(
+            """SELECT rel_path FROM manifest_files
+               WHERE snapshot_id=?
+               ORDER BY rel_path ASC
+               LIMIT ?""",
+            (snapshot_id, max_files),
+        ) as cur:
+            rows = await cur.fetchall()
+    except Exception:
+        pass
+    return "\n".join(row["rel_path"] for row in rows) if rows else ""
 
 
 def build_convention_block(report: ConventionReport | None) -> str:

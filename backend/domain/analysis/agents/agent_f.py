@@ -128,7 +128,6 @@ class AgentF(BaseTypedAgent):
             logger.info("[AgentF] %d chunks retrieved, completed in %dms", n_chunks, ms)
             return data
         except Exception as e:
-            logger.warning("[AgentF] failed: %s", e)
             ms = int((time.monotonic() - t0) * 1000)
-            logger.info("[AgentF] %d chunks retrieved, completed in %dms", n_chunks, ms)
+            logger.warning("[AgentF] failed in %dms: %s", ms, e)
             return self._fallback(str(e))

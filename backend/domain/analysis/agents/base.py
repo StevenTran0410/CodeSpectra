@@ -51,7 +51,6 @@ class BaseTypedAgent(BaseLLMAgent):
             max_completion_tokens,
             temperature=0.2,
         )
-        logger.info("[typed_agent] attempt1 raw (%d chars): %s", len(text), text[:800])
         try:
             obj = self._try_parse_json(text)
             if isinstance(obj, dict) and obj:
@@ -84,7 +83,6 @@ class BaseTypedAgent(BaseLLMAgent):
                 ),
                 max_completion_tokens, temperature=None,
             )
-        logger.info("[typed_agent] attempt2 raw (%d chars): %s", len(text2), text2[:400])
         try:
             obj2 = self._try_parse_json(text2)
             if isinstance(obj2, dict) and obj2:
