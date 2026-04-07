@@ -1,205 +1,102 @@
 # CodeSpectra Analysis Agents
 
-This document defines the analysis agent topology for CodeSpectra onboarding reports.
-It covers responsibilities, handoff flow, runtime decisions, and ticket mapping.
+This document describes the current analysis pipeline used in CodeSpectra.
 
----
+## Overview
 
-## 1) Design Goal
+CodeSpectra uses one dedicated LLM agent per report section (`A` to `K`) and executes them through a dependency-aware pipeline.
 
-Produce an evidence-backed onboarding report that answers:
+- Sections `A-J` are content agents.
+- Section `K` is an auditor agent that evaluates `A-J`.
+- Each section has a fixed output schema for consistency across runs.
 
-- What the system does and how it is organized
-- Which files/symbols matter most
-- Where to start reading
-- Which conventions exist and where they are broken
-- Which risky/complex areas need caution
+## Orchestration Model
 
----
+Pipeline runtime uses Haystack `AsyncPipeline` with async components.
 
-## 2) Merged Agent Set (Optimized)
+Current dependency graph:
 
-To keep runtime simpler and reduce orchestration overhead, related roles are merged.
+- Parallel base set: `A, B, C, D, F, G, I, J`
+- Dependent stage: `E` depends on `D`, `H` depends on `G`
+- Final stage: `K` depends on all `A-J`
 
-### A. Run Director Agent
+Section completion emits per-section events for incremental UI updates.
 
-Merged from: moderator + run controller.
+## Agent Responsibilities
 
-Responsibilities:
-- Start/stop analysis run
-- Decide section execution order
-- Enforce token/time budget
-- Handle retry/cancel behavior
+### `A` Project Identity Agent
 
-Outputs:
-- `run_plan`
-- `run_state` (step statuses)
-- run-level summary state
+- Infers repo identity, purpose, runtime type, and tech stack.
+- Uses retrieval plus direct manifest/doc context.
 
-### B. Retrieval Broker Agent
+### `B` Architecture Overview Agent
 
-Merged from: context retriever + retrieval strategy router.
+- Summarizes layers, frameworks, entrypoints, services, integrations.
 
-Responsibilities:
-- Build/use retrieval index (chunks + lexical)
-- Pick retrieval mode per request (`hybrid` or `vectorless`)
-- Return context bundles with evidence metadata
+### `C` Repository Structure Agent
 
-Outputs:
-- `ContextBundle[]`:
-  - file path
-  - chunk excerpt
-  - reason codes
-  - token estimate
+- Maps major folders to roles and explains repo structure.
 
-### C. Structure Intelligence Agent
+### `D` Coding Conventions Agent
 
-Merged from: identity + architecture + repo narrative + importance radar.
+- Extracts naming, async, DI, test, and error-handling conventions.
+- Uses static convention signals as grounding input.
 
-Covers report sections:
-- A) Project Identity Card
-- B) Architecture Overview
-- C) Repo Structure Narrative
-- G) Important Files Radar
-- H) Onboarding Reading Order
+### `E` Forbidden Patterns Agent
 
-Outputs:
-- section payloads for A/B/C/G/H
-- evidence references for each claim
+- Finds anti-patterns and violated conventions.
+- Uses `D` output as negative-space context.
 
-### D. Convention Intelligence Agent
+### `F` Feature Map Agent
 
-Merged from: convention analyzer + forbidden/negative convention detector.
+- Builds feature-level mapping with key files and data flow hints.
 
-Covers report sections:
-- D) Coding Convention & Team Style
-- E) Forbidden Things / Negative Conventions
+### `G` Important Files Radar Agent
 
-Outputs:
-- inferred team conventions
-- inferred boundary rules ("do not do X")
-- outlier examples and violation candidates
+- Picks high-value files: entrypoint, backbone, risky files, read-first.
 
-### E. Domain & Risk Intelligence Agent
+### `H` Onboarding Reading Order Agent
 
-Merged from: feature map + glossary + risk/complexity detector.
+- Produces practical reading path for a new engineer.
+- Depends on `G`.
 
-Covers report sections:
-- F) Functionality / Feature Map
-- I) Glossary / Domain Terms
-- J) Risk / Complexity / Unknowns
+### `I` Glossary Agent
 
-Outputs:
-- feature map
-- domain glossary
-- risk matrix + hotspots + unknowns
+- Extracts domain terms grounded in evidence files.
 
-### F. Evidence Auditor & Composer Agent
+### `J` Risk / Complexity Agent
 
-Merged from: evidence validator + confidence scorer + report composer.
+- Produces risks and hotspots, combined with static risk context.
 
-Covers report section:
-- K) Confidence & Evidence
+### `K` Evidence Auditor Agent
 
-Responsibilities:
-- Verify claims have supporting evidence
-- Assign confidence (`high` / `medium` / `low`)
-- Record blind spots
-- Compose final report artifact
+- Reviews `A-J` outputs and scores section-level confidence.
+- Reports weakest sections and coverage quality summary.
+- No repository retrieval; this is meta-analysis of section outputs.
 
-Outputs:
-- section K
-- final report JSON/Markdown
+## Context and Retrieval Model
 
----
+The pipeline does not use a centralized retrieval broker anymore.
 
-## 3) Inter-Agent Flow
+- Each section agent owns its retrieval strategy.
+- Agents call the shared retrieval service directly.
+- Static analysis outputs are injected as precomputed context for relevant sections.
 
-1. **Run Director** initializes run and section plan.
-2. For each section group, **Run Director -> Retrieval Broker** requests context.
-3. **Retrieval Broker** returns `ContextBundle`.
-4. Intelligence agent (Structure / Convention / Domain-Risk) generates section drafts.
-5. **Evidence Auditor & Composer** validates drafts and assigns confidence.
-6. **Composer** emits final report.
+## Output Contract
 
-Hard rule:
-- Intelligence agents do not fetch repository data directly.
-- They only consume context bundles from Retrieval Broker.
+Analysis report payload is versioned:
 
----
+```json
+{
+  "version": 2,
+  "sections": {
+    "A": {},
+    "B": {},
+    "...": {},
+    "K": {}
+  }
+}
+```
 
-## 4) Runtime Architecture Decision (Python/C++)
-
-### Orchestration choice
-
-Decision: **custom Python orchestration (plain service pipeline), not LangGraph**.
-
-Reasons:
-- predictable control flow
-- lower framework overhead
-- easier debugging in local desktop runtime
-- direct fit with existing FastAPI + job orchestration model
-
-LangGraph can be re-evaluated later if routing/branching complexity grows significantly.
-
-### C++ usage policy
-
-- Agent coordination stays in Python.
-- C++ is only for compute-heavy hotspots.
-
-Current and planned C++ hotspots:
-- graph neighbor expansion / graph scoring
-- retrieval lexical scoring over large chunk sets
-- optional rank-fusion kernels for hybrid retrieval
-
-Do not use C++ for prompt orchestration, section writing, or report composition.
-
----
-
-## 5) Mapping to Tickets
-
-- RPA-033: structural graph + graph navigation hints
-- RPA-034: chunking/retrieval/A-B comparison (hybrid vs vectorless)
-- RPA-035: analysis run UX and model/privacy controls
-- RPA-040/041/042/044: section generation from this agent stack
-
----
-
-## 6) Interface Contracts (Recommended)
-
-### ContextBundle
-
-- `bundle_id`
-- `section`
-- `query`
-- `mode`
-- `budget_tokens`
-- `used_tokens`
-- `items[]` with:
-  - `rel_path`
-  - `chunk_id`
-  - `excerpt`
-  - `reason_codes[]`
-  - `token_estimate`
-
-### SectionDraft
-
-- `section_id`
-- `content`
-- `claims[]`
-- `evidence_refs[]`
-
-### AuditResult
-
-- `section_id`
-- `confidence`
-- `supported_claims`
-- `unsupported_claims`
-- `blind_spots[]`
-
-### FinalReport
-
-- sections A-K
-- confidence summary
-- evidence index
+Older saved reports that still use `sections_v2` are supported by compatibility logic in readers.
 
