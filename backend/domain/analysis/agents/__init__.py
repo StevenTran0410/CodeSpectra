@@ -3,6 +3,9 @@
 from .agent_a import AgentA
 from .agent_b import AgentB
 from .agent_c import AgentC
+from .agent_d import AgentD
+from .agent_e import AgentE
+from .agent_f import AgentF
 from .agent_g import AgentG
 from .agent_h import AgentH
 from .agent_i import AgentI
@@ -12,6 +15,9 @@ __all__ = [
     "AgentA",
     "AgentB",
     "AgentC",
+    "AgentD",
+    "AgentE",
+    "AgentF",
     "AgentG",
     "AgentH",
     "AgentI",

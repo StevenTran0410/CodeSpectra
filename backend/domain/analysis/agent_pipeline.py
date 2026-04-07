@@ -13,6 +13,7 @@ from domain.retrieval.service import RetrievalService
 from domain.structural_graph.types import StructuralGraphSummary
 from shared.logger import logger
 
+from .static_convention import ConventionReport
 from .static_risk import RiskReport
 
 
@@ -155,16 +156,33 @@ class AnalysisAgentPipeline:
         self._agent_a = None
         self._agent_b = None
         self._agent_c = None
+        self._agent_d = None
+        self._agent_e = None
+        self._agent_f = None
         self._agent_g = None
         self._agent_h = None
         self._agent_i = None
         self._agent_j = None
         if retrieval_service is not None:
-            from .agents import AgentA, AgentB, AgentC, AgentG, AgentH, AgentI, AgentJ
+            from .agents import (
+                AgentA,
+                AgentB,
+                AgentC,
+                AgentD,
+                AgentE,
+                AgentF,
+                AgentG,
+                AgentH,
+                AgentI,
+                AgentJ,
+            )
 
             self._agent_a = AgentA(provider_service, retrieval_service)
             self._agent_b = AgentB(provider_service, retrieval_service)
             self._agent_c = AgentC(provider_service, retrieval_service)
+            self._agent_d = AgentD(provider_service, retrieval_service)
+            self._agent_e = AgentE(provider_service, retrieval_service)
+            self._agent_f = AgentF(provider_service, retrieval_service)
             self._agent_g = AgentG(provider_service, retrieval_service)
             self._agent_h = AgentH(provider_service, retrieval_service)
             self._agent_i = AgentI(provider_service, retrieval_service)
@@ -179,6 +197,7 @@ class AnalysisAgentPipeline:
         repo_name: str = "",
         graph_summary: StructuralGraphSummary | None = None,
         static_risk: RiskReport | None = None,
+        static_convention: ConventionReport | None = None,
     ) -> dict[str, Any]:
         sections_v2: dict[str, Any] = {}
         if not (self._agent_a and snapshot_id):
@@ -186,6 +205,9 @@ class AnalysisAgentPipeline:
 
         assert self._agent_b is not None
         assert self._agent_c is not None
+        assert self._agent_d is not None
+        assert self._agent_e is not None
+        assert self._agent_f is not None
         assert self._agent_g is not None
         assert self._agent_h is not None
         assert self._agent_i is not None
@@ -206,6 +228,26 @@ class AnalysisAgentPipeline:
         sections_v2["C"] = await self._agent_c.run(provider_id, model_id, snapshot_id)
         sections_v2["H"] = await self._agent_h.run(
             provider_id, model_id, snapshot_id, sections_v2.get("G")
+        )
+
+        # Wave 3 — conventions + feature map (D→E sequential; F after)
+        sections_v2["D"] = await self._agent_d.run(
+            provider_id,
+            model_id,
+            snapshot_id,
+            static_convention,
+            sections_v2.get("C"),
+        )
+        sections_v2["E"] = await self._agent_e.run(
+            provider_id,
+            model_id,
+            snapshot_id,
+            static_convention,
+            static_risk,
+            sections_v2.get("D"),
+        )
+        sections_v2["F"] = await self._agent_f.run(
+            provider_id, model_id, snapshot_id, graph_summary
         )
 
         return {"sections_v2": sections_v2}

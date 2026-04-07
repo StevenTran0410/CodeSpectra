@@ -66,6 +66,11 @@ export interface FolderItem {
   description: string
 }
 
+export interface ConventionAspect {
+  description: string
+  evidence_files: string[]
+}
+
 export interface ConventionSignal {
   category: string
   description: string
@@ -82,6 +87,7 @@ export interface RuleViolation {
   rule: string
   file: string
   description: string
+  severity?: 'high' | 'medium' | 'low' | string
 }
 
 export interface FeatureMapItem {
@@ -135,12 +141,12 @@ export interface SectionC {
 }
 
 export interface SectionD {
-  naming_style: string
-  error_handling: string
-  async_style: string
-  di_style: string
-  class_vs_functional: ClassVsFunctional | string
-  test_style: string
+  naming_style: ConventionAspect | string
+  error_handling: ConventionAspect | string
+  async_style: ConventionAspect | string
+  di_style: ConventionAspect | string
+  class_vs_functional: ConventionAspect | string
+  test_style: ConventionAspect | string
   signals: ConventionSignal[]
   confidence: Confidence
   evidence_files: string[]

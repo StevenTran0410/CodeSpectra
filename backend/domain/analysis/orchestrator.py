@@ -37,6 +37,7 @@ class RunDirectorAgent:
     ) -> dict[str, Any]:
         db = get_db()
         static_risk = None
+        static_conv = None
         try:
             static_risk = await run_risk_analysis(snapshot_id, db)
             logger.info(
@@ -74,4 +75,5 @@ class RunDirectorAgent:
             repo_name=repo_name,
             graph_summary=graph_summary,
             static_risk=static_risk,
+            static_convention=static_conv,
         )

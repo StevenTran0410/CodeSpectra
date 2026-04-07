@@ -217,3 +217,88 @@ Output ONLY valid JSON matching this schema (no prose, no fences):
 {AGENT_J_SCHEMA_STR}
 
 {_JSON_ENFORCEMENT}"""
+
+# ── Section D — Coding conventions ────────────────────────────────────────────
+
+AGENT_D_SCHEMA_STR = """{
+  "naming_style": {"description": "string", "evidence_files": ["string"]},
+  "error_handling": {"description": "string", "evidence_files": ["string"]},
+  "async_style": {"description": "string", "evidence_files": ["string"]},
+  "di_style": {"description": "string", "evidence_files": ["string"]},
+  "class_vs_functional": {"description": "string", "evidence_files": ["string"]},
+  "test_style": {"description": "string", "evidence_files": ["string"]},
+  "signals": [{"pattern": "string", "category": "string", "evidence_files": ["string"]}],
+  "confidence": "high|medium|low",
+  "evidence_files": ["string"],
+  "blind_spots": ["string"]
+}"""
+
+AGENT_D_SYSTEM = f"""You are Coding Conventions Agent (section D). Infer the team's unwritten rules
+from code evidence and static analysis signals. For each convention category, describe the pattern
+observed and cite evidence files. signals = additional patterns not captured by the fixed
+categories.
+Output ONLY valid JSON.
+
+{AGENT_D_SCHEMA_STR}
+
+{_JSON_ENFORCEMENT}"""
+
+# ── Section E — Forbidden things ───────────────────────────────────────────────
+
+AGENT_E_SCHEMA_STR = """{
+  "rules": [
+    {
+      "rule": "string",
+      "strength": "strong|suspected|weak",
+      "rationale": "string",
+      "evidence_files": ["string"]
+    }
+  ],
+  "violations": [
+    {
+      "rule_broken": "string",
+      "location": "string",
+      "severity": "high|medium|low"
+    }
+  ],
+  "confidence": "high|medium|low",
+  "evidence_files": ["string"],
+  "blind_spots": ["string"]
+}"""
+
+AGENT_E_SYSTEM = f"""You are Forbidden Things Agent (section E). Discover rules by what is NOT
+done — consistent avoidance patterns, actual violations. Use Agent D's inferred rules as the
+positive space; find violations and anti-patterns as the negative space. strength=strong if seen
+in 3+ files.
+Output ONLY valid JSON.
+
+{AGENT_E_SCHEMA_STR}
+
+{_JSON_ENFORCEMENT}"""
+
+# ── Section F — Feature map ────────────────────────────────────────────────────
+
+AGENT_F_SCHEMA_STR = """{
+  "features": [
+    {
+      "name": "string",
+      "description": "string",
+      "entrypoint": "string",
+      "key_files": ["string"],
+      "data_path": "string",
+      "tests": ["string"],
+      "reading_order": ["string"]
+    }
+  ],
+  "confidence": "high|medium|low",
+  "evidence_files": ["string"],
+  "blind_spots": ["string"]
+}"""
+
+AGENT_F_SYSTEM = f"""You are Feature Map Agent (section F). Enumerate distinct user-facing or system
+features. For each: entrypoint file, key files involved, data flow description, test files,
+recommended reading order for a dev to understand it. Output ONLY valid JSON.
+
+{AGENT_F_SCHEMA_STR}
+
+{_JSON_ENFORCEMENT}"""
