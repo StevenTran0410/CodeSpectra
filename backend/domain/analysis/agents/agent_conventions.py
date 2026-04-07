@@ -48,7 +48,7 @@ def _coerce_aspect(raw: Any) -> dict[str, list[str] | str]:
     return {"description": str(raw), "evidence_files": []}
 
 
-class AgentD(BaseTypedAgent):
+class ConventionsAgent(BaseTypedAgent):
     def __init__(
         self,
         provider_service: ProviderConfigService,
@@ -105,7 +105,7 @@ class AgentD(BaseTypedAgent):
                     query=_COMBINED_QUERY,
                     section=RetrievalSection.CONVENTIONS,
                     mode=RetrievalMode.HYBRID,
-                    max_results=20,
+                    max_results=30,
                 )
             )
             n_chunks = len(bundle.evidences)
@@ -118,7 +118,7 @@ class AgentD(BaseTypedAgent):
                 AGENT_D_SYSTEM,
                 user_prompt,
                 schema_hint=AGENT_D_SCHEMA_STR,
-                max_completion_tokens=16000,
+                max_completion_tokens=3000,
             )
             for k in _ASPECT_KEYS:
                 data[k] = _coerce_aspect(data.get(k))
@@ -152,9 +152,9 @@ class AgentD(BaseTypedAgent):
             data["confidence"] = _normalize_conf(str(data.get("confidence", "medium")))
             validate_section("D", data)
             ms = int((time.monotonic() - t0) * 1000)
-            logger.info("[AgentD] %d chunks retrieved, completed in %dms", n_chunks, ms)
+            logger.info("[ConventionsAgent] %d chunks retrieved, completed in %dms", n_chunks, ms)
             return data
         except Exception as e:
             ms = int((time.monotonic() - t0) * 1000)
-            logger.warning("[AgentD] failed in %dms: %s", ms, e)
+            logger.warning("[ConventionsAgent] failed in %dms: %s", ms, e)
             return self._fallback(str(e))

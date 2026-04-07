@@ -18,6 +18,7 @@ from domain.retrieval.service import RetrievalService
 from domain.structural_graph.types import StructuralGraphSummary
 from shared.logger import logger
 
+from .agents._context_builders import prefetch_pipeline_context
 from .static_convention import ConventionReport
 from .static_risk import RiskReport
 from .types import SectionDoneCallback
@@ -32,7 +33,7 @@ def _section_k_pipeline_fallback() -> dict[str, Any]:
         "weakest_sections": [],
         "coverage_percentage": 0.0,
         "notes": "Audit could not be completed.",
-        "blind_spots": ["AgentK failed"],
+        "blind_spots": ["AuditAgent failed"],
     }
 
 
@@ -290,43 +291,43 @@ class AnalysisAgentPipeline:
         provider_service: ProviderConfigService,
         retrieval_service: RetrievalService | None = None,
     ) -> None:
-        self._agent_a = None
-        self._agent_b = None
-        self._agent_c = None
-        self._agent_d = None
-        self._agent_e = None
-        self._agent_f = None
-        self._agent_g = None
-        self._agent_h = None
-        self._agent_i = None
-        self._agent_j = None
-        self._agent_k = None
+        self._project_identity = None
+        self._architecture = None
+        self._structure = None
+        self._conventions = None
+        self._violations = None
+        self._feature_map = None
+        self._important_files = None
+        self._onboarding = None
+        self._glossary = None
+        self._risk = None
+        self._auditor = None
         if retrieval_service is not None:
             from .agents import (
-                AgentA,
-                AgentB,
-                AgentC,
-                AgentD,
-                AgentE,
-                AgentF,
-                AgentG,
-                AgentH,
-                AgentI,
-                AgentJ,
-                AgentK,
+                ArchitectureAgent,
+                AuditAgent,
+                ConventionsAgent,
+                FeatureMapAgent,
+                GlossaryAgent,
+                ImportantFilesAgent,
+                OnboardingAgent,
+                ProjectIdentityAgent,
+                RiskAgent,
+                StructureAgent,
+                ViolationsAgent,
             )
 
-            self._agent_a = AgentA(provider_service, retrieval_service)
-            self._agent_b = AgentB(provider_service, retrieval_service)
-            self._agent_c = AgentC(provider_service, retrieval_service)
-            self._agent_d = AgentD(provider_service, retrieval_service)
-            self._agent_e = AgentE(provider_service, retrieval_service)
-            self._agent_f = AgentF(provider_service, retrieval_service)
-            self._agent_g = AgentG(provider_service, retrieval_service)
-            self._agent_h = AgentH(provider_service, retrieval_service)
-            self._agent_i = AgentI(provider_service, retrieval_service)
-            self._agent_j = AgentJ(provider_service, retrieval_service)
-            self._agent_k = AgentK(provider_service)
+            self._project_identity = ProjectIdentityAgent(provider_service, retrieval_service)
+            self._architecture = ArchitectureAgent(provider_service, retrieval_service)
+            self._structure = StructureAgent(provider_service, retrieval_service)
+            self._conventions = ConventionsAgent(provider_service, retrieval_service)
+            self._violations = ViolationsAgent(provider_service, retrieval_service)
+            self._feature_map = FeatureMapAgent(provider_service, retrieval_service)
+            self._important_files = ImportantFilesAgent(provider_service, retrieval_service)
+            self._onboarding = OnboardingAgent(provider_service, retrieval_service)
+            self._glossary = GlossaryAgent(provider_service, retrieval_service)
+            self._risk = RiskAgent(provider_service, retrieval_service)
+            self._auditor = AuditAgent(provider_service)
         self._concurrency_limit = _default_concurrency()
 
     async def run(
@@ -342,21 +343,21 @@ class AnalysisAgentPipeline:
         on_section_done: SectionDoneCallback | None = None,
     ) -> dict[str, Any]:
         sections: dict[str, Any] = {}
-        if not (self._agent_a and snapshot_id):
+        if not (self._project_identity and snapshot_id):
             return {"version": REPORT_VERSION, "sections": sections}
 
-        assert self._agent_b is not None
-        assert self._agent_c is not None
-        assert self._agent_d is not None
-        assert self._agent_e is not None
-        assert self._agent_f is not None
-        assert self._agent_g is not None
-        assert self._agent_h is not None
-        assert self._agent_i is not None
-        assert self._agent_j is not None
-        assert self._agent_k is not None
+        assert self._architecture is not None
+        assert self._structure is not None
+        assert self._conventions is not None
+        assert self._violations is not None
+        assert self._feature_map is not None
+        assert self._important_files is not None
+        assert self._onboarding is not None
+        assert self._glossary is not None
+        assert self._risk is not None
+        assert self._auditor is not None
 
-        ctx = {
+        ctx: dict[str, Any] = {
             "provider_id": provider_id,
             "model_id": model_id,
             "snapshot_id": snapshot_id,
@@ -365,15 +366,40 @@ class AnalysisAgentPipeline:
             "static_risk": static_risk,
             "static_convention": static_convention,
         }
+        try:
+            mem_ctx = await prefetch_pipeline_context(self._project_identity._retrieval, snapshot_id)
+        except Exception as _prefetch_err:
+            logger.warning(
+                "[pipeline] prefetch_pipeline_context failed, agents will use own retrieval: %s",
+                _prefetch_err,
+            )
+            mem_ctx = None
+        ctx["mem_ctx"] = mem_ctx
+        if mem_ctx is not None:
+            logger.info(
+                "[pipeline] PipelineMemoryContext ready: arch_bundle=%d chunks, folder_tree=%d chars, doc_files=%d chars, manifest_files=%d chars",
+                len(mem_ctx.arch_bundle.evidences),
+                len(mem_ctx.folder_tree),
+                len(mem_ctx.doc_files),
+                len(mem_ctx.manifest_files),
+            )
+        else:
+            logger.warning(
+                "[pipeline] PipelineMemoryContext unavailable — agents will use own retrieval"
+            )
         pipeline = AsyncPipeline()
         pipeline.add_component(
             "a",
             _SectionAgentComponent(
                 "A",
-                lambda c, _d: self._agent_a.run(
-                    c["provider_id"], c["model_id"], c["snapshot_id"], c["repo_name"]
+                lambda c, _d: self._project_identity.run(
+                    c["provider_id"],
+                    c["model_id"],
+                    c["snapshot_id"],
+                    c["repo_name"],
+                    mem_ctx=c.get("mem_ctx"),
                 ),
-                lambda c, _d: self._agent_a._fallback(
+                lambda c, _d: self._project_identity._fallback(
                     c["snapshot_id"], "pipeline", c["repo_name"]
                 ),
                 on_section_done,
@@ -383,10 +409,15 @@ class AnalysisAgentPipeline:
             "b",
             _SectionAgentComponent(
                 "B",
-                lambda c, _d: self._agent_b.run(
-                    c["provider_id"], c["model_id"], c["snapshot_id"], c["graph_summary"]
+                lambda c, d: self._architecture.run(
+                    c["provider_id"],
+                    c["model_id"],
+                    c["snapshot_id"],
+                    c["graph_summary"],
+                    arch_bundle=c["mem_ctx"].arch_bundle if c.get("mem_ctx") else None,
+                    a_output=d.get("a_output"),
                 ),
-                lambda _c, _d: self._agent_b._fallback("pipeline"),
+                lambda _c, _d: self._architecture._fallback("pipeline"),
                 on_section_done,
             ),
         )
@@ -394,10 +425,15 @@ class AnalysisAgentPipeline:
             "c",
             _SectionAgentComponent(
                 "C",
-                lambda c, _d: self._agent_c.run(
-                    c["provider_id"], c["model_id"], c["snapshot_id"]
+                lambda c, d: self._structure.run(
+                    c["provider_id"],
+                    c["model_id"],
+                    c["snapshot_id"],
+                    arch_bundle=c["mem_ctx"].arch_bundle if c.get("mem_ctx") else None,
+                    folder_tree=c["mem_ctx"].folder_tree if c.get("mem_ctx") else "",
+                    a_output=d.get("a_output"),
                 ),
-                lambda _c, _d: self._agent_c._fallback("pipeline"),
+                lambda _c, _d: self._structure._fallback("pipeline"),
                 on_section_done,
             ),
         )
@@ -405,14 +441,14 @@ class AnalysisAgentPipeline:
             "d",
             _SectionAgentComponent(
                 "D",
-                lambda c, _d: self._agent_d.run(
+                lambda c, _d: self._conventions.run(
                     c["provider_id"],
                     c["model_id"],
                     c["snapshot_id"],
                     c["static_convention"],
                     None,
                 ),
-                lambda _c, _d: self._agent_d._fallback("pipeline"),
+                lambda _c, _d: self._conventions._fallback("pipeline"),
                 on_section_done,
             ),
         )
@@ -420,7 +456,7 @@ class AnalysisAgentPipeline:
             "e",
             _SectionAgentComponent(
                 "E",
-                lambda c, d: self._agent_e.run(
+                lambda c, d: self._violations.run(
                     c["provider_id"],
                     c["model_id"],
                     c["snapshot_id"],
@@ -428,7 +464,7 @@ class AnalysisAgentPipeline:
                     c["static_risk"],
                     d.get("d_output"),
                 ),
-                lambda _c, _d: self._agent_e._fallback("pipeline"),
+                lambda _c, _d: self._violations._fallback("pipeline"),
                 on_section_done,
             ),
         )
@@ -436,10 +472,15 @@ class AnalysisAgentPipeline:
             "f",
             _SectionAgentComponent(
                 "F",
-                lambda c, _d: self._agent_f.run(
-                    c["provider_id"], c["model_id"], c["snapshot_id"], c["graph_summary"]
+                lambda c, d: self._feature_map.run(
+                    c["provider_id"],
+                    c["model_id"],
+                    c["snapshot_id"],
+                    c["graph_summary"],
+                    a_output=d.get("a_output"),
+                    b_output=d.get("b_output"),
                 ),
-                lambda _c, _d: self._agent_f._fallback("pipeline"),
+                lambda _c, _d: self._feature_map._fallback("pipeline"),
                 on_section_done,
             ),
         )
@@ -447,10 +488,10 @@ class AnalysisAgentPipeline:
             "g",
             _SectionAgentComponent(
                 "G",
-                lambda c, _d: self._agent_g.run(
+                lambda c, _d: self._important_files.run(
                     c["provider_id"], c["model_id"], c["snapshot_id"], c["graph_summary"]
                 ),
-                lambda _c, _d: self._agent_g._fallback("pipeline", []),
+                lambda _c, _d: self._important_files._fallback("pipeline", []),
                 on_section_done,
             ),
         )
@@ -458,10 +499,10 @@ class AnalysisAgentPipeline:
             "h",
             _SectionAgentComponent(
                 "H",
-                lambda c, d: self._agent_h.run(
+                lambda c, d: self._onboarding.run(
                     c["provider_id"], c["model_id"], c["snapshot_id"], d.get("g_output")
                 ),
-                lambda _c, _d: self._agent_h._fallback("pipeline"),
+                lambda _c, _d: self._onboarding._fallback("pipeline"),
                 on_section_done,
             ),
         )
@@ -469,10 +510,10 @@ class AnalysisAgentPipeline:
             "i",
             _SectionAgentComponent(
                 "I",
-                lambda c, _d: self._agent_i.run(
+                lambda c, _d: self._glossary.run(
                     c["provider_id"], c["model_id"], c["snapshot_id"]
                 ),
-                lambda _c, _d: self._agent_i._fallback("pipeline"),
+                lambda _c, _d: self._glossary._fallback("pipeline"),
                 on_section_done,
             ),
         )
@@ -480,10 +521,10 @@ class AnalysisAgentPipeline:
             "j",
             _SectionAgentComponent(
                 "J",
-                lambda c, _d: self._agent_j.run(
+                lambda c, _d: self._risk.run(
                     c["provider_id"], c["model_id"], c["snapshot_id"], c["static_risk"]
                 ),
-                lambda c, _d: self._agent_j._fallback("pipeline", c["static_risk"]),
+                lambda c, _d: self._risk._fallback("pipeline", c["static_risk"]),
                 on_section_done,
             ),
         )
@@ -491,7 +532,7 @@ class AnalysisAgentPipeline:
             "k",
             _SectionAgentComponent(
                 "K",
-                lambda c, d: self._agent_k.run(
+                lambda c, d: self._auditor.run(
                     c["provider_id"],
                     c["model_id"],
                     {
@@ -523,6 +564,10 @@ class AnalysisAgentPipeline:
         pipeline.connect("h.output", "k.h_output")
         pipeline.connect("i.output", "k.i_output")
         pipeline.connect("j.output", "k.j_output")
+        pipeline.connect("a.output", "b.a_output")
+        pipeline.connect("a.output", "c.a_output")
+        pipeline.connect("a.output", "f.a_output")
+        pipeline.connect("b.output", "f.b_output")
         names = {"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k"}
         data = {name: {"ctx": ctx} for name in names}
         async for partial in pipeline.run_async_generator(
@@ -539,25 +584,25 @@ class AnalysisAgentPipeline:
 
         # Safety net: every section must exist even if Haystack wiring changes.
         if "A" not in sections:
-            sections["A"] = self._agent_a._fallback(snapshot_id, "pipeline", repo_name)
+            sections["A"] = self._project_identity._fallback(snapshot_id, "pipeline", repo_name)
         if "B" not in sections:
-            sections["B"] = self._agent_b._fallback("pipeline")
+            sections["B"] = self._architecture._fallback("pipeline")
         if "C" not in sections:
-            sections["C"] = self._agent_c._fallback("pipeline")
+            sections["C"] = self._structure._fallback("pipeline")
         if "D" not in sections:
-            sections["D"] = self._agent_d._fallback("pipeline")
+            sections["D"] = self._conventions._fallback("pipeline")
         if "E" not in sections:
-            sections["E"] = self._agent_e._fallback("pipeline")
+            sections["E"] = self._violations._fallback("pipeline")
         if "F" not in sections:
-            sections["F"] = self._agent_f._fallback("pipeline")
+            sections["F"] = self._feature_map._fallback("pipeline")
         if "G" not in sections:
-            sections["G"] = self._agent_g._fallback("pipeline", [])
+            sections["G"] = self._important_files._fallback("pipeline", [])
         if "H" not in sections:
-            sections["H"] = self._agent_h._fallback("pipeline")
+            sections["H"] = self._onboarding._fallback("pipeline")
         if "I" not in sections:
-            sections["I"] = self._agent_i._fallback("pipeline")
+            sections["I"] = self._glossary._fallback("pipeline")
         if "J" not in sections:
-            sections["J"] = self._agent_j._fallback("pipeline", static_risk)
+            sections["J"] = self._risk._fallback("pipeline", static_risk)
         if "K" not in sections:
             sections["K"] = _section_k_pipeline_fallback()
 

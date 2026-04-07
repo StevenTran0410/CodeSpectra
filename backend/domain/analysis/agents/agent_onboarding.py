@@ -56,7 +56,7 @@ def _extract_g_hint(section_g_output: dict[str, Any]) -> str:
     return header + "\n".join(entries[:5])
 
 
-class AgentH(BaseTypedAgent):
+class OnboardingAgent(BaseTypedAgent):
     def __init__(
         self,
         provider_service: ProviderConfigService,
@@ -91,7 +91,7 @@ class AgentH(BaseTypedAgent):
                     query=("README setup guide getting started onboarding contributing"),
                     section=RetrievalSection.IMPORTANT_FILES,
                     mode=RetrievalMode.HYBRID,
-                    max_results=16,
+                    max_results=30,
                 )
             )
             n_chunks = len(bundle.evidences)
@@ -103,7 +103,7 @@ class AgentH(BaseTypedAgent):
                 AGENT_H_SYSTEM,
                 user_prompt,
                 AGENT_H_SCHEMA_STR,
-                max_completion_tokens=16000,
+                max_completion_tokens=4000,
             )
             raw_steps = data.get("steps")
             steps: list[dict[str, Any]] = []
@@ -141,9 +141,9 @@ class AgentH(BaseTypedAgent):
             data["confidence"] = _normalize_conf(str(data.get("confidence", "medium")))
             validate_section("H", data)
             ms = int((time.monotonic() - t0) * 1000)
-            logger.info("[AgentH] %d chunks retrieved, completed in %dms", n_chunks, ms)
+            logger.info("[OnboardingAgent] %d chunks retrieved, completed in %dms", n_chunks, ms)
             return data
         except Exception as e:
             ms = int((time.monotonic() - t0) * 1000)
-            logger.warning("[AgentH] failed in %dms: %s", ms, e)
+            logger.warning("[OnboardingAgent] failed in %dms: %s", ms, e)
             return self._fallback(str(e))

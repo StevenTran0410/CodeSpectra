@@ -22,7 +22,7 @@ def _slot_from_bundle(bundle_ev_paths: list[str], i: int, reason: str) -> dict[s
     return {"file": "unknown", "reason": reason}
 
 
-class AgentG(BaseTypedAgent):
+class ImportantFilesAgent(BaseTypedAgent):
     def __init__(
         self,
         provider_service: ProviderConfigService,
@@ -71,7 +71,7 @@ class AgentG(BaseTypedAgent):
                     query="entrypoint main bootstrap central high-import",
                     section=RetrievalSection.IMPORTANT_FILES,
                     mode=RetrievalMode.HYBRID,
-                    max_results=20,
+                    max_results=30,
                 )
             )
             n_chunks = len(bundle.evidences)
@@ -86,7 +86,7 @@ class AgentG(BaseTypedAgent):
                 AGENT_G_SYSTEM,
                 user_prompt,
                 AGENT_G_SCHEMA_STR,
-                max_completion_tokens=16000,
+                max_completion_tokens=2000,
             )
             slot_keys = (
                 "entrypoint",
@@ -128,9 +128,9 @@ class AgentG(BaseTypedAgent):
             data["confidence"] = _normalize_conf(str(data.get("confidence", "medium")))
             validate_section("G", data)
             ms = int((time.monotonic() - t0) * 1000)
-            logger.info("[AgentG] %d chunks retrieved, completed in %dms", n_chunks, ms)
+            logger.info("[ImportantFilesAgent] %d chunks retrieved, completed in %dms", n_chunks, ms)
             return data
         except Exception as e:
             ms = int((time.monotonic() - t0) * 1000)
-            logger.warning("[AgentG] failed in %dms: %s", ms, e)
+            logger.warning("[ImportantFilesAgent] failed in %dms: %s", ms, e)
             return self._fallback(str(e), paths)

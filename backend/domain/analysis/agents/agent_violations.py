@@ -32,7 +32,7 @@ _COMBINED_QUERY = (
 )
 
 
-class AgentE(BaseTypedAgent):
+class ViolationsAgent(BaseTypedAgent):
     def __init__(
         self,
         provider_service: ProviderConfigService,
@@ -80,7 +80,7 @@ class AgentE(BaseTypedAgent):
                     query=_COMBINED_QUERY,
                     section=RetrievalSection.CONVENTIONS,
                     mode=RetrievalMode.HYBRID,
-                    max_results=20,
+                    max_results=30,
                 )
             )
             n_chunks = len(bundle.evidences)
@@ -93,7 +93,7 @@ class AgentE(BaseTypedAgent):
                 AGENT_E_SYSTEM,
                 user_prompt,
                 schema_hint=AGENT_E_SCHEMA_STR,
-                max_completion_tokens=16000,
+                max_completion_tokens=2000,
             )
 
             raw_rules = data.get("rules")
@@ -158,9 +158,9 @@ class AgentE(BaseTypedAgent):
             data["confidence"] = _normalize_conf(str(data.get("confidence", "medium")))
             validate_section("E", data)
             ms = int((time.monotonic() - t0) * 1000)
-            logger.info("[AgentE] %d chunks retrieved, completed in %dms", n_chunks, ms)
+            logger.info("[ViolationsAgent] %d chunks retrieved, completed in %dms", n_chunks, ms)
             return data
         except Exception as e:
             ms = int((time.monotonic() - t0) * 1000)
-            logger.warning("[AgentE] failed in %dms: %s", ms, e)
+            logger.warning("[ViolationsAgent] failed in %dms: %s", ms, e)
             return self._fallback(str(e))
