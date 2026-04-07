@@ -221,14 +221,40 @@ export function registerFolderHandlers(client: BackendClient): void {
 
   ipcMain.handle(
     'analysis:start',
-    (_event, body: {
-      repo_id: string
-      snapshot_id: string
-      scan_mode: 'quick' | 'full'
-      privacy_mode: 'strict_local' | 'byok_cloud'
-      provider_id: string
-      model_id: string
-    }) => client.post('/api/analysis/start', body)
+    async (
+      event,
+      body: {
+        repo_id: string
+        snapshot_id: string
+        scan_mode: 'quick' | 'full'
+        privacy_mode: 'strict_local' | 'byok_cloud'
+        provider_id: string
+        model_id: string
+      }
+    ) => {
+      const job = await client.post<{ id: string }>('/api/analysis/start', body)
+      const sender = event.sender
+      let fromIdx = 0
+      const timer = setInterval(async () => {
+        if (sender.isDestroyed()) {
+          clearInterval(timer)
+          return
+        }
+        try {
+          const res = await client.get<{ events: unknown[]; job_done: boolean }>(
+            `/api/analysis/events/${job.id}?from_idx=${fromIdx}`
+          )
+          fromIdx += res.events.length
+          for (const evt of res.events) {
+            sender.send('analysis:section_done', evt)
+          }
+          if (res.job_done) clearInterval(timer)
+        } catch {
+          // transient error — continue polling
+        }
+      }, 2000)
+      return job
+    }
   )
 
   ipcMain.handle(

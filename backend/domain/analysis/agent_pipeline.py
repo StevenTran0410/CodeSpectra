@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 import json
 import re
+import time
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from domain.model_connector.service import ProviderConfigService
@@ -15,6 +18,20 @@ from shared.logger import logger
 
 from .static_convention import ConventionReport
 from .static_risk import RiskReport
+from .types import SectionDoneCallback
+
+REPORT_VERSION = 2
+
+
+def _section_k_pipeline_fallback() -> dict[str, Any]:
+    return {
+        "overall_confidence": "low",
+        "section_scores": {},
+        "weakest_sections": [],
+        "coverage_percentage": 0.0,
+        "notes": "Audit could not be completed.",
+        "blind_spots": ["AgentK failed"],
+    }
 
 
 def _normalize_conf(v: str) -> str:
@@ -147,6 +164,41 @@ class BaseLLMAgent:
         raise ValueError(f"all_attempts_failed: last_output={text[:120]!r}")
 
 
+async def _run_agent(
+    label: str,
+    agent: Any,
+    coro: Awaitable[dict[str, Any]],
+    on_section_done: SectionDoneCallback | None,
+    fallback_fn: Callable[[], dict[str, Any]],
+) -> dict[str, Any]:
+    """Wraps a single agent coroutine for use inside asyncio.gather."""
+    t0 = time.monotonic()
+    data: dict[str, Any]
+    status: str
+    error_msg: str | None = None
+    try:
+        data = await coro
+        status = "done"
+    except Exception as exc:
+        logger.error("[pipeline] agent %s failed: %s", label, exc, exc_info=True)
+        data = fallback_fn()
+        status = "error"
+        error_msg = str(exc)
+    duration_ms = int((time.monotonic() - t0) * 1000)
+    if on_section_done is not None:
+        try:
+            await on_section_done(
+                label,
+                status,
+                duration_ms,
+                data if status == "done" else None,
+                error_msg,
+            )
+        except Exception:
+            logger.warning("[pipeline] on_section_done callback failed for %s", label)
+    return data
+
+
 class AnalysisAgentPipeline:
     def __init__(
         self,
@@ -163,6 +215,7 @@ class AnalysisAgentPipeline:
         self._agent_h = None
         self._agent_i = None
         self._agent_j = None
+        self._agent_k = None
         if retrieval_service is not None:
             from .agents import (
                 AgentA,
@@ -175,6 +228,7 @@ class AnalysisAgentPipeline:
                 AgentH,
                 AgentI,
                 AgentJ,
+                AgentK,
             )
 
             self._agent_a = AgentA(provider_service, retrieval_service)
@@ -187,6 +241,7 @@ class AnalysisAgentPipeline:
             self._agent_h = AgentH(provider_service, retrieval_service)
             self._agent_i = AgentI(provider_service, retrieval_service)
             self._agent_j = AgentJ(provider_service, retrieval_service)
+            self._agent_k = AgentK(provider_service)
 
     async def run(
         self,
@@ -198,10 +253,11 @@ class AnalysisAgentPipeline:
         graph_summary: StructuralGraphSummary | None = None,
         static_risk: RiskReport | None = None,
         static_convention: ConventionReport | None = None,
+        on_section_done: SectionDoneCallback | None = None,
     ) -> dict[str, Any]:
-        sections_v2: dict[str, Any] = {}
+        sections: dict[str, Any] = {}
         if not (self._agent_a and snapshot_id):
-            return {"sections_v2": sections_v2}
+            return {"version": REPORT_VERSION, "sections": sections}
 
         assert self._agent_b is not None
         assert self._agent_c is not None
@@ -212,42 +268,126 @@ class AnalysisAgentPipeline:
         assert self._agent_h is not None
         assert self._agent_i is not None
         assert self._agent_j is not None
+        assert self._agent_k is not None
 
-        # Wave 1 — baseline agents (no inter-agent dependencies)
-        sections_v2["A"] = await self._agent_a.run(provider_id, model_id, snapshot_id, repo_name)
-        sections_v2["G"] = await self._agent_g.run(
-            provider_id, model_id, snapshot_id, graph_summary
+        wave_0_results = await asyncio.gather(
+            _run_agent(
+                "A",
+                self._agent_a,
+                self._agent_a.run(provider_id, model_id, snapshot_id, repo_name),
+                on_section_done,
+                lambda: self._agent_a._fallback(snapshot_id, "pipeline", repo_name),
+            ),
+            _run_agent(
+                "B",
+                self._agent_b,
+                self._agent_b.run(provider_id, model_id, snapshot_id, graph_summary),
+                on_section_done,
+                lambda: self._agent_b._fallback("pipeline"),
+            ),
+            _run_agent(
+                "C",
+                self._agent_c,
+                self._agent_c.run(provider_id, model_id, snapshot_id),
+                on_section_done,
+                lambda: self._agent_c._fallback("pipeline"),
+            ),
+            _run_agent(
+                "D",
+                self._agent_d,
+                self._agent_d.run(
+                    provider_id, model_id, snapshot_id, static_convention, None
+                ),
+                on_section_done,
+                lambda: self._agent_d._fallback("pipeline"),
+            ),
+            _run_agent(
+                "F",
+                self._agent_f,
+                self._agent_f.run(provider_id, model_id, snapshot_id, graph_summary),
+                on_section_done,
+                lambda: self._agent_f._fallback("pipeline"),
+            ),
+            _run_agent(
+                "G",
+                self._agent_g,
+                self._agent_g.run(provider_id, model_id, snapshot_id, graph_summary),
+                on_section_done,
+                lambda: self._agent_g._fallback("pipeline", []),
+            ),
+            _run_agent(
+                "I",
+                self._agent_i,
+                self._agent_i.run(provider_id, model_id, snapshot_id),
+                on_section_done,
+                lambda: self._agent_i._fallback("pipeline"),
+            ),
+            _run_agent(
+                "J",
+                self._agent_j,
+                self._agent_j.run(provider_id, model_id, snapshot_id, static_risk),
+                on_section_done,
+                lambda: self._agent_j._fallback("pipeline", static_risk),
+            ),
+            return_exceptions=True,
         )
-        sections_v2["I"] = await self._agent_i.run(provider_id, model_id, snapshot_id)
-        sections_v2["J"] = await self._agent_j.run(provider_id, model_id, snapshot_id, static_risk)
 
-        # Wave 2 — structure agents (B, C independent; H needs G)
-        sections_v2["B"] = await self._agent_b.run(
-            provider_id, model_id, snapshot_id, graph_summary
+        wave_0_letters = ("A", "B", "C", "D", "F", "G", "I", "J")
+        fallbacks_w0 = (
+            lambda: self._agent_a._fallback(snapshot_id, "pipeline", repo_name),
+            lambda: self._agent_b._fallback("pipeline"),
+            lambda: self._agent_c._fallback("pipeline"),
+            lambda: self._agent_d._fallback("pipeline"),
+            lambda: self._agent_f._fallback("pipeline"),
+            lambda: self._agent_g._fallback("pipeline", []),
+            lambda: self._agent_i._fallback("pipeline"),
+            lambda: self._agent_j._fallback("pipeline", static_risk),
         )
-        sections_v2["C"] = await self._agent_c.run(provider_id, model_id, snapshot_id)
-        sections_v2["H"] = await self._agent_h.run(
-            provider_id, model_id, snapshot_id, sections_v2.get("G")
+        for letter, res, fb in zip(
+            wave_0_letters, wave_0_results, fallbacks_w0, strict=True
+        ):
+            sections[letter] = res if isinstance(res, dict) else fb()
+
+        wave_1_results = await asyncio.gather(
+            _run_agent(
+                "E",
+                self._agent_e,
+                self._agent_e.run(
+                    provider_id,
+                    model_id,
+                    snapshot_id,
+                    static_convention,
+                    static_risk,
+                    sections.get("D"),
+                ),
+                on_section_done,
+                lambda: self._agent_e._fallback("pipeline"),
+            ),
+            _run_agent(
+                "H",
+                self._agent_h,
+                self._agent_h.run(
+                    provider_id, model_id, snapshot_id, sections.get("G")
+                ),
+                on_section_done,
+                lambda: self._agent_h._fallback("pipeline"),
+            ),
+            return_exceptions=True,
+        )
+        e_res, h_res = wave_1_results
+        sections["E"] = (
+            e_res if isinstance(e_res, dict) else self._agent_e._fallback("pipeline")
+        )
+        sections["H"] = (
+            h_res if isinstance(h_res, dict) else self._agent_h._fallback("pipeline")
         )
 
-        # Wave 3 — conventions + feature map (D→E sequential; F after)
-        sections_v2["D"] = await self._agent_d.run(
-            provider_id,
-            model_id,
-            snapshot_id,
-            static_convention,
-            sections_v2.get("C"),
-        )
-        sections_v2["E"] = await self._agent_e.run(
-            provider_id,
-            model_id,
-            snapshot_id,
-            static_convention,
-            static_risk,
-            sections_v2.get("D"),
-        )
-        sections_v2["F"] = await self._agent_f.run(
-            provider_id, model_id, snapshot_id, graph_summary
+        sections["K"] = await _run_agent(
+            "K",
+            self._agent_k,
+            self._agent_k.run(provider_id, model_id, sections),
+            on_section_done,
+            _section_k_pipeline_fallback,
         )
 
-        return {"sections_v2": sections_v2}
+        return {"version": REPORT_VERSION, "sections": sections}

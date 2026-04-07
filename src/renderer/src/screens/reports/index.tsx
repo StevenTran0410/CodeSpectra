@@ -1,17 +1,19 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import type { AnalysisReport, AnalysisReportSummary } from '../../types/electron'
-import type {
-  SectionA,
-  SectionB,
-  SectionC,
-  SectionD,
-  SectionE,
-  SectionF,
-  SectionG,
-  SectionH,
-  SectionI,
-  SectionJ,
+import {
+  ANALYSIS_REPORT_VERSION,
+  type SectionA,
+  type SectionB,
+  type SectionC,
+  type SectionD,
+  type SectionE,
+  type SectionF,
+  type SectionG,
+  type SectionH,
+  type SectionI,
+  type SectionJ,
+  type SectionK,
 } from '../../types/analysis'
 import { ErrorBanner } from '../../components/ui/ErrorBanner'
 import { toErrorMessage } from '../../lib/errors'
@@ -25,6 +27,29 @@ import SectionCardG from './components/SectionCardG'
 import SectionCardH from './components/SectionCardH'
 import SectionCardI from './components/SectionCardI'
 import SectionCardJ from './components/SectionCardJ'
+import SectionCardK from './components/SectionCardK'
+
+function getReportSections(raw: unknown): Record<string, unknown> | null {
+  if (!raw || typeof raw !== 'object') return null
+  const r = raw as Record<string, unknown>
+  const blob =
+    r.version === ANALYSIS_REPORT_VERSION ? r.sections : r.sections_v2
+  return blob && typeof blob === 'object' ? (blob as Record<string, unknown>) : null
+}
+
+const REPORT_SECTION_ORDER = [
+  'A',
+  'B',
+  'C',
+  'D',
+  'E',
+  'F',
+  'G',
+  'H',
+  'I',
+  'J',
+  'K',
+] as const
 
 export default function ReportViewerScreen(): React.ReactElement {
   const navigate = useNavigate()
@@ -128,9 +153,8 @@ export default function ReportViewerScreen(): React.ReactElement {
   }, [isDetailMode, selectedReportId, reportIdInUrl])
 
   const sectionsV2 = useMemo(() => {
-    const raw = report?.report as Record<string, unknown> | undefined
-    const v2 = raw?.sections_v2
-    return v2 && typeof v2 === 'object' ? (v2 as Record<string, unknown>) : null
+    if (!report?.report) return null
+    return getReportSections(report.report as unknown)
   }, [report])
 
   const v2Ok = (letter: string): boolean => {
@@ -245,16 +269,35 @@ export default function ReportViewerScreen(): React.ReactElement {
                 </div>
                 {sectionsV2 ? (
                   <div className="space-y-2">
-                    {v2Ok('A') && <SectionCardA data={sectionsV2.A as SectionA} />}
-                    {v2Ok('B') && <SectionCardB data={sectionsV2.B as SectionB} />}
-                    {v2Ok('C') && <SectionCardC data={sectionsV2.C as SectionC} />}
-                    {v2Ok('D') && <SectionCardD data={sectionsV2.D as SectionD} />}
-                    {v2Ok('E') && <SectionCardE data={sectionsV2.E as SectionE} />}
-                    {v2Ok('F') && <SectionCardF data={sectionsV2.F as SectionF} />}
-                    {v2Ok('G') && <SectionCardG data={sectionsV2.G as SectionG} />}
-                    {v2Ok('H') && <SectionCardH data={sectionsV2.H as SectionH} />}
-                    {v2Ok('I') && <SectionCardI data={sectionsV2.I as SectionI} />}
-                    {v2Ok('J') && <SectionCardJ data={sectionsV2.J as SectionJ} />}
+                    {REPORT_SECTION_ORDER.map((letter) => {
+                      if (!v2Ok(letter)) return null
+                      switch (letter) {
+                        case 'A':
+                          return <SectionCardA key={letter} data={sectionsV2.A as SectionA} />
+                        case 'B':
+                          return <SectionCardB key={letter} data={sectionsV2.B as SectionB} />
+                        case 'C':
+                          return <SectionCardC key={letter} data={sectionsV2.C as SectionC} />
+                        case 'D':
+                          return <SectionCardD key={letter} data={sectionsV2.D as SectionD} />
+                        case 'E':
+                          return <SectionCardE key={letter} data={sectionsV2.E as SectionE} />
+                        case 'F':
+                          return <SectionCardF key={letter} data={sectionsV2.F as SectionF} />
+                        case 'G':
+                          return <SectionCardG key={letter} data={sectionsV2.G as SectionG} />
+                        case 'H':
+                          return <SectionCardH key={letter} data={sectionsV2.H as SectionH} />
+                        case 'I':
+                          return <SectionCardI key={letter} data={sectionsV2.I as SectionI} />
+                        case 'J':
+                          return <SectionCardJ key={letter} data={sectionsV2.J as SectionJ} />
+                        case 'K':
+                          return <SectionCardK key={letter} data={sectionsV2.K as SectionK} />
+                        default:
+                          return null
+                      }
+                    })}
                   </div>
                 ) : (
                   <div className="text-xs text-zinc-500 py-4 text-center">

@@ -1,7 +1,17 @@
 """Analysis runtime types (RPA-035)."""
+
+from collections.abc import Awaitable, Callable
 from enum import Enum
+from typing import Any
 
 from pydantic import BaseModel
+
+# Callback: section_label, status ("done"|"error"), duration_ms,
+# data (None on error), error (None on success).
+SectionDoneCallback = Callable[
+    [str, str, int, dict[str, Any] | None, str | None],
+    Awaitable[None],
+]
 
 
 class ScanMode(str, Enum):

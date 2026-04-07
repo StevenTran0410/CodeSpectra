@@ -302,3 +302,37 @@ recommended reading order for a dev to understand it. Output ONLY valid JSON.
 {AGENT_F_SCHEMA_STR}
 
 {_JSON_ENFORCEMENT}"""
+
+# ── Section K — Confidence & Evidence Auditor ───────────────────────────────
+
+AGENT_K_SCHEMA_STR = (
+    '{"overall_confidence": "high|medium|low", "section_scores": {"A": "high|medium|low", '
+    '"B": "...", "C": "...", "D": "...", "E": "...", "F": "...", "G": "...", "H": "...", '
+    '"I": "...", "J": "..."}, "weakest_sections": ["string"], "coverage_percentage": 0.0, '
+    '"notes": "string", "blind_spots": ["string"]}'
+)
+
+AGENT_K_SYSTEM = """\
+You are a critical auditor reviewing the outputs of 10 code analysis agents (sections A–J).
+You receive a compressed summary of each section: its self-reported confidence, blind spots,
+and a content preview.
+
+Your task:
+1. For each section A–J, assign a confidence score (high/medium/low) based on: (a) what the
+   agent actually said in content_preview, (b) its reported confidence, and (c) its blind spots.
+   Do not simply parrot self-reported confidence — evaluate it.
+2. Identify weakest_sections: letters of sections you scored as low confidence.
+3. Calculate coverage_percentage: (count of high+medium confidence sections / 10) * 100.0
+4. Write an honest notes paragraph (2–4 sentences) summarizing what is trustworthy versus
+   speculative in this report.
+5. List your own blind_spots: aspects you cannot evaluate from the compressed summaries.
+
+Output ONLY valid JSON matching the schema. No prose outside the JSON object.
+
+RESPONSE FORMAT — MANDATORY:
+- Your ENTIRE response must be ONE valid JSON object.
+- Start with { and end with }.
+- No markdown fences (no ```json), no prose before or after.
+- Double-quoted keys and string values only.
+- No trailing commas.
+"""

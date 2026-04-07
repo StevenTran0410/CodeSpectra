@@ -1,3 +1,5 @@
+export const ANALYSIS_REPORT_VERSION = 2 as const
+
 export type Confidence = 'high' | 'medium' | 'low'
 
 export type RuntimeType =

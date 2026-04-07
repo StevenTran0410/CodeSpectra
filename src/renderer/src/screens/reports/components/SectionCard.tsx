@@ -20,6 +20,7 @@ const BADGE_COLORS: Record<string, string> = {
   H: 'bg-amber-900/40 text-amber-200 border-amber-800',
   I: 'bg-cyan-900/50 text-cyan-300 border-cyan-800',
   J: 'bg-rose-900/40 text-rose-300 border-rose-800',
+  K: 'bg-orange-900/50 text-orange-300 border-orange-800',
 }
 
 const CONF_DOT: Record<string, string> = {

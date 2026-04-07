@@ -13,6 +13,7 @@ from shared.logger import logger
 from .agent_pipeline import AnalysisAgentPipeline
 from .static_convention import run_convention_analysis
 from .static_risk import run_risk_analysis
+from .types import SectionDoneCallback
 
 
 class RunDirectorAgent:
@@ -34,6 +35,7 @@ class RunDirectorAgent:
         snapshot_id: str,
         scan_mode: str,
         repo_name: str = "",
+        on_section_done: SectionDoneCallback | None = None,
     ) -> dict[str, Any]:
         db = get_db()
         static_risk = None
@@ -76,4 +78,5 @@ class RunDirectorAgent:
             graph_summary=graph_summary,
             static_risk=static_risk,
             static_convention=static_conv,
+            on_section_done=on_section_done,
         )

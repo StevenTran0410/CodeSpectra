@@ -10,6 +10,7 @@ from .agent_g import AgentG
 from .agent_h import AgentH
 from .agent_i import AgentI
 from .agent_j import AgentJ
+from .agent_k import AgentK
 
 __all__ = [
     "AgentA",
@@ -22,4 +23,5 @@ __all__ = [
     "AgentH",
     "AgentI",
     "AgentJ",
+    "AgentK",
 ]
