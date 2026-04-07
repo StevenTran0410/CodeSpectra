@@ -1,4 +1,5 @@
 """Prompt templates for orchestration + section agents."""
+
 from __future__ import annotations
 
 from domain.retrieval.types import RetrievalBundle
@@ -25,7 +26,10 @@ SECTION_JSON_SCHEMA = """\
 DIRECTOR_JSON_SCHEMA = """\
 {
   "section_order": ["architecture","conventions","feature_map","important_files","glossary","risk"],
-  "max_results": {"architecture":24,"conventions":18,"feature_map":22,"important_files":20,"glossary":16,"risk":20},
+  "max_results": {
+    "architecture":24,"conventions":18,"feature_map":22,
+    "important_files":20,"glossary":16,"risk":20
+  },
   "notes": "one-line planning note"
 }"""
 
@@ -42,7 +46,9 @@ BROKER_JSON_SCHEMA = """\
 STRUCTURE_DETAILS_SCHEMA = """\
 {
   "identity_card": ["what the repo does","primary stack","system role"],
-  "architecture_overview": ["entrypoint","main modules","integrations","config","persistence hints"],
+  "architecture_overview": [
+    "entrypoint","main modules","integrations","config","persistence hints"
+  ],
   "onboarding_digest": [
     {"file": "path/to/file.py", "why": "reason to read it", "outcome": "what developer learns"}
   ]
@@ -106,8 +112,10 @@ CONVENTION_SYSTEM = f"""\
 You are Convention Intelligence Agent.
 You receive both static analysis findings (pre-computed) and RAG evidence excerpts.
 Produce sections D/E:
-D) Observed coding conventions — naming, module structure, folder roles, DI style, error handling
-E) Hidden rules / anti-patterns — violations, inconsistencies, forbidden imports, suspected undocumented rules
+D) Observed coding conventions — naming, module structure, folder roles, DI style,
+   error handling
+E) Hidden rules / anti-patterns — violations, inconsistencies, forbidden imports,
+   suspected undocumented rules
 
 Instructions:
 - USE the static signals as ground truth for patterns that already have numeric backing
@@ -334,5 +342,74 @@ Produce findings grouped by severity mentally (high first), at most 8 findings t
 Output ONLY valid JSON matching this schema (no prose, no fences):
 
 {AGENT_J_SCHEMA_STR}
+
+{_JSON_ENFORCEMENT}"""
+
+AGENT_B_SCHEMA_STR = """{
+  "main_layers": ["string"],
+  "frameworks": ["string"],
+  "entrypoints": ["string"],
+  "main_services": [{"name": "string", "path": "string", "role": "string"}],
+  "external_integrations": ["string"],
+  "config_sources": ["string"],
+  "database_hints": ["string"],
+  "confidence": "high|medium|low",
+  "evidence_files": ["string"],
+  "blind_spots": ["string"]
+}"""
+
+AGENT_B_SYSTEM = f"""You are Architecture Overview Agent (section B only).
+Describe how the repo is built (not product/domain): layers, frameworks, startup entrypoints,
+main services (name/path/role), external integrations, config sources, database hints.
+Paths must come from evidence. Output ONE JSON object for this schema only:
+
+{AGENT_B_SCHEMA_STR}
+
+{_JSON_ENFORCEMENT}"""
+
+AGENT_C_SCHEMA_STR = """{
+  "folders": [
+    {
+      "path": "string",
+      "role": "domain|infrastructure|delivery|shared|test|generated|unknown",
+      "description": "string"
+    }
+  ],
+  "summary": "string",
+  "confidence": "high|medium|low",
+  "evidence_files": ["string"],
+  "blind_spots": ["string"]
+}"""
+
+AGENT_C_SYSTEM = f"""You are Repo Structure Agent (section C only).
+Use the file listing and evidence only. Map significant folders to role
+(domain|infrastructure|delivery|shared|test|generated|unknown), one concise description per folder,
+then a short summary paragraph. Output ONE JSON object:
+
+{AGENT_C_SCHEMA_STR}
+
+{_JSON_ENFORCEMENT}"""
+
+AGENT_H_SCHEMA_STR = """{
+  "steps": [
+    {
+      "order": 1,
+      "file": "string",
+      "goal": "string",
+      "outcome": "string"
+    }
+  ],
+  "total_estimated_minutes": 30,
+  "confidence": "high|medium|low",
+  "evidence_files": ["string"],
+  "blind_spots": ["string"]
+}"""
+
+AGENT_H_SYSTEM = f"""You are Onboarding Reading Order Agent (section H only).
+Build a numbered reading path (~30 minutes) for a new developer: each step lists file, goal
+(what to look for), outcome (what they will understand). Set total_estimated_minutes to your
+overall time estimate. Evidence paths only. Output ONE JSON object:
+
+{AGENT_H_SCHEMA_STR}
 
 {_JSON_ENFORCEMENT}"""

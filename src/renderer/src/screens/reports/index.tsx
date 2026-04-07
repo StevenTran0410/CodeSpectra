@@ -1,11 +1,14 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import type { AnalysisReport, AnalysisReportSummary } from '../../types/electron'
-import type { SectionA, SectionG, SectionI, SectionJ } from '../../types/analysis'
+import type { SectionA, SectionB, SectionC, SectionG, SectionH, SectionI, SectionJ } from '../../types/analysis'
 import { ErrorBanner } from '../../components/ui/ErrorBanner'
 import { toErrorMessage } from '../../lib/errors'
 import SectionCardA from './components/SectionCardA'
+import SectionCardB from './components/SectionCardB'
+import SectionCardC from './components/SectionCardC'
 import SectionCardG from './components/SectionCardG'
+import SectionCardH from './components/SectionCardH'
 import SectionCardI from './components/SectionCardI'
 import SectionCardJ from './components/SectionCardJ'
 
@@ -229,7 +232,10 @@ export default function ReportViewerScreen(): React.ReactElement {
                 {sectionsV2 ? (
                   <div className="space-y-2">
                     {v2Ok('A') && <SectionCardA data={sectionsV2.A as SectionA} />}
+                    {v2Ok('B') && <SectionCardB data={sectionsV2.B as SectionB} />}
+                    {v2Ok('C') && <SectionCardC data={sectionsV2.C as SectionC} />}
                     {v2Ok('G') && <SectionCardG data={sectionsV2.G as SectionG} />}
+                    {v2Ok('H') && <SectionCardH data={sectionsV2.H as SectionH} />}
                     {v2Ok('I') && <SectionCardI data={sectionsV2.I as SectionI} />}
                     {v2Ok('J') && <SectionCardJ data={sectionsV2.J as SectionJ} />}
                   </div>

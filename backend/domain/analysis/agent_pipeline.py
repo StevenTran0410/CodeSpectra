@@ -1,4 +1,5 @@
 """LLM-powered analysis agent pipeline."""
+
 from __future__ import annotations
 
 import ast
@@ -78,7 +79,11 @@ def _heuristic_details_structure(
         "identity_card": ["(could not be generated — re-run analysis)"],
         "architecture_overview": arch_files or ["(no evidence)"],
         "onboarding_digest": [
-            {"file": f, "why": "central file from graph/retrieval", "outcome": "understand core structure"}
+            {
+                "file": f,
+                "why": "central file from graph/retrieval",
+                "outcome": "understand core structure",
+            }
             for f in imp_files[:4]
         ],
     }
@@ -94,21 +99,15 @@ def _heuristic_details_domain(
             {"feature": f, "core_files": [f], "notes": "retrieved as feature-map evidence"}
             for f in feat_files[:4]
         ],
-        "important_files_radar": [
-            {"file": f, "reason": "blast radius"}
-            for f in risk_files[:4]
-        ],
+        "important_files_radar": [{"file": f, "reason": "blast radius"} for f in risk_files[:4]],
         "glossary": [{"term": "(none extracted)", "meaning": "", "evidence": ""}],
         "risk_hotspots": [
-            {"area": f, "why": "high-score risk evidence", "files": [f]}
-            for f in risk_files[:3]
+            {"area": f, "why": "high-score risk evidence", "files": [f]} for f in risk_files[:3]
         ],
     }
 
 
-def _fallback_section(
-    section: str, bundles: list[RetrievalBundle], reason: str
-) -> SectionDraft:
+def _fallback_section(section: str, bundles: list[RetrievalBundle], reason: str) -> SectionDraft:
     files: list[str] = []
     for b in bundles:
         for f in _top_files(b, 8):
@@ -135,8 +134,9 @@ class BaseLLMAgent:
         if raw.startswith("```"):
             lines = raw.split("\n")
             inner = "\n".join(
-                l for l in lines
-                if not l.strip().startswith("```") and l.strip() != "json"
+                line
+                for line in lines
+                if not line.strip().startswith("```") and line.strip() != "json"
             ).strip()
             raw = inner if inner else raw.strip("`").lstrip("json").strip()
         try:
@@ -207,8 +207,12 @@ class BaseLLMAgent:
     ) -> dict[str, Any]:
         # Attempt 1: normal call at low temperature for deterministic JSON
         text = await self._call(
-            provider_id, model_id, system_prompt, user_prompt,
-            max_completion_tokens, temperature=0.2,
+            provider_id,
+            model_id,
+            system_prompt,
+            user_prompt,
+            max_completion_tokens,
+            temperature=0.2,
         )
         try:
             obj = self._try_parse_json(text)
@@ -230,8 +234,12 @@ class BaseLLMAgent:
             f"Previous output:\n{text}"
         )
         text2 = await self._call(
-            provider_id, model_id, system_prompt, repair_user,
-            max_completion_tokens, temperature=None,
+            provider_id,
+            model_id,
+            system_prompt,
+            repair_user,
+            max_completion_tokens,
+            temperature=None,
         )
         try:
             obj = self._try_parse_json(text2)
@@ -262,7 +270,10 @@ class StructureIntelligenceAgent(BaseLLMAgent):
         )
         try:
             data = await self._chat_json(
-                provider_id, model_id, STRUCTURE_SYSTEM, prompt,
+                provider_id,
+                model_id,
+                STRUCTURE_SYSTEM,
+                prompt,
                 max_completion_tokens=1400,
             )
             content = str(data.get("content", "")).strip()
@@ -273,12 +284,9 @@ class StructureIntelligenceAgent(BaseLLMAgent):
                 section="A/B/C/G/H",
                 content=content or "No content generated.",
                 confidence=_normalize_conf(str(data.get("confidence", "medium"))),
-                evidence_files=[
-                    f for f in data.get("evidence_files", []) if isinstance(f, str)
-                ][:8] or files[:8],
-                blind_spots=[
-                    b for b in data.get("blind_spots", []) if isinstance(b, str)
-                ][:8],
+                evidence_files=[f for f in data.get("evidence_files", []) if isinstance(f, str)][:8]
+                or files[:8],
+                blind_spots=[b for b in data.get("blind_spots", []) if isinstance(b, str)][:8],
                 details=details,
             )
         except Exception as e:
@@ -295,7 +303,9 @@ class ConventionIntelligenceAgent(BaseLLMAgent):
         conventions: RetrievalBundle,
         static_findings: ConventionReport | None = None,
     ) -> SectionDraft:
-        static_ctx = static_findings.as_context_text() if static_findings else "No static convention data."
+        static_ctx = (
+            static_findings.as_context_text() if static_findings else "No static convention data."
+        )
         prompt = (
             "Task: produce section D/E for onboarding report.\n\n"
             f"Pre-computed convention signals (ground truth):\n{static_ctx}\n\n"
@@ -303,7 +313,10 @@ class ConventionIntelligenceAgent(BaseLLMAgent):
         )
         try:
             data = await self._chat_json(
-                provider_id, model_id, CONVENTION_SYSTEM, prompt,
+                provider_id,
+                model_id,
+                CONVENTION_SYSTEM,
+                prompt,
                 max_completion_tokens=1200,
             )
             content = str(data.get("content", "")).strip()
@@ -317,12 +330,9 @@ class ConventionIntelligenceAgent(BaseLLMAgent):
                 section="D/E",
                 content=content or "No content generated.",
                 confidence=_normalize_conf(str(data.get("confidence", "medium"))),
-                evidence_files=[
-                    f for f in data.get("evidence_files", []) if isinstance(f, str)
-                ][:8] or _top_files(conventions, 8),
-                blind_spots=[
-                    b for b in data.get("blind_spots", []) if isinstance(b, str)
-                ][:8],
+                evidence_files=[f for f in data.get("evidence_files", []) if isinstance(f, str)][:8]
+                or _top_files(conventions, 8),
+                blind_spots=[b for b in data.get("blind_spots", []) if isinstance(b, str)][:8],
                 details=details,
             )
         except Exception as e:
@@ -349,7 +359,10 @@ class DomainRiskIntelligenceAgent(BaseLLMAgent):
         )
         try:
             data = await self._chat_json(
-                provider_id, model_id, DOMAIN_RISK_SYSTEM, prompt,
+                provider_id,
+                model_id,
+                DOMAIN_RISK_SYSTEM,
+                prompt,
                 max_completion_tokens=1400,
             )
             files = _top_files(feature_map, 8)
@@ -367,12 +380,9 @@ class DomainRiskIntelligenceAgent(BaseLLMAgent):
                 section="F/I/J",
                 content=content or "No content generated.",
                 confidence=_normalize_conf(str(data.get("confidence", "medium"))),
-                evidence_files=[
-                    f for f in data.get("evidence_files", []) if isinstance(f, str)
-                ][:8] or files[:8],
-                blind_spots=[
-                    b for b in data.get("blind_spots", []) if isinstance(b, str)
-                ][:8],
+                evidence_files=[f for f in data.get("evidence_files", []) if isinstance(f, str)][:8]
+                or files[:8],
+                blind_spots=[b for b in data.get("blind_spots", []) if isinstance(b, str)][:8],
                 details=details,
             )
         except Exception as e:
@@ -403,7 +413,10 @@ class RiskComplexityAgent(BaseLLMAgent):
         )
         try:
             data = await self._chat_json(
-                provider_id, model_id, RISK_COMPLEXITY_SYSTEM, prompt,
+                provider_id,
+                model_id,
+                RISK_COMPLEXITY_SYSTEM,
+                prompt,
                 max_completion_tokens=1400,
             )
             content = str(data.get("content", "")).strip()
@@ -418,12 +431,9 @@ class RiskComplexityAgent(BaseLLMAgent):
                 section="J",
                 content=content or "No content generated.",
                 confidence=_normalize_conf(str(data.get("confidence", "medium"))),
-                evidence_files=[
-                    f for f in data.get("evidence_files", []) if isinstance(f, str)
-                ][:8] or _top_files(risk_bundle, 8),
-                blind_spots=[
-                    b for b in data.get("blind_spots", []) if isinstance(b, str)
-                ][:8],
+                evidence_files=[f for f in data.get("evidence_files", []) if isinstance(f, str)][:8]
+                or _top_files(risk_bundle, 8),
+                blind_spots=[b for b in data.get("blind_spots", []) if isinstance(b, str)][:8],
                 details=details,
             )
         except Exception as e:
@@ -516,13 +526,19 @@ class AnalysisAgentPipeline:
         self._agent_g = None
         self._agent_i = None
         self._agent_j = None
+        self._agent_b = None
+        self._agent_c = None
+        self._agent_h = None
         if retrieval_service is not None:
-            from .agents import AgentA, AgentG, AgentI, AgentJ
+            from .agents import AgentA, AgentB, AgentC, AgentG, AgentH, AgentI, AgentJ
 
             self._agent_a = AgentA(provider_service, retrieval_service)
             self._agent_g = AgentG(provider_service, retrieval_service)
             self._agent_i = AgentI(provider_service, retrieval_service)
             self._agent_j = AgentJ(provider_service, retrieval_service)
+            self._agent_b = AgentB(provider_service, retrieval_service)
+            self._agent_c = AgentC(provider_service, retrieval_service)
+            self._agent_h = AgentH(provider_service, retrieval_service)
 
     async def run(
         self,
@@ -557,7 +573,9 @@ class AnalysisAgentPipeline:
             assert self._agent_g is not None
             assert self._agent_i is not None
             assert self._agent_j is not None
-            sections_v2["A"] = await self._agent_a.run(provider_id, model_id, snapshot_id, repo_name)
+            sections_v2["A"] = await self._agent_a.run(
+                provider_id, model_id, snapshot_id, repo_name
+            )
             sections_v2["G"] = await self._agent_g.run(
                 provider_id, model_id, snapshot_id, graph_summary
             )
@@ -565,4 +583,12 @@ class AnalysisAgentPipeline:
             sections_v2["J"] = await self._agent_j.run(
                 provider_id, model_id, snapshot_id, static_risk
             )
+            if self._agent_b and snapshot_id:
+                sections_v2["B"] = await self._agent_b.run(
+                    provider_id, model_id, snapshot_id, graph_summary
+                )
+                sections_v2["C"] = await self._agent_c.run(provider_id, model_id, snapshot_id)
+                sections_v2["H"] = await self._agent_h.run(
+                    provider_id, model_id, snapshot_id, sections_v2.get("G")
+                )
         return {**auditor_result, "sections_v2": sections_v2}
