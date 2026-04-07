@@ -1,5 +1,5 @@
 """Analysis run endpoints (RPA-035)."""
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from domain.analysis.service import AnalysisService
 from domain.analysis.types import (
@@ -26,6 +26,15 @@ async def start_analysis(body: StartAnalysisRequest) -> Job:
         return await _service.start(body)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/events/{job_id}")
+async def get_section_events(
+    job_id: str,
+    from_idx: int = Query(default=0, ge=0),
+) -> dict[str, object]:
+    events, job_done = _service.get_section_events(job_id, from_idx)
+    return {"events": events, "job_done": job_done}
 
 
 @router.get("/reports", response_model=list[AnalysisReportSummary])

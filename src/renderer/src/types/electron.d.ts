@@ -1,5 +1,14 @@
 // ── Job / Analysis pipeline ───────────────────────────────────────────────────
 
+export interface SectionDoneEvent {
+  type?: string
+  section: string
+  status: 'done' | 'error'
+  duration_ms?: number
+  data?: unknown
+  error?: string | null
+}
+
 export type JobStatus = 'pending' | 'running' | 'done' | 'failed' | 'cancelled'
 export type StepStatus = 'pending' | 'running' | 'done' | 'failed' | 'skipped'
 
@@ -428,6 +437,8 @@ declare global {
           saved: boolean
           file_path: string | null
         }>
+        onSectionDone: (cb: (event: unknown, data: SectionDoneEvent) => void) => void
+        offSectionDone: (cb: (event: unknown, data: SectionDoneEvent) => void) => void
         deleteRepot: (reportId: string) => Promise<void>
         deleterepot: (reportId: string) => Promise<void>
       }

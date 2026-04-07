@@ -130,6 +130,12 @@ const api = {
       ipcRenderer.invoke('analysis:deleteReport', reportId),
     exportReportMarkdown: (reportId: string) =>
       ipcRenderer.invoke('analysis:exportReportMarkdown', reportId),
+    onSectionDone: (cb: (event: unknown, data: unknown) => void) => {
+      ipcRenderer.on('analysis:section_done', cb)
+    },
+    offSectionDone: (cb: (event: unknown, data: unknown) => void) => {
+      ipcRenderer.removeListener('analysis:section_done', cb)
+    },
     // backward-compat typo alias
     deleteRepot: (reportId: string) =>
       ipcRenderer.invoke('analysis:deleteRepot', reportId),

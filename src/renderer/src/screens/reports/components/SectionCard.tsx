@@ -11,9 +11,16 @@ export interface SectionCardProps {
 
 const BADGE_COLORS: Record<string, string> = {
   A: 'bg-indigo-900/50 text-indigo-300 border-indigo-800',
+  B: 'bg-sky-900/50 text-sky-300 border-sky-800',
+  C: 'bg-teal-900/50 text-teal-300 border-teal-800',
+  D: 'bg-green-900/50 text-green-300 border-green-800',
+  E: 'bg-red-900/40 text-red-300 border-red-800',
+  F: 'bg-purple-900/50 text-purple-300 border-purple-800',
   G: 'bg-violet-900/50 text-violet-300 border-violet-800',
+  H: 'bg-amber-900/40 text-amber-200 border-amber-800',
   I: 'bg-cyan-900/50 text-cyan-300 border-cyan-800',
   J: 'bg-rose-900/40 text-rose-300 border-rose-800',
+  K: 'bg-orange-900/50 text-orange-300 border-orange-800',
 }
 
 const CONF_DOT: Record<string, string> = {

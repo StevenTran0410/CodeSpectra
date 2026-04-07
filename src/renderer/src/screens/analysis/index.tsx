@@ -3,10 +3,80 @@ import { Loader2 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { ErrorBanner } from '../../components/ui/ErrorBanner'
 import { JobProgressPanel } from '../../components/ui/JobProgressPanel'
+import type { AnalysisSectionId } from '../../hooks/useAnalysisSectionEvents'
+import { useAnalysisSectionEvents } from '../../hooks/useAnalysisSectionEvents'
 import { toErrorMessage } from '../../lib/errors'
 import { useJobStore } from '../../store/job.store'
 import { useLocalRepoStore } from '../../store/local-repo.store'
 import { useProviderStore } from '../../store/provider.store'
+import type {
+  SectionA,
+  SectionB,
+  SectionC,
+  SectionD,
+  SectionE,
+  SectionF,
+  SectionG,
+  SectionH,
+  SectionI,
+  SectionJ,
+  SectionK,
+} from '../../types/analysis'
+import SectionCardA from '../reports/components/SectionCardA'
+import SectionCardB from '../reports/components/SectionCardB'
+import SectionCardC from '../reports/components/SectionCardC'
+import SectionCardD from '../reports/components/SectionCardD'
+import SectionCardE from '../reports/components/SectionCardE'
+import SectionCardF from '../reports/components/SectionCardF'
+import SectionCardG from '../reports/components/SectionCardG'
+import SectionCardH from '../reports/components/SectionCardH'
+import SectionCardI from '../reports/components/SectionCardI'
+import SectionCardJ from '../reports/components/SectionCardJ'
+import SectionCardK from '../reports/components/SectionCardK'
+
+const LIVE_SECTION_ORDER: AnalysisSectionId[] = [
+  'A',
+  'B',
+  'C',
+  'D',
+  'E',
+  'F',
+  'G',
+  'H',
+  'I',
+  'J',
+  'K',
+]
+
+function renderLiveSection(letter: AnalysisSectionId, data: unknown): React.ReactElement | null {
+  if (data == null || typeof data !== 'object') return null
+  switch (letter) {
+    case 'A':
+      return <SectionCardA data={data as SectionA} />
+    case 'B':
+      return <SectionCardB data={data as SectionB} />
+    case 'C':
+      return <SectionCardC data={data as SectionC} />
+    case 'D':
+      return <SectionCardD data={data as SectionD} />
+    case 'E':
+      return <SectionCardE data={data as SectionE} />
+    case 'F':
+      return <SectionCardF data={data as SectionF} />
+    case 'G':
+      return <SectionCardG data={data as SectionG} />
+    case 'H':
+      return <SectionCardH data={data as SectionH} />
+    case 'I':
+      return <SectionCardI data={data as SectionI} />
+    case 'J':
+      return <SectionCardJ data={data as SectionJ} />
+    case 'K':
+      return <SectionCardK data={data as SectionK} />
+    default:
+      return null
+  }
+}
 
 export default function AnalysisRunScreen(): React.ReactElement {
   const navigate = useNavigate()
@@ -28,6 +98,13 @@ export default function AnalysisRunScreen(): React.ReactElement {
   const { repos, load: loadRepos } = useLocalRepoStore()
   const { providers, load: loadProviders, fetchModels, modelLists, loadingModels } = useProviderStore()
   const { activeJob, startPolling, cancel, clearActive, loadHistory } = useJobStore()
+
+  const showLiveSections =
+    !!activeJob && activeJob.type === 'analysis' && activeJob.status === 'running'
+  const { sectionStates, liveSections } = useAnalysisSectionEvents(
+    activeJob?.id,
+    showLiveSections
+  )
 
   const [repoId, setRepoId] = useState(persisted.repoId ?? '')
   const [snapshotId, setSnapshotId] = useState(persisted.snapshotId ?? '')
@@ -313,6 +390,48 @@ export default function AnalysisRunScreen(): React.ReactElement {
             job={activeJob}
             onCancel={activeJob.status === 'running' ? () => cancel(activeJob.id) : undefined}
           />
+        )}
+
+        {showLiveSections && (
+          <div className="bg-zinc-900/60 border border-zinc-700 rounded-xl p-4 space-y-3">
+            <div className="text-sm font-semibold text-zinc-200">Live report sections</div>
+            <p className="text-[11px] text-zinc-500">
+              Sections appear here as each agent completes (incremental). Full report is saved when
+              the job finishes.
+            </p>
+            <div className="space-y-2 max-h-[48vh] overflow-y-auto pr-1">
+              {LIVE_SECTION_ORDER.map((letter) => {
+                const st = sectionStates[letter]
+                const live = liveSections[letter]
+                if (st === 'done' && live != null) {
+                  return <div key={letter}>{renderLiveSection(letter, live)}</div>
+                }
+                return (
+                  <div
+                    key={letter}
+                    className={`rounded-lg border px-3 py-2 ${
+                      st === 'error'
+                        ? 'border-rose-800/50 bg-rose-950/20'
+                        : 'border-zinc-800 bg-zinc-950/50'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-mono text-zinc-300">{letter}</span>
+                      <span className="text-[10px] uppercase text-zinc-500">
+                        {st === 'error' ? 'failed' : 'pending'}
+                      </span>
+                    </div>
+                    {st === 'pending' && (
+                      <div className="mt-2 h-14 animate-pulse rounded bg-zinc-800/60" />
+                    )}
+                    {st === 'error' && (
+                      <div className="mt-2 text-[11px] text-rose-300/90">Section agent failed.</div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          </div>
         )}
       </div>
     </>

@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from typing import Any
 
 from domain.job.service import JobService
 from domain.job.types import CreateJobRequest, StepName
@@ -21,6 +22,7 @@ from shared.errors import NotFoundError
 from shared.logger import logger
 from shared.utils import new_id, utc_now_iso
 
+from .agent_pipeline import REPORT_VERSION as _REPORT_V2
 from .agent_pipeline import AnalysisAgentPipeline
 from .orchestrator import RunDirectorAgent
 from .types import (
@@ -144,14 +146,42 @@ def _render_section_j(s: dict, lines: list[str]) -> None:
     lines.append("")
 
 
+def _render_section_k(s: dict, lines: list[str]) -> None:
+    lines += ["## K — Confidence Auditor", ""]
+    cov = float(s.get("coverage_percentage") or 0)
+    lines.append(f"**Coverage (high/medium sections):** {cov:.0f}%")
+    oc = s.get("overall_confidence", "")
+    if oc:
+        lines.append(f"**Overall confidence:** {oc}")
+    scores = s.get("section_scores") or {}
+    if isinstance(scores, dict) and scores:
+        parts = [f"{k}: {v}" for k, v in sorted(scores.items())[:12]]
+        lines.append("")
+        lines.append("**Section scores:** " + "; ".join(parts))
+    weak = s.get("weakest_sections") or []
+    if isinstance(weak, list) and weak:
+        lines.append("")
+        lines.append("**Weakest sections:** " + ", ".join(str(w) for w in weak[:10]))
+    notes = s.get("notes", "")
+    if notes:
+        lines.append("")
+        lines.append(str(notes))
+    blind = s.get("blind_spots") or []
+    if isinstance(blind, list) and blind:
+        lines.append("")
+        lines.append("**Blind spots:** " + "; ".join(str(b) for b in blind[:10]))
+    lines.append("")
+
+
 _SECTION_RENDERERS = {
     "A": _render_section_a,
     "G": _render_section_g,
     "I": _render_section_i,
     "J": _render_section_j,
+    "K": _render_section_k,
 }
 
-_SECTION_ORDER = ["A", "G", "I", "J", "B", "C", "D", "E", "F", "H", "K"]
+_SECTION_ORDER = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K"]
 
 
 def _render_report_markdown(report: AnalysisReport) -> str:
@@ -170,8 +200,12 @@ def _render_report_markdown(report: AnalysisReport) -> str:
         "",
     ]
 
-    sections_v2 = raw.get("sections_v2")
-    if isinstance(sections_v2, dict) and sections_v2:
+    sections_v2 = (
+        raw.get("sections") if raw.get("version") == _REPORT_V2 else raw.get("sections_v2")
+    )
+    if not isinstance(sections_v2, dict):
+        sections_v2 = {}
+    if sections_v2:
         for letter in _SECTION_ORDER:
             sec = sections_v2.get(letter)
             if not isinstance(sec, dict) or "error" in sec:
@@ -211,6 +245,20 @@ class AnalysisService:
         self._director = RunDirectorAgent(
             self._provider, self._retrieval, self._agents, self._graph
         )
+        self._section_events: dict[str, list[dict[str, Any]]] = {}
+        self._job_final_status: dict[str, str] = {}
+
+    def append_section_event(self, job_id: str, event: dict[str, Any]) -> None:
+        if job_id not in self._section_events:
+            self._section_events[job_id] = []
+        self._section_events[job_id].append(event)
+
+    def get_section_events(self, job_id: str, from_idx: int) -> tuple[list[dict[str, Any]], bool]:
+        events = self._section_events.get(job_id, [])
+        slice_ = events[from_idx:]
+        final = self._job_final_status.get(job_id)
+        job_done = final in ("done", "failed", "cancelled")
+        return slice_, job_done
 
     async def estimate(self, repo_id: str, snapshot_id: str) -> AnalysisEstimateResponse:
         async with get_db().execute(
@@ -228,7 +276,9 @@ class AnalysisService:
             estimated_tokens=est_tokens,
         )
 
-    async def list_reports(self, repo_id: str | None = None, limit: int = 30) -> list[AnalysisReportSummary]:
+    async def list_reports(
+        self, repo_id: str | None = None, limit: int = 30
+    ) -> list[AnalysisReportSummary]:
         db = get_db()
         safe_limit = max(1, min(limit, 200))
         if repo_id:
@@ -336,14 +386,24 @@ class AnalysisService:
 
     async def delete_report(self, report_id: str) -> None:
         db = get_db()
+        async with db.execute(
+            "SELECT job_id FROM analysis_reports WHERE id=?", (report_id,)
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            raise NotFoundError("AnalysisReport", report_id)
+        job_id = str(row["job_id"])
         async with db.execute("DELETE FROM analysis_reports WHERE id=?", (report_id,)) as cur:
             if cur.rowcount == 0:
                 raise NotFoundError("AnalysisReport", report_id)
         await db.commit()
+        self._section_events.pop(job_id, None)
+        self._job_final_status.pop(job_id, None)
 
     async def export_report_markdown(self, report_id: str) -> AnalysisReportMarkdownResponse:
         rep = await self.get_report(report_id)
-        default_name = f"codespectra-report-{_slug(rep.summary.repo_name or rep.summary.repo_id)}-{report_id[:8]}.md"
+        slug = _slug(rep.summary.repo_name or rep.summary.repo_id)
+        default_name = f"codespectra-report-{slug}-{report_id[:8]}.md"
         return AnalysisReportMarkdownResponse(
             report_id=report_id,
             default_name=default_name,
@@ -351,11 +411,15 @@ class AnalysisService:
         )
 
     async def start(self, req: StartAnalysisRequest):
-        async with get_db().execute("SELECT name FROM local_repos WHERE id=?", (req.repo_id,)) as cur:
+        async with get_db().execute(
+            "SELECT name FROM local_repos WHERE id=?", (req.repo_id,)
+        ) as cur:
             repo = await cur.fetchone()
         if repo is None:
             raise NotFoundError("LocalRepo", req.repo_id)
-        async with get_db().execute("SELECT 1 FROM repo_snapshots WHERE id=?", (req.snapshot_id,)) as cur:
+        async with get_db().execute(
+            "SELECT 1 FROM repo_snapshots WHERE id=?", (req.snapshot_id,)
+        ) as cur:
             snap = await cur.fetchone()
         if snap is None:
             raise NotFoundError("RepoSnapshot", req.snapshot_id)
@@ -393,6 +457,30 @@ class AnalysisService:
         try:
             await self._jobs.start(job_id)
 
+            async def _on_section_done(
+                section: str,
+                status: str,
+                duration_ms: int,
+                data: dict[str, Any] | None,
+                error: str | None,
+            ) -> None:
+                evt = {
+                    "type": "analysis:section_done",
+                    "section": section,
+                    "status": status,
+                    "duration_ms": duration_ms,
+                    "data": data,
+                    "error": error,
+                }
+                self.append_section_event(job_id, evt)
+                logger.info(
+                    "[events:%s] section=%s status=%s duration_ms=%d",
+                    job_id,
+                    section,
+                    status,
+                    duration_ms,
+                )
+
             async def _cancelled() -> bool:
                 if self._jobs.is_cancelled(job_id):
                     logger.info(f"analysis job {job_id} cancelled signal received")
@@ -406,55 +494,78 @@ class AnalysisService:
             await self._jobs.update_step(job_id, StepName.MANIFEST.value, 100, "Manifest ready")
 
             await self._jobs.update_step(job_id, StepName.PARSE.value, 10, "Extracting symbols")
-            await self._repo_map.build(BuildRepoMapRequest(snapshot_id=req.snapshot_id, force_rebuild=True))
+            await self._repo_map.build(
+                BuildRepoMapRequest(snapshot_id=req.snapshot_id, force_rebuild=True)
+            )
             if await _cancelled():
                 return
             await self._jobs.update_step(job_id, StepName.PARSE.value, 100, "Repo map ready")
 
-            await self._jobs.update_step(job_id, StepName.GRAPH.value, 15, "Building structural graph")
-            await self._graph.build(BuildGraphRequest(snapshot_id=req.snapshot_id, force_rebuild=True))
+            await self._jobs.update_step(
+                job_id, StepName.GRAPH.value, 15, "Building structural graph"
+            )
+            await self._graph.build(
+                BuildGraphRequest(snapshot_id=req.snapshot_id, force_rebuild=True)
+            )
             if await _cancelled():
                 return
             await self._jobs.update_step(job_id, StepName.GRAPH.value, 100, "Graph ready")
 
             if req.scan_mode == ScanMode.FULL:
-                await self._jobs.update_step(job_id, StepName.EMBED.value, 20, "Building retrieval index")
+                await self._jobs.update_step(
+                    job_id, StepName.EMBED.value, 20, "Building retrieval index"
+                )
                 await self._retrieval.build_index(
                     BuildRetrievalIndexRequest(snapshot_id=req.snapshot_id, force_rebuild=True)
                 )
                 if await _cancelled():
                     return
-                await self._jobs.update_step(job_id, StepName.EMBED.value, 100, "Retrieval index ready")
+                await self._jobs.update_step(
+                    job_id, StepName.EMBED.value, 100, "Retrieval index ready"
+                )
 
             if req.scan_mode != ScanMode.FULL:
-                await self._jobs.update_step(job_id, StepName.GENERATE.value, 20, "Preparing retrieval index")
+                await self._jobs.update_step(
+                    job_id, StepName.GENERATE.value, 20, "Preparing retrieval index"
+                )
                 await self._retrieval.build_index(
                     BuildRetrievalIndexRequest(snapshot_id=req.snapshot_id, force_rebuild=False)
                 )
                 if await _cancelled():
                     return
 
-            await self._jobs.update_step(job_id, StepName.GENERATE.value, 30, "Director planning + broker retrieval")
+            await self._jobs.update_step(
+                job_id, StepName.GENERATE.value, 30, "Running analysis agents"
+            )
             if await _cancelled():
                 return
-            await self._jobs.update_step(job_id, StepName.GENERATE.value, 70, "Running LLM power agents")
+            await self._jobs.update_step(
+                job_id, StepName.GENERATE.value, 70, "Running LLM power agents"
+            )
             report = await self._director.run(
                 provider_id=req.provider_id,
                 model_id=req.model_id,
                 snapshot_id=req.snapshot_id,
                 scan_mode=req.scan_mode.value,
                 repo_name=repo_name,
+                on_section_done=_on_section_done,
             )
             if await _cancelled():
                 return
             await self._jobs.update_step(job_id, StepName.GENERATE.value, 100, "Sections generated")
 
-            await self._jobs.update_step(job_id, StepName.EXPORT.value, 60, "Assembling report artifact")
-            logger.info(f"[analysis:{job_id}] report_sections={len(report.get('sections', []))}")
+            await self._jobs.update_step(
+                job_id, StepName.EXPORT.value, 60, "Assembling report artifact"
+            )
+            sections_out = report.get("sections")
+            n_sec = len(sections_out) if isinstance(sections_out, dict) else 0
+            logger.info(f"[analysis:{job_id}] report_sections={n_sec}")
             await get_db().execute(
                 """
-                INSERT INTO analysis_reports
-                (id, job_id, repo_id, snapshot_id, provider_id, model_id, scan_mode, privacy_mode, report_json, created_at)
+                INSERT INTO analysis_reports (
+                    id, job_id, repo_id, snapshot_id, provider_id, model_id,
+                    scan_mode, privacy_mode, report_json, created_at
+                )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
@@ -477,4 +588,21 @@ class AnalysisService:
             await self._jobs.finish(job_id)
         except Exception as e:
             await self._jobs.fail(job_id, str(e))
+        finally:
+            try:
+                j = await self._jobs.get(job_id)
+                st = j.status.value
+                if st in ("done", "failed", "cancelled"):
+                    self._job_final_status[job_id] = st
+                    t = asyncio.create_task(_cleanup_job_events(self, job_id, 600))
+                    _bg_tasks.add(t)
+                    t.add_done_callback(_bg_tasks.discard)
+            except Exception:
+                logger.warning("analysis run finalize events failed for job %s", job_id)
 
+
+async def _cleanup_job_events(service: AnalysisService, job_id: str, delay: int) -> None:
+    await asyncio.sleep(delay)
+    service._section_events.pop(job_id, None)
+    service._job_final_status.pop(job_id, None)
+    logger.info("[events:%s] cleanup fired after %ds", job_id, delay)

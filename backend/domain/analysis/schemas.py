@@ -35,6 +35,11 @@ class FolderItem(TypedDict):
     description: str
 
 
+class ConventionAspect(TypedDict):
+    description: str
+    evidence_files: list[str]
+
+
 class SignalItem(TypedDict):
     category: str
     description: str
@@ -51,6 +56,7 @@ class ViolationItem(TypedDict):
     rule: str
     file: str
     description: str
+    severity: str
 
 
 class FeatureItem(TypedDict):
@@ -104,12 +110,12 @@ class SectionC(TypedDict):
 
 
 class SectionD(TypedDict):
-    naming_style: str
-    error_handling: str
-    async_style: str
-    di_style: str
-    class_vs_functional: str
-    test_style: str
+    naming_style: ConventionAspect
+    error_handling: ConventionAspect
+    async_style: ConventionAspect
+    di_style: ConventionAspect
+    class_vs_functional: ConventionAspect
+    test_style: ConventionAspect
     signals: list[SignalItem]
     confidence: str
     evidence_files: list[str]
