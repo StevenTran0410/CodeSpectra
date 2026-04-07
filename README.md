@@ -41,7 +41,7 @@ The analysis runs entirely on your machine when you use a local model. No code l
 │   │       └── gemini / deepseek  │
 │   ├── domain/workspace           │  Workspace CRUD
 │   ├── domain/local_repo          │  Local folder import + git metadata
-│   └── infrastructure/db         │  SQLite via aiosqlite (WAL mode)
+│   └── infrastructure/db          │  SQLite via aiosqlite (WAL mode)
 └──────────────────────────────────┘
              │ IPC
 ┌────────────▼─────────────────────┐
