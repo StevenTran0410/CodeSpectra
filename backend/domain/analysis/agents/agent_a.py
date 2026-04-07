@@ -7,12 +7,13 @@ from typing import Any
 from domain.model_connector.service import ProviderConfigService
 from domain.retrieval.service import RetrievalService
 from domain.retrieval.types import RetrievalMode, RetrievalSection, RetrieveRequest
-from infrastructure.db.database import get_db
+from infrastructure.db.database import get_db  # still used by _fetch_files_by_pattern
 from shared.logger import logger
 
 from ..agent_pipeline import _normalize_conf
 from ..prompts import AGENT_A_SCHEMA_STR, AGENT_A_SYSTEM, render_bundle
 from ..schemas import validate_section
+from ._context_builders import fetch_folder_tree
 from .base import BaseTypedAgent
 
 # Manifest files: build/dependency descriptors — fetch up to 3000 chars each
@@ -86,28 +87,8 @@ async def _gather_context(
     doc_task = _fetch_files_by_pattern(snapshot_id, _DOC_PATTERNS, char_limit=0, max_rows=4)
     # Manifest files: 3000 chars each
     manifest_task = _fetch_files_by_pattern(snapshot_id, _MANIFEST_PATTERNS, char_limit=3000)
-    tree_task = _fetch_folder_tree(snapshot_id)
+    tree_task = fetch_folder_tree(snapshot_id)
     return await asyncio.gather(bundle_task, doc_task, manifest_task, tree_task)
-
-
-async def _fetch_folder_tree(snapshot_id: str, max_files: int = 60) -> str:
-    """Return a compact top-level folder/file listing from manifest_files."""
-    db = get_db()
-    rows = []
-    try:
-        async with db.execute(
-            """SELECT rel_path FROM manifest_files
-               WHERE snapshot_id=?
-               ORDER BY rel_path ASC
-               LIMIT ?""",
-            (snapshot_id, max_files),
-        ) as cur:
-            rows = await cur.fetchall()
-    except Exception:
-        pass
-    if not rows:
-        return ""
-    return "\n".join(row["rel_path"] for row in rows)
 
 
 class AgentA(BaseTypedAgent):
@@ -178,7 +159,6 @@ class AgentA(BaseTypedAgent):
             logger.info("[AgentA] %d chunks retrieved, completed in %dms", n_chunks, ms)
             return data
         except Exception as e:
-            logger.warning("[AgentA] failed: %s", e)
             ms = int((time.monotonic() - t0) * 1000)
-            logger.info("[AgentA] %d chunks retrieved, completed in %dms", n_chunks, ms)
+            logger.warning("[AgentA] failed in %dms: %s", ms, e)
             return self._fallback(snapshot_id, str(e), repo_name)

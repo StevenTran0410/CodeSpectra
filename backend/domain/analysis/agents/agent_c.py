@@ -1,8 +1,4 @@
-"""Repo structure narrative agent (section C).
-
-# TODO(RPA-055): _fetch_folder_tree is duplicated from agent_a.py. Extract to
-# agents/_db_helpers.py when AgentD/F are added.
-"""
+"""Repo structure narrative agent (section C)."""
 
 from __future__ import annotations
 
@@ -13,12 +9,12 @@ from typing import Any
 from domain.model_connector.service import ProviderConfigService
 from domain.retrieval.service import RetrievalService
 from domain.retrieval.types import RetrievalMode, RetrievalSection, RetrieveRequest
-from infrastructure.db.database import get_db
 from shared.logger import logger
 
 from ..agent_pipeline import _normalize_conf
 from ..prompts import AGENT_C_SCHEMA_STR, AGENT_C_SYSTEM, render_bundle
 from ..schemas import validate_section
+from ._context_builders import fetch_folder_tree
 from .base import BaseTypedAgent
 
 _ALLOWED_FOLDER_ROLES = frozenset(
@@ -32,26 +28,6 @@ _ALLOWED_FOLDER_ROLES = frozenset(
         "unknown",
     }
 )
-
-
-async def _fetch_folder_tree(snapshot_id: str, max_files: int = 60) -> str:
-    """Return a compact top-level folder/file listing from manifest_files."""
-    db = get_db()
-    rows = []
-    try:
-        async with db.execute(
-            """SELECT rel_path FROM manifest_files
-               WHERE snapshot_id=?
-               ORDER BY rel_path ASC
-               LIMIT ?""",
-            (snapshot_id, max_files),
-        ) as cur:
-            rows = await cur.fetchall()
-    except Exception:
-        pass
-    if not rows:
-        return ""
-    return "\n".join(row["rel_path"] for row in rows)
 
 
 class AgentC(BaseTypedAgent):
@@ -86,7 +62,7 @@ class AgentC(BaseTypedAgent):
                         max_results=18,
                     )
                 ),
-                _fetch_folder_tree(snapshot_id),
+                fetch_folder_tree(snapshot_id),
             )
             n_chunks = len(bundle.evidences)
             user_prompt_parts = [f"snapshot_id={snapshot_id}"]
@@ -135,7 +111,6 @@ class AgentC(BaseTypedAgent):
             logger.info("[AgentC] %d chunks retrieved, completed in %dms", n_chunks, ms)
             return data
         except Exception as e:
-            logger.warning("[AgentC] failed: %s", e)
             ms = int((time.monotonic() - t0) * 1000)
-            logger.info("[AgentC] %d chunks retrieved, completed in %dms", n_chunks, ms)
+            logger.warning("[AgentC] failed in %dms: %s", ms, e)
             return self._fallback(str(e))

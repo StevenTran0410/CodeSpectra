@@ -157,12 +157,11 @@ cd ..
 
 ### Repository sources
 
-Current OSS workflow supports:
+Any git repository (GitHub, Bitbucket, GitLab, self-hosted, etc.) can be added via:
+- **Open Local Folder** — point to an already-cloned directory on disk.
+- **Clone from URL** — paste any HTTPS or SSH git URL; the app runs `git clone` using your system git credential manager or a configured SSH key.
 
-- Local folder import
-- Git repository setup/sync from the app workflow
-
-Use the app settings/setup screens instead of manual OAuth environment setup.
+No OAuth tokens or platform-specific setup required.
 
 ---
 
