@@ -31,6 +31,7 @@ class StartAnalysisRequest(BaseModel):
     privacy_mode: PrivacyMode = PrivacyMode.STRICT_LOCAL
     provider_id: str
     model_id: str
+    force_rerun: bool = False
 
 
 class ModelWarning(BaseModel):

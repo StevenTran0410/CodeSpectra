@@ -449,6 +449,7 @@ declare global {
           privacy_mode: 'strict_local' | 'byok_cloud'
           provider_id: string
           model_id: string
+          force_rerun?: boolean
         }) => Promise<Job>
         listReports: (repoId?: string, limit?: number) => Promise<AnalysisReportSummary[]>
         getReport: (reportId: string) => Promise<AnalysisReport>

@@ -7,6 +7,7 @@ from pathlib import Path
 
 from infrastructure.db.database import get_db
 from shared.errors import NotFoundError
+from shared.logger import logger
 from shared.sql_queries import SQL_SELECT_MANIFEST_FILES_BY_SNAPSHOT
 from shared.utils import new_id, read_utf8_lenient, utc_now_iso
 
@@ -172,6 +173,23 @@ class RetrievalService:
         if req.force_rebuild:
             await db.execute("DELETE FROM retrieval_chunks WHERE snapshot_id=?", (req.snapshot_id,))
             await db.execute("DELETE FROM retrieval_indexes WHERE snapshot_id=?", (req.snapshot_id,))
+        else:
+            async with db.execute(
+                "SELECT COUNT(*) as c FROM retrieval_chunks WHERE snapshot_id=?",
+                (req.snapshot_id,),
+            ) as cur:
+                row = await cur.fetchone()
+            if row and row["c"] > 0:
+                logger.info(
+                    "[retrieval] snapshot %s already indexed (%d chunks), skipping",
+                    req.snapshot_id, row["c"],
+                )
+                return BuildRetrievalIndexResponse(
+                    snapshot_id=req.snapshot_id,
+                    chunk_count=int(row["c"]),
+                    files_indexed=0,
+                    generated_at="cached",
+                )
 
         async with db.execute(SQL_SELECT_MANIFEST_FILES_BY_SNAPSHOT, (req.snapshot_id,)) as cur:
             files = await cur.fetchall()

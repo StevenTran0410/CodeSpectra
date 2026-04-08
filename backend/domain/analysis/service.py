@@ -828,7 +828,7 @@ class AnalysisService:
 
             await self._jobs.update_step(job_id, StepName.PARSE.value, 10, "Extracting symbols")
             await self._repo_map.build(
-                BuildRepoMapRequest(snapshot_id=req.snapshot_id, force_rebuild=True)
+                BuildRepoMapRequest(snapshot_id=req.snapshot_id, force_rebuild=False)
             )
             if await _cancelled():
                 return
@@ -838,7 +838,7 @@ class AnalysisService:
                 job_id, StepName.GRAPH.value, 15, "Building structural graph"
             )
             await self._graph.build(
-                BuildGraphRequest(snapshot_id=req.snapshot_id, force_rebuild=True)
+                BuildGraphRequest(snapshot_id=req.snapshot_id, force_rebuild=False)
             )
             if await _cancelled():
                 return
@@ -849,7 +849,7 @@ class AnalysisService:
                     job_id, StepName.EMBED.value, 20, "Building retrieval index"
                 )
                 await self._retrieval.build_index(
-                    BuildRetrievalIndexRequest(snapshot_id=req.snapshot_id, force_rebuild=True)
+                    BuildRetrievalIndexRequest(snapshot_id=req.snapshot_id, force_rebuild=False)
                 )
                 if await _cancelled():
                     return
@@ -872,17 +872,47 @@ class AnalysisService:
             )
             if await _cancelled():
                 return
-            await self._jobs.update_step(
-                job_id, StepName.GENERATE.value, 70, "Running LLM power agents"
-            )
-            report = await self._director.run(
-                provider_id=req.provider_id,
-                model_id=req.model_id,
-                snapshot_id=req.snapshot_id,
-                scan_mode=req.scan_mode.value,
-                repo_name=repo_name,
-                on_section_done=_on_section_done,
-            )
+
+            # Agent result cache: reuse existing report if snapshot + model unchanged
+            cached_report: dict[str, Any] | None = None
+            if not req.force_rerun:
+                async with get_db().execute(
+                    """
+                    SELECT report_json FROM analysis_reports
+                    WHERE snapshot_id=? AND model_id=?
+                    ORDER BY created_at DESC LIMIT 1
+                    """,
+                    (req.snapshot_id, req.model_id),
+                ) as cur:
+                    cached_row = await cur.fetchone()
+                if cached_row:
+                    try:
+                        cached_report = json.loads(cached_row["report_json"] or "{}")
+                        logger.info(
+                            "[analysis:%s] reusing cached agent results for snapshot=%s model=%s",
+                            job_id, req.snapshot_id, req.model_id,
+                        )
+                    except Exception:
+                        cached_report = None
+
+            if cached_report is not None:
+                report = cached_report
+                # Emit cached section events so the UI streaming still works
+                sections = cached_report.get("sections") or {}
+                for letter in sections:
+                    await _on_section_done(letter, "done", 0, sections[letter], None)
+            else:
+                await self._jobs.update_step(
+                    job_id, StepName.GENERATE.value, 70, "Running LLM power agents"
+                )
+                report = await self._director.run(
+                    provider_id=req.provider_id,
+                    model_id=req.model_id,
+                    snapshot_id=req.snapshot_id,
+                    scan_mode=req.scan_mode.value,
+                    repo_name=repo_name,
+                    on_section_done=_on_section_done,
+                )
             if await _cancelled():
                 return
             await self._jobs.update_step(job_id, StepName.GENERATE.value, 100, "Sections generated")

@@ -230,6 +230,7 @@ export function registerFolderHandlers(client: BackendClient): void {
         privacy_mode: 'strict_local' | 'byok_cloud'
         provider_id: string
         model_id: string
+        force_rerun?: boolean
       }
     ) => {
       const job = await client.post<{

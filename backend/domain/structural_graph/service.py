@@ -9,6 +9,7 @@ from pathlib import Path
 
 from infrastructure.db.database import get_db
 from shared.errors import NotFoundError
+from shared.logger import logger
 from shared.sql_queries import SQL_SELECT_MANIFEST_FILES_BY_SNAPSHOT
 from shared.toolchain import detect_cpp_toolchain
 from shared.utils import read_utf8_lenient, utc_now_iso
@@ -117,6 +118,17 @@ class StructuralGraphService:
         if req.force_rebuild:
             await db.execute("DELETE FROM structural_graph_edges WHERE snapshot_id=?", (req.snapshot_id,))
             await db.execute("DELETE FROM structural_graph_summaries WHERE snapshot_id=?", (req.snapshot_id,))
+        else:
+            async with db.execute(
+                "SELECT 1 FROM structural_graph_summaries WHERE snapshot_id=? LIMIT 1",
+                (req.snapshot_id,),
+            ) as cur:
+                exists = await cur.fetchone()
+            if exists:
+                logger.info(
+                    "[structural_graph] snapshot %s already built, skipping", req.snapshot_id
+                )
+                return BuildGraphResponse(summary=await self.summary(req.snapshot_id))
 
         async with db.execute(SQL_SELECT_MANIFEST_FILES_BY_SNAPSHOT, (req.snapshot_id,)) as cur:
             files = await cur.fetchall()

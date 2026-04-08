@@ -71,6 +71,29 @@ class RepoMapService:
 
         if req.force_rebuild:
             await db.execute("DELETE FROM code_symbols WHERE snapshot_id=?", (req.snapshot_id,))
+        else:
+            async with db.execute(
+                "SELECT COUNT(*) as c FROM code_symbols WHERE snapshot_id=?",
+                (req.snapshot_id,),
+            ) as cur:
+                row = await cur.fetchone()
+            if row and row["c"] > 0:
+                logger.info(
+                    "[repo_map] snapshot %s already indexed (%d symbols), skipping",
+                    req.snapshot_id, row["c"],
+                )
+                return BuildRepoMapResponse(
+                    summary=RepoMapSummary(
+                        snapshot_id=req.snapshot_id,
+                        total_symbols=int(row["c"]),
+                        files_indexed=0,
+                        parse_failures=0,
+                        extract_mode=ExtractMode.HYBRID,
+                        language_breakdown={},
+                        kind_breakdown={},
+                        generated_at="cached",
+                    )
+                )
 
         async with db.execute(
             SQL_SELECT_MANIFEST_FILES_BY_SNAPSHOT,

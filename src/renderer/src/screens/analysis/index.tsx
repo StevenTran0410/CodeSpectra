@@ -132,6 +132,7 @@ export default function AnalysisRunScreen(): React.ReactElement {
   const [estimate, setEstimate] = useState<{ file_count: number; estimated_tokens: number } | null>(null)
   const [starting, setStarting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [forceRerun, setForceRerun] = useState(false)
   const [latestReportId, setLatestReportId] = useState<string | null>(null)
   const [modelWarning, setModelWarning] = useState<{
     code: string
@@ -357,6 +358,18 @@ export default function AnalysisRunScreen(): React.ReactElement {
             </div>
           )}
 
+          <div className="flex items-center gap-3 text-xs text-zinc-400">
+            <label className="inline-flex items-center gap-1.5 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={forceRerun}
+                onChange={(e) => setForceRerun(e.target.checked)}
+                className="accent-indigo-500"
+              />
+              Force re-run (skip cache)
+            </label>
+          </div>
+
           <div className="flex items-center gap-2">
             <button
               onClick={async () => {
@@ -377,6 +390,7 @@ export default function AnalysisRunScreen(): React.ReactElement {
                     privacy_mode: privacyMode,
                     provider_id: providerId,
                     model_id: modelId,
+                    force_rerun: forceRerun,
                   })
                   setModelWarning(job.warning ?? null)
                   startPolling(job.id)
