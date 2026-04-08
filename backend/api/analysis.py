@@ -91,6 +91,6 @@ async def rerun_section(body: RerunSectionRequest) -> RerunSectionResponse:
 @router.post("/compare", response_model=ReportDiffResponse)
 async def compare_reports_endpoint(body: CompareRequest) -> ReportDiffResponse:
     try:
-        return await _service.compare_report_runs(body.report_id_a, body.report_id_b)
+        return await _service.compare_reports(body.report_id_a, body.report_id_b)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e

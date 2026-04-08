@@ -545,7 +545,7 @@ class AnalysisService:
             markdown=md,
         )
 
-    async def compare_report_runs(
+    async def compare_reports(
         self,
         report_id_a: str,
         report_id_b: str,
