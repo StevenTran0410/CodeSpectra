@@ -1,8 +1,8 @@
 # Planning docs — local only, not committed
 repo_atlas_plan/
 
-# Cursor agent configs — local only
-.cursor/
+# Claude agent configs — local only
+.claude/
 
 # OS
 .DS_Store

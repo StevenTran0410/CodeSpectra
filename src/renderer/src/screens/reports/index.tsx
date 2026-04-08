@@ -2,7 +2,6 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import type { AnalysisReport, AnalysisReportSummary } from '../../types/electron'
 import {
-  ANALYSIS_REPORT_VERSION,
   type SectionA,
   type SectionB,
   type SectionC,
@@ -14,6 +13,7 @@ import {
   type SectionI,
   type SectionJ,
   type SectionK,
+  type SectionL,
 } from '../../types/analysis'
 import { ErrorBanner } from '../../components/ui/ErrorBanner'
 import { toErrorMessage } from '../../lib/errors'
@@ -28,16 +28,18 @@ import SectionCardH from './components/SectionCardH'
 import SectionCardI from './components/SectionCardI'
 import SectionCardJ from './components/SectionCardJ'
 import SectionCardK from './components/SectionCardK'
+import SectionCardL from './components/SectionCardL'
 
 function getReportSections(raw: unknown): Record<string, unknown> | null {
   if (!raw || typeof raw !== 'object') return null
   const r = raw as Record<string, unknown>
   const blob =
-    r.version === ANALYSIS_REPORT_VERSION ? r.sections : r.sections_v2
+    r.version === 2 || r.version === 3 ? r.sections : r.sections_v2
   return blob && typeof blob === 'object' ? (blob as Record<string, unknown>) : null
 }
 
 const REPORT_SECTION_ORDER = [
+  'L',
   'A',
   'B',
   'C',
@@ -272,6 +274,8 @@ export default function ReportViewerScreen(): React.ReactElement {
                     {REPORT_SECTION_ORDER.map((letter) => {
                       if (!v2Ok(letter)) return null
                       switch (letter) {
+                        case 'L':
+                          return <SectionCardL key={letter} data={sectionsV2.L as SectionL} />
                         case 'A':
                           return <SectionCardA key={letter} data={sectionsV2.A as SectionA} />
                         case 'B':

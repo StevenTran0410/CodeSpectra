@@ -21,6 +21,7 @@ import type {
   SectionI,
   SectionJ,
   SectionK,
+  SectionL,
 } from '../../types/analysis'
 import SectionCardA from '../reports/components/SectionCardA'
 import SectionCardB from '../reports/components/SectionCardB'
@@ -33,6 +34,7 @@ import SectionCardH from '../reports/components/SectionCardH'
 import SectionCardI from '../reports/components/SectionCardI'
 import SectionCardJ from '../reports/components/SectionCardJ'
 import SectionCardK from '../reports/components/SectionCardK'
+import SectionCardL from '../reports/components/SectionCardL'
 
 const LIVE_SECTION_ORDER: AnalysisSectionId[] = [
   'A',
@@ -46,6 +48,7 @@ const LIVE_SECTION_ORDER: AnalysisSectionId[] = [
   'I',
   'J',
   'K',
+  'L',
 ]
 
 function renderLiveSection(letter: AnalysisSectionId, data: unknown): React.ReactElement | null {
@@ -73,6 +76,8 @@ function renderLiveSection(letter: AnalysisSectionId, data: unknown): React.Reac
       return <SectionCardJ data={data as SectionJ} />
     case 'K':
       return <SectionCardK data={data as SectionK} />
+    case 'L':
+      return <SectionCardL data={data as SectionL} />
     default:
       return null
   }

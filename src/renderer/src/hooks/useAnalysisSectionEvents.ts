@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import type { SectionDoneEvent } from '../types/electron'
 
 type SectionStatus = 'pending' | 'done' | 'error'
-export type AnalysisSectionId = 'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G' | 'H' | 'I' | 'J' | 'K'
+export type AnalysisSectionId = 'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G' | 'H' | 'I' | 'J' | 'K' | 'L'
 
 const ALL_SECTIONS: AnalysisSectionId[] = [
   'A',
@@ -16,6 +16,7 @@ const ALL_SECTIONS: AnalysisSectionId[] = [
   'I',
   'J',
   'K',
+  'L',
 ]
 
 const INITIAL_STATES = (): Record<AnalysisSectionId, SectionStatus> =>

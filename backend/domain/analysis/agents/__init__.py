@@ -1,4 +1,4 @@
-"""Section agents (A–K) — LLM + optional retrieval."""
+"""Section agents (A–L) — LLM + optional retrieval."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ __all__ = [
     "ProjectIdentityAgent",
     "RiskAgent",
     "StructureAgent",
+    "SynthesisAgent",
     "ViolationsAgent",
 ]
 
@@ -30,6 +31,7 @@ _AGENT_EXPORTS: dict[str, str] = {
     "ProjectIdentityAgent": "agent_project_identity",
     "RiskAgent": "agent_risk",
     "StructureAgent": "agent_structure",
+    "SynthesisAgent": "agent_synthesis",
     "ViolationsAgent": "agent_violations",
 }
 

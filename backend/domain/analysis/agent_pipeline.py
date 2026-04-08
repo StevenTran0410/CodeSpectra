@@ -23,7 +23,7 @@ from .static_convention import ConventionReport
 from .static_risk import RiskReport
 from .types import SectionDoneCallback
 
-REPORT_VERSION = 2
+REPORT_VERSION = 3
 
 
 def _section_k_pipeline_fallback() -> dict[str, Any]:
@@ -36,6 +36,18 @@ def _section_k_pipeline_fallback() -> dict[str, Any]:
         "blind_spots": ["AuditAgent failed"],
     }
 
+
+def _section_l_pipeline_fallback() -> dict[str, Any]:
+    return {
+        "executive_summary": "",
+        "architecture_narrative": "",
+        "tech_stack_snapshot": "",
+        "developer_quickstart": "",
+        "conventions_digest": "",
+        "risk_highlights": "",
+        "reading_path": "",
+        "confidence": "low",
+    }
 
 
 _COMPONENT_TO_SECTION: dict[str, str] = {
@@ -50,8 +62,9 @@ _COMPONENT_TO_SECTION: dict[str, str] = {
     "glossary": "I",
     "risk": "J",
     "auditor": "K",
+    "synthesizer": "L",
 }
-_SECTION_LETTERS = tuple("ABCDEFGHIJK")
+_SECTION_LETTERS = tuple("ABCDEFGHIJKL")
 
 
 def _default_concurrency() -> int:
@@ -228,6 +241,7 @@ class _SectionAgentComponent:
         onboarding_output: dict = None,
         glossary_output: dict = None,
         risk_output: dict = None,
+        auditor_output: dict = None,
     ) -> dict[str, Any]:
         _ = (
             ctx,
@@ -241,6 +255,7 @@ class _SectionAgentComponent:
             onboarding_output,
             glossary_output,
             risk_output,
+            auditor_output,
         )
         raise NotImplementedError("Use run_async() for analysis components.")
 
@@ -258,6 +273,7 @@ class _SectionAgentComponent:
         onboarding_output: dict = None,
         glossary_output: dict = None,
         risk_output: dict = None,
+        auditor_output: dict = None,
     ) -> dict[str, Any]:
         deps = {
             "identity_output": identity_output,
@@ -270,6 +286,7 @@ class _SectionAgentComponent:
             "onboarding_output": onboarding_output,
             "glossary_output": glossary_output,
             "risk_output": risk_output,
+            "auditor_output": auditor_output,
         }
         t0 = time.monotonic()
         status = "done"
@@ -316,6 +333,7 @@ class AnalysisAgentPipeline:
         self._glossary = None
         self._risk = None
         self._auditor = None
+        self._synthesizer = None
         if retrieval_service is not None:
             from .agents import (
                 ArchitectureAgent,
@@ -328,6 +346,7 @@ class AnalysisAgentPipeline:
                 ProjectIdentityAgent,
                 RiskAgent,
                 StructureAgent,
+                SynthesisAgent,
                 ViolationsAgent,
             )
 
@@ -342,6 +361,7 @@ class AnalysisAgentPipeline:
             self._glossary = GlossaryAgent(provider_service, retrieval_service)
             self._risk = RiskAgent(provider_service, retrieval_service)
             self._auditor = AuditAgent(provider_service)
+            self._synthesizer = SynthesisAgent(provider_service)
         self._concurrency_limit = _default_concurrency()
 
     async def run(
@@ -370,6 +390,7 @@ class AnalysisAgentPipeline:
         assert self._glossary is not None
         assert self._risk is not None
         assert self._auditor is not None
+        assert self._synthesizer is not None
 
         ctx: dict[str, Any] = {
             "provider_id": provider_id,
@@ -571,6 +592,31 @@ class AnalysisAgentPipeline:
                 on_section_done,
             ),
         )
+        pipeline.add_component(
+            "synthesizer",
+            _SectionAgentComponent(
+                "L",
+                lambda c, d: self._synthesizer.run(
+                    c["provider_id"],
+                    c["model_id"],
+                    {
+                        "A": d.get("identity_output"),
+                        "B": d.get("architecture_output"),
+                        "C": d.get("structure_output"),
+                        "D": d.get("conventions_output"),
+                        "E": d.get("violations_output"),
+                        "F": d.get("feature_map_output"),
+                        "G": d.get("important_files_output"),
+                        "H": d.get("onboarding_output"),
+                        "I": d.get("glossary_output"),
+                        "J": d.get("risk_output"),
+                        "K": d.get("auditor_output"),
+                    },
+                ),
+                lambda _c, _d: _section_l_pipeline_fallback(),
+                on_section_done,
+            ),
+        )
         pipeline.connect("conventions.output", "violations.conventions_output")
         pipeline.connect("important_files.output", "onboarding.important_files_output")
         pipeline.connect("project_identity.output", "auditor.identity_output")
@@ -587,11 +633,30 @@ class AnalysisAgentPipeline:
         pipeline.connect("project_identity.output", "structure.identity_output")
         pipeline.connect("project_identity.output", "feature_map.identity_output")
         pipeline.connect("architecture.output", "feature_map.architecture_output")
+        pipeline.connect("auditor.output", "synthesizer.auditor_output")
+        pipeline.connect("project_identity.output", "synthesizer.identity_output")
+        pipeline.connect("architecture.output", "synthesizer.architecture_output")
+        pipeline.connect("structure.output", "synthesizer.structure_output")
+        pipeline.connect("conventions.output", "synthesizer.conventions_output")
+        pipeline.connect("violations.output", "synthesizer.violations_output")
+        pipeline.connect("feature_map.output", "synthesizer.feature_map_output")
+        pipeline.connect("important_files.output", "synthesizer.important_files_output")
+        pipeline.connect("onboarding.output", "synthesizer.onboarding_output")
+        pipeline.connect("glossary.output", "synthesizer.glossary_output")
+        pipeline.connect("risk.output", "synthesizer.risk_output")
         names = {
-            "project_identity", "architecture", "structure",
-            "conventions", "violations", "feature_map",
-            "important_files", "onboarding", "glossary",
-            "risk", "auditor",
+            "project_identity",
+            "architecture",
+            "structure",
+            "conventions",
+            "violations",
+            "feature_map",
+            "important_files",
+            "onboarding",
+            "glossary",
+            "risk",
+            "auditor",
+            "synthesizer",
         }
         data = {name: {"ctx": ctx} for name in names}
         async for partial in pipeline.run_async_generator(
@@ -631,5 +696,7 @@ class AnalysisAgentPipeline:
             sections["J"] = self._risk._fallback("pipeline", static_risk)
         if "K" not in sections:
             sections["K"] = _section_k_pipeline_fallback()
+        if "L" not in sections:
+            sections["L"] = _section_l_pipeline_fallback()
 
         return {"version": REPORT_VERSION, "sections": sections}

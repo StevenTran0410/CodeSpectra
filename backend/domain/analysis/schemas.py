@@ -182,6 +182,17 @@ class SectionK(TypedDict):
     blind_spots: list[str]
 
 
+class SectionL(TypedDict):
+    executive_summary: str
+    architecture_narrative: str
+    tech_stack_snapshot: str
+    developer_quickstart: str
+    conventions_digest: str
+    risk_highlights: str
+    reading_path: str
+    confidence: str
+
+
 _SECTION_TYPES: dict[str, type] = {
     "A": SectionA,
     "B": SectionB,
@@ -194,6 +205,7 @@ _SECTION_TYPES: dict[str, type] = {
     "I": SectionI,
     "J": SectionJ,
     "K": SectionK,
+    "L": SectionL,
 }
 
 
