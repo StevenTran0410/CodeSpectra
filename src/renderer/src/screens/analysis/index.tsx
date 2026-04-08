@@ -133,6 +133,11 @@ export default function AnalysisRunScreen(): React.ReactElement {
   const [starting, setStarting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [latestReportId, setLatestReportId] = useState<string | null>(null)
+  const [modelWarning, setModelWarning] = useState<{
+    code: string
+    message: string
+    severity: string
+  } | null>(null)
 
   useEffect(() => {
     loadRepos()
@@ -240,6 +245,19 @@ export default function AnalysisRunScreen(): React.ReactElement {
       <div className="h-[calc(100vh-10rem)] overflow-y-auto p-4 space-y-3">
         {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
 
+        {modelWarning && (
+          <div className="rounded-lg border border-amber-400/50 bg-amber-500/15 text-amber-100 text-sm px-3 py-2 flex items-start justify-between gap-3">
+            <span>{modelWarning.message}</span>
+            <button
+              type="button"
+              onClick={() => setModelWarning(null)}
+              className="shrink-0 text-xs text-amber-200/90 hover:text-amber-50 underline"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+
         <div className="bg-zinc-900/60 border border-zinc-700 rounded-xl p-4 space-y-3">
           <div className="text-sm font-semibold text-zinc-200">Run Configuration</div>
 
@@ -346,6 +364,7 @@ export default function AnalysisRunScreen(): React.ReactElement {
                 setStarting(true)
                 setError(null)
                 setLatestReportId(null)
+                setModelWarning(null)
                 try {
                   if (privacyMode === 'byok_cloud' && !cloudConsentGiven) {
                     const c = await window.api.consent.giveCloud(true)
@@ -359,6 +378,7 @@ export default function AnalysisRunScreen(): React.ReactElement {
                     provider_id: providerId,
                     model_id: modelId,
                   })
+                  setModelWarning(job.warning ?? null)
                   startPolling(job.id)
                 } catch (err) {
                   setError(toErrorMessage(err))

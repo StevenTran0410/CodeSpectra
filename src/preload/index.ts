@@ -119,7 +119,10 @@ const api = {
       privacy_mode: 'strict_local' | 'byok_cloud'
       provider_id: string
       model_id: string
-    }) => ipcRenderer.invoke('analysis:start', body),
+    }): Promise<{
+      id: string
+      warning?: { code: string; message: string; severity: string } | null
+    }> => ipcRenderer.invoke('analysis:start', body),
     listReports: (repoId?: string, limit = 30) =>
       ipcRenderer.invoke('analysis:listReports', repoId, limit),
     getReport: (reportId: string) =>

@@ -6,7 +6,6 @@ import re
 from typing import Any
 
 from domain.model_connector.service import ProviderConfigService
-from shared.logger import logger
 
 from ..agent_pipeline import BaseLLMAgent
 
@@ -51,61 +50,14 @@ class BaseTypedAgent(BaseLLMAgent):
         model_id: str,
         system_prompt: str,
         user_prompt: str,
-        schema_hint: str,
+        schema_hint: str = "",
         max_completion_tokens: int = 1200,
     ) -> dict[str, Any]:
-        """Like _chat_json but repair prompt uses schema_hint instead of SectionDraft schema."""
-        text = await self._call(
+        return await super()._chat_json(
             provider_id,
             model_id,
             system_prompt,
             user_prompt,
-            max_completion_tokens,
-            temperature=0.2,
+            max_completion_tokens=max_completion_tokens,
+            schema_hint=schema_hint,
         )
-        try:
-            obj = self._try_parse_json(text)
-            if isinstance(obj, dict) and obj:
-                return obj
-        except Exception:
-            pass
-
-        logger.warning("Typed LLM agent: attempt 1 bad output (%d chars), retrying", len(text))
-
-        if not text.strip():
-            # Model returned empty — retry with explicit JSON instruction, higher budget
-            retry_system = (
-                system_prompt + "\n\nCRITICAL: You MUST respond with a JSON object. "
-                "Start your response with { and end with }. No prose."
-            )
-            text2 = await self._call(
-                provider_id,
-                model_id,
-                retry_system,
-                user_prompt,
-                max_completion_tokens * 2,
-                temperature=0.1,
-            )
-        else:
-            # Model returned prose — ask it to extract fields from its own output
-            text2 = await self._call(
-                provider_id,
-                model_id,
-                system_prompt,
-                (
-                    "Extract the required JSON fields from your previous response.\n"
-                    "Return ONLY valid JSON, no markdown fence, no commentary.\n"
-                    f"Required schema:\n{schema_hint}\n\n"
-                    f"Previous output:\n{text}"
-                ),
-                max_completion_tokens,
-                temperature=None,
-            )
-        try:
-            obj2 = self._try_parse_json(text2)
-            if isinstance(obj2, dict) and obj2:
-                return obj2
-        except Exception:
-            pass
-
-        raise ValueError(f"all_attempts_failed_typed: last_output={text2[:120]!r}")

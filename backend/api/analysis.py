@@ -7,9 +7,14 @@ from domain.analysis.types import (
     AnalysisReport,
     AnalysisReportMarkdownResponse,
     AnalysisReportSummary,
+    AuditExportResponse,
+    CompareRequest,
+    ReportDiffResponse,
+    RerunSectionRequest,
+    RerunSectionResponse,
     StartAnalysisRequest,
+    StartAnalysisResponse,
 )
-from domain.job.types import Job
 
 router = APIRouter(tags=["analysis"])
 _service = AnalysisService()
@@ -20,8 +25,8 @@ async def estimate_scope(repo_id: str, snapshot_id: str) -> AnalysisEstimateResp
     return await _service.estimate(repo_id=repo_id, snapshot_id=snapshot_id)
 
 
-@router.post("/start", response_model=Job, status_code=201)
-async def start_analysis(body: StartAnalysisRequest) -> Job:
+@router.post("/start", response_model=StartAnalysisResponse, status_code=201)
+async def start_analysis(body: StartAnalysisRequest) -> StartAnalysisResponse:
     try:
         return await _service.start(body)
     except ValueError as e:
@@ -60,3 +65,32 @@ async def delete_report(report_id: str) -> None:
 @router.get("/reports/{report_id}/markdown", response_model=AnalysisReportMarkdownResponse)
 async def export_report_markdown(report_id: str) -> AnalysisReportMarkdownResponse:
     return await _service.export_report_markdown(report_id)
+
+
+@router.get("/reports/{report_id}/export/audit", response_model=AuditExportResponse)
+async def export_audit_section(report_id: str) -> AuditExportResponse:
+    try:
+        return await _service.export_audit_section(report_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@router.post("/rerun_section", response_model=RerunSectionResponse)
+async def rerun_section(body: RerunSectionRequest) -> RerunSectionResponse:
+    try:
+        return await _service.rerun_section(
+            body.report_id,
+            body.section,
+            body.provider_id,
+            body.model_id,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@router.post("/compare", response_model=ReportDiffResponse)
+async def compare_reports_endpoint(body: CompareRequest) -> ReportDiffResponse:
+    try:
+        return await _service.compare_report_runs(body.report_id_a, body.report_id_b)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e

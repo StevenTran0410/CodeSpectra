@@ -232,7 +232,10 @@ export function registerFolderHandlers(client: BackendClient): void {
         model_id: string
       }
     ) => {
-      const job = await client.post<{ id: string }>('/api/analysis/start', body)
+      const job = await client.post<{
+        job_id: string
+        warning?: { code: string; message: string; severity: string } | null
+      }>('/api/analysis/start', body)
       const sender = event.sender
       let fromIdx = 0
       const timer = setInterval(async () => {
@@ -242,7 +245,7 @@ export function registerFolderHandlers(client: BackendClient): void {
         }
         try {
           const res = await client.get<{ events: unknown[]; job_done: boolean }>(
-            `/api/analysis/events/${job.id}?from_idx=${fromIdx}`
+            `/api/analysis/events/${job.job_id}?from_idx=${fromIdx}`
           )
           fromIdx += res.events.length
           for (const evt of res.events) {
@@ -253,7 +256,10 @@ export function registerFolderHandlers(client: BackendClient): void {
           // transient error — continue polling
         }
       }, 2000)
-      return job
+      return {
+        id: job.job_id,
+        warning: job.warning ?? null,
+      }
     }
   )
 

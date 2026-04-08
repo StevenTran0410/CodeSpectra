@@ -1,7 +1,7 @@
 """Analysis runtime types (RPA-035)."""
 
 from collections.abc import Awaitable, Callable
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel
@@ -14,12 +14,12 @@ SectionDoneCallback = Callable[
 ]
 
 
-class ScanMode(str, Enum):
+class ScanMode(StrEnum):
     QUICK = "quick"
     FULL = "full"
 
 
-class PrivacyMode(str, Enum):
+class PrivacyMode(StrEnum):
     STRICT_LOCAL = "strict_local"
     BYOK_CLOUD = "byok_cloud"
 
@@ -31,6 +31,17 @@ class StartAnalysisRequest(BaseModel):
     privacy_mode: PrivacyMode = PrivacyMode.STRICT_LOCAL
     provider_id: str
     model_id: str
+
+
+class ModelWarning(BaseModel):
+    code: str
+    message: str
+    severity: str
+
+
+class StartAnalysisResponse(BaseModel):
+    job_id: str
+    warning: ModelWarning | None = None
 
 
 class AnalysisEstimateResponse(BaseModel):
@@ -63,3 +74,36 @@ class AnalysisReportMarkdownResponse(BaseModel):
     report_id: str
     default_name: str
     markdown: str
+
+
+class AuditExportResponse(BaseModel):
+    report_id: str
+    default_name: str
+    markdown: str
+
+
+class RerunSectionRequest(BaseModel):
+    report_id: str
+    section: str
+    provider_id: str
+    model_id: str
+
+
+class RerunSectionResponse(BaseModel):
+    section: str
+    data: dict[str, Any]
+    duration_ms: int
+
+
+class CompareRequest(BaseModel):
+    report_id_a: str
+    report_id_b: str
+
+
+class ReportDiffResponse(BaseModel):
+    report_id_a: str
+    report_id_b: str
+    quality_trend: str
+    sections_changed: int
+    identical: bool
+    section_diffs: dict[str, dict[str, Any]]

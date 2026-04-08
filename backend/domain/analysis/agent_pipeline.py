@@ -154,6 +154,11 @@ class BaseLLMAgent:
         )
         return (res.content or "").strip()
 
+    def _output_ok(self, obj: dict[str, Any], schema_hint: str) -> bool:
+        if schema_hint:
+            return isinstance(obj, dict) and bool(obj)
+        return self._is_valid_section_output(obj)
+
     async def _chat_json(
         self,
         provider_id: str,
@@ -161,7 +166,9 @@ class BaseLLMAgent:
         system_prompt: str,
         user_prompt: str,
         max_completion_tokens: int = 1200,
+        schema_hint: str = "",
     ) -> dict[str, Any]:
+        agent_name = self.__class__.__name__
         text = await self._call(
             provider_id,
             model_id,
@@ -170,39 +177,103 @@ class BaseLLMAgent:
             max_completion_tokens,
             temperature=0.2,
         )
+
+        reason1 = "attempt1_failed"
         try:
             obj = self._try_parse_json(text)
-            if self._is_valid_section_output(obj):
+            if self._output_ok(obj, schema_hint):
                 return obj
-        except Exception:
-            pass
+            reason1 = "validation_failed"
+        except Exception as exc:
+            reason1 = str(exc) or f"{type(exc).__name__}"
 
-        logger.warning("LLM agent: attempt 1 bad output, asking model to extract fields from prose")
+        logger.warning("[%s] output_repair attempt=2 reason=%s", agent_name, reason1)
 
-        repair_user = (
-            "The following is your previous output. Extract the required JSON fields from it.\n"
-            "If a field is missing or unclear, use a reasonable default.\n"
-            "Return ONLY valid JSON, no markdown fence, no commentary.\n"
-            'Required schema: {"content": "string", "confidence": "high|medium|low", '
-            '"evidence_files": [], "blind_spots": [], "details": {}}\n\n'
-            f"Previous output:\n{text}"
-        )
-        text2 = await self._call(
-            provider_id,
-            model_id,
-            system_prompt,
-            repair_user,
-            max_completion_tokens,
-            temperature=None,
+        if not text.strip():
+            retry_system = (
+                system_prompt + "\n\nCRITICAL: You MUST respond with a JSON object. "
+                "Start your response with { and end with }. No prose."
+            )
+            text2 = await self._call(
+                provider_id,
+                model_id,
+                retry_system,
+                user_prompt,
+                max_completion_tokens * 2,
+                temperature=0.1,
+            )
+        else:
+            if schema_hint:
+                repair_user = (
+                    "Your previous output was not valid JSON or did not match the schema.\n"
+                    f"Error: {reason1}\n"
+                    "Return ONLY valid JSON, no markdown fence, no commentary.\n"
+                    f"Required schema:\n{schema_hint}\n\n"
+                    f"Previous output:\n{text}"
+                )
+            else:
+                hint_tail = f"\n\nAdditional hint:\n{schema_hint}" if schema_hint else ""
+                repair_user = (
+                    "Your previous output was not valid JSON.\n"
+                    f"Parse/validation error: {reason1}\n"
+                    "Return ONLY valid JSON starting with { and ending with }.\n"
+                    "Required keys: content (str), confidence (high|medium|low), "
+                    "evidence_files (list), blind_spots (list), details (dict).\n"
+                    f"{hint_tail}\n\n"
+                    f"Previous output:\n{text}"
+                )
+            text2 = await self._call(
+                provider_id,
+                model_id,
+                system_prompt,
+                repair_user,
+                max_completion_tokens,
+                temperature=None,
+            )
+
+        reason2 = "attempt2_failed"
+        try:
+            obj2 = self._try_parse_json(text2)
+            if self._output_ok(obj2, schema_hint):
+                return obj2
+            if not schema_hint and obj2.get("content") and obj2.get("confidence"):
+                return obj2
+            reason2 = "validation_failed_after_repair"
+        except Exception as exc:
+            reason2 = str(exc) or f"{type(exc).__name__}"
+
+        logger.warning("[%s] output_repair attempt=3 reason=%s", agent_name, reason2)
+
+        fallback_prompt = (
+            'Return exactly this JSON object and nothing else: '
+            '{"content": "", "confidence": "low", "evidence_files": [], '
+            '"blind_spots": ["output_repair_failed"], "details": {}}'
         )
         try:
-            obj = self._try_parse_json(text2)
-            if obj.get("content") and obj.get("confidence"):
-                return obj
+            text3 = await self._call(
+                provider_id,
+                model_id,
+                system_prompt,
+                fallback_prompt,
+                max_completion_tokens,
+                temperature=0.0,
+            )
+            try:
+                obj3 = self._try_parse_json(text3)
+                if isinstance(obj3, dict):
+                    return obj3
+            except Exception:
+                pass
         except Exception:
             pass
 
-        raise ValueError(f"all_attempts_failed: last_output={text[:120]!r}")
+        return {
+            "content": "",
+            "confidence": "low",
+            "evidence_files": [],
+            "blind_spots": ["output_repair_failed"],
+            "details": {},
+        }
 
 
 SectionRunner = Callable[[dict[str, Any], dict[str, Any]], Awaitable[dict[str, Any]]]
