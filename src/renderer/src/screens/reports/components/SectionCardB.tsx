@@ -1,12 +1,16 @@
 import React from 'react'
 import type { SectionB } from '../../../types/analysis'
-import SectionCard from './SectionCard'
+import SectionCard, { type SectionCardRerunProps } from './SectionCard'
 
 function normConf(c: string | undefined): 'high' | 'medium' | 'low' {
   return c === 'high' || c === 'medium' || c === 'low' ? c : 'medium'
 }
 
-export default function SectionCardB({ data }: { data: SectionB }): React.ReactElement {
+export default function SectionCardB({
+  data,
+  onRerun,
+  rerunBusy,
+}: { data: SectionB } & SectionCardRerunProps): React.ReactElement {
   const conf = normConf(data.confidence)
   return (
     <SectionCard
@@ -14,6 +18,8 @@ export default function SectionCardB({ data }: { data: SectionB }): React.ReactE
       sectionName="Architecture Overview"
       confidence={conf}
       evidenceCount={data.evidence_files?.length ?? 0}
+      onRerun={onRerun}
+      rerunBusy={rerunBusy}
     >
       <div className="space-y-3">
         {data.main_layers && data.main_layers.length > 0 && (

@@ -1,6 +1,6 @@
 import React from 'react'
 import type { FolderRole, SectionC } from '../../../types/analysis'
-import SectionCard from './SectionCard'
+import SectionCard, { type SectionCardRerunProps } from './SectionCard'
 
 const ROLE_BADGE: Record<string, string> = {
   domain: 'bg-indigo-900/50 text-indigo-300 border-indigo-800/60',
@@ -21,7 +21,11 @@ function roleClass(role: FolderRole | string | undefined): string {
   return ROLE_BADGE[r] ?? ROLE_BADGE.unknown
 }
 
-export default function SectionCardC({ data }: { data: SectionC }): React.ReactElement {
+export default function SectionCardC({
+  data,
+  onRerun,
+  rerunBusy,
+}: { data: SectionC } & SectionCardRerunProps): React.ReactElement {
   const conf = normConf(data.confidence)
   return (
     <SectionCard
@@ -29,6 +33,8 @@ export default function SectionCardC({ data }: { data: SectionC }): React.ReactE
       sectionName="Repo Structure"
       confidence={conf}
       evidenceCount={data.evidence_files?.length ?? 0}
+      onRerun={onRerun}
+      rerunBusy={rerunBusy}
     >
       <div className="space-y-3">
         {data.summary ? (

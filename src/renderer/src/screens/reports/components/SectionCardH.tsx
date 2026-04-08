@@ -1,12 +1,16 @@
 import React from 'react'
 import type { SectionH } from '../../../types/analysis'
-import SectionCard from './SectionCard'
+import SectionCard, { type SectionCardRerunProps } from './SectionCard'
 
 function normConf(c: string | undefined): 'high' | 'medium' | 'low' {
   return c === 'high' || c === 'medium' || c === 'low' ? c : 'medium'
 }
 
-export default function SectionCardH({ data }: { data: SectionH }): React.ReactElement {
+export default function SectionCardH({
+  data,
+  onRerun,
+  rerunBusy,
+}: { data: SectionH } & SectionCardRerunProps): React.ReactElement {
   const conf = normConf(data.confidence)
   const ordered = [...(data.steps ?? [])].sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
 
@@ -16,6 +20,8 @@ export default function SectionCardH({ data }: { data: SectionH }): React.ReactE
       sectionName="Onboarding Reading Order"
       confidence={conf}
       evidenceCount={data.evidence_files?.length ?? 0}
+      onRerun={onRerun}
+      rerunBusy={rerunBusy}
     >
       <div className="space-y-3">
         <div className="text-[11px] text-zinc-500 mb-2">

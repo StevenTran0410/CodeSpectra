@@ -106,6 +106,27 @@ export interface AnalysisReportSummary {
   created_at: string
 }
 
+export interface ReportSectionDiff {
+  letter: string
+  changed: boolean
+  skipped_by_hash: boolean
+  confidence_delta: string | null
+  content_word_delta_pct: number | null
+  list_added: string[]
+  list_removed: string[]
+  section_score_changes: Record<string, string>
+  improvement: boolean | null
+}
+
+export interface ReportDiffResult {
+  report_id_a: string
+  report_id_b: string
+  quality_trend: string
+  sections_changed: number
+  identical: boolean
+  section_diffs: Record<string, ReportSectionDiff>
+}
+
 export interface AnalysisReport {
   summary: AnalysisReportSummary
   report: {
@@ -437,6 +458,20 @@ declare global {
           saved: boolean
           file_path: string | null
         }>
+        exportAuditSection: (reportId: string) => Promise<{
+          saved: boolean
+          file_path: string | null
+        }>
+        rerunSection: (body: {
+          report_id: string
+          section: string
+          provider_id: string
+          model_id: string
+        }) => Promise<{ section: string; data: Record<string, unknown>; duration_ms: number }>
+        compareReports: (body: {
+          report_id_a: string
+          report_id_b: string
+        }) => Promise<ReportDiffResult>
         onSectionDone: (cb: (event: unknown, data: SectionDoneEvent) => void) => void
         offSectionDone: (cb: (event: unknown, data: SectionDoneEvent) => void) => void
         deleteRepot: (reportId: string) => Promise<void>

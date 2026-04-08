@@ -300,6 +300,41 @@ export function registerFolderHandlers(client: BackendClient): void {
     return { saved: true, file_path: save.filePath }
   })
 
+  ipcMain.handle('analysis:exportAuditSection', async (_event, reportId: string) => {
+    const data = await client.get<{ report_id: string; default_name: string; markdown: string }>(
+      `/api/analysis/reports/${reportId}/export/audit`
+    )
+    const save = await dialog.showSaveDialog({
+      title: 'Save Audit Markdown',
+      defaultPath: path.join(app.getPath('desktop'), data.default_name),
+      filters: [{ name: 'Markdown', extensions: ['md'] }],
+    })
+    if (save.canceled || !save.filePath) {
+      return { saved: false, file_path: null }
+    }
+    await fs.writeFile(save.filePath, data.markdown, 'utf-8')
+    return { saved: true, file_path: save.filePath }
+  })
+
+  ipcMain.handle(
+    'analysis:rerunSection',
+    (
+      _event,
+      body: {
+        report_id: string
+        section: string
+        provider_id: string
+        model_id: string
+      }
+    ) => client.post('/api/analysis/rerun_section', body)
+  )
+
+  ipcMain.handle(
+    'analysis:compareReports',
+    (_event, body: { report_id_a: string; report_id_b: string }) =>
+      client.post('/api/analysis/compare', body)
+  )
+
   // backward-compat typo alias used by some renderer builds
   ipcMain.handle(
     'analysis:deleteRepot',

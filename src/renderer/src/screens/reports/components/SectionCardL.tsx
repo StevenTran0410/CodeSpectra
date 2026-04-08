@@ -1,6 +1,6 @@
 import React from 'react'
 import type { Confidence, SectionL } from '../../../types/analysis'
-import SectionCard from './SectionCard'
+import SectionCard, { type SectionCardRerunProps } from './SectionCard'
 
 function normConf(c: string | undefined): Confidence {
   return c === 'high' || c === 'medium' || c === 'low' ? c : 'medium'
@@ -16,11 +16,21 @@ const PROSE_FIELDS: { key: keyof SectionL; label: string }[] = [
   { key: 'reading_path', label: 'Reading Path' },
 ]
 
-export default function SectionCardL({ data }: { data: SectionL }): React.ReactElement {
+export default function SectionCardL({
+  data,
+  onRerun,
+  rerunBusy,
+}: { data: SectionL } & SectionCardRerunProps): React.ReactElement {
   const conf = normConf(data.confidence)
 
   return (
-    <SectionCard sectionId="L" sectionName="Synthesis Report" confidence={conf}>
+    <SectionCard
+      sectionId="L"
+      sectionName="Synthesis Report"
+      confidence={conf}
+      onRerun={onRerun}
+      rerunBusy={rerunBusy}
+    >
       <div className="space-y-3">
         {PROSE_FIELDS.map(({ key, label }) => {
           const value = data[key] as string

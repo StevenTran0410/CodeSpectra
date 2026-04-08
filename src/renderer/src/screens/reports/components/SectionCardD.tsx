@@ -1,6 +1,6 @@
 import React from 'react'
 import type { ConventionAspect, SectionD } from '../../../types/analysis'
-import SectionCard from './SectionCard'
+import SectionCard, { type SectionCardRerunProps } from './SectionCard'
 
 function normConf(c: string | undefined): 'high' | 'medium' | 'low' {
   return c === 'high' || c === 'medium' || c === 'low' ? c : 'medium'
@@ -33,7 +33,11 @@ function aspectParts(value: ConventionAspect | string): { desc: string; files: s
   }
 }
 
-export default function SectionCardD({ data }: { data: SectionD }): React.ReactElement {
+export default function SectionCardD({
+  data,
+  onRerun,
+  rerunBusy,
+}: { data: SectionD } & SectionCardRerunProps): React.ReactElement {
   const conf = normConf(data.confidence)
   return (
     <SectionCard
@@ -41,6 +45,8 @@ export default function SectionCardD({ data }: { data: SectionD }): React.ReactE
       sectionName="Coding Conventions"
       confidence={conf}
       evidenceCount={data.evidence_files?.length ?? 0}
+      onRerun={onRerun}
+      rerunBusy={rerunBusy}
     >
       <div className="space-y-3">
         <div className="rounded border border-zinc-800 overflow-hidden text-xs">

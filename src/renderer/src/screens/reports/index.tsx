@@ -1,6 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import type { AnalysisReport, AnalysisReportSummary } from '../../types/electron'
+import type {
+  AnalysisReport,
+  AnalysisReportSummary,
+  ReportDiffResult,
+} from '../../types/electron'
 import {
   type SectionA,
   type SectionB,
@@ -72,6 +76,13 @@ export default function ReportViewerScreen(): React.ReactElement {
   const [hideDeleteWarning, setHideDeleteWarning] = useState(
     localStorage.getItem('reports.deleteWarningHidden') === '1'
   )
+  const [rerunLetter, setRerunLetter] = useState<string | null>(null)
+  const [exportAuditBusy, setExportAuditBusy] = useState(false)
+  const [repoReportsForCompare, setRepoReportsForCompare] = useState<AnalysisReportSummary[]>([])
+  const [compareOpen, setCompareOpen] = useState(false)
+  const [compareOtherId, setCompareOtherId] = useState('')
+  const [compareBusy, setCompareBusy] = useState(false)
+  const [diffResult, setDiffResult] = useState<ReportDiffResult | null>(null)
 
   const refreshList = async (preferredReportId?: string) => {
     setLoading(true)
@@ -112,6 +123,61 @@ export default function ReportViewerScreen(): React.ReactElement {
     }
   }
 
+  const rerunSection = async (letter: string) => {
+    if (!report) return
+    setRerunLetter(letter)
+    setError(null)
+    try {
+      await window.api.analysis.rerunSection({
+        report_id: report.summary.id,
+        section: letter,
+        provider_id: report.summary.provider_id,
+        model_id: report.summary.model_id,
+      })
+      const fresh = await window.api.analysis.getReport(report.summary.id)
+      setReport(fresh)
+    } catch (err) {
+      setError(toErrorMessage(err))
+    } finally {
+      setRerunLetter(null)
+    }
+  }
+
+  const exportAudit = async () => {
+    if (!report) return
+    setExportAuditBusy(true)
+    setError(null)
+    setSuccess(null)
+    try {
+      const out = await window.api.analysis.exportAuditSection(report.summary.id)
+      if (out.saved && out.file_path) {
+        setSuccess(`Audit markdown saved: ${out.file_path}`)
+      }
+    } catch (err) {
+      setError(toErrorMessage(err))
+    } finally {
+      setExportAuditBusy(false)
+    }
+  }
+
+  const runCompare = async () => {
+    if (!report || !compareOtherId.trim()) return
+    setCompareBusy(true)
+    setError(null)
+    try {
+      const res = await window.api.analysis.compareReports({
+        report_id_a: report.summary.id,
+        report_id_b: compareOtherId.trim(),
+      })
+      setDiffResult(res)
+      setCompareOpen(false)
+    } catch (err) {
+      setError(toErrorMessage(err))
+    } finally {
+      setCompareBusy(false)
+    }
+  }
+
   const exportMarkdown = async () => {
     if (!report) return
     setExportingMd(true)
@@ -132,6 +198,15 @@ export default function ReportViewerScreen(): React.ReactElement {
   useEffect(() => {
     void refreshList()
   }, [repoId, reportIdInUrl])
+
+  useEffect(() => {
+    if (!isDetailMode || !report) {
+      setRepoReportsForCompare([])
+      return
+    }
+    const rid = report.summary.repo_id
+    void window.api.analysis.listReports(rid, 50).then(setRepoReportsForCompare)
+  }, [isDetailMode, report?.summary.repo_id, report?.summary.id])
 
   useEffect(() => {
     const run = async () => {
@@ -247,6 +322,20 @@ export default function ReportViewerScreen(): React.ReactElement {
                     >
                       Back
                     </button>
+                    {repoReportsForCompare.length >= 2 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCompareOtherId(
+                            repoReportsForCompare.find((r) => r.id !== report.summary.id)?.id ?? ''
+                          )
+                          setCompareOpen(true)
+                        }}
+                        className="px-2 py-1 text-[11px] border border-sky-800 text-sky-300 rounded hover:border-sky-600"
+                      >
+                        Compare with…
+                      </button>
+                    )}
                     <button
                       onClick={() => { void exportMarkdown() }}
                       disabled={exportingMd}
@@ -269,35 +358,179 @@ export default function ReportViewerScreen(): React.ReactElement {
                     </button>
                   </div>
                 </div>
+                {diffResult && (
+                  <div className="rounded-lg border border-zinc-600/80 bg-zinc-950/60 p-3 space-y-2">
+                    <div className="flex flex-wrap items-center gap-2 justify-between">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span
+                          className={`text-[10px] uppercase tracking-wide px-2 py-0.5 rounded border ${
+                            diffResult.quality_trend === 'improving'
+                              ? 'border-emerald-800 text-emerald-300 bg-emerald-950/30'
+                              : diffResult.quality_trend === 'degrading'
+                                ? 'border-rose-800 text-rose-300 bg-rose-950/30'
+                                : 'border-zinc-600 text-zinc-400 bg-zinc-900/40'
+                          }`}
+                        >
+                          {diffResult.quality_trend}
+                        </span>
+                        <span className="text-[11px] text-zinc-400">
+                          {diffResult.identical
+                            ? 'No section differences'
+                            : `${diffResult.sections_changed} section(s) changed`}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setDiffResult(null)}
+                        className="text-[11px] text-zinc-500 hover:text-zinc-300"
+                      >
+                        Dismiss
+                      </button>
+                    </div>
+                    <div className="max-h-56 overflow-y-auto space-y-1">
+                      {Object.entries(diffResult.section_diffs)
+                        .filter(([, d]) => d.changed)
+                        .map(([letter, d]) => (
+                          <div
+                            key={letter}
+                            className={`text-[11px] rounded border px-2 py-1.5 ${
+                              d.improvement === true
+                                ? 'border-emerald-800/70 bg-emerald-950/15'
+                                : d.improvement === false
+                                  ? 'border-rose-800/70 bg-rose-950/15'
+                                  : 'border-zinc-700 bg-zinc-900/30'
+                            }`}
+                          >
+                            <span className="font-mono font-semibold text-zinc-200">{letter}</span>
+                            {d.confidence_delta && (
+                              <span className="text-zinc-400"> · {d.confidence_delta}</span>
+                            )}
+                            {d.list_added.length > 0 && (
+                              <span className="text-emerald-400/90"> · +{d.list_added.length}</span>
+                            )}
+                            {d.list_removed.length > 0 && (
+                              <span className="text-rose-400/90"> · −{d.list_removed.length}</span>
+                            )}
+                          </div>
+                        ))}
+                    </div>
+                  </div>
+                )}
                 {sectionsV2 ? (
                   <div className="space-y-2">
                     {REPORT_SECTION_ORDER.map((letter) => {
                       if (!v2Ok(letter)) return null
                       switch (letter) {
                         case 'L':
-                          return <SectionCardL key={letter} data={sectionsV2.L as SectionL} />
+                          return (
+                            <SectionCardL
+                              key={letter}
+                              data={sectionsV2.L as SectionL}
+                              onRerun={() => void rerunSection('L')}
+                              rerunBusy={rerunLetter === 'L'}
+                            />
+                          )
                         case 'A':
-                          return <SectionCardA key={letter} data={sectionsV2.A as SectionA} />
+                          return (
+                            <SectionCardA
+                              key={letter}
+                              data={sectionsV2.A as SectionA}
+                              onRerun={() => void rerunSection('A')}
+                              rerunBusy={rerunLetter === 'A'}
+                            />
+                          )
                         case 'B':
-                          return <SectionCardB key={letter} data={sectionsV2.B as SectionB} />
+                          return (
+                            <SectionCardB
+                              key={letter}
+                              data={sectionsV2.B as SectionB}
+                              onRerun={() => void rerunSection('B')}
+                              rerunBusy={rerunLetter === 'B'}
+                            />
+                          )
                         case 'C':
-                          return <SectionCardC key={letter} data={sectionsV2.C as SectionC} />
+                          return (
+                            <SectionCardC
+                              key={letter}
+                              data={sectionsV2.C as SectionC}
+                              onRerun={() => void rerunSection('C')}
+                              rerunBusy={rerunLetter === 'C'}
+                            />
+                          )
                         case 'D':
-                          return <SectionCardD key={letter} data={sectionsV2.D as SectionD} />
+                          return (
+                            <SectionCardD
+                              key={letter}
+                              data={sectionsV2.D as SectionD}
+                              onRerun={() => void rerunSection('D')}
+                              rerunBusy={rerunLetter === 'D'}
+                            />
+                          )
                         case 'E':
-                          return <SectionCardE key={letter} data={sectionsV2.E as SectionE} />
+                          return (
+                            <SectionCardE
+                              key={letter}
+                              data={sectionsV2.E as SectionE}
+                              onRerun={() => void rerunSection('E')}
+                              rerunBusy={rerunLetter === 'E'}
+                            />
+                          )
                         case 'F':
-                          return <SectionCardF key={letter} data={sectionsV2.F as SectionF} />
+                          return (
+                            <SectionCardF
+                              key={letter}
+                              data={sectionsV2.F as SectionF}
+                              onRerun={() => void rerunSection('F')}
+                              rerunBusy={rerunLetter === 'F'}
+                            />
+                          )
                         case 'G':
-                          return <SectionCardG key={letter} data={sectionsV2.G as SectionG} />
+                          return (
+                            <SectionCardG
+                              key={letter}
+                              data={sectionsV2.G as SectionG}
+                              onRerun={() => void rerunSection('G')}
+                              rerunBusy={rerunLetter === 'G'}
+                            />
+                          )
                         case 'H':
-                          return <SectionCardH key={letter} data={sectionsV2.H as SectionH} />
+                          return (
+                            <SectionCardH
+                              key={letter}
+                              data={sectionsV2.H as SectionH}
+                              onRerun={() => void rerunSection('H')}
+                              rerunBusy={rerunLetter === 'H'}
+                            />
+                          )
                         case 'I':
-                          return <SectionCardI key={letter} data={sectionsV2.I as SectionI} />
+                          return (
+                            <SectionCardI
+                              key={letter}
+                              data={sectionsV2.I as SectionI}
+                              onRerun={() => void rerunSection('I')}
+                              rerunBusy={rerunLetter === 'I'}
+                            />
+                          )
                         case 'J':
-                          return <SectionCardJ key={letter} data={sectionsV2.J as SectionJ} />
+                          return (
+                            <SectionCardJ
+                              key={letter}
+                              data={sectionsV2.J as SectionJ}
+                              onRerun={() => void rerunSection('J')}
+                              rerunBusy={rerunLetter === 'J'}
+                            />
+                          )
                         case 'K':
-                          return <SectionCardK key={letter} data={sectionsV2.K as SectionK} />
+                          return (
+                            <SectionCardK
+                              key={letter}
+                              data={sectionsV2.K as SectionK}
+                              onRerun={() => void rerunSection('K')}
+                              rerunBusy={rerunLetter === 'K'}
+                              onExportAudit={() => void exportAudit()}
+                              exportAuditBusy={exportAuditBusy}
+                            />
+                          )
                         default:
                           return null
                       }
@@ -315,6 +548,47 @@ export default function ReportViewerScreen(): React.ReactElement {
           </div>
         )}
       </div>
+      {compareOpen && report && (
+        <div className="fixed inset-0 z-50 bg-black/55 flex items-center justify-center p-4">
+          <div className="w-full max-w-md rounded-lg border border-zinc-700 bg-zinc-900 p-4 space-y-3">
+            <div className="text-sm font-semibold text-zinc-100">Compare reports</div>
+            <div className="text-xs text-zinc-400">
+              Select another run from the same repository to diff against this report.
+            </div>
+            <select
+              value={compareOtherId}
+              onChange={(e) => setCompareOtherId(e.target.value)}
+              className="w-full rounded border border-zinc-700 bg-zinc-950 text-xs text-zinc-200 px-2 py-2"
+            >
+              {repoReportsForCompare
+                .filter((r) => r.id !== report.summary.id)
+                .map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.id.slice(0, 10)} — {r.model_id} — {r.created_at}
+                  </option>
+                ))}
+            </select>
+            <div className="flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setCompareOpen(false)}
+                disabled={compareBusy}
+                className="px-3 py-1.5 text-xs border border-zinc-700 rounded-md text-zinc-300 hover:border-zinc-600 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void runCompare()}
+                disabled={compareBusy || !compareOtherId}
+                className="px-3 py-1.5 text-xs bg-sky-700 hover:bg-sky-600 rounded-md text-white disabled:opacity-50"
+              >
+                {compareBusy ? 'Comparing…' : 'Compare'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {confirmDelete && report && (
         <div className="fixed inset-0 z-50 bg-black/55 flex items-center justify-center p-4">
           <div className="w-full max-w-md rounded-lg border border-zinc-700 bg-zinc-900 p-4 space-y-3">
