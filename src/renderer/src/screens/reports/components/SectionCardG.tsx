@@ -1,6 +1,6 @@
 import React, { useState } from 'react'
 import type { SectionG, SectionRadarSlot } from '../../../types/analysis'
-import SectionCard from './SectionCard'
+import SectionCard, { type SectionCardRerunProps } from './SectionCard'
 
 function lastTwoSegments(path: string): string {
   const norm = path.replace(/\\/g, '/').replace(/^\/+/, '')
@@ -19,7 +19,11 @@ const SLOTS: { key: keyof SectionG; label: string }[] = [
   { key: 'read_first', label: 'Read First' },
 ]
 
-export default function SectionCardG({ data }: { data: SectionG }): React.ReactElement {
+export default function SectionCardG({
+  data,
+  onRerun,
+  rerunBusy,
+}: { data: SectionG } & SectionCardRerunProps): React.ReactElement {
   const [showOther, setShowOther] = useState(false)
   const conf = data.confidence === 'high' || data.confidence === 'medium' || data.confidence === 'low'
     ? data.confidence
@@ -47,6 +51,8 @@ export default function SectionCardG({ data }: { data: SectionG }): React.ReactE
       sectionName="Important Files Radar"
       confidence={conf}
       evidenceCount={data.evidence_files?.length ?? 0}
+      onRerun={onRerun}
+      rerunBusy={rerunBusy}
     >
       <div className="grid grid-cols-2 gap-2">
         {SLOTS.map(({ key, label }) => (

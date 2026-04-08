@@ -1,9 +1,13 @@
 import React from 'react'
 import type { RiskFinding, SectionJ } from '../../../types/analysis'
 import { SEVERITY_COLORS, SEVERITY_DOT } from '../constants'
-import SectionCard from './SectionCard'
+import SectionCard, { type SectionCardRerunProps } from './SectionCard'
 
-export default function SectionCardJ({ data }: { data: SectionJ }): React.ReactElement {
+export default function SectionCardJ({
+  data,
+  onRerun,
+  rerunBusy,
+}: { data: SectionJ } & SectionCardRerunProps): React.ReactElement {
   const conf = data.confidence === 'high' || data.confidence === 'medium' || data.confidence === 'low'
     ? data.confidence
     : 'medium'
@@ -22,6 +26,8 @@ export default function SectionCardJ({ data }: { data: SectionJ }): React.ReactE
       sectionName="Risk & Complexity"
       confidence={conf}
       evidenceCount={data.evidence_files?.length ?? 0}
+      onRerun={onRerun}
+      rerunBusy={rerunBusy}
     >
       {data.summary ? (
         <p className="text-xs text-zinc-300 italic mb-3 leading-relaxed">{data.summary}</p>

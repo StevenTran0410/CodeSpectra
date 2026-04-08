@@ -1,5 +1,10 @@
 import React, { useState } from 'react'
 
+export type SectionCardRerunProps = {
+  onRerun?: () => void | Promise<void>
+  rerunBusy?: boolean
+}
+
 export interface SectionCardProps {
   sectionId: string
   sectionName: string
@@ -7,6 +12,9 @@ export interface SectionCardProps {
   evidenceCount?: number
   children: React.ReactNode
   defaultCollapsed?: boolean
+  onRerun?: SectionCardRerunProps['onRerun']
+  rerunBusy?: boolean
+  headerExtra?: React.ReactNode
 }
 
 const BADGE_COLORS: Record<string, string> = {
@@ -21,6 +29,7 @@ const BADGE_COLORS: Record<string, string> = {
   I: 'bg-cyan-900/50 text-cyan-300 border-cyan-800',
   J: 'bg-rose-900/40 text-rose-300 border-rose-800',
   K: 'bg-orange-900/50 text-orange-300 border-orange-800',
+  L: 'bg-lime-900/50 text-lime-300 border-lime-800',
 }
 
 const CONF_DOT: Record<string, string> = {
@@ -36,6 +45,9 @@ export default function SectionCard({
   evidenceCount,
   children,
   defaultCollapsed = false,
+  onRerun,
+  rerunBusy = false,
+  headerExtra,
 }: SectionCardProps): React.ReactElement {
   const [collapsed, setCollapsed] = useState(defaultCollapsed)
   const badge = BADGE_COLORS[sectionId] ?? 'bg-zinc-800 text-zinc-300 border-zinc-700'
@@ -52,6 +64,23 @@ export default function SectionCard({
           <span className="text-sm font-semibold text-zinc-200 truncate">{sectionName}</span>
         </div>
         <div className="flex items-center gap-2 shrink-0">
+          {headerExtra}
+          {onRerun && (
+            <button
+              type="button"
+              title="Re-run this section"
+              disabled={rerunBusy}
+              onClick={() => {
+                void onRerun()
+              }}
+              className="p-1 rounded border border-zinc-700 text-zinc-500 hover:border-amber-700/80 hover:text-amber-300/90 disabled:opacity-40"
+              aria-label="Re-run section"
+            >
+              <span className="text-xs leading-none" aria-hidden>
+                ↻
+              </span>
+            </button>
+          )}
           <span
             className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide text-zinc-400"
             title={`Confidence: ${confidence}`}

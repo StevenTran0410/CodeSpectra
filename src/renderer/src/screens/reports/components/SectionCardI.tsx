@@ -1,8 +1,12 @@
 import React, { useMemo, useState } from 'react'
 import type { SectionI } from '../../../types/analysis'
-import SectionCard from './SectionCard'
+import SectionCard, { type SectionCardRerunProps } from './SectionCard'
 
-export default function SectionCardI({ data }: { data: SectionI }): React.ReactElement {
+export default function SectionCardI({
+  data,
+  onRerun,
+  rerunBusy,
+}: { data: SectionI } & SectionCardRerunProps): React.ReactElement {
   const [query, setQuery] = useState('')
   const conf = data.confidence === 'high' || data.confidence === 'medium' || data.confidence === 'low'
     ? data.confidence
@@ -22,7 +26,13 @@ export default function SectionCardI({ data }: { data: SectionI }): React.ReactE
   }, [data.terms, query])
 
   return (
-    <SectionCard sectionId="I" sectionName="Domain Glossary" confidence={conf}>
+    <SectionCard
+      sectionId="I"
+      sectionName="Domain Glossary"
+      confidence={conf}
+      onRerun={onRerun}
+      rerunBusy={rerunBusy}
+    >
       <div className="space-y-2">
         <input
           type="search"

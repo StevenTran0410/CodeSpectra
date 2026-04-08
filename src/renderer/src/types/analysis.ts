@@ -1,4 +1,4 @@
-export const ANALYSIS_REPORT_VERSION = 2 as const
+export const ANALYSIS_REPORT_VERSION = 3 as const
 
 export type Confidence = 'high' | 'medium' | 'low'
 
@@ -214,9 +214,27 @@ export interface SectionK {
   blind_spots: string[]
 }
 
-export type SectionId = 'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G' | 'H' | 'I' | 'J' | 'K'
+export interface SectionL {
+  executive_summary: string
+  architecture_narrative: string
+  tech_stack_snapshot: string
+  developer_quickstart: string
+  conventions_digest: string
+  risk_highlights: string
+  reading_path: string
+  confidence: string
+}
+
+export type SectionId = 'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G' | 'H' | 'I' | 'J' | 'K' | 'L'
 
 export interface AnalysisReportV2 {
   version: 2
   sections: Partial<Record<SectionId, unknown>>
 }
+
+export interface AnalysisReportV3 {
+  version: 3
+  sections: Partial<Record<SectionId, unknown>> & { L?: SectionL }
+}
+
+export type AnalysisReport = AnalysisReportV2 | AnalysisReportV3

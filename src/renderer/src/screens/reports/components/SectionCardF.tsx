@@ -1,13 +1,17 @@
 import React, { useState } from 'react'
 import { Beaker, FileText } from 'lucide-react'
 import type { FeatureMapItem, SectionF } from '../../../types/analysis'
-import SectionCard from './SectionCard'
+import SectionCard, { type SectionCardRerunProps } from './SectionCard'
 
 function normConf(c: string | undefined): 'high' | 'medium' | 'low' {
   return c === 'high' || c === 'medium' || c === 'low' ? c : 'medium'
 }
 
-export default function SectionCardF({ data }: { data: SectionF }): React.ReactElement {
+export default function SectionCardF({
+  data,
+  onRerun,
+  rerunBusy,
+}: { data: SectionF } & SectionCardRerunProps): React.ReactElement {
   const conf = normConf(data.confidence)
   const [expanded, setExpanded] = useState<Set<number>>(() => new Set())
 
@@ -26,6 +30,8 @@ export default function SectionCardF({ data }: { data: SectionF }): React.ReactE
       sectionName="Feature Map"
       confidence={conf}
       evidenceCount={data.evidence_files?.length ?? 0}
+      onRerun={onRerun}
+      rerunBusy={rerunBusy}
     >
       <div className="space-y-3">
         {!data.features || data.features.length === 0 ? (

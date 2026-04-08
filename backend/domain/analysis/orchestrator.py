@@ -12,6 +12,7 @@ from infrastructure.db.database import get_db
 from shared.logger import logger
 
 from .agent_pipeline import AnalysisAgentPipeline
+from .diff import compute_section_hash
 from .static_convention import run_convention_analysis
 from .static_risk import run_risk_analysis
 from .types import SectionDoneCallback
@@ -71,7 +72,7 @@ class RunDirectorAgent:
         except Exception as e:
             logger.warning("Graph summary failed: %s", e)
 
-        return await self._pipeline.run(
+        out = await self._pipeline.run(
             provider_id=provider_id,
             model_id=model_id,
             snapshot_id=snapshot_id,
@@ -81,3 +82,16 @@ class RunDirectorAgent:
             static_convention=static_conv,
             on_section_done=on_section_done,
         )
+        sections = out.get("sections")
+        if isinstance(sections, dict):
+            hashes: dict[str, str] = {}
+            for letter, data in sections.items():
+                if isinstance(data, dict):
+                    hashes[str(letter)] = compute_section_hash(data)
+            out["section_hashes"] = hashes
+        out["static_cache"] = {
+            "risk": static_risk.to_dict() if static_risk else None,
+            "convention": static_conv.to_dict() if static_conv else None,
+            "graph": graph_summary.model_dump() if graph_summary else None,
+        }
+        return out

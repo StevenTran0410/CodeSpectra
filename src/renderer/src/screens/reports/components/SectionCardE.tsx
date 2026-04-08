@@ -1,6 +1,6 @@
 import React, { useState } from 'react'
 import type { ForbiddenRule, SectionE } from '../../../types/analysis'
-import SectionCard from './SectionCard'
+import SectionCard, { type SectionCardRerunProps } from './SectionCard'
 
 function normConf(c: string | undefined): 'high' | 'medium' | 'low' {
   return c === 'high' || c === 'medium' || c === 'low' ? c : 'medium'
@@ -22,7 +22,11 @@ function violSeverityClass(sev: string | undefined): string {
   return 'bg-amber-900/40 text-amber-200 border-amber-800'
 }
 
-export default function SectionCardE({ data }: { data: SectionE }): React.ReactElement {
+export default function SectionCardE({
+  data,
+  onRerun,
+  rerunBusy,
+}: { data: SectionE } & SectionCardRerunProps): React.ReactElement {
   const conf = normConf(data.confidence)
   const [violOpen, setViolOpen] = useState(false)
   const nViol = data.violations_found?.length ?? 0
@@ -33,6 +37,8 @@ export default function SectionCardE({ data }: { data: SectionE }): React.ReactE
       sectionName="Forbidden Things"
       confidence={conf}
       evidenceCount={data.evidence_files?.length ?? 0}
+      onRerun={onRerun}
+      rerunBusy={rerunBusy}
     >
       <div className="space-y-3">
         <div>

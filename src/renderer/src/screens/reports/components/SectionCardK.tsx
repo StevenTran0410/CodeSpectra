@@ -1,6 +1,6 @@
 import React from 'react'
 import type { Confidence, SectionK } from '../../../types/analysis'
-import SectionCard from './SectionCard'
+import SectionCard, { type SectionCardRerunProps } from './SectionCard'
 
 const SECTION_LETTERS = 'ABCDEFGHIJ'.split('') as string[]
 
@@ -15,13 +15,44 @@ function scoreChipClass(level: string | undefined): string {
   return 'bg-zinc-800/50 text-zinc-400 border-zinc-700'
 }
 
-export default function SectionCardK({ data }: { data: SectionK }): React.ReactElement {
+export default function SectionCardK({
+  data,
+  onExportAudit,
+  exportAuditBusy,
+  onRerun,
+  rerunBusy,
+}: {
+  data: SectionK
+  onExportAudit?: () => void | Promise<void>
+  exportAuditBusy?: boolean
+} & SectionCardRerunProps): React.ReactElement {
   const conf = normConf(data.overall_confidence)
   const pct = Number.isFinite(data.coverage_percentage) ? data.coverage_percentage : 0
   const clamped = Math.max(0, Math.min(100, pct))
 
   return (
-    <SectionCard sectionId="K" sectionName="Confidence Auditor" confidence={conf} defaultCollapsed>
+    <SectionCard
+      sectionId="K"
+      sectionName="Confidence Auditor"
+      confidence={conf}
+      defaultCollapsed
+      onRerun={onRerun}
+      rerunBusy={rerunBusy}
+      headerExtra={
+        onExportAudit ? (
+          <button
+            type="button"
+            disabled={exportAuditBusy}
+            onClick={() => {
+              void onExportAudit()
+            }}
+            className="px-2 py-0.5 text-[10px] rounded border border-indigo-700 text-indigo-300 hover:border-indigo-500 disabled:opacity-40"
+          >
+            {exportAuditBusy ? '…' : 'Export Audit'}
+          </button>
+        ) : undefined
+      }
+    >
       <div className="space-y-3">
         <div>
           <div className="text-[10px] uppercase tracking-wide text-zinc-500 mb-1.5">

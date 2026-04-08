@@ -119,7 +119,10 @@ const api = {
       privacy_mode: 'strict_local' | 'byok_cloud'
       provider_id: string
       model_id: string
-    }) => ipcRenderer.invoke('analysis:start', body),
+    }): Promise<{
+      id: string
+      warning?: { code: string; message: string; severity: string } | null
+    }> => ipcRenderer.invoke('analysis:start', body),
     listReports: (repoId?: string, limit = 30) =>
       ipcRenderer.invoke('analysis:listReports', repoId, limit),
     getReport: (reportId: string) =>
@@ -130,6 +133,16 @@ const api = {
       ipcRenderer.invoke('analysis:deleteReport', reportId),
     exportReportMarkdown: (reportId: string) =>
       ipcRenderer.invoke('analysis:exportReportMarkdown', reportId),
+    exportAuditSection: (reportId: string) =>
+      ipcRenderer.invoke('analysis:exportAuditSection', reportId),
+    rerunSection: (body: {
+      report_id: string
+      section: string
+      provider_id: string
+      model_id: string
+    }) => ipcRenderer.invoke('analysis:rerunSection', body),
+    compareReports: (body: { report_id_a: string; report_id_b: string }) =>
+      ipcRenderer.invoke('analysis:compareReports', body),
     onSectionDone: (cb: (event: unknown, data: unknown) => void) => {
       ipcRenderer.on('analysis:section_done', cb)
     },

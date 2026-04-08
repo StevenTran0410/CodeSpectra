@@ -232,7 +232,10 @@ export function registerFolderHandlers(client: BackendClient): void {
         model_id: string
       }
     ) => {
-      const job = await client.post<{ id: string }>('/api/analysis/start', body)
+      const job = await client.post<{
+        job_id: string
+        warning?: { code: string; message: string; severity: string } | null
+      }>('/api/analysis/start', body)
       const sender = event.sender
       let fromIdx = 0
       const timer = setInterval(async () => {
@@ -242,7 +245,7 @@ export function registerFolderHandlers(client: BackendClient): void {
         }
         try {
           const res = await client.get<{ events: unknown[]; job_done: boolean }>(
-            `/api/analysis/events/${job.id}?from_idx=${fromIdx}`
+            `/api/analysis/events/${job.job_id}?from_idx=${fromIdx}`
           )
           fromIdx += res.events.length
           for (const evt of res.events) {
@@ -253,7 +256,10 @@ export function registerFolderHandlers(client: BackendClient): void {
           // transient error — continue polling
         }
       }, 2000)
-      return job
+      return {
+        id: job.job_id,
+        warning: job.warning ?? null,
+      }
     }
   )
 
@@ -293,6 +299,41 @@ export function registerFolderHandlers(client: BackendClient): void {
     await fs.writeFile(save.filePath, data.markdown, 'utf-8')
     return { saved: true, file_path: save.filePath }
   })
+
+  ipcMain.handle('analysis:exportAuditSection', async (_event, reportId: string) => {
+    const data = await client.get<{ report_id: string; default_name: string; markdown: string }>(
+      `/api/analysis/reports/${reportId}/export/audit`
+    )
+    const save = await dialog.showSaveDialog({
+      title: 'Save Audit Markdown',
+      defaultPath: path.join(app.getPath('desktop'), data.default_name),
+      filters: [{ name: 'Markdown', extensions: ['md'] }],
+    })
+    if (save.canceled || !save.filePath) {
+      return { saved: false, file_path: null }
+    }
+    await fs.writeFile(save.filePath, data.markdown, 'utf-8')
+    return { saved: true, file_path: save.filePath }
+  })
+
+  ipcMain.handle(
+    'analysis:rerunSection',
+    (
+      _event,
+      body: {
+        report_id: string
+        section: string
+        provider_id: string
+        model_id: string
+      }
+    ) => client.post('/api/analysis/rerun_section', body)
+  )
+
+  ipcMain.handle(
+    'analysis:compareReports',
+    (_event, body: { report_id_a: string; report_id_b: string }) =>
+      client.post('/api/analysis/compare', body)
+  )
 
   // backward-compat typo alias used by some renderer builds
   ipcMain.handle(

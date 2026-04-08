@@ -1,9 +1,6 @@
 """Repo map and symbol extraction service (RPA-032)."""
-import ast
 import json
-import re
 from pathlib import Path
-from typing import Any
 
 from infrastructure.db.database import get_db
 from shared.errors import NotFoundError
@@ -11,6 +8,12 @@ from shared.logger import logger
 from shared.sql_queries import SQL_SELECT_MANIFEST_FILES_BY_SNAPSHOT
 from shared.utils import new_id, read_utf8_lenient, utc_now_iso
 
+from ._loaders import _get_ts_lang, _Symbol, _ts_parse
+from ._normalizer import _dedupe_symbols
+from ._walkers_js_ts import _walk_js_ts
+from ._walkers_python import _walk_python_ts
+from ._walkers_regex import _extract_lexical_symbols, _extract_python_symbols_ast
+from ._walkers_systems import _walk_c_cpp, _walk_go, _walk_java, _walk_rust
 from .types import (
     BuildRepoMapRequest,
     BuildRepoMapResponse,
@@ -23,289 +26,16 @@ from .types import (
     SymbolsResponse,
 )
 
-_Symbol = tuple[str, SymbolKind, int, int, str | None, str | None, ExtractSource]
-
-# ── Tree-sitter language loader (new API: tree-sitter >= 0.22) ────────────────
-
-def _load_ts_language(name: str) -> Any | None:
-    """Load a tree-sitter Language object from the individual language packages."""
-    try:
-        from tree_sitter import Language
-        if name == "python":
-            import tree_sitter_python as m
-        elif name in ("javascript", "js"):
-            import tree_sitter_javascript as m  # type: ignore[no-redef]
-        elif name == "typescript":
-            import tree_sitter_typescript as m  # type: ignore[no-redef]
-            return Language(m.language_typescript())
-        elif name == "go":
-            import tree_sitter_go as m  # type: ignore[no-redef]
-        elif name == "java":
-            import tree_sitter_java as m  # type: ignore[no-redef]
-        elif name == "rust":
-            import tree_sitter_rust as m  # type: ignore[no-redef]
-        elif name == "c":
-            import tree_sitter_c as m  # type: ignore[no-redef]
-        elif name in ("cpp", "c++"):
-            import tree_sitter_cpp as m  # type: ignore[no-redef]
-        else:
-            return None
-        return Language(m.language())
-    except Exception:
-        return None
-
-
-def _ts_parse(content: str, lang: Any) -> Any | None:
-    """Parse source text with tree-sitter, return root Node or None."""
-    try:
-        from tree_sitter import Parser
-        p = Parser(lang)
-        tree = p.parse(content.encode("utf-8", errors="ignore"))
-        return tree.root_node
-    except Exception:
-        return None
-
-
-def _node_name(node: Any) -> str | None:
-    try:
-        n = node.child_by_field_name("name")
-        return n.text.decode("utf-8", errors="ignore").strip() if n and n.text else None
-    except Exception:
-        return None
-
-
-def _node_text(node: Any) -> str | None:
-    try:
-        return node.text.decode("utf-8", errors="ignore").strip() if node and node.text else None
-    except Exception:
-        return None
-
-
-def _lines(node: Any) -> tuple[int, int]:
-    return node.start_point[0] + 1, node.end_point[0] + 1
-
-
-def _emit(out: list[_Symbol], node: Any, kind: SymbolKind, parent: str | None = None) -> str | None:
-    """Emit a symbol if the node has a name field. Returns the name or None."""
-    name = _node_name(node)
-    if name:
-        s, e = _lines(node)
-        out.append((name, kind, s, e, None, parent, ExtractSource.AST))
-    return name
-
-
-# ── Language-specific tree-sitter walkers ─────────────────────────────────────
-
-def _walk_python_ts(root: Any) -> list[_Symbol]:
-    out: list[_Symbol] = []
-    def walk(node: Any, cs: list[str]) -> None:
-        t = node.type
-        if t == "decorated_definition":
-            for ch in node.children:
-                if ch.type in ("function_definition", "class_definition"):
-                    walk(ch, cs)
-            return
-        if t == "function_definition":
-            _emit(out, node, SymbolKind.METHOD if cs else SymbolKind.FUNCTION, cs[-1] if cs else None)
-        elif t == "class_definition":
-            name = _emit(out, node, SymbolKind.CLASS, cs[-1] if cs else None)
-            if name:
-                for ch in node.children: walk(ch, [*cs, name])
-                return
-        for ch in node.children: walk(ch, cs)
-    walk(root, [])
-    return out
-
-
-# Flat dispatch: node_type → (kind, inherits_parent)
-_JS_FLAT: dict[str, tuple[SymbolKind, bool]] = {
-    "function_declaration":           (SymbolKind.FUNCTION,   True),
-    "generator_function_declaration": (SymbolKind.FUNCTION,   True),
-    "function_expression":            (SymbolKind.FUNCTION,   True),
-    "method_definition":              (SymbolKind.METHOD,     True),
-    "method_signature":               (SymbolKind.METHOD,     True),
-    "enum_declaration":               (SymbolKind.ENUM,       False),
-}
-_TS_ONLY_FLAT: dict[str, tuple[SymbolKind, bool]] = {
-    "interface_declaration":  (SymbolKind.INTERFACE, False),
-    "type_alias_declaration": (SymbolKind.TYPE,      False),
-}
-
-
-def _walk_js_ts(root: Any, is_ts: bool = False) -> list[_Symbol]:
-    out: list[_Symbol] = []
-    flat = {**_JS_FLAT, **(_TS_ONLY_FLAT if is_ts else {})}
-
-    def walk(node: Any, cs: list[str]) -> None:
-        t = node.type
-        if t in flat:
-            kind, inherit = flat[t]
-            _emit(out, node, kind, cs[-1] if cs and inherit else None)
-        elif t in ("class_declaration", "class"):
-            name = _emit(out, node, SymbolKind.CLASS)
-            if name:
-                for ch in node.children: walk(ch, [*cs, name])
-                return
-        elif t == "lexical_declaration":
-            for ch in node.children:
-                if ch.type == "variable_declarator":
-                    val = ch.child_by_field_name("value")
-                    if val and val.type in ("arrow_function", "function_expression"):
-                        vn = ch.child_by_field_name("name")
-                        name = _node_text(vn)
-                        if name:
-                            s, e = _lines(ch)
-                            out.append((name, SymbolKind.FUNCTION, s, e, None, cs[-1] if cs else None, ExtractSource.AST))
-        for ch in node.children: walk(ch, cs)
-
-    walk(root, [])
-    return out
-
-
-def _walk_go(root: Any) -> list[_Symbol]:
-    out: list[_Symbol] = []
-    for node in root.children:
-        t = node.type
-        if t == "function_declaration":
-            _emit(out, node, SymbolKind.FUNCTION)
-        elif t == "method_declaration":
-            name = _node_text(node.child_by_field_name("name"))
-            recv_type = None
-            recv = node.child_by_field_name("receiver")
-            if recv:
-                for ch in recv.children:
-                    if ch.type == "parameter_declaration":
-                        for tc in ch.children:
-                            if tc.type in ("type_identifier", "pointer_type"):
-                                recv_type = (_node_text(tc) or "").lstrip("*") or None
-            if name:
-                s, e = _lines(node)
-                out.append((name, SymbolKind.METHOD, s, e, None, recv_type, ExtractSource.AST))
-        elif t == "type_declaration":
-            for ch in node.children:
-                if ch.type == "type_spec":
-                    name = _node_name(ch)
-                    if not name: continue
-                    body = ch.child_by_field_name("type")
-                    kind = (SymbolKind.CLASS if body and body.type == "struct_type" else
-                            SymbolKind.INTERFACE if body and body.type == "interface_type" else
-                            SymbolKind.TYPE)
-                    s, e = _lines(ch)
-                    out.append((name, kind, s, e, None, None, ExtractSource.AST))
-    return out
-
-
-def _walk_java(root: Any) -> list[_Symbol]:
-    out: list[_Symbol] = []
-    def walk(node: Any, cs: list[str]) -> None:
-        t = node.type
-        if t == "class_declaration":
-            name = _emit(out, node, SymbolKind.CLASS, cs[-1] if cs else None)
-            if name:
-                for ch in node.children: walk(ch, [*cs, name])
-                return
-        elif t == "interface_declaration":
-            _emit(out, node, SymbolKind.INTERFACE)
-        elif t == "enum_declaration":
-            _emit(out, node, SymbolKind.ENUM)
-        elif t in ("method_declaration", "constructor_declaration"):
-            _emit(out, node, SymbolKind.METHOD, cs[-1] if cs else None)
-        for ch in node.children: walk(ch, cs)
-    walk(root, [])
-    return out
-
-
-_RUST_FLAT: dict[str, SymbolKind] = {
-    "struct_item": SymbolKind.CLASS,
-    "enum_item":   SymbolKind.ENUM,
-    "trait_item":  SymbolKind.INTERFACE,
-    "type_item":   SymbolKind.TYPE,
-}
-
-
-def _walk_rust(root: Any) -> list[_Symbol]:
-    out: list[_Symbol] = []
-    def walk(node: Any, impl_ctx: str | None = None) -> None:
-        t = node.type
-        if t == "function_item":
-            _emit(out, node, SymbolKind.METHOD if impl_ctx else SymbolKind.FUNCTION, impl_ctx)
-        elif t in _RUST_FLAT:
-            _emit(out, node, _RUST_FLAT[t])
-        elif t == "impl_item":
-            impl_name = _node_text(node.child_by_field_name("type"))
-            for ch in node.children: walk(ch, impl_ctx=impl_name)
-            return
-        for ch in node.children: walk(ch, impl_ctx)
-    walk(root)
-    return out
-
-
-def _resolve_c_decl_name(node: Any) -> str | None:
-    """Unwrap nested C/C++ declarators to find the function name."""
-    if node is None: return None
-    if node.type == "identifier": return _node_text(node)
-    if node.type in ("function_declarator", "pointer_declarator", "reference_declarator",
-                     "abstract_reference_declarator", "scoped_identifier"):
-        inner = node.child_by_field_name("declarator")
-        if inner: return _resolve_c_decl_name(inner)
-        for ch in node.children:
-            result = _resolve_c_decl_name(ch)
-            if result: return result
-    return None
-
-
-def _walk_c_cpp(root: Any, is_cpp: bool = False) -> list[_Symbol]:
-    out: list[_Symbol] = []
-    def walk(node: Any) -> None:
-        t = node.type
-        if t == "function_definition":
-            name = _resolve_c_decl_name(node.child_by_field_name("declarator"))
-            if name:
-                s, e = _lines(node)
-                out.append((name, SymbolKind.FUNCTION, s, e, None, None, ExtractSource.AST))
-        elif t in ("struct_specifier", "union_specifier"):
-            _emit(out, node, SymbolKind.CLASS)
-        elif t == "enum_specifier":
-            _emit(out, node, SymbolKind.ENUM)
-        elif is_cpp and t == "class_specifier":
-            name = _emit(out, node, SymbolKind.CLASS)
-            if name:
-                for ch in node.children: walk(ch)
-                return
-        elif t == "type_definition":
-            for ch in node.children:
-                if ch.type == "type_identifier":
-                    tname = _node_text(ch)
-                    if tname:
-                        s, e = _lines(node)
-                        out.append((tname, SymbolKind.TYPE, s, e, None, None, ExtractSource.AST))
-                    break
-        for ch in node.children: walk(ch)
-    walk(root)
-    return out
-
-
-# ── Cached language objects + dispatcher ──────────────────────────────────────
-
-_TS_CACHE: dict[str, Any] = {}
-
-
-def _get_ts_lang(name: str) -> Any | None:
-    if name not in _TS_CACHE:
-        _TS_CACHE[name] = _load_ts_language(name)
-    return _TS_CACHE[name]
-
-
-_WALKERS: dict[str, Any] = {
-    "python":     lambda root: _walk_python_ts(root),
+_WALKERS: dict[str, object] = {
+    "python": lambda root: _walk_python_ts(root),
     "javascript": lambda root: _walk_js_ts(root, is_ts=False),
     "typescript": lambda root: _walk_js_ts(root, is_ts=True),
-    "go":         _walk_go,
-    "java":       _walk_java,
-    "rust":       _walk_rust,
-    "c":          lambda root: _walk_c_cpp(root, is_cpp=False),
-    "cpp":        lambda root: _walk_c_cpp(root, is_cpp=True),
-    "c++":        lambda root: _walk_c_cpp(root, is_cpp=True),
+    "go": _walk_go,
+    "java": _walk_java,
+    "rust": _walk_rust,
+    "c": lambda root: _walk_c_cpp(root, is_cpp=False),
+    "cpp": lambda root: _walk_c_cpp(root, is_cpp=True),
+    "c++": lambda root: _walk_c_cpp(root, is_cpp=True),
 }
 
 
@@ -321,104 +51,10 @@ def _extract_symbols_treesitter(content: str, language: str) -> list[_Symbol]:
     if root is None:
         return []
     try:
-        return walker(root)
+        return walker(root)  # type: ignore[operator,misc]
     except Exception as exc:
         logger.warning("tree-sitter extraction failed for %s: %s", language, exc)
         return []
-
-
-# ── Legacy regex fallback (kept for unsupported languages) ────────────────────
-
-_RE_PY_CLASS = re.compile(r"^\s*class\s+([A-Za-z_][A-Za-z0-9_]*)", re.MULTILINE)
-_RE_PY_FUNC = re.compile(r"^\s*def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", re.MULTILINE)
-
-
-class _PythonSymbolVisitor(ast.NodeVisitor):
-    def __init__(self) -> None:
-        self.symbols: list[_Symbol] = []
-        self._class_stack: list[str] = []
-
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:  # noqa: N802
-        self.symbols.append(
-            (
-                node.name,
-                SymbolKind.CLASS,
-                int(getattr(node, "lineno", 1)),
-                int(getattr(node, "end_lineno", getattr(node, "lineno", 1))),
-                None,
-                self._class_stack[-1] if self._class_stack else None,
-                ExtractSource.AST,
-            )
-        )
-        self._class_stack.append(node.name)
-        self.generic_visit(node)
-        self._class_stack.pop()
-
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:  # noqa: N802
-        self._visit_function(node, is_async=False)
-
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:  # noqa: N802
-        self._visit_function(node, is_async=True)
-
-    def _visit_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef, is_async: bool) -> None:
-        args = [a.arg for a in node.args.args]
-        sig_prefix = "async " if is_async else ""
-        sig = f"{sig_prefix}{node.name}({', '.join(args)})"
-        kind = SymbolKind.METHOD if self._class_stack else SymbolKind.FUNCTION
-        parent_name = self._class_stack[-1] if self._class_stack else None
-        self.symbols.append(
-            (
-                node.name,
-                kind,
-                int(getattr(node, "lineno", 1)),
-                int(getattr(node, "end_lineno", getattr(node, "lineno", 1))),
-                sig,
-                parent_name,
-                ExtractSource.AST,
-            )
-        )
-        self.generic_visit(node)
-
-
-def _line_for_match(content: str, start: int) -> int:
-    return content.count("\n", 0, start) + 1
-
-
-def _extract_python_symbols_ast(content: str) -> list[_Symbol]:
-    tree = ast.parse(content)
-    visitor = _PythonSymbolVisitor()
-    visitor.visit(tree)
-    return visitor.symbols
-
-
-def _extract_lexical_symbols(content: str, language: str | None) -> list[_Symbol]:
-    """Last-resort regex fallback for languages without tree-sitter support."""
-    out: list[_Symbol] = []
-
-    def add_from(regex: re.Pattern[str], kind: SymbolKind) -> None:
-        for m in regex.finditer(content):
-            line = _line_for_match(content, m.start())
-            out.append((m.group(1), kind, line, line, None, None, ExtractSource.LEXICAL))
-
-    add_from(_RE_PY_CLASS, SymbolKind.CLASS)
-    add_from(_RE_PY_FUNC, SymbolKind.FUNCTION)
-    return out
-
-
-def _dedupe_symbols(symbols: list[_Symbol]) -> list[_Symbol]:
-    seen: set[tuple[str, str, int, int, str | None]] = set()
-    out: list[_Symbol] = []
-    for name, kind, line_start, line_end, signature, parent, source in symbols:
-        key = (name, kind.value, line_start, line_end, parent)
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append((name, kind, line_start, line_end, signature, parent, source))
-    return out
-
-
-
-
 
 
 class RepoMapService:
@@ -469,7 +105,6 @@ class RepoMapService:
             symbols: list[_Symbol]
             try:
                 if language == "python":
-                    # Python stdlib ast is the ground truth; tree-sitter as fallback.
                     try:
                         symbols = _extract_python_symbols_ast(content)
                         used_structural += 1
@@ -488,7 +123,6 @@ class RepoMapService:
                         parse_failures += 1
                         symbols = _extract_lexical_symbols(content, language)
                 else:
-                    # Unknown language: try tree-sitter by name, then regex
                     symbols = _extract_symbols_treesitter(content, language or "")
                     if not symbols:
                         symbols = _extract_lexical_symbols(content, language)
@@ -511,7 +145,8 @@ class RepoMapService:
                 await db.execute(
                     """
                     INSERT INTO code_symbols
-                    (id, snapshot_id, rel_path, language, name, kind, line_start, line_end, signature, parent_name, extract_source, created_at)
+                    (id, snapshot_id, rel_path, language, name, kind, line_start, line_end,
+                     signature, parent_name, extract_source, created_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
@@ -538,7 +173,8 @@ class RepoMapService:
         await db.execute(
             """
             INSERT INTO repo_maps
-            (snapshot_id, total_symbols, files_indexed, parse_failures, extract_mode, language_breakdown, kind_breakdown, generated_at)
+            (snapshot_id, total_symbols, files_indexed, parse_failures, extract_mode,
+             language_breakdown, kind_breakdown, generated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
@@ -568,7 +204,8 @@ class RepoMapService:
         )
 
     async def summary(self, snapshot_id: str) -> RepoMapSummary:
-        async with get_db().execute("SELECT * FROM repo_maps WHERE snapshot_id=?", (snapshot_id,)) as cur:
+        q_maps = "SELECT * FROM repo_maps WHERE snapshot_id=?"
+        async with get_db().execute(q_maps, (snapshot_id,)) as cur:
             row = await cur.fetchone()
         if row is None:
             raise NotFoundError("RepoMap", snapshot_id)
@@ -583,7 +220,12 @@ class RepoMapService:
             generated_at=row["generated_at"],
         )
 
-    async def symbols(self, snapshot_id: str, limit: int = 500, path_prefix: str | None = None) -> SymbolsResponse:
+    async def symbols(
+        self,
+        snapshot_id: str,
+        limit: int = 500,
+        path_prefix: str | None = None,
+    ) -> SymbolsResponse:
         if path_prefix:
             query = """
                 SELECT * FROM code_symbols
@@ -616,7 +258,9 @@ class RepoMapService:
                     line_end=r["line_end"],
                     signature=r["signature"],
                     parent_name=r["parent_name"],
-                    extract_source=ExtractSource(r["extract_source"] if r["extract_source"] else "lexical"),
+                    extract_source=ExtractSource(
+                        r["extract_source"] if r["extract_source"] else "lexical"
+                    ),
                 )
                 for r in rows
             ],
@@ -654,21 +298,25 @@ class RepoMapService:
                     line_end=r["line_end"],
                     signature=r["signature"],
                     parent_name=r["parent_name"],
-                    extract_source=ExtractSource(r["extract_source"] if r["extract_source"] else "lexical"),
+                    extract_source=ExtractSource(
+                        r["extract_source"] if r["extract_source"] else "lexical"
+                    ),
                 )
                 for r in rows
             ],
         )
 
     async def export_csv(self, snapshot_id: str, exclude_tests: bool = True) -> RepoMapCsvResponse:
-        async with get_db().execute("SELECT 1 FROM repo_maps WHERE snapshot_id=?", (snapshot_id,)) as cur:
+        q_exists = "SELECT 1 FROM repo_maps WHERE snapshot_id=?"
+        async with get_db().execute(q_exists, (snapshot_id,)) as cur:
             exists = await cur.fetchone()
         if exists is None:
             raise NotFoundError("RepoMap", snapshot_id)
 
         async with get_db().execute(
             """
-            SELECT DISTINCT rel_path, language, name, kind, line_start, line_end, parent_name, signature, extract_source
+            SELECT DISTINCT rel_path, language, name, kind, line_start, line_end,
+                   parent_name, signature, extract_source
             FROM code_symbols
             WHERE snapshot_id=?
             ORDER BY rel_path ASC, line_start ASC, name ASC

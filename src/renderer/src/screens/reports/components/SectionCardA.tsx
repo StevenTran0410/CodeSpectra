@@ -1,6 +1,6 @@
 import React from 'react'
 import type { SectionA } from '../../../types/analysis'
-import SectionCard from './SectionCard'
+import SectionCard, { type SectionCardRerunProps } from './SectionCard'
 
 const RUNTIME_COLORS: Record<string, string> = {
   web_app: 'bg-blue-900/50 text-blue-300',
@@ -14,7 +14,11 @@ const RUNTIME_COLORS: Record<string, string> = {
   unknown: 'bg-zinc-800 text-zinc-400',
 }
 
-export default function SectionCardA({ data }: { data: SectionA }): React.ReactElement {
+export default function SectionCardA({
+  data,
+  onRerun,
+  rerunBusy,
+}: { data: SectionA } & SectionCardRerunProps): React.ReactElement {
   const rt = String(data.runtime_type ?? 'unknown')
   const rtClass = RUNTIME_COLORS[rt] ?? RUNTIME_COLORS.unknown
   const conf = data.confidence === 'high' || data.confidence === 'medium' || data.confidence === 'low'
@@ -27,6 +31,8 @@ export default function SectionCardA({ data }: { data: SectionA }): React.ReactE
       sectionName="Project Identity"
       confidence={conf}
       evidenceCount={data.evidence_files?.length ?? 0}
+      onRerun={onRerun}
+      rerunBusy={rerunBusy}
     >
       <div className="space-y-3">
         <h4 className="text-base font-semibold text-zinc-100">{data.repo_name}</h4>

@@ -21,6 +21,7 @@ import type {
   SectionI,
   SectionJ,
   SectionK,
+  SectionL,
 } from '../../types/analysis'
 import SectionCardA from '../reports/components/SectionCardA'
 import SectionCardB from '../reports/components/SectionCardB'
@@ -33,6 +34,7 @@ import SectionCardH from '../reports/components/SectionCardH'
 import SectionCardI from '../reports/components/SectionCardI'
 import SectionCardJ from '../reports/components/SectionCardJ'
 import SectionCardK from '../reports/components/SectionCardK'
+import SectionCardL from '../reports/components/SectionCardL'
 
 const LIVE_SECTION_ORDER: AnalysisSectionId[] = [
   'A',
@@ -46,6 +48,7 @@ const LIVE_SECTION_ORDER: AnalysisSectionId[] = [
   'I',
   'J',
   'K',
+  'L',
 ]
 
 function renderLiveSection(letter: AnalysisSectionId, data: unknown): React.ReactElement | null {
@@ -73,6 +76,8 @@ function renderLiveSection(letter: AnalysisSectionId, data: unknown): React.Reac
       return <SectionCardJ data={data as SectionJ} />
     case 'K':
       return <SectionCardK data={data as SectionK} />
+    case 'L':
+      return <SectionCardL data={data as SectionL} />
     default:
       return null
   }
@@ -128,6 +133,11 @@ export default function AnalysisRunScreen(): React.ReactElement {
   const [starting, setStarting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [latestReportId, setLatestReportId] = useState<string | null>(null)
+  const [modelWarning, setModelWarning] = useState<{
+    code: string
+    message: string
+    severity: string
+  } | null>(null)
 
   useEffect(() => {
     loadRepos()
@@ -235,6 +245,19 @@ export default function AnalysisRunScreen(): React.ReactElement {
       <div className="h-[calc(100vh-10rem)] overflow-y-auto p-4 space-y-3">
         {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
 
+        {modelWarning && (
+          <div className="rounded-lg border border-amber-400/50 bg-amber-500/15 text-amber-100 text-sm px-3 py-2 flex items-start justify-between gap-3">
+            <span>{modelWarning.message}</span>
+            <button
+              type="button"
+              onClick={() => setModelWarning(null)}
+              className="shrink-0 text-xs text-amber-200/90 hover:text-amber-50 underline"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+
         <div className="bg-zinc-900/60 border border-zinc-700 rounded-xl p-4 space-y-3">
           <div className="text-sm font-semibold text-zinc-200">Run Configuration</div>
 
@@ -341,6 +364,7 @@ export default function AnalysisRunScreen(): React.ReactElement {
                 setStarting(true)
                 setError(null)
                 setLatestReportId(null)
+                setModelWarning(null)
                 try {
                   if (privacyMode === 'byok_cloud' && !cloudConsentGiven) {
                     const c = await window.api.consent.giveCloud(true)
@@ -354,6 +378,7 @@ export default function AnalysisRunScreen(): React.ReactElement {
                     provider_id: providerId,
                     model_id: modelId,
                   })
+                  setModelWarning(job.warning ?? null)
                   startPolling(job.id)
                 } catch (err) {
                   setError(toErrorMessage(err))

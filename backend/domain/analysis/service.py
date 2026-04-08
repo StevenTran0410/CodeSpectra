@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from typing import Any
 
 from domain.job.service import JobService
@@ -17,7 +18,7 @@ from domain.repo_map.types import BuildRepoMapRequest
 from domain.retrieval.service import RetrievalService
 from domain.retrieval.types import BuildRetrievalIndexRequest
 from domain.structural_graph.service import StructuralGraphService
-from domain.structural_graph.types import BuildGraphRequest
+from domain.structural_graph.types import BuildGraphRequest, StructuralGraphSummary
 from infrastructure.db.database import get_db
 from shared.errors import NotFoundError
 from shared.logger import logger
@@ -25,15 +26,29 @@ from shared.utils import new_id, utc_now_iso
 
 from .agent_pipeline import REPORT_VERSION as _REPORT_V2
 from .agent_pipeline import AnalysisAgentPipeline
+from .diff import compare_reports as diff_compare_payloads
+from .diff import compute_section_hash
+from .model_guard import check_model_capability
 from .orchestrator import RunDirectorAgent
+from .static_convention import (
+    ConventionReport,
+    ConventionSignal,
+    run_convention_analysis,
+)
+from .static_risk import RiskFinding, RiskReport, run_risk_analysis
 from .types import (
     AnalysisEstimateResponse,
     AnalysisReport,
     AnalysisReportMarkdownResponse,
     AnalysisReportSummary,
+    AuditExportResponse,
+    ModelWarning,
     PrivacyMode,
+    ReportDiffResponse,
+    RerunSectionResponse,
     ScanMode,
     StartAnalysisRequest,
+    StartAnalysisResponse,
 )
 
 _bg_tasks: set[asyncio.Task] = set()
@@ -190,6 +205,98 @@ _SECTION_RENDERERS = {
 }
 
 _SECTION_ORDER = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K"]
+
+
+def _sections_from_report_json(raw: dict) -> dict[str, dict]:
+    ver = raw.get("version")
+    blob = raw.get("sections") if ver in (2, 3) else raw.get("sections_v2")
+    if not isinstance(blob, dict):
+        return {}
+    return {str(k): v for k, v in blob.items() if isinstance(v, dict)}
+
+
+def _dsec(sections: dict[str, dict], letter: str) -> dict | None:
+    v = sections.get(letter)
+    return v if isinstance(v, dict) else None
+
+
+def _risk_from_cached_dict(d: object | None) -> RiskReport | None:
+    if not isinstance(d, dict):
+        return None
+    findings: list[RiskFinding] = []
+    for f in d.get("findings") or []:
+        if not isinstance(f, dict):
+            continue
+        findings.append(
+            RiskFinding(
+                category=str(f.get("category", "")),
+                severity=str(f.get("severity", "low")),
+                title=str(f.get("title", "")),
+                rationale=str(f.get("rationale", "")),
+                evidence=list(f.get("evidence") or []),
+                details=dict(f.get("details") or {}),
+            )
+        )
+    return RiskReport(findings=findings)
+
+
+def _convention_from_cached_dict(d: object | None) -> ConventionReport | None:
+    if not isinstance(d, dict):
+        return None
+    signals: list[ConventionSignal] = []
+    for s in d.get("signals") or []:
+        if not isinstance(s, dict):
+            continue
+        signals.append(
+            ConventionSignal(
+                signal=str(s.get("signal", "")),
+                title=str(s.get("title", "")),
+                description=str(s.get("description", "")),
+                confidence=str(s.get("confidence", "medium")),
+                evidence=list(s.get("evidence") or []),
+                details=dict(s.get("details") or {}),
+            )
+        )
+    return ConventionReport(signals=signals)
+
+
+def _render_audit_export_md(
+    repo_name: str,
+    created_at: str,
+    model_id: str,
+    k: dict[str, Any],
+) -> str:
+    oc = str(k.get("overall_confidence") or "")
+    cov = float(k.get("coverage_percentage") or 0)
+    scores = k.get("section_scores") or {}
+    rows: list[str] = []
+    if isinstance(scores, dict):
+        for letter in sorted(scores.keys()):
+            rows.append(f"| {letter} | {scores.get(letter, '')} |")
+    table = "\n".join(rows) if rows else "| — | — |"
+    weak = k.get("weakest_sections") or []
+    weak_lines = ", ".join(str(w) for w in weak[:20]) if isinstance(weak, list) else ""
+    blind = k.get("blind_spots") or []
+    blind_txt = ""
+    if isinstance(blind, list) and blind:
+        blind_txt = "\n".join(f"- {b}" for b in blind[:25])
+    notes = str(k.get("notes") or "")
+    return (
+        f"# CodeSpectra Audit — {repo_name}\n"
+        f"*Generated: {created_at} · Model: {model_id}*\n\n"
+        f"## Overall Assessment\n"
+        f"Confidence: {oc} | Coverage: {cov:.0f}%\n\n"
+        f"## Section Scores\n"
+        f"| Section | Confidence |\n"
+        f"|---------|------------|\n"
+        f"{table}\n\n"
+        f"## Weakest Sections\n"
+        f"{weak_lines or '—'}\n\n"
+        f"## Coverage Gaps\n"
+        f"{blind_txt or '—'}\n\n"
+        f"## Notes\n"
+        f"{notes or '—'}\n"
+    )
 
 
 def _render_report_markdown(report: AnalysisReport) -> str:
@@ -418,7 +525,223 @@ class AnalysisService:
             markdown=_render_report_markdown(rep),
         )
 
-    async def start(self, req: StartAnalysisRequest):
+    async def export_audit_section(self, report_id: str) -> AuditExportResponse:
+        rep = await self.get_report(report_id)
+        raw = rep.report if isinstance(rep.report, dict) else {}
+        sections = _sections_from_report_json(raw)
+        k = sections.get("K")
+        if not isinstance(k, dict) or "error" in k:
+            raise ValueError("Audit section K is missing or failed")
+        rn = rep.summary.repo_name or rep.summary.repo_id
+        md = _render_audit_export_md(
+            str(rn),
+            rep.summary.created_at,
+            rep.summary.model_id,
+            k,
+        )
+        return AuditExportResponse(
+            report_id=report_id,
+            default_name=f"audit-{report_id[:8]}.md",
+            markdown=md,
+        )
+
+    async def compare_reports(
+        self,
+        report_id_a: str,
+        report_id_b: str,
+    ) -> ReportDiffResponse:
+        a = await self.get_report(report_id_a)
+        b = await self.get_report(report_id_b)
+        if a.summary.repo_id != b.summary.repo_id:
+            raise ValueError("Both reports must belong to the same repository")
+        cr = diff_compare_payloads(a.report, b.report)
+        return ReportDiffResponse(
+            report_id_a=report_id_a,
+            report_id_b=report_id_b,
+            quality_trend=cr.quality_trend,
+            sections_changed=cr.sections_changed,
+            identical=cr.identical,
+            section_diffs=cr.section_diffs,
+        )
+
+    async def _persist_report_json(self, report_id: str, payload: dict[str, Any]) -> None:
+        db = get_db()
+        await db.execute(
+            "UPDATE analysis_reports SET report_json=? WHERE id=?",
+            (json.dumps(payload), report_id),
+        )
+        await db.commit()
+
+    async def _load_static_for_rerun(
+        self,
+        raw: dict[str, Any],
+        snapshot_id: str,
+    ) -> tuple[RiskReport, ConventionReport, StructuralGraphSummary | None]:
+        db = get_db()
+        cache = raw.get("static_cache") or raw.get("static_analysis_cache")
+        risk: RiskReport | None = None
+        conv: ConventionReport | None = None
+        graph: StructuralGraphSummary | None = None
+        if isinstance(cache, dict):
+            risk = _risk_from_cached_dict(cache.get("risk") or cache.get("static_risk"))
+            conv = _convention_from_cached_dict(
+                cache.get("convention") or cache.get("static_convention")
+            )
+            gd = cache.get("graph") or cache.get("graph_summary")
+            if isinstance(gd, dict):
+                try:
+                    graph = StructuralGraphSummary.model_validate(gd)
+                except Exception:
+                    graph = None
+        if risk is None:
+            try:
+                risk = await run_risk_analysis(snapshot_id, db)
+            except Exception:
+                risk = RiskReport(findings=[])
+        if conv is None:
+            try:
+                conv = await run_convention_analysis(snapshot_id, db)
+            except Exception:
+                conv = ConventionReport(signals=[])
+        if graph is None:
+            try:
+                graph = await self._graph.summary(snapshot_id)
+            except Exception:
+                graph = None
+        return risk, conv, graph
+
+    async def rerun_section(
+        self,
+        report_id: str,
+        section: str,
+        provider_id: str,
+        model_id: str,
+    ) -> RerunSectionResponse:
+        s = section.strip().upper()
+        if not s or s[0] not in "ABCDEFGHIJKL":
+            raise ValueError("Invalid section letter")
+        letter = s[0]
+        rep = await self.get_report(report_id)
+        raw = dict(rep.report) if isinstance(rep.report, dict) else {}
+        sections = _sections_from_report_json(raw)
+        snapshot_id = rep.summary.snapshot_id
+        id_a = _dsec(sections, "A")
+        repo_name = ""
+        if id_a:
+            repo_name = str(id_a.get("repo_name") or rep.summary.repo_name or "")
+        static_risk, static_conv, graph_summary = await self._load_static_for_rerun(
+            raw, snapshot_id
+        )
+        pi = self._agents._project_identity
+        if pi is None:
+            raise ValueError("Analysis agents unavailable")
+        assert self._agents._architecture is not None
+        assert self._agents._structure is not None
+        assert self._agents._conventions is not None
+        assert self._agents._violations is not None
+        assert self._agents._feature_map is not None
+        assert self._agents._important_files is not None
+        assert self._agents._onboarding is not None
+        assert self._agents._glossary is not None
+        assert self._agents._risk is not None
+        assert self._agents._auditor is not None
+        assert self._agents._synthesizer is not None
+
+        t0 = time.monotonic()
+        if letter == "A":
+            out = await pi.run(
+                provider_id, model_id, snapshot_id, repo_name, mem_ctx=None
+            )
+        elif letter == "B":
+            out = await self._agents._architecture.run(
+                provider_id,
+                model_id,
+                snapshot_id,
+                graph_summary,
+                arch_bundle=None,
+                identity_output=_dsec(sections, "A"),
+            )
+        elif letter == "C":
+            out = await self._agents._structure.run(
+                provider_id,
+                model_id,
+                snapshot_id,
+                arch_bundle=None,
+                folder_tree="",
+                identity_output=_dsec(sections, "A"),
+            )
+        elif letter == "D":
+            out = await self._agents._conventions.run(
+                provider_id, model_id, snapshot_id, static_conv, None
+            )
+        elif letter == "E":
+            out = await self._agents._violations.run(
+                provider_id,
+                model_id,
+                snapshot_id,
+                static_conv,
+                static_risk,
+                _dsec(sections, "D"),
+            )
+        elif letter == "F":
+            out = await self._agents._feature_map.run(
+                provider_id,
+                model_id,
+                snapshot_id,
+                graph_summary,
+                identity_output=_dsec(sections, "A"),
+                architecture_output=_dsec(sections, "B"),
+            )
+        elif letter == "G":
+            out = await self._agents._important_files.run(
+                provider_id, model_id, snapshot_id, graph_summary
+            )
+        elif letter == "H":
+            out = await self._agents._onboarding.run(
+                provider_id,
+                model_id,
+                snapshot_id,
+                _dsec(sections, "G"),
+            )
+        elif letter == "I":
+            out = await self._agents._glossary.run(
+                provider_id, model_id, snapshot_id
+            )
+        elif letter == "J":
+            out = await self._agents._risk.run(
+                provider_id, model_id, snapshot_id, static_risk
+            )
+        elif letter == "K":
+            bundle = {x: _dsec(sections, x) for x in "ABCDEFGHIJ"}
+            out = await self._agents._auditor.run(
+                provider_id, model_id, bundle
+            )
+        elif letter == "L":
+            bundle = {x: _dsec(sections, x) for x in "ABCDEFGHIJK"}
+            out = await self._agents._synthesizer.run(
+                provider_id, model_id, bundle
+            )
+        else:
+            raise ValueError("Unsupported section")
+        if not isinstance(out, dict):
+            raise ValueError("Agent returned invalid payload")
+
+        ver = raw.get("version")
+        if ver in (2, 3):
+            sec_blob = raw.setdefault("sections", {})
+        else:
+            sec_blob = raw.setdefault("sections_v2", {})
+        if not isinstance(sec_blob, dict):
+            raise ValueError("Report sections payload is invalid")
+        sec_blob[letter] = out
+        sh = raw.setdefault("section_hashes", {})
+        if isinstance(sh, dict):
+            sh[letter] = compute_section_hash(out)
+        await self._persist_report_json(report_id, raw)
+        duration_ms = int((time.monotonic() - t0) * 1000)
+        return RerunSectionResponse(section=letter, data=out, duration_ms=duration_ms)
+
+    async def start(self, req: StartAnalysisRequest) -> StartAnalysisResponse:
         async with get_db().execute(
             "SELECT name FROM local_repos WHERE id=?", (req.repo_id,)
         ) as cur:
@@ -459,7 +782,9 @@ class AnalysisService:
         task = asyncio.create_task(self._run(job.id, req, repo_name))
         _bg_tasks.add(task)
         task.add_done_callback(lambda t: _bg_tasks.discard(t))
-        return job
+        raw_warn = check_model_capability(req.model_id)
+        warning = ModelWarning(**raw_warn) if raw_warn else None
+        return StartAnalysisResponse(job_id=job.id, warning=warning)
 
     async def _run(self, job_id: str, req: StartAnalysisRequest, repo_name: str = "") -> None:
         try:

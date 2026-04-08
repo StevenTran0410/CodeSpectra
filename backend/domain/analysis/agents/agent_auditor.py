@@ -12,22 +12,18 @@ from shared.logger import logger
 from ..agent_pipeline import _normalize_conf
 from ..prompts import AGENT_K_SCHEMA_STR, AGENT_K_SYSTEM
 from ..schemas import validate_section
+from ._section_compressor import compress_section
 from .base import BaseTypedAgent
 
 
 def _build_agent_k_input(sections: dict[str, Any]) -> dict[str, Any]:
-    """
-    Compress 10 section outputs into a bounded AuditAgent input.
-
-    Per section extracts: confidence, blind_spots[:3], content_preview[:500].
-    """
     compressed: dict[str, Any] = {}
     for letter in "ABCDEFGHIJ":
         s = sections.get(letter) or {}
         compressed[letter] = {
             "confidence": s.get("confidence", "medium"),
             "blind_spots": (s.get("blind_spots") or [])[:3],
-            "content_preview": str(s.get("content", ""))[:500],
+            "content_preview": compress_section(letter, s, char_cap=500),
         }
     return compressed
 
