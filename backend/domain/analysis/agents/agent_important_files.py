@@ -1,4 +1,5 @@
 """Important files radar agent (section G)."""
+
 from __future__ import annotations
 
 import time
@@ -61,9 +62,7 @@ class ImportantFilesAgent(BaseTypedAgent):
             if graph_summary and graph_summary.top_central_files:
                 graph_lines.append("Graph centrality (top files by import score):")
                 for n in graph_summary.top_central_files[:10]:
-                    graph_lines.append(
-                        f"  {n.rel_path} (score={n.score}, indegree={n.indegree})"
-                    )
+                    graph_lines.append(f"  {n.rel_path} (score={n.score}, indegree={n.indegree})")
             graph_block = "\n".join(graph_lines)
             bundle = await self._retrieval.retrieve(
                 RetrieveRequest(
@@ -77,9 +76,7 @@ class ImportantFilesAgent(BaseTypedAgent):
             n_chunks = len(bundle.evidences)
             paths = [e.rel_path for e in bundle.evidences]
             prefix = f"{graph_block}\n\n" if graph_block else ""
-            user_prompt = (
-                f"{prefix}snapshot_id={snapshot_id}\n\nEvidence:\n{render_bundle(bundle)}"
-            )
+            user_prompt = f"{prefix}snapshot_id={snapshot_id}\n\nEvidence:\n{render_bundle(bundle)}"
             data = await self._chat_json_typed(
                 provider_id,
                 model_id,
@@ -128,7 +125,9 @@ class ImportantFilesAgent(BaseTypedAgent):
             data["confidence"] = _normalize_conf(str(data.get("confidence", "medium")))
             validate_section("G", data)
             ms = int((time.monotonic() - t0) * 1000)
-            logger.info("[ImportantFilesAgent] %d chunks retrieved, completed in %dms", n_chunks, ms)
+            logger.info(
+                "[ImportantFilesAgent] %d chunks retrieved, completed in %dms", n_chunks, ms
+            )
             return data
         except Exception as e:
             ms = int((time.monotonic() - t0) * 1000)

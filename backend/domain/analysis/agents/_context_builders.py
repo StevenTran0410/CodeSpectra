@@ -1,4 +1,5 @@
 """Typed context assembly helpers shared across section agents."""
+
 from __future__ import annotations
 
 import asyncio
@@ -13,14 +14,28 @@ from ..static_convention import ConventionReport
 from ..static_risk import RiskReport
 
 _MANIFEST_PATTERNS = (
-    "pyproject.toml", "package.json", "Cargo.toml", "go.mod",
-    "requirements.txt", "setup.py", "setup.cfg", "pom.xml",
-    "build.gradle", "composer.json", "Gemfile", "Package.swift",
+    "pyproject.toml",
+    "package.json",
+    "Cargo.toml",
+    "go.mod",
+    "requirements.txt",
+    "setup.py",
+    "setup.cfg",
+    "pom.xml",
+    "build.gradle",
+    "composer.json",
+    "Gemfile",
+    "Package.swift",
 )
 
 _DOC_PATTERNS = (
-    "README.md", "README.rst", "README.txt", "README",
-    "CHANGELOG.md", "CONTRIBUTING.md", "ARCHITECTURE.md",
+    "README.md",
+    "README.rst",
+    "README.txt",
+    "README",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "ARCHITECTURE.md",
 )
 
 
@@ -133,9 +148,7 @@ def extract_b_arch_context(b_output: dict[str, Any] | None) -> str:
         return ""
     layers = b_output.get("main_layers") or []
     services = b_output.get("main_services") or []
-    layers_str = (
-        ", ".join(str(l) for l in layers) if isinstance(layers, list) else ""
-    )
+    layers_str = ", ".join(str(layer) for layer in layers) if isinstance(layers, list) else ""
     if not layers_str and not services:
         return ""
     lines = ["Architecture context (from ArchitectureAgent — do not re-list these services):"]
@@ -203,10 +216,7 @@ def extract_d_hint_context(agent_d_output: dict[str, Any] | None) -> str:
             continue
         cat = str(item.get("category", "") or "")
         hint = str(
-            item.get("pattern", "")
-            or item.get("description", "")
-            or item.get("evidence", "")
-            or ""
+            item.get("pattern", "") or item.get("description", "") or item.get("evidence", "") or ""
         )[:90]
         if not hint and not cat:
             continue

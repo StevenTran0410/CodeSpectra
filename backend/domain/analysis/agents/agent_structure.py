@@ -55,7 +55,7 @@ class StructureAgent(BaseTypedAgent):
         snapshot_id: str,
         arch_bundle: RetrievalBundle | None = None,
         folder_tree: str = "",
-        a_output: dict | None = None,
+        identity_output: dict | None = None,
     ) -> dict[str, Any]:
         t0 = time.monotonic()
         n_chunks = 0
@@ -83,7 +83,7 @@ class StructureAgent(BaseTypedAgent):
                     fetch_folder_tree(snapshot_id),
                 )
             n_chunks = len(bundle.evidences)
-            identity_block = extract_a_identity_context(a_output)
+            identity_block = extract_a_identity_context(identity_output)
             user_prompt_parts = [f"snapshot_id={snapshot_id}"]
             if identity_block:
                 user_prompt_parts.insert(0, identity_block)

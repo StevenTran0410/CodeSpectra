@@ -57,7 +57,7 @@ class ViolationsAgent(BaseTypedAgent):
         snapshot_id: str,
         static_convention: ConventionReport | None = None,
         static_risk: RiskReport | None = None,
-        agent_d_output: dict[str, Any] | None = None,
+        conventions_output: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         t0 = time.monotonic()
         n_chunks = 0
@@ -69,7 +69,7 @@ class ViolationsAgent(BaseTypedAgent):
             rb = build_risk_block(static_risk, categories=["blast_radius", "anti_pattern"])
             if rb:
                 prefix_parts.append(rb)
-            dh = extract_d_hint_context(agent_d_output)
+            dh = extract_d_hint_context(conventions_output)
             if dh:
                 prefix_parts.append(dh)
             prefix = "\n\n".join(prefix_parts) + ("\n\n" if prefix_parts else "")
@@ -84,9 +84,7 @@ class ViolationsAgent(BaseTypedAgent):
                 )
             )
             n_chunks = len(bundle.evidences)
-            user_prompt = (
-                f"{prefix}snapshot_id={snapshot_id}\n\nEvidence:\n{render_bundle(bundle)}"
-            )
+            user_prompt = f"{prefix}snapshot_id={snapshot_id}\n\nEvidence:\n{render_bundle(bundle)}"
             data = await self._chat_json_typed(
                 provider_id,
                 model_id,
@@ -111,9 +109,7 @@ class ViolationsAgent(BaseTypedAgent):
                         extra = ", ".join(str(x) for x in evf[:8] if x is not None)
                         if extra:
                             rationale = (
-                                f"{rationale} | files: {extra}"
-                                if rationale
-                                else f"files: {extra}"
+                                f"{rationale} | files: {extra}" if rationale else f"files: {extra}"
                             )
                     rules_out.append(
                         {

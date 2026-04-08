@@ -18,7 +18,7 @@ from domain.retrieval.service import RetrievalService
 from domain.structural_graph.types import StructuralGraphSummary
 from shared.logger import logger
 
-from .agents._context_builders import prefetch_pipeline_context
+from .agents._context_builders import PipelineMemoryContext, prefetch_pipeline_context
 from .static_convention import ConventionReport
 from .static_risk import RiskReport
 from .types import SectionDoneCallback
@@ -37,6 +37,20 @@ def _section_k_pipeline_fallback() -> dict[str, Any]:
     }
 
 
+
+_COMPONENT_TO_SECTION: dict[str, str] = {
+    "project_identity": "A",
+    "architecture": "B",
+    "structure": "C",
+    "conventions": "D",
+    "violations": "E",
+    "feature_map": "F",
+    "important_files": "G",
+    "onboarding": "H",
+    "glossary": "I",
+    "risk": "J",
+    "auditor": "K",
+}
 _SECTION_LETTERS = tuple("ABCDEFGHIJK")
 
 
@@ -204,29 +218,29 @@ class _SectionAgentComponent:
     def run(
         self,
         ctx: dict[str, Any],
-        a_output: dict = None,
-        b_output: dict = None,
-        c_output: dict = None,
-        d_output: dict = None,
-        e_output: dict = None,
-        f_output: dict = None,
-        g_output: dict = None,
-        h_output: dict = None,
-        i_output: dict = None,
-        j_output: dict = None,
+        identity_output: dict = None,
+        architecture_output: dict = None,
+        structure_output: dict = None,
+        conventions_output: dict = None,
+        violations_output: dict = None,
+        feature_map_output: dict = None,
+        important_files_output: dict = None,
+        onboarding_output: dict = None,
+        glossary_output: dict = None,
+        risk_output: dict = None,
     ) -> dict[str, Any]:
         _ = (
             ctx,
-            a_output,
-            b_output,
-            c_output,
-            d_output,
-            e_output,
-            f_output,
-            g_output,
-            h_output,
-            i_output,
-            j_output,
+            identity_output,
+            architecture_output,
+            structure_output,
+            conventions_output,
+            violations_output,
+            feature_map_output,
+            important_files_output,
+            onboarding_output,
+            glossary_output,
+            risk_output,
         )
         raise NotImplementedError("Use run_async() for analysis components.")
 
@@ -234,28 +248,28 @@ class _SectionAgentComponent:
     async def run_async(
         self,
         ctx: dict[str, Any],
-        a_output: dict = None,
-        b_output: dict = None,
-        c_output: dict = None,
-        d_output: dict = None,
-        e_output: dict = None,
-        f_output: dict = None,
-        g_output: dict = None,
-        h_output: dict = None,
-        i_output: dict = None,
-        j_output: dict = None,
+        identity_output: dict = None,
+        architecture_output: dict = None,
+        structure_output: dict = None,
+        conventions_output: dict = None,
+        violations_output: dict = None,
+        feature_map_output: dict = None,
+        important_files_output: dict = None,
+        onboarding_output: dict = None,
+        glossary_output: dict = None,
+        risk_output: dict = None,
     ) -> dict[str, Any]:
         deps = {
-            "a_output": a_output,
-            "b_output": b_output,
-            "c_output": c_output,
-            "d_output": d_output,
-            "e_output": e_output,
-            "f_output": f_output,
-            "g_output": g_output,
-            "h_output": h_output,
-            "i_output": i_output,
-            "j_output": j_output,
+            "identity_output": identity_output,
+            "architecture_output": architecture_output,
+            "structure_output": structure_output,
+            "conventions_output": conventions_output,
+            "violations_output": violations_output,
+            "feature_map_output": feature_map_output,
+            "important_files_output": important_files_output,
+            "onboarding_output": onboarding_output,
+            "glossary_output": glossary_output,
+            "risk_output": risk_output,
         }
         t0 = time.monotonic()
         status = "done"
@@ -366,8 +380,11 @@ class AnalysisAgentPipeline:
             "static_risk": static_risk,
             "static_convention": static_convention,
         }
+        mem_ctx: PipelineMemoryContext | None
         try:
-            mem_ctx = await prefetch_pipeline_context(self._project_identity._retrieval, snapshot_id)
+            mem_ctx = await prefetch_pipeline_context(
+                self._project_identity._retrieval, snapshot_id
+            )
         except Exception as _prefetch_err:
             logger.warning(
                 "[pipeline] prefetch_pipeline_context failed, agents will use own retrieval: %s",
@@ -377,7 +394,8 @@ class AnalysisAgentPipeline:
         ctx["mem_ctx"] = mem_ctx
         if mem_ctx is not None:
             logger.info(
-                "[pipeline] PipelineMemoryContext ready: arch_bundle=%d chunks, folder_tree=%d chars, doc_files=%d chars, manifest_files=%d chars",
+                "[pipeline] PipelineMemoryContext ready: arch_bundle=%d chunks, "
+                "folder_tree=%d chars, doc_files=%d chars, manifest_files=%d chars",
                 len(mem_ctx.arch_bundle.evidences),
                 len(mem_ctx.folder_tree),
                 len(mem_ctx.doc_files),
@@ -389,7 +407,7 @@ class AnalysisAgentPipeline:
             )
         pipeline = AsyncPipeline()
         pipeline.add_component(
-            "a",
+            "project_identity",
             _SectionAgentComponent(
                 "A",
                 lambda c, _d: self._project_identity.run(
@@ -406,7 +424,7 @@ class AnalysisAgentPipeline:
             ),
         )
         pipeline.add_component(
-            "b",
+            "architecture",
             _SectionAgentComponent(
                 "B",
                 lambda c, d: self._architecture.run(
@@ -415,14 +433,14 @@ class AnalysisAgentPipeline:
                     c["snapshot_id"],
                     c["graph_summary"],
                     arch_bundle=c["mem_ctx"].arch_bundle if c.get("mem_ctx") else None,
-                    a_output=d.get("a_output"),
+                    identity_output=d.get("identity_output"),
                 ),
                 lambda _c, _d: self._architecture._fallback("pipeline"),
                 on_section_done,
             ),
         )
         pipeline.add_component(
-            "c",
+            "structure",
             _SectionAgentComponent(
                 "C",
                 lambda c, d: self._structure.run(
@@ -431,14 +449,14 @@ class AnalysisAgentPipeline:
                     c["snapshot_id"],
                     arch_bundle=c["mem_ctx"].arch_bundle if c.get("mem_ctx") else None,
                     folder_tree=c["mem_ctx"].folder_tree if c.get("mem_ctx") else "",
-                    a_output=d.get("a_output"),
+                    identity_output=d.get("identity_output"),
                 ),
                 lambda _c, _d: self._structure._fallback("pipeline"),
                 on_section_done,
             ),
         )
         pipeline.add_component(
-            "d",
+            "conventions",
             _SectionAgentComponent(
                 "D",
                 lambda c, _d: self._conventions.run(
@@ -453,7 +471,7 @@ class AnalysisAgentPipeline:
             ),
         )
         pipeline.add_component(
-            "e",
+            "violations",
             _SectionAgentComponent(
                 "E",
                 lambda c, d: self._violations.run(
@@ -462,14 +480,14 @@ class AnalysisAgentPipeline:
                     c["snapshot_id"],
                     c["static_convention"],
                     c["static_risk"],
-                    d.get("d_output"),
+                    d.get("conventions_output"),
                 ),
                 lambda _c, _d: self._violations._fallback("pipeline"),
                 on_section_done,
             ),
         )
         pipeline.add_component(
-            "f",
+            "feature_map",
             _SectionAgentComponent(
                 "F",
                 lambda c, d: self._feature_map.run(
@@ -477,15 +495,15 @@ class AnalysisAgentPipeline:
                     c["model_id"],
                     c["snapshot_id"],
                     c["graph_summary"],
-                    a_output=d.get("a_output"),
-                    b_output=d.get("b_output"),
+                    identity_output=d.get("identity_output"),
+                    architecture_output=d.get("architecture_output"),
                 ),
                 lambda _c, _d: self._feature_map._fallback("pipeline"),
                 on_section_done,
             ),
         )
         pipeline.add_component(
-            "g",
+            "important_files",
             _SectionAgentComponent(
                 "G",
                 lambda c, _d: self._important_files.run(
@@ -496,29 +514,30 @@ class AnalysisAgentPipeline:
             ),
         )
         pipeline.add_component(
-            "h",
+            "onboarding",
             _SectionAgentComponent(
                 "H",
                 lambda c, d: self._onboarding.run(
-                    c["provider_id"], c["model_id"], c["snapshot_id"], d.get("g_output")
+                    c["provider_id"],
+                    c["model_id"],
+                    c["snapshot_id"],
+                    d.get("important_files_output"),
                 ),
                 lambda _c, _d: self._onboarding._fallback("pipeline"),
                 on_section_done,
             ),
         )
         pipeline.add_component(
-            "i",
+            "glossary",
             _SectionAgentComponent(
                 "I",
-                lambda c, _d: self._glossary.run(
-                    c["provider_id"], c["model_id"], c["snapshot_id"]
-                ),
+                lambda c, _d: self._glossary.run(c["provider_id"], c["model_id"], c["snapshot_id"]),
                 lambda _c, _d: self._glossary._fallback("pipeline"),
                 on_section_done,
             ),
         )
         pipeline.add_component(
-            "j",
+            "risk",
             _SectionAgentComponent(
                 "J",
                 lambda c, _d: self._risk.run(
@@ -529,46 +548,51 @@ class AnalysisAgentPipeline:
             ),
         )
         pipeline.add_component(
-            "k",
+            "auditor",
             _SectionAgentComponent(
                 "K",
                 lambda c, d: self._auditor.run(
                     c["provider_id"],
                     c["model_id"],
                     {
-                        "A": d.get("a_output"),
-                        "B": d.get("b_output"),
-                        "C": d.get("c_output"),
-                        "D": d.get("d_output"),
-                        "E": d.get("e_output"),
-                        "F": d.get("f_output"),
-                        "G": d.get("g_output"),
-                        "H": d.get("h_output"),
-                        "I": d.get("i_output"),
-                        "J": d.get("j_output"),
+                        "A": d.get("identity_output"),
+                        "B": d.get("architecture_output"),
+                        "C": d.get("structure_output"),
+                        "D": d.get("conventions_output"),
+                        "E": d.get("violations_output"),
+                        "F": d.get("feature_map_output"),
+                        "G": d.get("important_files_output"),
+                        "H": d.get("onboarding_output"),
+                        "I": d.get("glossary_output"),
+                        "J": d.get("risk_output"),
                     },
                 ),
                 lambda _c, _d: _section_k_pipeline_fallback(),
                 on_section_done,
             ),
         )
-        pipeline.connect("d.output", "e.d_output")
-        pipeline.connect("g.output", "h.g_output")
-        pipeline.connect("a.output", "k.a_output")
-        pipeline.connect("b.output", "k.b_output")
-        pipeline.connect("c.output", "k.c_output")
-        pipeline.connect("d.output", "k.d_output")
-        pipeline.connect("e.output", "k.e_output")
-        pipeline.connect("f.output", "k.f_output")
-        pipeline.connect("g.output", "k.g_output")
-        pipeline.connect("h.output", "k.h_output")
-        pipeline.connect("i.output", "k.i_output")
-        pipeline.connect("j.output", "k.j_output")
-        pipeline.connect("a.output", "b.a_output")
-        pipeline.connect("a.output", "c.a_output")
-        pipeline.connect("a.output", "f.a_output")
-        pipeline.connect("b.output", "f.b_output")
-        names = {"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k"}
+        pipeline.connect("conventions.output", "violations.conventions_output")
+        pipeline.connect("important_files.output", "onboarding.important_files_output")
+        pipeline.connect("project_identity.output", "auditor.identity_output")
+        pipeline.connect("architecture.output", "auditor.architecture_output")
+        pipeline.connect("structure.output", "auditor.structure_output")
+        pipeline.connect("conventions.output", "auditor.conventions_output")
+        pipeline.connect("violations.output", "auditor.violations_output")
+        pipeline.connect("feature_map.output", "auditor.feature_map_output")
+        pipeline.connect("important_files.output", "auditor.important_files_output")
+        pipeline.connect("onboarding.output", "auditor.onboarding_output")
+        pipeline.connect("glossary.output", "auditor.glossary_output")
+        pipeline.connect("risk.output", "auditor.risk_output")
+        pipeline.connect("project_identity.output", "architecture.identity_output")
+        pipeline.connect("project_identity.output", "structure.identity_output")
+        pipeline.connect("project_identity.output", "feature_map.identity_output")
+        pipeline.connect("architecture.output", "feature_map.architecture_output")
+        names = {
+            "project_identity", "architecture", "structure",
+            "conventions", "violations", "feature_map",
+            "important_files", "onboarding", "glossary",
+            "risk", "auditor",
+        }
         data = {name: {"ctx": ctx} for name in names}
         async for partial in pipeline.run_async_generator(
             data=data,
@@ -580,7 +604,9 @@ class AnalysisAgentPipeline:
                     continue
                 output = output_map.get("output")
                 if isinstance(output, dict):
-                    sections[name.upper()] = output
+                    section_letter = _COMPONENT_TO_SECTION.get(name)
+                    if section_letter and isinstance(output, dict):
+                        sections[section_letter] = output
 
         # Safety net: every section must exist even if Haystack wiring changes.
         if "A" not in sections:

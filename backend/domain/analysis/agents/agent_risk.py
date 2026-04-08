@@ -1,4 +1,5 @@
 """Risk and complexity agent (section J)."""
+
 from __future__ import annotations
 
 import time

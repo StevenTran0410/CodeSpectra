@@ -47,8 +47,8 @@ class FeatureMapAgent(BaseTypedAgent):
         model_id: str,
         snapshot_id: str,
         graph_summary: StructuralGraphSummary | None = None,
-        a_output: dict | None = None,
-        b_output: dict | None = None,
+        identity_output: dict | None = None,
+        architecture_output: dict | None = None,
     ) -> dict[str, Any]:
         t0 = time.monotonic()
         n_chunks = 0
@@ -57,12 +57,10 @@ class FeatureMapAgent(BaseTypedAgent):
             if graph_summary and graph_summary.top_central_files:
                 lines = ["Graph centrality (top files by import score):"]
                 for n in graph_summary.top_central_files[:10]:
-                    lines.append(
-                        f"  {n.rel_path} (score={n.score}, indegree={n.indegree})"
-                    )
+                    lines.append(f"  {n.rel_path} (score={n.score}, indegree={n.indegree})")
                 graph_block = "\n".join(lines)
-            identity_block = extract_a_identity_context(a_output)
-            arch_block = extract_b_arch_context(b_output)
+            identity_block = extract_a_identity_context(identity_output)
+            arch_block = extract_b_arch_context(architecture_output)
             prefix_parts = []
             if identity_block:
                 prefix_parts.append(identity_block)
@@ -82,9 +80,7 @@ class FeatureMapAgent(BaseTypedAgent):
                 )
             )
             n_chunks = len(bundle.evidences)
-            user_prompt = (
-                f"{prefix}snapshot_id={snapshot_id}\n\nEvidence:\n{render_bundle(bundle)}"
-            )
+            user_prompt = f"{prefix}snapshot_id={snapshot_id}\n\nEvidence:\n{render_bundle(bundle)}"
             data = await self._chat_json_typed(
                 provider_id,
                 model_id,

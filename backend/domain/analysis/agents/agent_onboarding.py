@@ -25,7 +25,7 @@ _G_SLOT_KEYS = (
 )
 
 
-def _extract_g_hint(section_g_output: dict[str, Any]) -> str:
+def _extract_g_hint(important_files_output: dict[str, Any]) -> str:
     entries: list[str] = []
     seen: set[str] = set()
 
@@ -42,10 +42,10 @@ def _extract_g_hint(section_g_output: dict[str, Any]) -> str:
         entries.append(f"- {f} ({r[:80]})")
 
     for key in _G_SLOT_KEYS:
-        slot = section_g_output.get(key)
+        slot = important_files_output.get(key)
         if isinstance(slot, dict):
             push(str(slot.get("file", "")), str(slot.get("reason", "")))
-    oi = section_g_output.get("other_important")
+    oi = important_files_output.get("other_important")
     if isinstance(oi, list):
         for item in oi:
             if isinstance(item, dict):
@@ -79,12 +79,16 @@ class OnboardingAgent(BaseTypedAgent):
         provider_id: str,
         model_id: str,
         snapshot_id: str,
-        section_g_output: dict[str, Any] | None = None,
+        important_files_output: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         t0 = time.monotonic()
         n_chunks = 0
         try:
-            g_hint = _extract_g_hint(section_g_output) if isinstance(section_g_output, dict) else ""
+            g_hint = (
+                _extract_g_hint(important_files_output)
+                if isinstance(important_files_output, dict)
+                else ""
+            )
             bundle = await self._retrieval.retrieve(
                 RetrieveRequest(
                     snapshot_id=snapshot_id,

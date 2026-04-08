@@ -1,4 +1,5 @@
 """Project identity agent (section A)."""
+
 from __future__ import annotations
 
 import asyncio
@@ -89,7 +90,8 @@ class ProjectIdentityAgent(BaseTypedAgent):
                 manifest_ctx = mem_ctx.manifest_files
                 folder_tree = mem_ctx.folder_tree
                 logger.info(
-                    "[ProjectIdentityAgent] using mem_ctx: doc_files=%d chars, manifest_files=%d chars, folder_tree=%d chars",
+                    "[ProjectIdentityAgent] using mem_ctx: doc_files=%d chars, "
+                    "manifest_files=%d chars, folder_tree=%d chars",
                     len(mem_ctx.doc_files),
                     len(mem_ctx.manifest_files),
                     len(mem_ctx.folder_tree),
@@ -103,7 +105,9 @@ class ProjectIdentityAgent(BaseTypedAgent):
             user_prompt_parts = [f"{hint}snapshot_id={snapshot_id}"]
             if folder_tree:
                 n_files = folder_tree.count("\n") + 1
-                user_prompt_parts.append(f"\n--- Repo file listing ({n_files} files) ---\n{folder_tree}")
+                user_prompt_parts.append(
+                    f"\n--- Repo file listing ({n_files} files) ---\n{folder_tree}"
+                )
             if doc_ctx:
                 user_prompt_parts.append(f"\n--- Documentation files (full content) ---\n{doc_ctx}")
             if manifest_ctx:
@@ -131,7 +135,9 @@ class ProjectIdentityAgent(BaseTypedAgent):
             data["confidence"] = _normalize_conf(str(data.get("confidence", "medium")))
             validate_section("A", data)
             ms = int((time.monotonic() - t0) * 1000)
-            logger.info("[ProjectIdentityAgent] %d chunks retrieved, completed in %dms", n_chunks, ms)
+            logger.info(
+                "[ProjectIdentityAgent] %d chunks retrieved, completed in %dms", n_chunks, ms
+            )
             return data
         except Exception as e:
             ms = int((time.monotonic() - t0) * 1000)

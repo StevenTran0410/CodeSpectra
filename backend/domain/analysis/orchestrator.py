@@ -1,4 +1,5 @@
 """Analysis orchestration — wires static analysis, graph summary, and agent pipeline."""
+
 from __future__ import annotations
 
 from typing import Any

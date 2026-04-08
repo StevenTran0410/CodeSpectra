@@ -1,4 +1,5 @@
 """Domain glossary agent (section I)."""
+
 from __future__ import annotations
 
 import time

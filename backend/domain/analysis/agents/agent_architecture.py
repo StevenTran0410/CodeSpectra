@@ -48,7 +48,7 @@ class ArchitectureAgent(BaseTypedAgent):
         snapshot_id: str,
         graph_summary: StructuralGraphSummary | None = None,
         arch_bundle: RetrievalBundle | None = None,
-        a_output: dict | None = None,
+        identity_output: dict | None = None,
     ) -> dict[str, Any]:
         t0 = time.monotonic()
         n_chunks = 0
@@ -79,7 +79,7 @@ class ArchitectureAgent(BaseTypedAgent):
                     )
                 )
             n_chunks = len(bundle.evidences)
-            identity_block = extract_a_identity_context(a_output)
+            identity_block = extract_a_identity_context(identity_output)
             prefix_parts = []
             if identity_block:
                 prefix_parts.append(identity_block)

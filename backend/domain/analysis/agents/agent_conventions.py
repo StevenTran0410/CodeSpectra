@@ -78,7 +78,7 @@ class ConventionsAgent(BaseTypedAgent):
         model_id: str,
         snapshot_id: str,
         static_convention: ConventionReport | None = None,
-        section_c_output: dict[str, Any] | None = None,
+        structure_output: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         t0 = time.monotonic()
         n_chunks = 0
@@ -87,15 +87,13 @@ class ConventionsAgent(BaseTypedAgent):
             conv = build_convention_block(static_convention)
             if conv:
                 prefix_parts.append(conv)
-            if section_c_output:
-                raw_folders = section_c_output.get("folders")
+            if structure_output:
+                raw_folders = structure_output.get("folders")
                 if isinstance(raw_folders, list) and raw_folders:
                     lines = ["Folder roles from structure agent:"]
                     for folder in raw_folders[:8]:
                         if isinstance(folder, dict):
-                            lines.append(
-                                f"  {folder.get('path', '')} → {folder.get('role', '')}"
-                            )
+                            lines.append(f"  {folder.get('path', '')} → {folder.get('role', '')}")
                     prefix_parts.append("\n".join(lines))
             prefix = "\n\n".join(prefix_parts) + ("\n\n" if prefix_parts else "")
 
@@ -109,9 +107,7 @@ class ConventionsAgent(BaseTypedAgent):
                 )
             )
             n_chunks = len(bundle.evidences)
-            user_prompt = (
-                f"{prefix}snapshot_id={snapshot_id}\n\nEvidence:\n{render_bundle(bundle)}"
-            )
+            user_prompt = f"{prefix}snapshot_id={snapshot_id}\n\nEvidence:\n{render_bundle(bundle)}"
             data = await self._chat_json_typed(
                 provider_id,
                 model_id,
@@ -139,9 +135,7 @@ class ConventionsAgent(BaseTypedAgent):
                         ev_str = ", ".join(str(x) for x in ev_files[:8] if x is not None)
                     elif i.get("evidence") is not None:
                         ev_str = str(i.get("evidence", "") or "")
-                    sigs.append(
-                        {"category": cat, "description": desc, "evidence": ev_str}
-                    )
+                    sigs.append({"category": cat, "description": desc, "evidence": ev_str})
             data["signals"] = sigs
             for key in ("evidence_files", "blind_spots"):
                 raw = data.get(key)
