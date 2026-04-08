@@ -32,7 +32,7 @@ _COMBINED_QUERY = (
 )
 
 
-class AgentE(BaseTypedAgent):
+class ViolationsAgent(BaseTypedAgent):
     def __init__(
         self,
         provider_service: ProviderConfigService,
@@ -57,7 +57,7 @@ class AgentE(BaseTypedAgent):
         snapshot_id: str,
         static_convention: ConventionReport | None = None,
         static_risk: RiskReport | None = None,
-        agent_d_output: dict[str, Any] | None = None,
+        conventions_output: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         t0 = time.monotonic()
         n_chunks = 0
@@ -69,7 +69,7 @@ class AgentE(BaseTypedAgent):
             rb = build_risk_block(static_risk, categories=["blast_radius", "anti_pattern"])
             if rb:
                 prefix_parts.append(rb)
-            dh = extract_d_hint_context(agent_d_output)
+            dh = extract_d_hint_context(conventions_output)
             if dh:
                 prefix_parts.append(dh)
             prefix = "\n\n".join(prefix_parts) + ("\n\n" if prefix_parts else "")
@@ -80,20 +80,18 @@ class AgentE(BaseTypedAgent):
                     query=_COMBINED_QUERY,
                     section=RetrievalSection.CONVENTIONS,
                     mode=RetrievalMode.HYBRID,
-                    max_results=20,
+                    max_results=30,
                 )
             )
             n_chunks = len(bundle.evidences)
-            user_prompt = (
-                f"{prefix}snapshot_id={snapshot_id}\n\nEvidence:\n{render_bundle(bundle)}"
-            )
+            user_prompt = f"{prefix}snapshot_id={snapshot_id}\n\nEvidence:\n{render_bundle(bundle)}"
             data = await self._chat_json_typed(
                 provider_id,
                 model_id,
                 AGENT_E_SYSTEM,
                 user_prompt,
                 schema_hint=AGENT_E_SCHEMA_STR,
-                max_completion_tokens=16000,
+                max_completion_tokens=2000,
             )
 
             raw_rules = data.get("rules")
@@ -111,9 +109,7 @@ class AgentE(BaseTypedAgent):
                         extra = ", ".join(str(x) for x in evf[:8] if x is not None)
                         if extra:
                             rationale = (
-                                f"{rationale} | files: {extra}"
-                                if rationale
-                                else f"files: {extra}"
+                                f"{rationale} | files: {extra}" if rationale else f"files: {extra}"
                             )
                     rules_out.append(
                         {
@@ -158,9 +154,9 @@ class AgentE(BaseTypedAgent):
             data["confidence"] = _normalize_conf(str(data.get("confidence", "medium")))
             validate_section("E", data)
             ms = int((time.monotonic() - t0) * 1000)
-            logger.info("[AgentE] %d chunks retrieved, completed in %dms", n_chunks, ms)
+            logger.info("[ViolationsAgent] %d chunks retrieved, completed in %dms", n_chunks, ms)
             return data
         except Exception as e:
             ms = int((time.monotonic() - t0) * 1000)
-            logger.warning("[AgentE] failed in %dms: %s", ms, e)
+            logger.warning("[ViolationsAgent] failed in %dms: %s", ms, e)
             return self._fallback(str(e))

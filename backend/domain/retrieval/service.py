@@ -29,11 +29,11 @@ _SECTION_BUDGETS: dict[RetrievalSection, int] = {
     # Modern LLMs: 128K-200K context; even local 8B models have 8K+.
     # Cursor sends 8K-20K code tokens per query — our old 2600 was severe under-use.
     # Budget here = tokens reserved for evidence only (system prompt + user preamble add ~800 on top).
-    RetrievalSection.ARCHITECTURE: 10_000,
-    RetrievalSection.CONVENTIONS: 7_000,
-    RetrievalSection.FEATURE_MAP: 10_000,
-    RetrievalSection.IMPORTANT_FILES: 8_000,
-    RetrievalSection.GLOSSARY: 5_000,
+    RetrievalSection.ARCHITECTURE: 14_000,
+    RetrievalSection.CONVENTIONS: 10_000,
+    RetrievalSection.FEATURE_MAP: 14_000,
+    RetrievalSection.IMPORTANT_FILES: 12_000,
+    RetrievalSection.GLOSSARY: 7_000,
 }
 
 _SECTION_CATEGORY_HINTS: dict[RetrievalSection, set[str]] = {

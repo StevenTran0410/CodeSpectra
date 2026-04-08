@@ -1,4 +1,5 @@
 """Risk and complexity agent (section J)."""
+
 from __future__ import annotations
 
 import time
@@ -16,7 +17,7 @@ from ..static_risk import RiskReport
 from .base import BaseTypedAgent
 
 
-class AgentJ(BaseTypedAgent):
+class RiskAgent(BaseTypedAgent):
     def __init__(
         self,
         provider_service: ProviderConfigService,
@@ -73,7 +74,7 @@ class AgentJ(BaseTypedAgent):
                     query="risk complexity large file deep nesting TODO FIXME hotspot",
                     section=RetrievalSection.IMPORTANT_FILES,
                     mode=RetrievalMode.HYBRID,
-                    max_results=20,
+                    max_results=30,
                 )
             )
             n_chunks = len(bundle.evidences)
@@ -87,7 +88,7 @@ class AgentJ(BaseTypedAgent):
                 AGENT_J_SYSTEM,
                 user_prompt,
                 AGENT_J_SCHEMA_STR,
-                max_completion_tokens=16000,
+                max_completion_tokens=3000,
             )
             raw_findings = data.get("findings")
             findings: list[dict[str, Any]] = []
@@ -118,9 +119,9 @@ class AgentJ(BaseTypedAgent):
             data["confidence"] = _normalize_conf(str(data.get("confidence", "medium")))
             validate_section("J", data)
             ms = int((time.monotonic() - t0) * 1000)
-            logger.info("[AgentJ] %d chunks retrieved, completed in %dms", n_chunks, ms)
+            logger.info("[RiskAgent] %d chunks retrieved, completed in %dms", n_chunks, ms)
             return data
         except Exception as e:
             ms = int((time.monotonic() - t0) * 1000)
-            logger.warning("[AgentJ] failed in %dms: %s", ms, e)
+            logger.warning("[RiskAgent] failed in %dms: %s", ms, e)
             return self._fallback(str(e), static_risk)

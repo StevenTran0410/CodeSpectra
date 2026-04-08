@@ -17,7 +17,7 @@ from .base import BaseTypedAgent
 
 def _build_agent_k_input(sections: dict[str, Any]) -> dict[str, Any]:
     """
-    Compress 10 section outputs into a bounded AgentK input.
+    Compress 10 section outputs into a bounded AuditAgent input.
 
     Per section extracts: confidence, blind_spots[:3], content_preview[:500].
     """
@@ -39,11 +39,11 @@ def _agent_k_fallback() -> dict[str, Any]:
         "weakest_sections": [],
         "coverage_percentage": 0.0,
         "notes": "Audit could not be completed.",
-        "blind_spots": ["AgentK failed"],
+        "blind_spots": ["AuditAgent failed"],
     }
 
 
-class AgentK(BaseTypedAgent):
+class AuditAgent(BaseTypedAgent):
     def __init__(self, provider_service: ProviderConfigService) -> None:
         super().__init__(provider_service)
 
@@ -88,5 +88,5 @@ class AgentK(BaseTypedAgent):
         ]
         validate_section("K", result)
         ms = int((time.monotonic() - t0) * 1000)
-        logger.info("[AgentK] completed in %dms", ms)
+        logger.info("[AuditAgent] completed in %dms", ms)
         return result

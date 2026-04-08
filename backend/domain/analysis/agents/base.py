@@ -1,4 +1,5 @@
 """Base agent with JSON chat path for typed section schemas (RPA-053)."""
+
 from __future__ import annotations
 
 import re
@@ -23,14 +24,25 @@ class BaseTypedAgent(BaseLLMAgent):
     def __init__(self, provider_service: ProviderConfigService) -> None:
         super().__init__(provider_service)
 
-    async def _call(self, provider_id, model_id, system_prompt, user_prompt,
-                    max_completion_tokens, temperature=0.2, json_mode=True):
+    async def _call(
+        self,
+        provider_id,
+        model_id,
+        system_prompt,
+        user_prompt,
+        max_completion_tokens,
+        temperature=0.2,
+        json_mode=True,
+    ):
         """Override to sanitize prompts before sending to LLM."""
         return await super()._call(
-            provider_id, model_id,
+            provider_id,
+            model_id,
             _sanitize(system_prompt),
             _sanitize(user_prompt),
-            max_completion_tokens, temperature, json_mode,
+            max_completion_tokens,
+            temperature,
+            json_mode,
         )
 
     async def _chat_json_typed(
@@ -63,25 +75,31 @@ class BaseTypedAgent(BaseLLMAgent):
         if not text.strip():
             # Model returned empty — retry with explicit JSON instruction, higher budget
             retry_system = (
-                system_prompt
-                + "\n\nCRITICAL: You MUST respond with a JSON object. "
+                system_prompt + "\n\nCRITICAL: You MUST respond with a JSON object. "
                 "Start your response with { and end with }. No prose."
             )
             text2 = await self._call(
-                provider_id, model_id, retry_system, user_prompt,
-                max_completion_tokens * 2, temperature=0.1,
+                provider_id,
+                model_id,
+                retry_system,
+                user_prompt,
+                max_completion_tokens * 2,
+                temperature=0.1,
             )
         else:
             # Model returned prose — ask it to extract fields from its own output
             text2 = await self._call(
-                provider_id, model_id, system_prompt,
+                provider_id,
+                model_id,
+                system_prompt,
                 (
                     "Extract the required JSON fields from your previous response.\n"
                     "Return ONLY valid JSON, no markdown fence, no commentary.\n"
                     f"Required schema:\n{schema_hint}\n\n"
                     f"Previous output:\n{text}"
                 ),
-                max_completion_tokens, temperature=None,
+                max_completion_tokens,
+                temperature=None,
             )
         try:
             obj2 = self._try_parse_json(text2)

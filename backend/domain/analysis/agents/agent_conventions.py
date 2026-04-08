@@ -48,7 +48,7 @@ def _coerce_aspect(raw: Any) -> dict[str, list[str] | str]:
     return {"description": str(raw), "evidence_files": []}
 
 
-class AgentD(BaseTypedAgent):
+class ConventionsAgent(BaseTypedAgent):
     def __init__(
         self,
         provider_service: ProviderConfigService,
@@ -78,7 +78,7 @@ class AgentD(BaseTypedAgent):
         model_id: str,
         snapshot_id: str,
         static_convention: ConventionReport | None = None,
-        section_c_output: dict[str, Any] | None = None,
+        structure_output: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         t0 = time.monotonic()
         n_chunks = 0
@@ -87,15 +87,13 @@ class AgentD(BaseTypedAgent):
             conv = build_convention_block(static_convention)
             if conv:
                 prefix_parts.append(conv)
-            if section_c_output:
-                raw_folders = section_c_output.get("folders")
+            if structure_output:
+                raw_folders = structure_output.get("folders")
                 if isinstance(raw_folders, list) and raw_folders:
                     lines = ["Folder roles from structure agent:"]
                     for folder in raw_folders[:8]:
                         if isinstance(folder, dict):
-                            lines.append(
-                                f"  {folder.get('path', '')} → {folder.get('role', '')}"
-                            )
+                            lines.append(f"  {folder.get('path', '')} → {folder.get('role', '')}")
                     prefix_parts.append("\n".join(lines))
             prefix = "\n\n".join(prefix_parts) + ("\n\n" if prefix_parts else "")
 
@@ -105,20 +103,18 @@ class AgentD(BaseTypedAgent):
                     query=_COMBINED_QUERY,
                     section=RetrievalSection.CONVENTIONS,
                     mode=RetrievalMode.HYBRID,
-                    max_results=20,
+                    max_results=30,
                 )
             )
             n_chunks = len(bundle.evidences)
-            user_prompt = (
-                f"{prefix}snapshot_id={snapshot_id}\n\nEvidence:\n{render_bundle(bundle)}"
-            )
+            user_prompt = f"{prefix}snapshot_id={snapshot_id}\n\nEvidence:\n{render_bundle(bundle)}"
             data = await self._chat_json_typed(
                 provider_id,
                 model_id,
                 AGENT_D_SYSTEM,
                 user_prompt,
                 schema_hint=AGENT_D_SCHEMA_STR,
-                max_completion_tokens=16000,
+                max_completion_tokens=3000,
             )
             for k in _ASPECT_KEYS:
                 data[k] = _coerce_aspect(data.get(k))
@@ -139,9 +135,7 @@ class AgentD(BaseTypedAgent):
                         ev_str = ", ".join(str(x) for x in ev_files[:8] if x is not None)
                     elif i.get("evidence") is not None:
                         ev_str = str(i.get("evidence", "") or "")
-                    sigs.append(
-                        {"category": cat, "description": desc, "evidence": ev_str}
-                    )
+                    sigs.append({"category": cat, "description": desc, "evidence": ev_str})
             data["signals"] = sigs
             for key in ("evidence_files", "blind_spots"):
                 raw = data.get(key)
@@ -152,9 +146,9 @@ class AgentD(BaseTypedAgent):
             data["confidence"] = _normalize_conf(str(data.get("confidence", "medium")))
             validate_section("D", data)
             ms = int((time.monotonic() - t0) * 1000)
-            logger.info("[AgentD] %d chunks retrieved, completed in %dms", n_chunks, ms)
+            logger.info("[ConventionsAgent] %d chunks retrieved, completed in %dms", n_chunks, ms)
             return data
         except Exception as e:
             ms = int((time.monotonic() - t0) * 1000)
-            logger.warning("[AgentD] failed in %dms: %s", ms, e)
+            logger.warning("[ConventionsAgent] failed in %dms: %s", ms, e)
             return self._fallback(str(e))

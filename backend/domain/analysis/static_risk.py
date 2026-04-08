@@ -7,6 +7,7 @@ Performance hotspots are accelerated via the native C++ graph module
 (domain.structural_graph._native_graph) when available.
 Python fallbacks are always present so the app runs without the native build.
 """
+
 from __future__ import annotations
 
 import importlib
@@ -20,6 +21,7 @@ import aiosqlite
 
 from shared.logger import logger
 
+
 # ── native module (optional, built by scripts/build_native_graph.py) ──────────
 def _try_native():
     try:
@@ -27,23 +29,24 @@ def _try_native():
     except Exception:
         return None
 
+
 _native = _try_native()
 
 # ── tunables ──────────────────────────────────────────────────────────────────
-_GOD_OBJECT_LINE_THRESHOLD = 300   # estimated lines (size_bytes / 40)
+_GOD_OBJECT_LINE_THRESHOLD = 300  # estimated lines (size_bytes / 40)
 _GOD_OBJECT_SYMBOL_THRESHOLD = 25  # symbols per file
-_SCC_HIGH_MIN = 3                  # SCC size for "high" severity circular import
+_SCC_HIGH_MIN = 3  # SCC size for "high" severity circular import
 _TODO_PATTERN = re.compile(r"\b(TODO|FIXME|HACK|XXX|NOSONAR)\b")
-_TODO_MODULE_HIGH = 8              # annotations per module → high
-_TODO_MODULE_MED = 3               # annotations per module → medium
+_TODO_MODULE_HIGH = 8  # annotations per module → high
+_TODO_MODULE_MED = 3  # annotations per module → medium
 _TEST_DIR_PATTERN = re.compile(r"(^|/)tests?(/|$)", re.IGNORECASE)
 _TEST_FILE_SUFFIX = re.compile(r"(test_|_test|\.test\.|\.spec\.)", re.IGNORECASE)
 
 
 @dataclass
 class RiskFinding:
-    category: str        # god_object|circular_import|todo_hotspot|test_gap|blast_radius|config_risk
-    severity: str        # high|medium|low
+    category: str  # god_object|circular_import|todo_hotspot|test_gap|blast_radius|config_risk
+    severity: str  # high|medium|low
     title: str
     rationale: str
     evidence: list[str] = field(default_factory=list)
@@ -62,9 +65,7 @@ class RiskReport:
         for f in self.findings:
             ev = ", ".join(f.evidence[:3]) or "n/a"
             lines.append(
-                f"[{f.severity.upper()}][{f.category}] {f.title}\n"
-                f"  {f.rationale}\n"
-                f"  evidence: {ev}"
+                f"[{f.severity.upper()}][{f.category}] {f.title}\n  {f.rationale}\n  evidence: {ev}"
             )
         return "\n".join(lines)
 
@@ -85,6 +86,7 @@ class RiskReport:
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
+
 
 def _module(rel_path: str) -> str:
     parts = PurePosixPath(rel_path.replace("\\", "/")).parts
@@ -163,9 +165,8 @@ def _compute_scc(edge_tuples: list[tuple[str, str]]) -> list[list[str]]:
 
 # ── detectors ─────────────────────────────────────────────────────────────────
 
-async def detect_god_objects(
-    snapshot_id: str, db: aiosqlite.Connection
-) -> list[RiskFinding]:
+
+async def detect_god_objects(snapshot_id: str, db: aiosqlite.Connection) -> list[RiskFinding]:
     # file size → estimated lines
     async with db.execute(
         "SELECT rel_path, size_bytes FROM manifest_files WHERE snapshot_id=?",
@@ -188,24 +189,26 @@ async def detect_god_objects(
         sym_cnt = sym_counts.get(rel_path, 0)
         if est_lines >= _GOD_OBJECT_LINE_THRESHOLD and sym_cnt >= _GOD_OBJECT_SYMBOL_THRESHOLD:
             severity = "high" if est_lines >= 600 or sym_cnt >= 50 else "medium"
-            findings.append(RiskFinding(
-                category="god_object",
-                severity=severity,
-                title=f"Oversized file: {rel_path}",
-                rationale=(
-                    f"~{est_lines} estimated lines, {sym_cnt} symbols. "
-                    "Likely does too much — high maintenance and change risk."
-                ),
-                evidence=[rel_path],
-                details={"estimated_lines": est_lines, "symbol_count": sym_cnt},
-            ))
-    findings.sort(key=lambda f: (0 if f.severity == "high" else 1, -f.details.get("estimated_lines", 0)))
+            findings.append(
+                RiskFinding(
+                    category="god_object",
+                    severity=severity,
+                    title=f"Oversized file: {rel_path}",
+                    rationale=(
+                        f"~{est_lines} estimated lines, {sym_cnt} symbols. "
+                        "Likely does too much — high maintenance and change risk."
+                    ),
+                    evidence=[rel_path],
+                    details={"estimated_lines": est_lines, "symbol_count": sym_cnt},
+                )
+            )
+    findings.sort(
+        key=lambda f: (0 if f.severity == "high" else 1, -f.details.get("estimated_lines", 0))
+    )
     return findings[:10]
 
 
-async def detect_circular_imports(
-    snapshot_id: str, db: aiosqlite.Connection
-) -> list[RiskFinding]:
+async def detect_circular_imports(snapshot_id: str, db: aiosqlite.Connection) -> list[RiskFinding]:
     async with db.execute(
         "SELECT src_path, dst_path FROM structural_graph_edges "
         "WHERE snapshot_id=? AND is_external=0",
@@ -227,27 +230,27 @@ async def detect_circular_imports(
     for scc in sorted(sccs, key=lambda s: -len(s))[:8]:
         severity = "high" if len(scc) >= _SCC_HIGH_MIN else "medium"
         files_short = scc[:5]
-        findings.append(RiskFinding(
-            category="circular_import",
-            severity=severity,
-            title=f"Circular import cycle ({len(scc)} files)",
-            rationale=(
-                f"Strongly-connected component of {len(scc)} files detected. "
-                "Increases build/test fragility and complicates refactoring. "
-                "(Confidence: approximate — dynamic imports not captured.)"
-            ),
-            evidence=files_short,
-            details={"cycle_size": len(scc), "files": scc[:8]},
-        ))
+        findings.append(
+            RiskFinding(
+                category="circular_import",
+                severity=severity,
+                title=f"Circular import cycle ({len(scc)} files)",
+                rationale=(
+                    f"Strongly-connected component of {len(scc)} files detected. "
+                    "Increases build/test fragility and complicates refactoring. "
+                    "(Confidence: approximate — dynamic imports not captured.)"
+                ),
+                evidence=files_short,
+                details={"cycle_size": len(scc), "files": scc[:8]},
+            )
+        )
     return findings
 
 
 _TODO_KEYWORDS = ["TODO", "FIXME", "HACK", "XXX", "NOSONAR"]
 
 
-async def detect_todo_hotspots(
-    snapshot_id: str, db: aiosqlite.Connection
-) -> list[RiskFinding]:
+async def detect_todo_hotspots(snapshot_id: str, db: aiosqlite.Connection) -> list[RiskFinding]:
     async with db.execute(
         "SELECT rel_path, content FROM retrieval_chunks WHERE snapshot_id=?",
         (snapshot_id,),
@@ -287,19 +290,32 @@ async def detect_todo_hotspots(
     for mod, count in sorted(module_counts.items(), key=lambda x: -x[1]):
         if count < _TODO_MODULE_MED:
             continue
-        severity = "high" if count >= _TODO_MODULE_HIGH else "medium" if count >= _TODO_MODULE_MED else "low"
+        severity = (
+            "high"
+            if count >= _TODO_MODULE_HIGH
+            else "medium"
+            if count >= _TODO_MODULE_MED
+            else "low"
+        )
         evidence = sorted(module_files[mod])[:5]
-        findings.append(RiskFinding(
-            category="todo_hotspot",
-            severity=severity,
-            title=f"TODO/FIXME hotspot: {mod}/ ({count} annotations)",
-            rationale=(
-                f"Module '{mod}' has {count} TODO/FIXME/HACK annotations across "
-                f"{len(module_files[mod])} files. Signals deferred work and potential instability."
-            ),
-            evidence=evidence,
-            details={"module": mod, "annotation_count": count, "file_count": len(module_files[mod])},
-        ))
+        findings.append(
+            RiskFinding(
+                category="todo_hotspot",
+                severity=severity,
+                title=f"TODO/FIXME hotspot: {mod}/ ({count} annotations)",
+                rationale=(
+                    f"Module '{mod}' has {count} TODO/FIXME/HACK annotations across "
+                    f"{len(module_files[mod])} files. "
+                    "Signals deferred work and potential instability."
+                ),
+                evidence=evidence,
+                details={
+                    "module": mod,
+                    "annotation_count": count,
+                    "file_count": len(module_files[mod]),
+                },
+            )
+        )
     return findings[:8]
 
 
@@ -343,33 +359,45 @@ async def detect_test_coverage_shape(
             continue
         if mod not in modules_with_tests:
             severity = "high" if len(src_files) >= 10 else "medium"
-            findings.append(RiskFinding(
-                category="test_gap",
-                severity=severity,
-                title=f"No test coverage: {mod}/ ({len(src_files)} source files)",
-                rationale=f"Module '{mod}' has {len(src_files)} source files but zero test files found.",
-                evidence=src_files[:4],
-                details={"module": mod, "source_file_count": len(src_files)},
-            ))
+            findings.append(
+                RiskFinding(
+                    category="test_gap",
+                    severity=severity,
+                    title=f"No test coverage: {mod}/ ({len(src_files)} source files)",
+                    rationale=(
+                        f"Module '{mod}' has {len(src_files)} source files "
+                        "but zero test files found."
+                    ),
+                    evidence=src_files[:4],
+                    details={"module": mod, "source_file_count": len(src_files)},
+                )
+            )
 
     # Overall ratio warning
     if overall_ratio < 0.15 and total_source >= 10:
-        findings.append(RiskFinding(
-            category="test_gap",
-            severity="medium",
-            title=f"Low overall test ratio ({total_test}/{total_source} = {overall_ratio:.0%})",
-            rationale="Less than 15% of source files have corresponding test files (structural estimate).",
-            evidence=[],
-            details={"test_files": total_test, "source_files": total_source, "ratio": round(overall_ratio, 3)},
-        ))
+        findings.append(
+            RiskFinding(
+                category="test_gap",
+                severity="medium",
+                title=f"Low overall test ratio ({total_test}/{total_source} = {overall_ratio:.0%})",
+                rationale=(
+                    "Less than 15% of source files have corresponding test files "
+                    "(structural estimate)."
+                ),
+                evidence=[],
+                details={
+                    "test_files": total_test,
+                    "source_files": total_source,
+                    "ratio": round(overall_ratio, 3),
+                },
+            )
+        )
 
-    findings.sort(key=lambda f: (0 if f.severity == "high" else 1 if f.severity == "medium" else 2))
+    findings.sort(key=lambda f: 0 if f.severity == "high" else 1 if f.severity == "medium" else 2)
     return findings[:8]
 
 
-async def detect_blast_radius(
-    snapshot_id: str, db: aiosqlite.Connection
-) -> list[RiskFinding]:
+async def detect_blast_radius(snapshot_id: str, db: aiosqlite.Connection) -> list[RiskFinding]:
     async with db.execute(
         "SELECT top_central_files FROM structural_graph_summaries WHERE snapshot_id=?",
         (snapshot_id,),
@@ -398,18 +426,20 @@ async def detect_blast_radius(
     if not file_list:
         return []
 
-    return [RiskFinding(
-        category="blast_radius",
-        severity="medium",
-        title=f"High blast-radius files ({len(file_list)} identified)",
-        rationale=(
-            "These files appear in many import paths. "
-            "Changes here ripple across the most of the codebase — "
-            "should be touched carefully and tested thoroughly."
-        ),
-        evidence=file_list[:8],
-        details={"files": file_list[:10]},
-    )]
+    return [
+        RiskFinding(
+            category="blast_radius",
+            severity="medium",
+            title=f"High blast-radius files ({len(file_list)} identified)",
+            rationale=(
+                "These files appear in many import paths. "
+                "Changes here ripple across the most of the codebase — "
+                "should be touched carefully and tested thoroughly."
+            ),
+            evidence=file_list[:8],
+            details={"files": file_list[:10]},
+        )
+    ]
 
 
 _ENV_KEYWORDS = ["os.environ", "process.env", "getenv", "dotenv", ".env"]
@@ -420,9 +450,7 @@ _HARDCODE_PATTERN = re.compile(
 )
 
 
-async def detect_config_env_risk(
-    snapshot_id: str, db: aiosqlite.Connection
-) -> list[RiskFinding]:
+async def detect_config_env_risk(snapshot_id: str, db: aiosqlite.Connection) -> list[RiskFinding]:
     """Detect env-var spread and potential hardcoded secrets heuristics."""
     async with db.execute(
         "SELECT rel_path, content FROM retrieval_chunks WHERE snapshot_id=?",
@@ -437,7 +465,7 @@ async def detect_config_env_risk(
         try:
             chunk_tuples = [(r["rel_path"], r["content"] or "") for r in rows]
             # Env keyword scan via C++
-            hits = _native.scan_keywords_bulk(chunk_tuples, [kw.upper() for kw in _ENV_KEYWORDS])
+            _ = _native.scan_keywords_bulk(chunk_tuples, [kw.upper() for kw in _ENV_KEYWORDS])
             # Uppercase env keywords won't match — fall through to Python for env
             # (env keywords are mixed-case; use Python regex for env, C++ for TODO only)
         except Exception:
@@ -453,35 +481,41 @@ async def detect_config_env_risk(
     findings: list[RiskFinding] = []
 
     if len(env_files) >= 8:
-        findings.append(RiskFinding(
-            category="config_risk",
-            severity="medium",
-            title=f"Env var references spread across {len(env_files)} files",
-            rationale=(
-                "Configuration is read from many locations rather than a single config layer. "
-                "Makes deployment and environment changes risky."
-            ),
-            evidence=sorted(env_files)[:6],
-            details={"env_ref_count": len(env_files)},
-        ))
+        findings.append(
+            RiskFinding(
+                category="config_risk",
+                severity="medium",
+                title=f"Env var references spread across {len(env_files)} files",
+                rationale=(
+                    "Configuration is read from many locations rather than a single config layer. "
+                    "Makes deployment and environment changes risky."
+                ),
+                evidence=sorted(env_files)[:6],
+                details={"env_ref_count": len(env_files)},
+            )
+        )
 
     if hardcode_files:
-        findings.append(RiskFinding(
-            category="config_risk",
-            severity="high",
-            title=f"Possible hardcoded secrets in {len(hardcode_files)} file(s)",
-            rationale=(
-                "Heuristic pattern matched credential-like assignments. "
-                "Verify these are not real secrets committed to source. (Confidence: low — may be test fixtures.)"
-            ),
-            evidence=sorted(hardcode_files)[:5],
-            details={"suspicious_files": len(hardcode_files)},
-        ))
+        findings.append(
+            RiskFinding(
+                category="config_risk",
+                severity="high",
+                title=f"Possible hardcoded secrets in {len(hardcode_files)} file(s)",
+                rationale=(
+                    "Heuristic pattern matched credential-like assignments. "
+                    "Verify these are not real secrets committed to source. "
+                    "(Confidence: low — may be test fixtures.)"
+                ),
+                evidence=sorted(hardcode_files)[:5],
+                details={"suspicious_files": len(hardcode_files)},
+            )
+        )
 
     return findings
 
 
 # ── entry point ───────────────────────────────────────────────────────────────
+
 
 async def run_risk_analysis(snapshot_id: str, db: aiosqlite.Connection) -> RiskReport:
     """Run all static risk detectors and return a consolidated RiskReport."""

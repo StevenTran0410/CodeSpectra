@@ -14,6 +14,7 @@ from shared.logger import logger
 from ..agent_pipeline import _normalize_conf
 from ..prompts import AGENT_F_SCHEMA_STR, AGENT_F_SYSTEM, render_bundle
 from ..schemas import validate_section
+from ._context_builders import extract_a_identity_context, extract_b_arch_context
 from .base import BaseTypedAgent
 
 _COMBINED_QUERY = (
@@ -23,7 +24,7 @@ _COMBINED_QUERY = (
 )
 
 
-class AgentF(BaseTypedAgent):
+class FeatureMapAgent(BaseTypedAgent):
     def __init__(
         self,
         provider_service: ProviderConfigService,
@@ -46,6 +47,8 @@ class AgentF(BaseTypedAgent):
         model_id: str,
         snapshot_id: str,
         graph_summary: StructuralGraphSummary | None = None,
+        identity_output: dict | None = None,
+        architecture_output: dict | None = None,
     ) -> dict[str, Any]:
         t0 = time.monotonic()
         n_chunks = 0
@@ -54,11 +57,18 @@ class AgentF(BaseTypedAgent):
             if graph_summary and graph_summary.top_central_files:
                 lines = ["Graph centrality (top files by import score):"]
                 for n in graph_summary.top_central_files[:10]:
-                    lines.append(
-                        f"  {n.rel_path} (score={n.score}, indegree={n.indegree})"
-                    )
+                    lines.append(f"  {n.rel_path} (score={n.score}, indegree={n.indegree})")
                 graph_block = "\n".join(lines)
-            prefix = f"{graph_block}\n\n" if graph_block else ""
+            identity_block = extract_a_identity_context(identity_output)
+            arch_block = extract_b_arch_context(architecture_output)
+            prefix_parts = []
+            if identity_block:
+                prefix_parts.append(identity_block)
+            if arch_block:
+                prefix_parts.append(arch_block)
+            if graph_block:
+                prefix_parts.append(graph_block)
+            prefix = "\n\n".join(prefix_parts) + ("\n\n" if prefix_parts else "")
 
             bundle = await self._retrieval.retrieve(
                 RetrieveRequest(
@@ -66,20 +76,18 @@ class AgentF(BaseTypedAgent):
                     query=_COMBINED_QUERY,
                     section=RetrievalSection.FEATURE_MAP,
                     mode=RetrievalMode.HYBRID,
-                    max_results=20,
+                    max_results=30,
                 )
             )
             n_chunks = len(bundle.evidences)
-            user_prompt = (
-                f"{prefix}snapshot_id={snapshot_id}\n\nEvidence:\n{render_bundle(bundle)}"
-            )
+            user_prompt = f"{prefix}snapshot_id={snapshot_id}\n\nEvidence:\n{render_bundle(bundle)}"
             data = await self._chat_json_typed(
                 provider_id,
                 model_id,
                 AGENT_F_SYSTEM,
                 user_prompt,
                 schema_hint=AGENT_F_SCHEMA_STR,
-                max_completion_tokens=16000,
+                max_completion_tokens=5000,
             )
 
             raw_feat = data.get("features")
@@ -125,9 +133,9 @@ class AgentF(BaseTypedAgent):
             data["confidence"] = _normalize_conf(str(data.get("confidence", "medium")))
             validate_section("F", data)
             ms = int((time.monotonic() - t0) * 1000)
-            logger.info("[AgentF] %d chunks retrieved, completed in %dms", n_chunks, ms)
+            logger.info("[FeatureMapAgent] %d chunks retrieved, completed in %dms", n_chunks, ms)
             return data
         except Exception as e:
             ms = int((time.monotonic() - t0) * 1000)
-            logger.warning("[AgentF] failed in %dms: %s", ms, e)
+            logger.warning("[FeatureMapAgent] failed in %dms: %s", ms, e)
             return self._fallback(str(e))

@@ -15,10 +15,10 @@ RESPONSE FORMAT — MANDATORY:
 - Never invent file paths not present in the evidence."""
 
 
-def render_bundle(bundle: RetrievalBundle, limit: int = 28, excerpt_chars: int = 1500) -> str:
+def render_bundle(bundle: RetrievalBundle, limit: int = 40, excerpt_chars: int = 2000) -> str:
     """Render retrieval bundle as LLM context.
 
-    limit: max evidence items to include (default 28).
+    limit: max evidence items to include (default 40).
     excerpt_chars: max chars per chunk. boundary-expanded chunks get 2× room.
     """
     parts: list[str] = []

@@ -1,4 +1,5 @@
 """Analysis runtime service (RPA-035)."""
+
 from __future__ import annotations
 
 import asyncio
@@ -61,7 +62,8 @@ def _section_footer(s: dict, lines: list[str]) -> None:
 
 def _render_section_a(s: dict, lines: list[str]) -> None:
     lines += [
-        "## A — Project Identity Card", "",
+        "## A — Project Identity Card",
+        "",
         f"**Repo:** {s.get('repo_name', '')}  ",
         f"**Domain:** {s.get('domain', '')}  ",
         f"**Runtime type:** `{s.get('runtime_type', '')}`  ",
@@ -80,8 +82,14 @@ def _render_section_a(s: dict, lines: list[str]) -> None:
 
 def _render_section_g(s: dict, lines: list[str]) -> None:
     lines += ["## G — Important Files Radar", ""]
-    slots = ["entrypoint", "backbone", "critical_config", "highest_centrality",
-             "most_dangerous_to_touch", "read_first"]
+    slots = [
+        "entrypoint",
+        "backbone",
+        "critical_config",
+        "highest_centrality",
+        "most_dangerous_to_touch",
+        "read_first",
+    ]
     labels = {
         "entrypoint": "Entrypoint",
         "backbone": "Backbone",

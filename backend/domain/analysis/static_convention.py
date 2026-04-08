@@ -3,6 +3,7 @@
 Queries the DB (code_symbols, manifest_files) and returns serialisable dataclasses
 that are fed as pre-computed context to ConventionIntelligenceAgent.
 """
+
 from __future__ import annotations
 
 import re
@@ -17,10 +18,25 @@ from shared.logger import logger
 # ── known patterns ────────────────────────────────────────────────────────────
 
 _CLASS_SUFFIXES = [
-    "Service", "Controller", "Repository", "Handler", "Manager",
-    "Factory", "Builder", "Provider", "Middleware", "Adapter",
-    "Decorator", "Observer", "Strategy", "Validator", "Serializer",
-    "Util", "Utils", "Helper", "Mixin",
+    "Service",
+    "Controller",
+    "Repository",
+    "Handler",
+    "Manager",
+    "Factory",
+    "Builder",
+    "Provider",
+    "Middleware",
+    "Adapter",
+    "Decorator",
+    "Observer",
+    "Strategy",
+    "Validator",
+    "Serializer",
+    "Util",
+    "Utils",
+    "Helper",
+    "Mixin",
 ]
 
 _FOLDER_ROLES: dict[str, str] = {
@@ -56,10 +72,10 @@ _TEST_DIR = re.compile(r"(^|/)tests?(/|$)", re.IGNORECASE)
 
 @dataclass
 class ConventionSignal:
-    signal: str          # naming_suffix|naming_style|folder_role|style_signal|anti_pattern
+    signal: str  # naming_suffix|naming_style|folder_role|style_signal|anti_pattern
     title: str
     description: str
-    confidence: str      # high|medium|low
+    confidence: str  # high|medium|low
     evidence: list[str] = field(default_factory=list)
     details: dict = field(default_factory=dict)
 
@@ -99,6 +115,7 @@ class ConventionReport:
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
+
 def _detect_naming_style(names: list[str]) -> str | None:
     camel = sum(1 for n in names if _CAMEL_RE.match(n))
     pascal = sum(1 for n in names if _PASCAL_RE.match(n))
@@ -121,6 +138,7 @@ def _is_test_file(rel_path: str) -> bool:
 
 
 # ── miners ────────────────────────────────────────────────────────────────────
+
 
 async def mine_naming_conventions(
     snapshot_id: str, db: aiosqlite.Connection
@@ -145,31 +163,36 @@ async def mine_naming_conventions(
     dominant_suffixes = [(s, c) for s, c in suffix_counts.most_common(5) if c >= 2]
     if dominant_suffixes:
         desc_parts = [f"{s} ({c}×)" for s, c in dominant_suffixes[:3]]
-        signals.append(ConventionSignal(
-            signal="naming_suffix",
-            title="Class naming suffix conventions observed",
-            description=f"Dominant class suffixes: {', '.join(desc_parts)}. "
-                        f"These are the team's architectural role markers.",
-            confidence="high" if dominant_suffixes[0][1] >= 5 else "medium",
-            evidence=[],
-            details={"dominant_suffixes": [s for s, _ in dominant_suffixes]},
-        ))
+        signals.append(
+            ConventionSignal(
+                signal="naming_suffix",
+                title="Class naming suffix conventions observed",
+                description=f"Dominant class suffixes: {', '.join(desc_parts)}. "
+                f"These are the team's architectural role markers.",
+                confidence="high" if dominant_suffixes[0][1] >= 5 else "medium",
+                evidence=[],
+                details={"dominant_suffixes": [s for s, _ in dominant_suffixes]},
+            )
+        )
 
     # --- function naming style ---
     func_names = [
-        r["name"] for r in symbols
+        r["name"]
+        for r in symbols
         if r["kind"] in ("function", "method") and not r["name"].startswith("_")
     ]
     func_style = _detect_naming_style(func_names[:300])
     if func_style:
-        signals.append(ConventionSignal(
-            signal="naming_style",
-            title=f"Function naming: {func_style}",
-            description=f"Function/method names predominantly use {func_style} style.",
-            confidence="high" if len(func_names) >= 20 else "medium",
-            evidence=[],
-            details={"style": func_style, "sample_size": len(func_names)},
-        ))
+        signals.append(
+            ConventionSignal(
+                signal="naming_style",
+                title=f"Function naming: {func_style}",
+                description=f"Function/method names predominantly use {func_style} style.",
+                confidence="high" if len(func_names) >= 20 else "medium",
+                evidence=[],
+                details={"style": func_style, "sample_size": len(func_names)},
+            )
+        )
 
     # --- file naming patterns ---
     async with db.execute(
@@ -178,24 +201,26 @@ async def mine_naming_conventions(
     ) as cur:
         src_files = [r["rel_path"] for r in await cur.fetchall()]
 
-    file_names = [PurePosixPath(f.replace("\\", "/")).stem for f in src_files if not _is_test_file(f)]
+    file_names = [
+        PurePosixPath(f.replace("\\", "/")).stem for f in src_files if not _is_test_file(f)
+    ]
     file_style = _detect_naming_style(file_names[:300])
     if file_style:
-        signals.append(ConventionSignal(
-            signal="naming_style",
-            title=f"File naming: {file_style}",
-            description=f"Source file names predominantly use {file_style} style.",
-            confidence="medium",
-            evidence=[],
-            details={"style": file_style, "sample_size": len(file_names)},
-        ))
+        signals.append(
+            ConventionSignal(
+                signal="naming_style",
+                title=f"File naming: {file_style}",
+                description=f"Source file names predominantly use {file_style} style.",
+                confidence="medium",
+                evidence=[],
+                details={"style": file_style, "sample_size": len(file_names)},
+            )
+        )
 
     return signals
 
 
-async def mine_folder_roles(
-    snapshot_id: str, db: aiosqlite.Connection
-) -> list[ConventionSignal]:
+async def mine_folder_roles(snapshot_id: str, db: aiosqlite.Connection) -> list[ConventionSignal]:
     async with db.execute(
         "SELECT rel_path FROM manifest_files WHERE snapshot_id=? AND category='source'",
         (snapshot_id,),
@@ -214,15 +239,17 @@ async def mine_folder_roles(
     for folder_label, files in sorted(folder_files.items(), key=lambda x: -len(x[1])):
         if len(files) < 2:
             continue
-        signals.append(ConventionSignal(
-            signal="folder_role",
-            title=f"Folder-role pattern: {folder_label}",
-            description=f"{len(files)} source files under this role folder. "
-                        f"The team uses folder-based architectural separation.",
-            confidence="high" if len(files) >= 5 else "medium",
-            evidence=files[:4],
-            details={"file_count": len(files)},
-        ))
+        signals.append(
+            ConventionSignal(
+                signal="folder_role",
+                title=f"Folder-role pattern: {folder_label}",
+                description=f"{len(files)} source files under this role folder. "
+                f"The team uses folder-based architectural separation.",
+                confidence="high" if len(files) >= 5 else "medium",
+                evidence=files[:4],
+                details={"file_count": len(files)},
+            )
+        )
 
     return signals[:6]
 
@@ -262,21 +289,29 @@ async def mine_class_function_ratio(
             ratio = classes / total
             if ratio > 0.4:
                 style = "class-heavy OOP"
-                desc = f"{lang}: {classes} classes vs {functions} functions ({ratio:.0%} class ratio) — OOP style."
+                desc = (
+                    f"{lang}: {classes} classes vs {functions} functions "
+                    f"({ratio:.0%} class ratio) — OOP style."
+                )
             elif ratio < 0.1:
                 style = "functional / procedural"
-                desc = f"{lang}: {classes} classes vs {functions} functions ({ratio:.0%} class ratio) — functional style."
+                desc = (
+                    f"{lang}: {classes} classes vs {functions} functions "
+                    f"({ratio:.0%} class ratio) — functional style."
+                )
             else:
                 continue  # mixed, not interesting
 
-        signals.append(ConventionSignal(
-            signal="style_signal",
-            title=f"{lang.capitalize()}: {style}",
-            description=desc,
-            confidence="medium",
-            evidence=[],
-            details={"language": lang, "classes": classes, "functions": functions},
-        ))
+        signals.append(
+            ConventionSignal(
+                signal="style_signal",
+                title=f"{lang.capitalize()}: {style}",
+                description=desc,
+                confidence="medium",
+                evidence=[],
+                details={"language": lang, "classes": classes, "functions": functions},
+            )
+        )
 
     return signals[:4]
 
@@ -313,27 +348,29 @@ async def detect_import_boundary_violations(
         return []
 
     ev_files = list({v[0] for v in violations[:10]})
-    return [ConventionSignal(
-        signal="anti_pattern",
-        title=f"Import boundary violations ({len(violations)} detected)",
-        description=(
-            f"Files in lower-level layers import from higher-level layers. "
-            f"Example: {violations[0][0]} → {violations[0][1]}. "
-            f"This couples layers that should be unidirectional."
-        ),
-        confidence="medium",
-        evidence=ev_files[:5],
-        details={"violation_count": len(violations), "examples": [
-            {"from": v[0], "to": v[1]} for v in violations[:5]
-        ]},
-    )]
+    return [
+        ConventionSignal(
+            signal="anti_pattern",
+            title=f"Import boundary violations ({len(violations)} detected)",
+            description=(
+                f"Files in lower-level layers import from higher-level layers. "
+                f"Example: {violations[0][0]} → {violations[0][1]}. "
+                f"This couples layers that should be unidirectional."
+            ),
+            confidence="medium",
+            evidence=ev_files[:5],
+            details={
+                "violation_count": len(violations),
+                "examples": [{"from": v[0], "to": v[1]} for v in violations[:5]],
+            },
+        )
+    ]
 
 
 # ── entry point ───────────────────────────────────────────────────────────────
 
-async def run_convention_analysis(
-    snapshot_id: str, db: aiosqlite.Connection
-) -> ConventionReport:
+
+async def run_convention_analysis(snapshot_id: str, db: aiosqlite.Connection) -> ConventionReport:
     """Run all convention miners and return a ConventionReport."""
     signals: list[ConventionSignal] = []
     miners = [

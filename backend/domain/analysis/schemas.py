@@ -1,4 +1,5 @@
 """Typed section contracts for analysis report (RPA-053)."""
+
 from __future__ import annotations
 
 from typing import Any, TypedDict

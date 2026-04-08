@@ -25,7 +25,7 @@ _G_SLOT_KEYS = (
 )
 
 
-def _extract_g_hint(section_g_output: dict[str, Any]) -> str:
+def _extract_g_hint(important_files_output: dict[str, Any]) -> str:
     entries: list[str] = []
     seen: set[str] = set()
 
@@ -42,10 +42,10 @@ def _extract_g_hint(section_g_output: dict[str, Any]) -> str:
         entries.append(f"- {f} ({r[:80]})")
 
     for key in _G_SLOT_KEYS:
-        slot = section_g_output.get(key)
+        slot = important_files_output.get(key)
         if isinstance(slot, dict):
             push(str(slot.get("file", "")), str(slot.get("reason", "")))
-    oi = section_g_output.get("other_important")
+    oi = important_files_output.get("other_important")
     if isinstance(oi, list):
         for item in oi:
             if isinstance(item, dict):
@@ -56,7 +56,7 @@ def _extract_g_hint(section_g_output: dict[str, Any]) -> str:
     return header + "\n".join(entries[:5])
 
 
-class AgentH(BaseTypedAgent):
+class OnboardingAgent(BaseTypedAgent):
     def __init__(
         self,
         provider_service: ProviderConfigService,
@@ -79,19 +79,23 @@ class AgentH(BaseTypedAgent):
         provider_id: str,
         model_id: str,
         snapshot_id: str,
-        section_g_output: dict[str, Any] | None = None,
+        important_files_output: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         t0 = time.monotonic()
         n_chunks = 0
         try:
-            g_hint = _extract_g_hint(section_g_output) if isinstance(section_g_output, dict) else ""
+            g_hint = (
+                _extract_g_hint(important_files_output)
+                if isinstance(important_files_output, dict)
+                else ""
+            )
             bundle = await self._retrieval.retrieve(
                 RetrieveRequest(
                     snapshot_id=snapshot_id,
                     query=("README setup guide getting started onboarding contributing"),
                     section=RetrievalSection.IMPORTANT_FILES,
                     mode=RetrievalMode.HYBRID,
-                    max_results=16,
+                    max_results=30,
                 )
             )
             n_chunks = len(bundle.evidences)
@@ -103,7 +107,7 @@ class AgentH(BaseTypedAgent):
                 AGENT_H_SYSTEM,
                 user_prompt,
                 AGENT_H_SCHEMA_STR,
-                max_completion_tokens=16000,
+                max_completion_tokens=4000,
             )
             raw_steps = data.get("steps")
             steps: list[dict[str, Any]] = []
@@ -141,9 +145,9 @@ class AgentH(BaseTypedAgent):
             data["confidence"] = _normalize_conf(str(data.get("confidence", "medium")))
             validate_section("H", data)
             ms = int((time.monotonic() - t0) * 1000)
-            logger.info("[AgentH] %d chunks retrieved, completed in %dms", n_chunks, ms)
+            logger.info("[OnboardingAgent] %d chunks retrieved, completed in %dms", n_chunks, ms)
             return data
         except Exception as e:
             ms = int((time.monotonic() - t0) * 1000)
-            logger.warning("[AgentH] failed in %dms: %s", ms, e)
+            logger.warning("[OnboardingAgent] failed in %dms: %s", ms, e)
             return self._fallback(str(e))

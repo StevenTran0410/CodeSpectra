@@ -1,27 +1,42 @@
-"""Per-section typed agents (wave 1)."""
+"""Section agents (A–K) — LLM + optional retrieval."""
 
-from .agent_a import AgentA
-from .agent_b import AgentB
-from .agent_c import AgentC
-from .agent_d import AgentD
-from .agent_e import AgentE
-from .agent_f import AgentF
-from .agent_g import AgentG
-from .agent_h import AgentH
-from .agent_i import AgentI
-from .agent_j import AgentJ
-from .agent_k import AgentK
+from __future__ import annotations
+
+import importlib
+from typing import Any
 
 __all__ = [
-    "AgentA",
-    "AgentB",
-    "AgentC",
-    "AgentD",
-    "AgentE",
-    "AgentF",
-    "AgentG",
-    "AgentH",
-    "AgentI",
-    "AgentJ",
-    "AgentK",
+    "ArchitectureAgent",
+    "AuditAgent",
+    "ConventionsAgent",
+    "FeatureMapAgent",
+    "GlossaryAgent",
+    "ImportantFilesAgent",
+    "OnboardingAgent",
+    "ProjectIdentityAgent",
+    "RiskAgent",
+    "StructureAgent",
+    "ViolationsAgent",
 ]
+
+_AGENT_EXPORTS: dict[str, str] = {
+    "ArchitectureAgent": "agent_architecture",
+    "AuditAgent": "agent_auditor",
+    "ConventionsAgent": "agent_conventions",
+    "FeatureMapAgent": "agent_feature_map",
+    "GlossaryAgent": "agent_glossary",
+    "ImportantFilesAgent": "agent_important_files",
+    "OnboardingAgent": "agent_onboarding",
+    "ProjectIdentityAgent": "agent_project_identity",
+    "RiskAgent": "agent_risk",
+    "StructureAgent": "agent_structure",
+    "ViolationsAgent": "agent_violations",
+}
+
+
+def __getattr__(name: str) -> Any:
+    mod_name = _AGENT_EXPORTS.get(name)
+    if mod_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    mod = importlib.import_module(f"{__name__}.{mod_name}")
+    return getattr(mod, name)
