@@ -12,6 +12,7 @@ from domain.structural_graph.types import StructuralGraphSummary
 from shared.logger import logger
 
 from ..agent_pipeline import _normalize_conf
+from ..profiles import NORMAL_PROFILE, AnalysisProfile
 from ..prompts import AGENT_B_SCHEMA_STR, AGENT_B_SYSTEM, render_bundle
 from ..schemas import validate_section
 from ._context_builders import extract_a_identity_context
@@ -49,9 +50,11 @@ class ArchitectureAgent(BaseTypedAgent):
         graph_summary: StructuralGraphSummary | None = None,
         arch_bundle: RetrievalBundle | None = None,
         identity_output: dict | None = None,
+        profile: AnalysisProfile | None = None,
     ) -> dict[str, Any]:
         t0 = time.monotonic()
         n_chunks = 0
+        _profile = profile or NORMAL_PROFILE
         try:
             graph_block = ""
             if graph_summary and graph_summary.top_central_files:
@@ -75,7 +78,7 @@ class ArchitectureAgent(BaseTypedAgent):
                         ),
                         section=RetrievalSection.ARCHITECTURE,
                         mode=RetrievalMode.HYBRID,
-                        max_results=30,
+                        max_results=_profile.retrieval_max_results,
                     )
                 )
             n_chunks = len(bundle.evidences)
@@ -93,7 +96,7 @@ class ArchitectureAgent(BaseTypedAgent):
                 AGENT_B_SYSTEM,
                 user_prompt,
                 AGENT_B_SCHEMA_STR,
-                max_completion_tokens=2500,
+                max_completion_tokens=_profile.tokens_architecture,
             )
             for key in (
                 "main_layers",

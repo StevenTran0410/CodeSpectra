@@ -12,6 +12,7 @@ from domain.structural_graph.types import StructuralGraphSummary
 from shared.logger import logger
 
 from ..agent_pipeline import _normalize_conf
+from ..profiles import NORMAL_PROFILE, AnalysisProfile
 from ..prompts import AGENT_G_SCHEMA_STR, AGENT_G_SYSTEM, render_bundle
 from ..schemas import validate_section
 from .base import BaseTypedAgent
@@ -53,10 +54,12 @@ class ImportantFilesAgent(BaseTypedAgent):
         model_id: str,
         snapshot_id: str,
         graph_summary: StructuralGraphSummary | None = None,
+        profile: AnalysisProfile | None = None,
     ) -> dict[str, Any]:
         t0 = time.monotonic()
         n_chunks = 0
         paths: list[str] = []
+        _profile = profile or NORMAL_PROFILE
         try:
             graph_lines: list[str] = []
             if graph_summary and graph_summary.top_central_files:
@@ -70,7 +73,7 @@ class ImportantFilesAgent(BaseTypedAgent):
                     query="entrypoint main bootstrap central high-import",
                     section=RetrievalSection.IMPORTANT_FILES,
                     mode=RetrievalMode.HYBRID,
-                    max_results=30,
+                    max_results=_profile.retrieval_max_results,
                 )
             )
             n_chunks = len(bundle.evidences)
@@ -83,7 +86,7 @@ class ImportantFilesAgent(BaseTypedAgent):
                 AGENT_G_SYSTEM,
                 user_prompt,
                 AGENT_G_SCHEMA_STR,
-                max_completion_tokens=2000,
+                max_completion_tokens=_profile.tokens_important_files,
             )
             slot_keys = (
                 "entrypoint",

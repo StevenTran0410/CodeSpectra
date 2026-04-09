@@ -11,6 +11,7 @@ from domain.retrieval.types import RetrievalMode, RetrievalSection, RetrieveRequ
 from shared.logger import logger
 
 from ..agent_pipeline import _normalize_conf
+from ..profiles import NORMAL_PROFILE, AnalysisProfile
 from ..prompts import AGENT_E_SCHEMA_STR, AGENT_E_SYSTEM, render_bundle
 from ..schemas import validate_section
 from ..static_convention import ConventionReport
@@ -58,9 +59,11 @@ class ViolationsAgent(BaseTypedAgent):
         static_convention: ConventionReport | None = None,
         static_risk: RiskReport | None = None,
         conventions_output: dict[str, Any] | None = None,
+        profile: AnalysisProfile | None = None,
     ) -> dict[str, Any]:
         t0 = time.monotonic()
         n_chunks = 0
+        _profile = profile or NORMAL_PROFILE
         try:
             prefix_parts: list[str] = []
             cb = build_convention_block(static_convention)
@@ -80,7 +83,7 @@ class ViolationsAgent(BaseTypedAgent):
                     query=_COMBINED_QUERY,
                     section=RetrievalSection.CONVENTIONS,
                     mode=RetrievalMode.HYBRID,
-                    max_results=30,
+                    max_results=_profile.retrieval_max_results,
                 )
             )
             n_chunks = len(bundle.evidences)
@@ -91,7 +94,7 @@ class ViolationsAgent(BaseTypedAgent):
                 AGENT_E_SYSTEM,
                 user_prompt,
                 schema_hint=AGENT_E_SCHEMA_STR,
-                max_completion_tokens=2000,
+                max_completion_tokens=_profile.tokens_violations,
             )
 
             raw_rules = data.get("rules")

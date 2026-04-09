@@ -12,6 +12,7 @@ from domain.structural_graph.types import StructuralGraphSummary
 from shared.logger import logger
 
 from ..agent_pipeline import _normalize_conf
+from ..profiles import NORMAL_PROFILE, AnalysisProfile
 from ..prompts import AGENT_F_SCHEMA_STR, AGENT_F_SYSTEM, render_bundle
 from ..schemas import validate_section
 from ._context_builders import extract_a_identity_context, extract_b_arch_context
@@ -49,9 +50,11 @@ class FeatureMapAgent(BaseTypedAgent):
         graph_summary: StructuralGraphSummary | None = None,
         identity_output: dict | None = None,
         architecture_output: dict | None = None,
+        profile: AnalysisProfile | None = None,
     ) -> dict[str, Any]:
         t0 = time.monotonic()
         n_chunks = 0
+        _profile = profile or NORMAL_PROFILE
         try:
             graph_block = ""
             if graph_summary and graph_summary.top_central_files:
@@ -76,7 +79,7 @@ class FeatureMapAgent(BaseTypedAgent):
                     query=_COMBINED_QUERY,
                     section=RetrievalSection.FEATURE_MAP,
                     mode=RetrievalMode.HYBRID,
-                    max_results=30,
+                    max_results=_profile.retrieval_max_results,
                 )
             )
             n_chunks = len(bundle.evidences)
@@ -87,7 +90,7 @@ class FeatureMapAgent(BaseTypedAgent):
                 AGENT_F_SYSTEM,
                 user_prompt,
                 schema_hint=AGENT_F_SCHEMA_STR,
-                max_completion_tokens=5000,
+                max_completion_tokens=_profile.tokens_feature_map,
             )
 
             raw_feat = data.get("features")

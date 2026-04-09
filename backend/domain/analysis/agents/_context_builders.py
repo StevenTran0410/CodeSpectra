@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from domain.retrieval.service import RetrievalService
 from domain.retrieval.types import RetrievalBundle, RetrievalMode, RetrievalSection, RetrieveRequest
@@ -12,6 +12,9 @@ from infrastructure.db.database import get_db
 
 from ..static_convention import ConventionReport
 from ..static_risk import RiskReport
+
+if TYPE_CHECKING:
+    from ..profiles import AnalysisProfile
 
 _MANIFEST_PATTERNS = (
     "pyproject.toml",
@@ -89,13 +92,27 @@ async def prefetch_pipeline_context(
     retrieval: RetrievalService,
     snapshot_id: str,
     mode: RetrievalMode = RetrievalMode.HYBRID,
+    profile: "AnalysisProfile | None" = None,
 ) -> PipelineMemoryContext:
     """Pre-fetch shared retrieval data before pipeline construction.
 
     Runs 4 DB/retrieval tasks in parallel. arch_bundle is shared by B and C.
     folder_tree, doc_files, manifest_files are used by A (and C for folder_tree).
     D and E are NOT pre-fetched — they have semantically orthogonal CONVENTIONS queries.
+
+    Args:
+        retrieval: The retrieval service to use.
+        snapshot_id: Snapshot to retrieve context for.
+        mode: Retrieval mode (hybrid/semantic/keyword).
+        profile: Optional :class:`~domain.analysis.profiles.AnalysisProfile` that
+            controls retrieval depth and char limits.  When ``None`` the
+            NORMAL_PROFILE defaults are used.
     """
+    if profile is None:
+        from ..profiles import NORMAL_PROFILE  # lazy to avoid circular import at module level
+
+        profile = NORMAL_PROFILE
+
     arch_task = retrieval.retrieve(
         RetrieveRequest(
             snapshot_id=snapshot_id,
@@ -105,12 +122,16 @@ async def prefetch_pipeline_context(
             ),
             section=RetrievalSection.ARCHITECTURE,
             mode=mode,
-            max_results=30,
+            max_results=profile.retrieval_arch_max_results,
         )
     )
     tree_task = fetch_folder_tree(snapshot_id)
-    doc_task = _fetch_files_by_pattern(snapshot_id, _DOC_PATTERNS, char_limit=0, max_rows=4)
-    manifest_task = _fetch_files_by_pattern(snapshot_id, _MANIFEST_PATTERNS, char_limit=3000)
+    doc_task = _fetch_files_by_pattern(
+        snapshot_id, _DOC_PATTERNS, char_limit=profile.retrieval_doc_char_limit, max_rows=4
+    )
+    manifest_task = _fetch_files_by_pattern(
+        snapshot_id, _MANIFEST_PATTERNS, char_limit=profile.retrieval_manifest_char_limit
+    )
     arch, tree, docs, manifests = await asyncio.gather(
         arch_task, tree_task, doc_task, manifest_task
     )

@@ -12,6 +12,7 @@ from domain.retrieval.types import RetrievalBundle, RetrievalMode, RetrievalSect
 from shared.logger import logger
 
 from ..agent_pipeline import _normalize_conf
+from ..profiles import NORMAL_PROFILE, AnalysisProfile
 from ..prompts import AGENT_C_SCHEMA_STR, AGENT_C_SYSTEM, render_bundle
 from ..schemas import validate_section
 from ._context_builders import extract_a_identity_context, fetch_folder_tree
@@ -56,9 +57,11 @@ class StructureAgent(BaseTypedAgent):
         arch_bundle: RetrievalBundle | None = None,
         folder_tree: str = "",
         identity_output: dict | None = None,
+        profile: AnalysisProfile | None = None,
     ) -> dict[str, Any]:
         t0 = time.monotonic()
         n_chunks = 0
+        _profile = profile or NORMAL_PROFILE
         try:
             if arch_bundle is not None:
                 bundle = arch_bundle
@@ -77,7 +80,7 @@ class StructureAgent(BaseTypedAgent):
                             query=("folder module package structure layer boundary domain"),
                             section=RetrievalSection.ARCHITECTURE,
                             mode=RetrievalMode.HYBRID,
-                            max_results=30,
+                            max_results=_profile.retrieval_max_results,
                         )
                     ),
                     fetch_folder_tree(snapshot_id),
@@ -100,7 +103,7 @@ class StructureAgent(BaseTypedAgent):
                 AGENT_C_SYSTEM,
                 user_prompt,
                 AGENT_C_SCHEMA_STR,
-                max_completion_tokens=2000,
+                max_completion_tokens=_profile.tokens_structure,
             )
             raw_folders = data.get("folders")
             folders: list[dict[str, str]] = []

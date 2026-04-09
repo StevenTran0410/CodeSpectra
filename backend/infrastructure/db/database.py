@@ -290,6 +290,13 @@ _MIGRATIONS: list[dict[str, Any]] = [
             CREATE INDEX IF NOT EXISTS idx_analysis_reports_snapshot ON analysis_reports(snapshot_id, created_at DESC);
         """,
     },
+    {
+        "version": 16,
+        "description": "Add large_codebase_mode column to analysis_reports for cache key separation",
+        "sql": """
+            ALTER TABLE analysis_reports ADD COLUMN large_codebase_mode INTEGER NOT NULL DEFAULT 0;
+        """,
+    },
 ]
 
 TARGET_VERSION = len(_MIGRATIONS) - 1

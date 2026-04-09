@@ -11,6 +11,7 @@ from domain.retrieval.types import RetrievalMode, RetrievalSection, RetrieveRequ
 from shared.logger import logger
 
 from ..agent_pipeline import _normalize_conf
+from ..profiles import NORMAL_PROFILE, AnalysisProfile
 from ..prompts import AGENT_J_SCHEMA_STR, AGENT_J_SYSTEM, render_bundle
 from ..schemas import validate_section
 from ..static_risk import RiskReport
@@ -63,9 +64,11 @@ class RiskAgent(BaseTypedAgent):
         model_id: str,
         snapshot_id: str,
         static_risk: RiskReport | None = None,
+        profile: AnalysisProfile | None = None,
     ) -> dict[str, Any]:
         t0 = time.monotonic()
         n_chunks = 0
+        _profile = profile or NORMAL_PROFILE
         static_ctx = static_risk.as_context_text() if static_risk else "No static risk data."
         try:
             bundle = await self._retrieval.retrieve(
@@ -74,7 +77,7 @@ class RiskAgent(BaseTypedAgent):
                     query="risk complexity large file deep nesting TODO FIXME hotspot",
                     section=RetrievalSection.IMPORTANT_FILES,
                     mode=RetrievalMode.HYBRID,
-                    max_results=30,
+                    max_results=_profile.retrieval_max_results,
                 )
             )
             n_chunks = len(bundle.evidences)
@@ -88,7 +91,7 @@ class RiskAgent(BaseTypedAgent):
                 AGENT_J_SYSTEM,
                 user_prompt,
                 AGENT_J_SCHEMA_STR,
-                max_completion_tokens=3000,
+                max_completion_tokens=_profile.tokens_risk,
             )
             raw_findings = data.get("findings")
             findings: list[dict[str, Any]] = []

@@ -94,6 +94,7 @@ export default function AnalysisRunScreen(): React.ReactElement {
         privacyMode?: 'strict_local' | 'byok_cloud'
         providerId?: string
         modelId?: string
+        largecodebaseMode?: boolean
       }
     } catch {
       return {}
@@ -133,6 +134,7 @@ export default function AnalysisRunScreen(): React.ReactElement {
   const [starting, setStarting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [forceRerun, setForceRerun] = useState(false)
+  const [largecodebaseMode, setLargecodebaseMode] = useState(persisted.largecodebaseMode ?? false)
   const [latestReportId, setLatestReportId] = useState<string | null>(null)
   const [modelWarning, setModelWarning] = useState<{
     code: string
@@ -190,9 +192,10 @@ export default function AnalysisRunScreen(): React.ReactElement {
         privacyMode,
         providerId,
         modelId,
+        largecodebaseMode,
       }),
     )
-  }, [repoId, snapshotId, scanMode, privacyMode, providerId, modelId])
+  }, [repoId, snapshotId, scanMode, privacyMode, providerId, modelId, largecodebaseMode])
 
   useEffect(() => {
     const run = async () => {
@@ -368,6 +371,18 @@ export default function AnalysisRunScreen(): React.ReactElement {
               />
               Force re-run (skip cache)
             </label>
+            <label
+              className="inline-flex items-center gap-1.5 cursor-pointer select-none"
+              title="Recommended for: ~10k+ files, >1.5M LOC, monorepo with many packages/services, or previous runs with missing context"
+            >
+              <input
+                type="checkbox"
+                checked={largecodebaseMode}
+                onChange={(e) => setLargecodebaseMode(e.target.checked)}
+                className="accent-indigo-500"
+              />
+              Large codebase mode
+            </label>
           </div>
 
           <div className="flex items-center gap-2">
@@ -391,8 +406,9 @@ export default function AnalysisRunScreen(): React.ReactElement {
                     provider_id: providerId,
                     model_id: modelId,
                     force_rerun: forceRerun,
+                    large_codebase_mode: largecodebaseMode,
                   })
-                  setModelWarning(job.warning ?? null)
+                  setModelWarning((job as unknown as { warning?: { code: string; message: string; severity: string } | null }).warning ?? null)
                   startPolling(job.id)
                 } catch (err) {
                   setError(toErrorMessage(err))

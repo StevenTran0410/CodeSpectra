@@ -11,6 +11,7 @@ from domain.retrieval.types import RetrievalMode, RetrievalSection, RetrieveRequ
 from shared.logger import logger
 
 from ..agent_pipeline import _normalize_conf
+from ..profiles import NORMAL_PROFILE, AnalysisProfile
 from ..prompts import AGENT_I_SCHEMA_STR, AGENT_I_SYSTEM, render_bundle
 from ..schemas import validate_section
 from .base import BaseTypedAgent
@@ -32,9 +33,16 @@ class GlossaryAgent(BaseTypedAgent):
             "blind_spots": [f"Agent failed: {reason}"],
         }
 
-    async def run(self, provider_id: str, model_id: str, snapshot_id: str) -> dict[str, Any]:
+    async def run(
+        self,
+        provider_id: str,
+        model_id: str,
+        snapshot_id: str,
+        profile: AnalysisProfile | None = None,
+    ) -> dict[str, Any]:
         t0 = time.monotonic()
         n_chunks = 0
+        _profile = profile or NORMAL_PROFILE
         try:
             bundle = await self._retrieval.retrieve(
                 RetrieveRequest(
@@ -42,7 +50,7 @@ class GlossaryAgent(BaseTypedAgent):
                     query="domain model entity type definition event constant",
                     section=RetrievalSection.GLOSSARY,
                     mode=RetrievalMode.HYBRID,
-                    max_results=30,
+                    max_results=_profile.retrieval_max_results,
                 )
             )
             n_chunks = len(bundle.evidences)
@@ -53,7 +61,7 @@ class GlossaryAgent(BaseTypedAgent):
                 AGENT_I_SYSTEM,
                 user_prompt,
                 AGENT_I_SCHEMA_STR,
-                max_completion_tokens=3000,
+                max_completion_tokens=_profile.tokens_glossary,
             )
             raw_terms = data.get("terms")
             terms: list[dict[str, Any]] = []

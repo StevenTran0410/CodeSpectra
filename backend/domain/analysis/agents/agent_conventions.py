@@ -11,6 +11,7 @@ from domain.retrieval.types import RetrievalMode, RetrievalSection, RetrieveRequ
 from shared.logger import logger
 
 from ..agent_pipeline import _normalize_conf
+from ..profiles import NORMAL_PROFILE, AnalysisProfile
 from ..prompts import AGENT_D_SCHEMA_STR, AGENT_D_SYSTEM, render_bundle
 from ..schemas import validate_section
 from ..static_convention import ConventionReport
@@ -79,9 +80,11 @@ class ConventionsAgent(BaseTypedAgent):
         snapshot_id: str,
         static_convention: ConventionReport | None = None,
         structure_output: dict[str, Any] | None = None,
+        profile: AnalysisProfile | None = None,
     ) -> dict[str, Any]:
         t0 = time.monotonic()
         n_chunks = 0
+        _profile = profile or NORMAL_PROFILE
         try:
             prefix_parts: list[str] = []
             conv = build_convention_block(static_convention)
@@ -103,7 +106,7 @@ class ConventionsAgent(BaseTypedAgent):
                     query=_COMBINED_QUERY,
                     section=RetrievalSection.CONVENTIONS,
                     mode=RetrievalMode.HYBRID,
-                    max_results=30,
+                    max_results=_profile.retrieval_max_results,
                 )
             )
             n_chunks = len(bundle.evidences)
@@ -114,7 +117,7 @@ class ConventionsAgent(BaseTypedAgent):
                 AGENT_D_SYSTEM,
                 user_prompt,
                 schema_hint=AGENT_D_SCHEMA_STR,
-                max_completion_tokens=3000,
+                max_completion_tokens=_profile.tokens_conventions,
             )
             for k in _ASPECT_KEYS:
                 data[k] = _coerce_aspect(data.get(k))
