@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from domain.model_connector.service import ProviderConfigService
 from domain.retrieval.service import RetrievalService
@@ -12,6 +12,7 @@ from domain.retrieval.types import RetrievalMode, RetrievalSection, RetrieveRequ
 from shared.logger import logger
 
 from ..agent_pipeline import _normalize_conf
+from ..profiles import NORMAL_PROFILE, AnalysisProfile
 from ..prompts import AGENT_A_SCHEMA_STR, AGENT_A_SYSTEM, render_bundle
 from ..schemas import validate_section
 from ._context_builders import (
@@ -25,7 +26,9 @@ from .base import BaseTypedAgent
 
 
 async def _gather_context(
-    retrieval: RetrievalService, snapshot_id: str
+    retrieval: RetrievalService,
+    snapshot_id: str,
+    profile: AnalysisProfile,
 ) -> tuple[Any, str, str, str]:
     """Run retrieval + doc fetch + manifest fetch + folder tree in parallel."""
     bundle_task = retrieval.retrieve(
@@ -34,11 +37,15 @@ async def _gather_context(
             query="README entrypoint package manifest setup pyproject cargo",
             section=RetrievalSection.IMPORTANT_FILES,
             mode=RetrievalMode.HYBRID,
-            max_results=30,
+            max_results=profile.retrieval_max_results,
         )
     )
-    doc_task = _fetch_files_by_pattern(snapshot_id, _DOC_PATTERNS, char_limit=0, max_rows=4)
-    manifest_task = _fetch_files_by_pattern(snapshot_id, _MANIFEST_PATTERNS, char_limit=3000)
+    doc_task = _fetch_files_by_pattern(
+        snapshot_id, _DOC_PATTERNS, char_limit=profile.retrieval_doc_char_limit, max_rows=4
+    )
+    manifest_task = _fetch_files_by_pattern(
+        snapshot_id, _MANIFEST_PATTERNS, char_limit=profile.retrieval_manifest_char_limit
+    )
     tree_task = fetch_folder_tree(snapshot_id)
     return await asyncio.gather(bundle_task, doc_task, manifest_task, tree_task)
 
@@ -72,9 +79,11 @@ class ProjectIdentityAgent(BaseTypedAgent):
         snapshot_id: str,
         repo_name: str = "",
         mem_ctx: PipelineMemoryContext | None = None,
+        profile: AnalysisProfile | None = None,
     ) -> dict[str, Any]:
         t0 = time.monotonic()
         n_chunks = 0
+        _profile = profile or NORMAL_PROFILE
         try:
             if mem_ctx is not None:
                 bundle = await self._retrieval.retrieve(
@@ -83,7 +92,7 @@ class ProjectIdentityAgent(BaseTypedAgent):
                         query="README entrypoint package manifest setup pyproject cargo",
                         section=RetrievalSection.IMPORTANT_FILES,
                         mode=RetrievalMode.HYBRID,
-                        max_results=30,
+                        max_results=_profile.retrieval_max_results,
                     )
                 )
                 doc_ctx = mem_ctx.doc_files
@@ -98,7 +107,7 @@ class ProjectIdentityAgent(BaseTypedAgent):
                 )
             else:
                 bundle, doc_ctx, manifest_ctx, folder_tree = await _gather_context(
-                    self._retrieval, snapshot_id
+                    self._retrieval, snapshot_id, _profile
                 )
             n_chunks = len(bundle.evidences)
             hint = f"repo_name={repo_name}\n" if repo_name else ""
@@ -120,7 +129,7 @@ class ProjectIdentityAgent(BaseTypedAgent):
                 AGENT_A_SYSTEM,
                 user_prompt,
                 AGENT_A_SCHEMA_STR,
-                max_completion_tokens=2000,
+                max_completion_tokens=_profile.tokens_project_identity,
             )
             for key in ("repo_name", "domain", "purpose", "runtime_type", "business_context"):
                 data[key] = str(data.get(key, "") or "")

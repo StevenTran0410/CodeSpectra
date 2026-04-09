@@ -26,6 +26,12 @@ from .types import SectionDoneCallback
 
 REPORT_VERSION = 3
 
+# Maximum number of per-section re-runs in large_codebase_mode quality gate
+_LARGE_MODE_MAX_RETRIES: int = 3
+# Sections eligible for quality-gate retry (no retrieval agents K/L are excluded as they
+# get re-run automatically after the improved base sections)
+_RETRYABLE_SECTIONS = frozenset("ABCDEFGHIJ")
+
 
 def _section_k_pipeline_fallback() -> dict[str, Any]:
     return {
@@ -474,11 +480,12 @@ class AnalysisAgentPipeline:
             "graph_summary": graph_summary,
             "static_risk": static_risk,
             "static_convention": static_convention,
+            "profile": profile,
         }
         mem_ctx: PipelineMemoryContext | None
         try:
             mem_ctx = await prefetch_pipeline_context(
-                self._project_identity._retrieval, snapshot_id
+                self._project_identity._retrieval, snapshot_id, profile=profile
             )
         except Exception as _prefetch_err:
             logger.warning(
@@ -511,6 +518,7 @@ class AnalysisAgentPipeline:
                     c["snapshot_id"],
                     c["repo_name"],
                     mem_ctx=c.get("mem_ctx"),
+                    profile=c.get("profile"),
                 ),
                 lambda c, _d: self._project_identity._fallback(
                     c["snapshot_id"], "pipeline", c["repo_name"]
@@ -529,6 +537,7 @@ class AnalysisAgentPipeline:
                     c["graph_summary"],
                     arch_bundle=c["mem_ctx"].arch_bundle if c.get("mem_ctx") else None,
                     identity_output=d.get("identity_output"),
+                    profile=c.get("profile"),
                 ),
                 lambda _c, _d: self._architecture._fallback("pipeline"),
                 on_section_done,
@@ -545,6 +554,7 @@ class AnalysisAgentPipeline:
                     arch_bundle=c["mem_ctx"].arch_bundle if c.get("mem_ctx") else None,
                     folder_tree=c["mem_ctx"].folder_tree if c.get("mem_ctx") else "",
                     identity_output=d.get("identity_output"),
+                    profile=c.get("profile"),
                 ),
                 lambda _c, _d: self._structure._fallback("pipeline"),
                 on_section_done,
@@ -560,6 +570,7 @@ class AnalysisAgentPipeline:
                     c["snapshot_id"],
                     c["static_convention"],
                     None,
+                    profile=c.get("profile"),
                 ),
                 lambda _c, _d: self._conventions._fallback("pipeline"),
                 on_section_done,
@@ -576,6 +587,7 @@ class AnalysisAgentPipeline:
                     c["static_convention"],
                     c["static_risk"],
                     d.get("conventions_output"),
+                    profile=c.get("profile"),
                 ),
                 lambda _c, _d: self._violations._fallback("pipeline"),
                 on_section_done,
@@ -592,6 +604,7 @@ class AnalysisAgentPipeline:
                     c["graph_summary"],
                     identity_output=d.get("identity_output"),
                     architecture_output=d.get("architecture_output"),
+                    profile=c.get("profile"),
                 ),
                 lambda _c, _d: self._feature_map._fallback("pipeline"),
                 on_section_done,
@@ -602,7 +615,11 @@ class AnalysisAgentPipeline:
             _SectionAgentComponent(
                 "G",
                 lambda c, _d: self._important_files.run(
-                    c["provider_id"], c["model_id"], c["snapshot_id"], c["graph_summary"]
+                    c["provider_id"],
+                    c["model_id"],
+                    c["snapshot_id"],
+                    c["graph_summary"],
+                    profile=c.get("profile"),
                 ),
                 lambda _c, _d: self._important_files._fallback("pipeline", []),
                 on_section_done,
@@ -617,6 +634,7 @@ class AnalysisAgentPipeline:
                     c["model_id"],
                     c["snapshot_id"],
                     d.get("important_files_output"),
+                    profile=c.get("profile"),
                 ),
                 lambda _c, _d: self._onboarding._fallback("pipeline"),
                 on_section_done,
@@ -626,7 +644,12 @@ class AnalysisAgentPipeline:
             "glossary",
             _SectionAgentComponent(
                 "I",
-                lambda c, _d: self._glossary.run(c["provider_id"], c["model_id"], c["snapshot_id"]),
+                lambda c, _d: self._glossary.run(
+                    c["provider_id"],
+                    c["model_id"],
+                    c["snapshot_id"],
+                    profile=c.get("profile"),
+                ),
                 lambda _c, _d: self._glossary._fallback("pipeline"),
                 on_section_done,
             ),
@@ -636,7 +659,11 @@ class AnalysisAgentPipeline:
             _SectionAgentComponent(
                 "J",
                 lambda c, _d: self._risk.run(
-                    c["provider_id"], c["model_id"], c["snapshot_id"], c["static_risk"]
+                    c["provider_id"],
+                    c["model_id"],
+                    c["snapshot_id"],
+                    c["static_risk"],
+                    profile=c.get("profile"),
                 ),
                 lambda c, _d: self._risk._fallback("pipeline", c["static_risk"]),
                 on_section_done,
@@ -661,6 +688,7 @@ class AnalysisAgentPipeline:
                         "I": d.get("glossary_output"),
                         "J": d.get("risk_output"),
                     },
+                    profile=c.get("profile"),
                 ),
                 lambda _c, _d: _section_k_pipeline_fallback(),
                 on_section_done,
@@ -686,6 +714,7 @@ class AnalysisAgentPipeline:
                         "J": d.get("risk_output"),
                         "K": d.get("auditor_output"),
                     },
+                    profile=c.get("profile"),
                 ),
                 lambda _c, _d: _section_l_pipeline_fallback(),
                 on_section_done,
@@ -781,4 +810,217 @@ class AnalysisAgentPipeline:
         if "L" not in sections:
             sections["L"] = _section_l_pipeline_fallback()
 
+        # Phase 3: quality-gate retry loop (large_codebase_mode only).
+        # If the auditor (K) or synthesis (L) section indicates low confidence,
+        # retry up to _LARGE_MODE_MAX_RETRIES times for the weakest sections.
+        if large_codebase_mode:
+            sections = await self._quality_gate_retry(
+                sections=sections,
+                provider_id=provider_id,
+                model_id=model_id,
+                snapshot_id=snapshot_id,
+                repo_name=repo_name,
+                graph_summary=graph_summary,
+                static_risk=static_risk,
+                static_convention=static_convention,
+                mem_ctx=mem_ctx,
+                profile=profile,
+            )
+
         return {"version": REPORT_VERSION, "sections": sections}
+
+    # ------------------------------------------------------------------
+    # Phase 3 — quality-gate retry (large_codebase_mode only)
+    # ------------------------------------------------------------------
+
+    def _audit_quality(self, sections: dict[str, Any]) -> list[str]:
+        """Return list of section letters with low confidence according to auditor K.
+
+        Falls back to inspecting individual section confidence fields if K is
+        absent or incomplete.
+        """
+        k = sections.get("K") or {}
+        weakest: list[str] = []
+
+        # Collect auditor-flagged weak sections
+        raw_w = k.get("weakest_sections", [])
+        if isinstance(raw_w, list):
+            for s in raw_w:
+                letter = str(s).upper()
+                if letter in _RETRYABLE_SECTIONS:
+                    weakest.append(letter)
+
+        # Also add any section that self-reports low confidence
+        for letter in _RETRYABLE_SECTIONS:
+            sec = sections.get(letter) or {}
+            if str(sec.get("confidence", "")).lower() == "low" and letter not in weakest:
+                weakest.append(letter)
+
+        return weakest
+
+    async def _retry_section(
+        self,
+        letter: str,
+        *,
+        provider_id: str,
+        model_id: str,
+        snapshot_id: str,
+        repo_name: str,
+        graph_summary: Any,
+        static_risk: Any,
+        static_convention: Any,
+        mem_ctx: Any,
+        profile: Any,
+        sections: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Re-run a single section agent and return the new output, or None on failure."""
+        arch_bundle = mem_ctx.arch_bundle if mem_ctx else None
+        folder_tree = mem_ctx.folder_tree if mem_ctx else ""
+        try:
+            if letter == "A":
+                return await self._project_identity.run(
+                    provider_id, model_id, snapshot_id, repo_name,
+                    mem_ctx=mem_ctx, profile=profile,
+                )
+            if letter == "B":
+                return await self._architecture.run(
+                    provider_id, model_id, snapshot_id, graph_summary,
+                    arch_bundle=arch_bundle,
+                    identity_output=sections.get("A"),
+                    profile=profile,
+                )
+            if letter == "C":
+                return await self._structure.run(
+                    provider_id, model_id, snapshot_id,
+                    arch_bundle=arch_bundle, folder_tree=folder_tree,
+                    identity_output=sections.get("A"),
+                    profile=profile,
+                )
+            if letter == "D":
+                return await self._conventions.run(
+                    provider_id, model_id, snapshot_id,
+                    static_convention, None, profile=profile,
+                )
+            if letter == "E":
+                return await self._violations.run(
+                    provider_id, model_id, snapshot_id,
+                    static_convention, static_risk,
+                    conventions_output=sections.get("D"),
+                    profile=profile,
+                )
+            if letter == "F":
+                return await self._feature_map.run(
+                    provider_id, model_id, snapshot_id, graph_summary,
+                    identity_output=sections.get("A"),
+                    architecture_output=sections.get("B"),
+                    profile=profile,
+                )
+            if letter == "G":
+                return await self._important_files.run(
+                    provider_id, model_id, snapshot_id, graph_summary,
+                    profile=profile,
+                )
+            if letter == "H":
+                return await self._onboarding.run(
+                    provider_id, model_id, snapshot_id,
+                    sections.get("G"), profile=profile,
+                )
+            if letter == "I":
+                return await self._glossary.run(
+                    provider_id, model_id, snapshot_id, profile=profile,
+                )
+            if letter == "J":
+                return await self._risk.run(
+                    provider_id, model_id, snapshot_id, static_risk, profile=profile,
+                )
+        except Exception as retry_err:
+            logger.warning(
+                "[pipeline] quality_gate retry section=%s failed: %s", letter, retry_err
+            )
+        return None
+
+    async def _quality_gate_retry(
+        self,
+        sections: dict[str, Any],
+        *,
+        provider_id: str,
+        model_id: str,
+        snapshot_id: str,
+        repo_name: str,
+        graph_summary: Any,
+        static_risk: Any,
+        static_convention: Any,
+        mem_ctx: Any,
+        profile: Any,
+    ) -> dict[str, Any]:
+        """Retry weak sections up to _LARGE_MODE_MAX_RETRIES times.
+
+        After all retries, K and L are re-synthesised so the final report
+        reflects the improved base sections.  Gracefully degrades: any
+        individual failure is logged and the original section is kept.
+        """
+        import asyncio as _asyncio
+
+        for attempt in range(1, _LARGE_MODE_MAX_RETRIES + 1):
+            weak = self._audit_quality(sections)
+            if not weak:
+                logger.info("[pipeline] quality_gate pass=%d — all sections acceptable", attempt)
+                break
+            logger.info(
+                "[pipeline] quality_gate pass=%d — retrying sections=%s",
+                attempt,
+                weak,
+            )
+            retry_tasks = {
+                letter: self._retry_section(
+                    letter,
+                    provider_id=provider_id,
+                    model_id=model_id,
+                    snapshot_id=snapshot_id,
+                    repo_name=repo_name,
+                    graph_summary=graph_summary,
+                    static_risk=static_risk,
+                    static_convention=static_convention,
+                    mem_ctx=mem_ctx,
+                    profile=profile,
+                    sections=sections,
+                )
+                for letter in weak
+            }
+            results = await _asyncio.gather(*retry_tasks.values(), return_exceptions=True)
+            improved = False
+            for letter, result in zip(retry_tasks.keys(), results):
+                if isinstance(result, dict):
+                    new_conf = str(result.get("confidence", "low")).lower()
+                    old_conf = str((sections.get(letter) or {}).get("confidence", "low")).lower()
+                    if new_conf != "low" or old_conf == "low":
+                        sections[letter] = result
+                        improved = True
+                        logger.info(
+                            "[pipeline] quality_gate section=%s conf=%s->%s",
+                            letter, old_conf, new_conf,
+                        )
+
+            if not improved:
+                logger.info(
+                    "[pipeline] quality_gate pass=%d — no improvement, stopping retries", attempt
+                )
+                break
+
+        # Re-run K (auditor) and L (synthesizer) with the final section set
+        try:
+            new_k = await self._auditor.run(
+                provider_id, model_id, sections, profile=profile
+            )
+            sections["K"] = new_k
+        except Exception as e:
+            logger.warning("[pipeline] quality_gate re-audit failed: %s", e)
+        try:
+            new_l = await self._synthesizer.run(
+                provider_id, model_id, sections, profile=profile
+            )
+            sections["L"] = new_l
+        except Exception as e:
+            logger.warning("[pipeline] quality_gate re-synthesize failed: %s", e)
+
+        return sections

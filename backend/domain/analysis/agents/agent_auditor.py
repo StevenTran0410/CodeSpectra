@@ -10,6 +10,7 @@ from domain.model_connector.service import ProviderConfigService
 from shared.logger import logger
 
 from ..agent_pipeline import _normalize_conf
+from ..profiles import NORMAL_PROFILE, AnalysisProfile
 from ..prompts import AGENT_K_SCHEMA_STR, AGENT_K_SYSTEM
 from ..schemas import validate_section
 from ._section_compressor import compress_section
@@ -48,8 +49,10 @@ class AuditAgent(BaseTypedAgent):
         provider_id: str,
         model_id: str,
         all_sections: dict[str, Any],
+        profile: AnalysisProfile | None = None,
     ) -> dict[str, Any]:
         t0 = time.monotonic()
+        _profile = profile or NORMAL_PROFILE
         compact = _build_agent_k_input(all_sections)
         user_prompt = json.dumps(compact, ensure_ascii=False)
         result = await self._chat_json_typed(
@@ -58,7 +61,7 @@ class AuditAgent(BaseTypedAgent):
             AGENT_K_SYSTEM,
             user_prompt,
             AGENT_K_SCHEMA_STR,
-            max_completion_tokens=2000,
+            max_completion_tokens=_profile.tokens_auditor,
         )
         valid_letters = set("ABCDEFGHIJ")
         result["overall_confidence"] = _normalize_conf(

@@ -11,6 +11,7 @@ from domain.retrieval.types import RetrievalMode, RetrievalSection, RetrieveRequ
 from shared.logger import logger
 
 from ..agent_pipeline import _normalize_conf
+from ..profiles import NORMAL_PROFILE, AnalysisProfile
 from ..prompts import AGENT_H_SCHEMA_STR, AGENT_H_SYSTEM, render_bundle
 from ..schemas import validate_section
 from .base import BaseTypedAgent
@@ -80,9 +81,11 @@ class OnboardingAgent(BaseTypedAgent):
         model_id: str,
         snapshot_id: str,
         important_files_output: dict[str, Any] | None = None,
+        profile: AnalysisProfile | None = None,
     ) -> dict[str, Any]:
         t0 = time.monotonic()
         n_chunks = 0
+        _profile = profile or NORMAL_PROFILE
         try:
             g_hint = (
                 _extract_g_hint(important_files_output)
@@ -95,7 +98,7 @@ class OnboardingAgent(BaseTypedAgent):
                     query=("README setup guide getting started onboarding contributing"),
                     section=RetrievalSection.IMPORTANT_FILES,
                     mode=RetrievalMode.HYBRID,
-                    max_results=30,
+                    max_results=_profile.retrieval_max_results,
                 )
             )
             n_chunks = len(bundle.evidences)
@@ -107,7 +110,7 @@ class OnboardingAgent(BaseTypedAgent):
                 AGENT_H_SYSTEM,
                 user_prompt,
                 AGENT_H_SCHEMA_STR,
-                max_completion_tokens=4000,
+                max_completion_tokens=_profile.tokens_onboarding,
             )
             raw_steps = data.get("steps")
             steps: list[dict[str, Any]] = []
