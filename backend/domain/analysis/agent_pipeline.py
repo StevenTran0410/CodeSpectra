@@ -19,6 +19,7 @@ from domain.structural_graph.types import StructuralGraphSummary
 from shared.logger import logger
 
 from .agents._context_builders import PipelineMemoryContext, prefetch_pipeline_context
+from .profiles import get_profile
 from .static_convention import ConventionReport
 from .static_risk import RiskReport
 from .types import SectionDoneCallback
@@ -446,7 +447,9 @@ class AnalysisAgentPipeline:
         static_risk: RiskReport | None = None,
         static_convention: ConventionReport | None = None,
         on_section_done: SectionDoneCallback | None = None,
+        large_codebase_mode: bool = False,
     ) -> dict[str, Any]:
+        profile = get_profile(large_codebase_mode)
         sections: dict[str, Any] = {}
         if not (self._project_identity and snapshot_id):
             return {"version": REPORT_VERSION, "sections": sections}
@@ -730,10 +733,18 @@ class AnalysisAgentPipeline:
             "synthesizer",
         }
         data = {name: {"ctx": ctx} for name in names}
+        effective_concurrency = max(1, int(self._concurrency_limit * profile.concurrency_scale))
+        if large_codebase_mode:
+            logger.info(
+                "[pipeline] large_codebase_mode=True profile=%s concurrency=%d->%d",
+                profile.mode,
+                self._concurrency_limit,
+                effective_concurrency,
+            )
         async for partial in pipeline.run_async_generator(
             data=data,
             include_outputs_from=names,
-            concurrency_limit=self._concurrency_limit,
+            concurrency_limit=effective_concurrency,
         ):
             for name, output_map in partial.items():
                 if name not in names or not isinstance(output_map, dict):

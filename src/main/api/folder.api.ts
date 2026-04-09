@@ -231,6 +231,7 @@ export function registerFolderHandlers(client: BackendClient): void {
         provider_id: string
         model_id: string
         force_rerun?: boolean
+        large_codebase_mode?: boolean
       }
     ) => {
       const job = await client.post<{

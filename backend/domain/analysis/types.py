@@ -32,6 +32,7 @@ class StartAnalysisRequest(BaseModel):
     provider_id: str
     model_id: str
     force_rerun: bool = False
+    large_codebase_mode: bool = False
 
 
 class ModelWarning(BaseModel):

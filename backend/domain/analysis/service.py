@@ -873,16 +873,16 @@ class AnalysisService:
             if await _cancelled():
                 return
 
-            # Agent result cache: reuse existing report if snapshot + model unchanged
+            # Agent result cache: reuse existing report if snapshot + model + mode unchanged
             cached_report: dict[str, Any] | None = None
             if not req.force_rerun:
                 async with get_db().execute(
                     """
                     SELECT report_json FROM analysis_reports
-                    WHERE snapshot_id=? AND model_id=?
+                    WHERE snapshot_id=? AND model_id=? AND large_codebase_mode=?
                     ORDER BY created_at DESC LIMIT 1
                     """,
-                    (req.snapshot_id, req.model_id),
+                    (req.snapshot_id, req.model_id, 1 if req.large_codebase_mode else 0),
                 ) as cur:
                     cached_row = await cur.fetchone()
                 if cached_row:
@@ -912,6 +912,7 @@ class AnalysisService:
                     scan_mode=req.scan_mode.value,
                     repo_name=repo_name,
                     on_section_done=_on_section_done,
+                    large_codebase_mode=req.large_codebase_mode,
                 )
             if await _cancelled():
                 return
@@ -927,9 +928,9 @@ class AnalysisService:
                 """
                 INSERT INTO analysis_reports (
                     id, job_id, repo_id, snapshot_id, provider_id, model_id,
-                    scan_mode, privacy_mode, report_json, created_at
+                    scan_mode, privacy_mode, report_json, created_at, large_codebase_mode
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     new_id(),
@@ -942,6 +943,7 @@ class AnalysisService:
                     req.privacy_mode.value,
                     json.dumps(report),
                     utc_now_iso(),
+                    1 if req.large_codebase_mode else 0,
                 ),
             )
             await get_db().commit()

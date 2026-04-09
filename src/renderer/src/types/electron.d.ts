@@ -450,6 +450,7 @@ declare global {
           provider_id: string
           model_id: string
           force_rerun?: boolean
+          large_codebase_mode?: boolean
         }) => Promise<Job>
         listReports: (repoId?: string, limit?: number) => Promise<AnalysisReportSummary[]>
         getReport: (reportId: string) => Promise<AnalysisReport>
