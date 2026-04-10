@@ -111,13 +111,18 @@ class ConventionsAgent(BaseTypedAgent):
             )
             n_chunks = len(bundle.evidences)
             user_prompt = f"{prefix}snapshot_id={snapshot_id}\n\nEvidence:\n{render_bundle(bundle)}"
-            data = await self._chat_json_typed(
-                provider_id,
-                model_id,
-                AGENT_D_SYSTEM,
-                user_prompt,
+            data = await self._chat_json_with_augment(
+                retrieval=self._retrieval,
+                snapshot_id=snapshot_id,
+                provider_id=provider_id,
+                model_id=model_id,
+                system_prompt=AGENT_D_SYSTEM,
+                user_prompt=user_prompt,
                 schema_hint=AGENT_D_SCHEMA_STR,
                 max_completion_tokens=_profile.tokens_conventions,
+                retrieval_section=RetrievalSection.CONVENTIONS,
+                profile=_profile,
+                agent_tag="ConventionsAgent",
             )
             for k in _ASPECT_KEYS:
                 data[k] = _coerce_aspect(data.get(k))

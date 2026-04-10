@@ -17,8 +17,8 @@ from ..prompts import AGENT_A_SCHEMA_STR, AGENT_A_SYSTEM, render_bundle
 from ..schemas import validate_section
 from ._context_builders import (
     PipelineMemoryContext,
-    _DOC_PATTERNS,
     _MANIFEST_PATTERNS,
+    _fetch_docs_with_fallback,
     _fetch_files_by_pattern,
     fetch_folder_tree,
 )
@@ -40,9 +40,7 @@ async def _gather_context(
             max_results=profile.retrieval_max_results,
         )
     )
-    doc_task = _fetch_files_by_pattern(
-        snapshot_id, _DOC_PATTERNS, char_limit=profile.retrieval_doc_char_limit, max_rows=4
-    )
+    doc_task = _fetch_docs_with_fallback(retrieval, snapshot_id, profile)
     manifest_task = _fetch_files_by_pattern(
         snapshot_id, _MANIFEST_PATTERNS, char_limit=profile.retrieval_manifest_char_limit
     )

@@ -80,13 +80,18 @@ class ImportantFilesAgent(BaseTypedAgent):
             paths = [e.rel_path for e in bundle.evidences]
             prefix = f"{graph_block}\n\n" if graph_block else ""
             user_prompt = f"{prefix}snapshot_id={snapshot_id}\n\nEvidence:\n{render_bundle(bundle)}"
-            data = await self._chat_json_typed(
-                provider_id,
-                model_id,
-                AGENT_G_SYSTEM,
-                user_prompt,
-                AGENT_G_SCHEMA_STR,
+            data = await self._chat_json_with_augment(
+                retrieval=self._retrieval,
+                snapshot_id=snapshot_id,
+                provider_id=provider_id,
+                model_id=model_id,
+                system_prompt=AGENT_G_SYSTEM,
+                user_prompt=user_prompt,
+                schema_hint=AGENT_G_SCHEMA_STR,
                 max_completion_tokens=_profile.tokens_important_files,
+                retrieval_section=RetrievalSection.IMPORTANT_FILES,
+                profile=_profile,
+                agent_tag="ImportantFilesAgent",
             )
             slot_keys = (
                 "entrypoint",

@@ -85,13 +85,18 @@ class RiskAgent(BaseTypedAgent):
                 f"Static risk findings (FACTS — do not contradict):\n{static_ctx}\n\n"
                 f"Code evidence:\n{render_bundle(bundle)}"
             )
-            data = await self._chat_json_typed(
-                provider_id,
-                model_id,
-                AGENT_J_SYSTEM,
-                user_prompt,
-                AGENT_J_SCHEMA_STR,
+            data = await self._chat_json_with_augment(
+                retrieval=self._retrieval,
+                snapshot_id=snapshot_id,
+                provider_id=provider_id,
+                model_id=model_id,
+                system_prompt=AGENT_J_SYSTEM,
+                user_prompt=user_prompt,
+                schema_hint=AGENT_J_SCHEMA_STR,
                 max_completion_tokens=_profile.tokens_risk,
+                retrieval_section=RetrievalSection.IMPORTANT_FILES,
+                profile=_profile,
+                agent_tag="RiskAgent",
             )
             raw_findings = data.get("findings")
             findings: list[dict[str, Any]] = []

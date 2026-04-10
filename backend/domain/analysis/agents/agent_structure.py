@@ -97,13 +97,18 @@ class StructureAgent(BaseTypedAgent):
                 )
             user_prompt_parts.append(f"\n--- Retrieval evidence ---\n{render_bundle(bundle)}")
             user_prompt = "\n".join(user_prompt_parts)
-            data = await self._chat_json_typed(
-                provider_id,
-                model_id,
-                AGENT_C_SYSTEM,
-                user_prompt,
-                AGENT_C_SCHEMA_STR,
+            data = await self._chat_json_with_augment(
+                retrieval=self._retrieval,
+                snapshot_id=snapshot_id,
+                provider_id=provider_id,
+                model_id=model_id,
+                system_prompt=AGENT_C_SYSTEM,
+                user_prompt=user_prompt,
+                schema_hint=AGENT_C_SCHEMA_STR,
                 max_completion_tokens=_profile.tokens_structure,
+                retrieval_section=RetrievalSection.ARCHITECTURE,
+                profile=_profile,
+                agent_tag="StructureAgent",
             )
             raw_folders = data.get("folders")
             folders: list[dict[str, str]] = []
