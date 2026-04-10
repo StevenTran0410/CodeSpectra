@@ -14,7 +14,7 @@ async def list_workspaces() -> list[Workspace]:
 
 @router.post("/", response_model=Workspace, status_code=201)
 async def create_workspace(body: CreateWorkspaceRequest) -> Workspace:
-    return await _service.create(body.name)
+    return await _service.create(body.name, body.description)
 
 
 @router.get("/{workspace_id}", response_model=Workspace)

@@ -12,7 +12,7 @@ class WorkspaceService:
     async def list_all(self) -> list[Workspace]:
         db = get_db()
         async with db.execute(
-            "SELECT id, name, created_at, updated_at, settings FROM workspaces ORDER BY created_at ASC"
+            "SELECT id, name, description, created_at, updated_at, settings FROM workspaces ORDER BY created_at ASC"
         ) as cur:
             rows = await cur.fetchall()
         return [self._row_to_workspace(r) for r in rows]
@@ -20,7 +20,7 @@ class WorkspaceService:
     async def get_by_id(self, workspace_id: str) -> Workspace:
         db = get_db()
         async with db.execute(
-            "SELECT id, name, created_at, updated_at, settings FROM workspaces WHERE id = ?",
+            "SELECT id, name, description, created_at, updated_at, settings FROM workspaces WHERE id = ?",
             (workspace_id,),
         ) as cur:
             row = await cur.fetchone()
@@ -28,7 +28,7 @@ class WorkspaceService:
             raise NotFoundError("Workspace", workspace_id)
         return self._row_to_workspace(row)
 
-    async def create(self, name: str) -> Workspace:
+    async def create(self, name: str, description: str | None = None) -> Workspace:
         db = get_db()
 
         # Check for duplicate name
@@ -42,12 +42,12 @@ class WorkspaceService:
         ws_id = new_id()
         now = utc_now_iso()
         await db.execute(
-            "INSERT INTO workspaces (id, name, created_at, updated_at, settings) VALUES (?, ?, ?, ?, ?)",
-            (ws_id, name, now, now, "{}"),
+            "INSERT INTO workspaces (id, name, description, created_at, updated_at, settings) VALUES (?, ?, ?, ?, ?, ?)",
+            (ws_id, name, description, now, now, "{}"),
         )
         await db.commit()
         logger.info(f"Created workspace '{name}' ({ws_id})")
-        return Workspace(id=ws_id, name=name, created_at=now, updated_at=now, settings={})
+        return Workspace(id=ws_id, name=name, description=description, created_at=now, updated_at=now, settings={})
 
     async def rename(self, workspace_id: str, new_name: str) -> Workspace:
         db = get_db()
@@ -75,11 +75,58 @@ class WorkspaceService:
 
     async def delete(self, workspace_id: str) -> None:
         db = get_db()
+
+        # Verify workspace exists before cascade
         async with db.execute(
-            "DELETE FROM workspaces WHERE id = ?", (workspace_id,)
+            "SELECT 1 FROM workspaces WHERE id = ?", (workspace_id,)
         ) as cur:
-            if cur.rowcount == 0:
+            if not await cur.fetchone():
                 raise NotFoundError("Workspace", workspace_id)
+
+        # Collect all repo IDs and snapshot IDs belonging to this workspace
+        async with db.execute(
+            "SELECT id FROM local_repos WHERE workspace_id = ?", (workspace_id,)
+        ) as cur:
+            repo_rows = await cur.fetchall()
+        repo_ids = [r["id"] for r in repo_rows]
+
+        snapshot_ids: list[str] = []
+        if repo_ids:
+            placeholders = ",".join("?" * len(repo_ids))
+            async with db.execute(
+                f"SELECT id FROM repo_snapshots WHERE local_repo_id IN ({placeholders})",
+                repo_ids,
+            ) as cur:
+                snap_rows = await cur.fetchall()
+            snapshot_ids = [r["id"] for r in snap_rows]
+
+        # Cascade: snapshot children
+        if snapshot_ids:
+            ph = ",".join("?" * len(snapshot_ids))
+            for table in (
+                "manifest_files",
+                "code_symbols",
+                "repo_maps",
+                "structural_graph_edges",
+                "structural_graph_summaries",
+                "retrieval_chunks",
+                "retrieval_indexes",
+            ):
+                await db.execute(f"DELETE FROM {table} WHERE snapshot_id IN ({ph})", snapshot_ids)
+            await db.execute(f"DELETE FROM repo_snapshots WHERE id IN ({ph})", snapshot_ids)
+
+        # Cascade: jobs + analysis_reports for this workspace's repos
+        if repo_ids:
+            ph = ",".join("?" * len(repo_ids))
+            await db.execute(
+                f"DELETE FROM analysis_reports WHERE job_id IN (SELECT id FROM jobs WHERE repo_id IN ({ph}))",
+                repo_ids,
+            )
+            await db.execute(f"DELETE FROM jobs WHERE repo_id IN ({ph})", repo_ids)
+            await db.execute(f"DELETE FROM local_repos WHERE id IN ({ph})", repo_ids)
+
+        # NOTE: provider_configs are global (not workspace-scoped) and are intentionally NOT deleted.
+        await db.execute("DELETE FROM workspaces WHERE id = ?", (workspace_id,))
         await db.commit()
         logger.info(f"Deleted workspace {workspace_id}")
 
@@ -90,6 +137,7 @@ class WorkspaceService:
         return Workspace(
             id=row["id"],
             name=row["name"],
+            description=row["description"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             settings=settings,

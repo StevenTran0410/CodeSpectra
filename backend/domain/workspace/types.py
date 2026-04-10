@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field, field_validator
 class Workspace(BaseModel):
     id: str
     name: str
+    description: str | None = None
     created_at: str
     updated_at: str
     settings: dict = Field(default_factory=dict)
@@ -11,6 +12,7 @@ class Workspace(BaseModel):
 
 class CreateWorkspaceRequest(BaseModel):
     name: str
+    description: str | None = None
 
     @field_validator("name")
     @classmethod

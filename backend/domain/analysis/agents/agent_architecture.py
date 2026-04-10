@@ -90,13 +90,18 @@ class ArchitectureAgent(BaseTypedAgent):
                 prefix_parts.append(graph_block)
             prefix = "\n\n".join(prefix_parts) + ("\n\n" if prefix_parts else "")
             user_prompt = f"{prefix}snapshot_id={snapshot_id}\n\nEvidence:\n{render_bundle(bundle)}"
-            data = await self._chat_json_typed(
-                provider_id,
-                model_id,
-                AGENT_B_SYSTEM,
-                user_prompt,
-                AGENT_B_SCHEMA_STR,
+            data = await self._chat_json_with_augment(
+                retrieval=self._retrieval,
+                snapshot_id=snapshot_id,
+                provider_id=provider_id,
+                model_id=model_id,
+                system_prompt=AGENT_B_SYSTEM,
+                user_prompt=user_prompt,
+                schema_hint=AGENT_B_SCHEMA_STR,
                 max_completion_tokens=_profile.tokens_architecture,
+                retrieval_section=RetrievalSection.ARCHITECTURE,
+                profile=_profile,
+                agent_tag="ArchitectureAgent",
             )
             for key in (
                 "main_layers",

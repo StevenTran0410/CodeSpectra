@@ -44,7 +44,7 @@ export default function Home(): React.ReactElement {
         {modal.type === 'create' && (
           <WorkspaceModal
             mode="create"
-            onConfirm={(name) => create(name).then(() => {})}
+            onConfirm={(name, description) => create(name, description).then(() => {})}
             onClose={() => setModal({ type: 'none' })}
           />
         )}
@@ -69,7 +69,7 @@ export default function Home(): React.ReactElement {
         {workspaces.map((ws) => (
           <div
             key={ws.id}
-            className={`card p-4 cursor-pointer transition-colors hover:border-gray-600 relative ${
+            className={`card p-4 cursor-pointer transition-colors hover:border-gray-600 relative group ${
               ws.id === activeWorkspaceId ? 'border-blue-700 bg-blue-950/20' : ''
             }`}
             onClick={() => setActive(ws.id)}
@@ -83,9 +83,14 @@ export default function Home(): React.ReactElement {
                 </div>
                 <div className="min-w-0">
                   <p className="text-sm font-medium text-gray-100 truncate">{ws.name}</p>
-                  <p className="text-xs text-gray-500 mt-0.5">
-                    Created {new Date(ws.created_at).toLocaleDateString()}
-                  </p>
+                  {ws.description && (
+                    <p className="text-xs text-gray-500 mt-0.5 truncate">{ws.description}</p>
+                  )}
+                  {!ws.description && (
+                    <p className="text-xs text-gray-500 mt-0.5">
+                      Created {new Date(ws.created_at).toLocaleDateString()}
+                    </p>
+                  )}
                 </div>
               </div>
 
@@ -148,7 +153,7 @@ export default function Home(): React.ReactElement {
       {modal.type === 'create' && (
         <WorkspaceModal
           mode="create"
-          onConfirm={(name) => create(name).then(() => {})}
+          onConfirm={(name, description) => create(name, description).then(() => {})}
           onClose={() => setModal({ type: 'none' })}
         />
       )}

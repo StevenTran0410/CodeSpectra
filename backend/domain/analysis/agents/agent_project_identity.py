@@ -123,13 +123,18 @@ class ProjectIdentityAgent(BaseTypedAgent):
                 user_prompt_parts.append(f"\n--- Manifest / dependency files ---\n{manifest_ctx}")
             user_prompt_parts.append(f"\n--- Retrieval evidence ---\n{render_bundle(bundle)}")
             user_prompt = "\n".join(user_prompt_parts)
-            data = await self._chat_json_typed(
-                provider_id,
-                model_id,
-                AGENT_A_SYSTEM,
-                user_prompt,
-                AGENT_A_SCHEMA_STR,
+            data = await self._chat_json_with_augment(
+                retrieval=self._retrieval,
+                snapshot_id=snapshot_id,
+                provider_id=provider_id,
+                model_id=model_id,
+                system_prompt=AGENT_A_SYSTEM,
+                user_prompt=user_prompt,
+                schema_hint=AGENT_A_SCHEMA_STR,
                 max_completion_tokens=_profile.tokens_project_identity,
+                retrieval_section=RetrievalSection.IMPORTANT_FILES,
+                profile=_profile,
+                agent_tag="ProjectIdentityAgent",
             )
             for key in ("repo_name", "domain", "purpose", "runtime_type", "business_context"):
                 data[key] = str(data.get(key, "") or "")

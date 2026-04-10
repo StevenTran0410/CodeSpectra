@@ -9,6 +9,7 @@ import { toErrorMessage } from '../../lib/errors'
 import { useJobStore } from '../../store/job.store'
 import { useLocalRepoStore } from '../../store/local-repo.store'
 import { useProviderStore } from '../../store/provider.store'
+import { useWorkspaceStore } from '../../store/workspace.store'
 import type {
   SectionA,
   SectionB,
@@ -101,8 +102,9 @@ export default function AnalysisRunScreen(): React.ReactElement {
     }
   })()
 
+  const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId)
   const { repos, load: loadRepos } = useLocalRepoStore()
-  const { providers, load: loadProviders, fetchModels, modelLists, loadingModels } = useProviderStore()
+  const { providers, load: loadProviders, fetchModels, modelLists, loadingModels, modelErrors } = useProviderStore()
   const { activeJob, startPolling, cancel, clearActive, loadHistory } = useJobStore()
 
   const showLiveSections =
@@ -143,11 +145,11 @@ export default function AnalysisRunScreen(): React.ReactElement {
   } | null>(null)
 
   useEffect(() => {
-    loadRepos()
+    loadRepos(activeWorkspaceId ?? undefined)
     loadProviders()
     window.api.consent.checkCloud().then((v) => setCloudConsentGiven(v.given)).catch(() => null)
     loadHistory()
-  }, [loadRepos, loadProviders, loadHistory])
+  }, [loadRepos, loadProviders, loadHistory, activeWorkspaceId])
 
   useEffect(() => {
     if (repos.length === 0) {
@@ -162,7 +164,9 @@ export default function AnalysisRunScreen(): React.ReactElement {
   }, [repoId, repos, snapshotId])
 
   useEffect(() => {
-    if (!providerId && providers.length > 0) {
+    if (providers.length === 0) return
+    // Reset if providerId is empty OR points to a provider that no longer exists (stale localStorage)
+    if (!providerId || !providers.some((p) => p.id === providerId)) {
       setProviderId(providers[0].id)
       setModelId(providers[0].model_id)
     }
@@ -224,9 +228,25 @@ export default function AnalysisRunScreen(): React.ReactElement {
     return []
   }, [modelLists, providerId, selectedProvider])
 
+  // Auto-fetch model list whenever provider changes (including on mount)
+  useEffect(() => {
+    if (providerId) fetchModels(providerId)
+  }, [providerId, fetchModels])
+
+  // Once model list loads, pick first option if current modelId is not in the list
+  useEffect(() => {
+    if (modelOptions.length > 0 && !modelOptions.includes(modelId)) {
+      setModelId(modelOptions[0])
+    }
+  }, [modelOptions, modelId])
+
+  const selectedSnapshot = snapshots.find((s) => s.id === snapshotId) ?? null
+  const snapshotReady = selectedSnapshot?.status === 'ready'
+
   const canStart =
     !!repoId &&
     !!snapshotId &&
+    snapshotReady &&
     !!providerId &&
     !!modelId &&
     (privacyMode !== 'byok_cloud' || cloudConsentGiven || cloudWarningAck)
@@ -319,15 +339,32 @@ export default function AnalysisRunScreen(): React.ReactElement {
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-            <select
-              value={modelId}
-              onChange={(e) => setModelId(e.target.value)}
-              className="bg-zinc-950 border border-zinc-700 rounded-md px-2 py-2 text-sm text-zinc-100"
-            >
-              {(modelOptions.length > 0 ? modelOptions : ['']).map((m) => (
-                <option key={m} value={m}>{m || '(no model)'}</option>
-              ))}
-            </select>
+            <div className="flex gap-1.5">
+              <select
+                value={modelId}
+                onChange={(e) => setModelId(e.target.value)}
+                className="flex-1 min-w-0 bg-zinc-950 border border-zinc-700 rounded-md px-2 py-2 text-sm text-zinc-100"
+              >
+                {(modelOptions.length > 0 ? modelOptions : ['']).map((m) => (
+                  <option key={m} value={m}>{m || '(no model)'}</option>
+                ))}
+              </select>
+              <button
+                type="button"
+                title="Fetch available models from provider"
+                disabled={!providerId || !!loadingModels[providerId]}
+                onClick={() => providerId && fetchModels(providerId)}
+                className="shrink-0 flex items-center justify-center w-8 h-8 mt-0.5 rounded-md border border-zinc-700 bg-zinc-950 text-zinc-400 hover:text-zinc-100 hover:border-zinc-500 disabled:opacity-40 transition-colors"
+              >
+                <Loader2
+                  size={14}
+                  className={loadingModels[providerId] ? 'animate-spin' : ''}
+                />
+              </button>
+            </div>
+            {modelErrors[providerId] && (
+              <div className="col-span-full text-[11px] text-rose-400 -mt-1">{modelErrors[providerId]}</div>
+            )}
             <div className="text-xs text-zinc-500 flex items-center">
               {estimating ? (
                 <span className="inline-flex items-center gap-1"><Loader2 size={12} className="animate-spin" /> Estimating...</span>
@@ -384,6 +421,16 @@ export default function AnalysisRunScreen(): React.ReactElement {
               Large codebase mode
             </label>
           </div>
+
+          {snapshotId && !snapshotReady && selectedSnapshot && (
+            <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 text-amber-200 text-xs px-3 py-2 space-y-1">
+              <div className="font-medium">Snapshot not ready for analysis</div>
+              <div className="text-amber-300/80">
+                This snapshot has status <span className="font-mono text-amber-200">{selectedSnapshot.status}</span>.
+                Go to <span className="font-medium">Repositories</span> → prepare a snapshot and wait for it to complete before running analysis.
+              </div>
+            </div>
+          )}
 
           <div className="flex items-center gap-2">
             <button

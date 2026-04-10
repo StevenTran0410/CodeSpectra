@@ -9,11 +9,14 @@ import {
   FileText,
   Settings,
   ChevronDown,
-  Plus
+  Plus,
+  Sun,
+  Moon
 } from 'lucide-react'
 import { useWorkspaceStore } from '../../store/workspace.store'
 import { useState } from 'react'
 import { WorkspaceModal } from '../workspace/WorkspaceModal'
+import { useTheme } from '../../hooks/useTheme'
 
 const NAV_ITEMS = [
   { path: '/', label: 'Home', icon: Home, end: true },
@@ -29,6 +32,7 @@ export function Sidebar(): React.ReactElement {
   const [showWorkspacePicker, setShowWorkspacePicker] = useState(false)
   const [showCreateModal, setShowCreateModal] = useState(false)
   const navigate = useNavigate()
+  const { isDark, toggle } = useTheme()
 
   const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId)
 
@@ -109,8 +113,8 @@ export function Sidebar(): React.ReactElement {
           ))}
         </nav>
 
-        {/* Settings at bottom */}
-        <div className="px-2 py-2 border-t border-surface-border">
+        {/* Settings + theme toggle at bottom */}
+        <div className="px-2 py-2 border-t border-surface-border space-y-0.5">
           <NavLink
             to="/settings"
             className={({ isActive }) =>
@@ -124,13 +128,21 @@ export function Sidebar(): React.ReactElement {
             <Settings className="w-4 h-4 shrink-0" />
             Settings
           </NavLink>
+          <button
+            className="btn-ghost w-full justify-start px-2.5 py-2 text-sm"
+            aria-label="Toggle theme"
+            onClick={toggle}
+          >
+            {isDark ? <Sun className="w-4 h-4 shrink-0" /> : <Moon className="w-4 h-4 shrink-0" />}
+            {isDark ? 'Light mode' : 'Dark mode'}
+          </button>
         </div>
       </aside>
 
       {showCreateModal && (
         <WorkspaceModal
           mode="create"
-          onConfirm={(name) => create(name).then(() => {})}
+          onConfirm={(name, description) => create(name, description).then(() => {})}
           onClose={() => setShowCreateModal(false)}
         />
       )}

@@ -44,7 +44,7 @@ export default function RepositoriesScreen(): React.ReactElement {
     [repos, selectedRepoId],
   )
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => { load(activeWorkspaceId ?? undefined) }, [load, activeWorkspaceId])
 
   useEffect(() => {
     if (!selectedRepoId && repos.length > 0) setSelectedRepoId(repos[0].id)

@@ -4,12 +4,13 @@ import { X } from 'lucide-react'
 interface Props {
   mode: 'create' | 'rename'
   initialName?: string
-  onConfirm: (name: string) => Promise<void>
+  onConfirm: (name: string, description?: string) => Promise<void>
   onClose: () => void
 }
 
 export function WorkspaceModal({ mode, initialName = '', onConfirm, onClose }: Props): React.ReactElement {
   const [name, setName] = useState(initialName)
+  const [description, setDescription] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -27,7 +28,7 @@ export function WorkspaceModal({ mode, initialName = '', onConfirm, onClose }: P
     setLoading(true)
     setError(null)
     try {
-      await onConfirm(trimmed)
+      await onConfirm(trimmed, mode === 'create' ? description.trim() || undefined : undefined)
       onClose()
     } catch (err) {
       setError(String(err))
@@ -64,6 +65,21 @@ export function WorkspaceModal({ mode, initialName = '', onConfirm, onClose }: P
             />
             {error && <p className="text-red-400 text-xs mt-1.5">{error}</p>}
           </div>
+
+          {mode === 'create' && (
+            <div>
+              <label className="block text-xs text-gray-400 mb-1.5">Description <span className="text-gray-600">(optional)</span></label>
+              <textarea
+                className="input resize-none"
+                placeholder="What is this workspace for?"
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                maxLength={200}
+                rows={2}
+                disabled={loading}
+              />
+            </div>
+          )}
 
           <div className="flex gap-2 justify-end pt-1">
             <button type="button" className="btn-secondary" onClick={onClose} disabled={loading}>

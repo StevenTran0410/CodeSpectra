@@ -10,7 +10,7 @@ import type {
 const api = {
   workspace: {
     list: (): Promise<Workspace[]> => ipcRenderer.invoke('workspace:list'),
-    create: (name: string): Promise<Workspace> => ipcRenderer.invoke('workspace:create', name),
+    create: (name: string, description?: string): Promise<Workspace> => ipcRenderer.invoke('workspace:create', name, description),
     rename: (id: string, name: string): Promise<Workspace> =>
       ipcRenderer.invoke('workspace:rename', id, name),
     delete: (id: string): Promise<void> => ipcRenderer.invoke('workspace:delete', id)
@@ -35,8 +35,8 @@ const api = {
   folder: {
     pick: (): Promise<string | null> => ipcRenderer.invoke('folder:pick'),
     validate: (path: string) => ipcRenderer.invoke('folder:validate', path),
-    list: () => ipcRenderer.invoke('folder:list'),
-    add: (path: string) => ipcRenderer.invoke('folder:add', path),
+    list: (workspaceId?: string) => ipcRenderer.invoke('folder:list', workspaceId),
+    add: (path: string, workspaceId?: string) => ipcRenderer.invoke('folder:add', path, workspaceId),
     remove: (id: string): Promise<void> => ipcRenderer.invoke('folder:remove', id),
     revalidate: (id: string) => ipcRenderer.invoke('folder:revalidate', id),
     branches: (id: string, refresh = false): Promise<string[]> =>
@@ -54,7 +54,7 @@ const api = {
       }
     ) => ipcRenderer.invoke('folder:updateSettings', id, settings),
     estimateFileCount: (id: string) => ipcRenderer.invoke('folder:estimateFileCount', id),
-    cloneFromUrl: (url: string) => ipcRenderer.invoke('folder:cloneFromUrl', url)
+    cloneFromUrl: (url: string, workspaceId?: string) => ipcRenderer.invoke('folder:cloneFromUrl', url, workspaceId)
   },
   sync: {
     prepare: (body: {

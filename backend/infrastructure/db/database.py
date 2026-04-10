@@ -297,6 +297,20 @@ _MIGRATIONS: list[dict[str, Any]] = [
             ALTER TABLE analysis_reports ADD COLUMN large_codebase_mode INTEGER NOT NULL DEFAULT 0;
         """,
     },
+    {
+        "version": 17,
+        "description": "Add description column to workspaces (CS-020)",
+        "sql": """
+            ALTER TABLE workspaces ADD COLUMN description TEXT DEFAULT NULL;
+        """,
+    },
+    {
+        "version": 18,
+        "description": "Add workspace_id to local_repos for workspace-scoped repo lists (CS-020)",
+        "sql": """
+            ALTER TABLE local_repos ADD COLUMN workspace_id TEXT;
+        """,
+    },
 ]
 
 TARGET_VERSION = len(_MIGRATIONS) - 1

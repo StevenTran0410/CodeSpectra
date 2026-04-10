@@ -23,12 +23,14 @@ export function registerFolderHandlers(client: BackendClient): void {
 
   ipcMain.handle(
     'folder:list',
-    () => client.get('/api/local-repo/')
+    (_event, workspaceId?: string) =>
+      client.get(`/api/local-repo/${workspaceId ? `?workspace_id=${encodeURIComponent(workspaceId)}` : ''}`)
   )
 
   ipcMain.handle(
     'folder:add',
-    (_event, path: string) => client.post('/api/local-repo/', { path })
+    (_event, path: string, workspaceId?: string) =>
+      client.post('/api/local-repo/', { path, workspace_id: workspaceId ?? null })
   )
 
   ipcMain.handle(
@@ -80,10 +82,10 @@ export function registerFolderHandlers(client: BackendClient): void {
    * Destination is auto-resolved to ~/CodeSpectra/repos/<repo-name>.
    * Returns the registered LocalRepo on success.
    */
-  ipcMain.handle('folder:cloneFromUrl', async (_event, url: string) => {
+  ipcMain.handle('folder:cloneFromUrl', async (_event, url: string, workspaceId?: string) => {
     const repoName = url.split('/').pop()?.replace(/\.git$/, '') ?? 'repo'
     const destPath = path.join(app.getPath('home'), 'CodeSpectra', 'repos', repoName)
-    return client.post('/api/local-repo/clone', { url, dest_path: destPath })
+    return client.post('/api/local-repo/clone', { url, dest_path: destPath, workspace_id: workspaceId ?? null })
   })
 
   ipcMain.handle(

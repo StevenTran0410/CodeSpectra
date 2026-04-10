@@ -12,10 +12,10 @@ interface LocalRepoState {
   branchesMap: Record<string, string[]>     // repo_id → branch list
   loadingBranchesId: string | null
 
-  load: () => Promise<void>
+  load: (workspaceId?: string) => Promise<void>
   validate: (path: string) => Promise<ValidateFolderResponse | null>
   clearValidation: () => void
-  add: (path: string) => Promise<LocalRepo | null>
+  add: (path: string, workspaceId?: string) => Promise<LocalRepo | null>
   remove: (id: string) => Promise<void>
   revalidate: (id: string) => Promise<void>
   loadBranches: (id: string, refresh?: boolean) => Promise<void>
@@ -34,10 +34,10 @@ export const useLocalRepoStore = create<LocalRepoState>((set, get) => ({
   branchesMap: {},
   loadingBranchesId: null,
 
-  load: async () => {
+  load: async (workspaceId?: string) => {
     set({ loading: true, error: null })
     try {
-      const repos = await window.api.folder.list()
+      const repos = await window.api.folder.list(workspaceId)
       set({ repos, loading: false })
     } catch (err) {
       set({ loading: false, error: String(err) })
@@ -58,10 +58,10 @@ export const useLocalRepoStore = create<LocalRepoState>((set, get) => ({
 
   clearValidation: () => set({ validation: null }),
 
-  add: async (path: string) => {
+  add: async (path: string, workspaceId?: string) => {
     set({ adding: true, error: null })
     try {
-      const repo = await window.api.folder.add(path)
+      const repo = await window.api.folder.add(path, workspaceId)
       set((s) => ({ repos: [...s.repos, repo], adding: false, validation: null }))
       return repo
     } catch (err) {

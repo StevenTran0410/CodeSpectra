@@ -2,6 +2,22 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Light mode (default) */
+:root {
+  --surface: #f0f2f5;
+  --surface-raised: #ffffff;
+  --surface-overlay: #e8eaed;
+  --surface-border: #d0d7de;
+}
+
+/* Dark mode */
+.dark {
+  --surface: #0f1117;
+  --surface-raised: #161b22;
+  --surface-overlay: #1c2128;
+  --surface-border: #30363d;
+}
+
 @layer base {
   * {
     box-sizing: border-box;
@@ -18,21 +34,157 @@
   }
 
   body {
-    background-color: #0f1117;
+    background-color: var(--surface);
     color: #e6edf3;
     font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     font-size: 14px;
     user-select: none;
   }
 
-  /* Allow text selection and normal input behaviour inside editable elements */
-  input,
-  textarea,
-  [contenteditable] {
-    user-select: text;
-    -webkit-user-select: text;
-    cursor: text;
+  /* ── Light mode overrides ─────────────────────────────────────────────────
+     Remap all hardcoded dark-tone classes without touching components.
+     Pattern: dark-bright → light-dark (invert luminance).
+  ── */
+
+  /* Body text */
+  html:not(.dark) body { color: #111827; }
+
+  /* gray-* text — dark-first design uses gray-100 as primary, gray-400 as muted */
+  html:not(.dark) .text-gray-100 { color: #111827; }
+  html:not(.dark) .text-gray-200 { color: #1f2937; }
+  html:not(.dark) .text-gray-300 { color: #374151; }
+  html:not(.dark) .text-gray-400 { color: #4b5563; }
+  html:not(.dark) .text-gray-500 { color: #6b7280; }
+  html:not(.dark) .text-gray-600 { color: #9ca3af; }
+
+  /* zinc-* text */
+  html:not(.dark) .text-zinc-100 { color: #0f172a; }
+  html:not(.dark) .text-zinc-200 { color: #1e293b; }
+  html:not(.dark) .text-zinc-300 { color: #334155; }
+  html:not(.dark) .text-zinc-400 { color: #475569; }
+  html:not(.dark) .text-zinc-500 { color: #64748b; }
+  html:not(.dark) .text-zinc-600 { color: #94a3b8; }
+
+  /* zinc-* backgrounds — solid variants */
+  html:not(.dark) .bg-zinc-950 { background-color: #f8fafc; }
+  html:not(.dark) .bg-zinc-900 { background-color: #f1f5f9; }
+  html:not(.dark) .bg-zinc-800 { background-color: #e2e8f0; }
+  html:not(.dark) .bg-zinc-700 { background-color: #cbd5e1; }
+
+  /* zinc-* backgrounds — opacity variants (Tailwind escapes the slash in class name) */
+  html:not(.dark) .bg-zinc-950\/50  { background-color: rgba(248, 250, 252, 0.5);  }
+  html:not(.dark) .bg-zinc-900\/60  { background-color: rgba(241, 245, 249, 0.6);  }
+  html:not(.dark) .bg-zinc-900\/40  { background-color: rgba(241, 245, 249, 0.4);  }
+  html:not(.dark) .bg-zinc-800\/60  { background-color: rgba(226, 232, 240, 0.6);  }
+  html:not(.dark) .bg-zinc-800\/40  { background-color: rgba(226, 232, 240, 0.4);  }
+
+  /* zinc-* borders */
+  html:not(.dark) .border-zinc-800 { border-color: #e2e8f0; }
+  html:not(.dark) .border-zinc-700 { border-color: #cbd5e1; }
+  html:not(.dark) .border-zinc-600 { border-color: #94a3b8; }
+
+  /* hover border variants */
+  html:not(.dark) .hover\:border-zinc-600:hover { border-color: #94a3b8; }
+  html:not(.dark) .hover\:border-zinc-500:hover { border-color: #64748b; }
+
+  /* Inputs & selects — typically use bg-zinc-950 / border-zinc-700 */
+  html:not(.dark) select,
+  html:not(.dark) input[type="text"],
+  html:not(.dark) input[type="password"],
+  html:not(.dark) input[type="email"],
+  html:not(.dark) input[type="search"],
+  html:not(.dark) textarea {
+    background-color: #ffffff;
+    border-color: #d0d7de;
+    color: #111827;
   }
+  html:not(.dark) select option {
+    background-color: #ffffff;
+    color: #111827;
+  }
+
+  /* Report section cards — rose/amber/emerald text on dark bg → remap for light */
+  html:not(.dark) .text-amber-100  { color: #92400e; }
+  html:not(.dark) .text-amber-200  { color: #b45309; }
+  html:not(.dark) .text-rose-300   { color: #be123c; }
+  html:not(.dark) .text-rose-400   { color: #e11d48; }
+  html:not(.dark) .text-emerald-300 { color: #065f46; }
+  html:not(.dark) .text-emerald-400 { color: #047857; }
+  html:not(.dark) .text-indigo-300  { color: #3730a3; }
+  html:not(.dark) .text-indigo-400  { color: #4338ca; }
+  html:not(.dark) .text-blue-300    { color: #1d4ed8; }
+  html:not(.dark) .text-blue-400    { color: #2563eb; }
+  html:not(.dark) .text-violet-300  { color: #5b21b6; }
+  html:not(.dark) .text-violet-400  { color: #6d28d9; }
+  html:not(.dark) .text-sky-300     { color: #0369a1; }
+  html:not(.dark) .text-sky-400     { color: #0284c7; }
+  html:not(.dark) .text-orange-300  { color: #92400e; }
+  html:not(.dark) .text-orange-400  { color: #b45309; }
+
+  /* Additional color overrides for Report section card badges */
+  html:not(.dark) .text-teal-300    { color: #0f766e; }
+  html:not(.dark) .text-teal-400    { color: #0d9488; }
+  html:not(.dark) .text-cyan-300    { color: #0e7490; }
+  html:not(.dark) .text-cyan-400    { color: #0891b2; }
+  html:not(.dark) .text-green-300   { color: #15803d; }
+  html:not(.dark) .text-green-400   { color: #16a34a; }
+  html:not(.dark) .text-red-300     { color: #b91c1c; }
+  html:not(.dark) .text-red-400     { color: #dc2626; }
+  html:not(.dark) .text-purple-300  { color: #7e22ce; }
+  html:not(.dark) .text-purple-400  { color: #9333ea; }
+  html:not(.dark) .text-lime-300    { color: #4d7c0f; }
+  html:not(.dark) .text-lime-400    { color: #65a30d; }
+  html:not(.dark) .text-yellow-300  { color: #a16207; }
+  html:not(.dark) .text-yellow-400  { color: #ca8a04; }
+  html:not(.dark) .text-rose-200    { color: #9f1239; }
+  html:not(.dark) .text-indigo-200  { color: #3730a3; }
+  html:not(.dark) .text-slate-300   { color: #475569; }
+  html:not(.dark) .text-slate-400   { color: #64748b; }
+  html:not(.dark) .text-amber-300   { color: #92400e; }
+  html:not(.dark) .text-amber-400   { color: #b45309; }
+
+  /* Section card badge backgrounds — dark-toned → light tints */
+  html:not(.dark) .bg-indigo-900\/50 { background-color: rgba(238, 242, 255, 0.5); }
+  html:not(.dark) .bg-sky-900\/50    { background-color: rgba(240, 249, 255, 0.5); }
+  html:not(.dark) .bg-teal-900\/50   { background-color: rgba(240, 253, 250, 0.5); }
+  html:not(.dark) .bg-green-900\/50  { background-color: rgba(240, 253, 244, 0.5); }
+  html:not(.dark) .bg-red-900\/40    { background-color: rgba(254, 242, 242, 0.5); }
+  html:not(.dark) .bg-purple-900\/50 { background-color: rgba(250, 245, 255, 0.5); }
+  html:not(.dark) .bg-violet-900\/50 { background-color: rgba(245, 243, 255, 0.5); }
+  html:not(.dark) .bg-amber-900\/40  { background-color: rgba(255, 251, 235, 0.5); }
+  html:not(.dark) .bg-cyan-900\/50   { background-color: rgba(236, 254, 255, 0.5); }
+  html:not(.dark) .bg-rose-900\/40   { background-color: rgba(255, 241, 242, 0.5); }
+  html:not(.dark) .bg-orange-900\/50 { background-color: rgba(255, 247, 237, 0.5); }
+  html:not(.dark) .bg-lime-900\/50   { background-color: rgba(247, 254, 231, 0.5); }
+
+  /* Section card badge backgrounds — other opacity variants used in SectionCard */
+  html:not(.dark) .bg-zinc-950\/80   { background-color: rgba(248, 250, 252, 0.8); }
+  html:not(.dark) .bg-zinc-950\/20   { background-color: rgba(248, 250, 252, 0.2); }
+  html:not(.dark) .bg-rose-950\/20   { background-color: rgba(255, 241, 242, 0.2); }
+  html:not(.dark) .bg-amber-500\/10  { background-color: rgba(255, 251, 235, 0.5); }
+  html:not(.dark) .bg-amber-500\/15  { background-color: rgba(255, 251, 235, 0.6); }
+
+  /* Blind spots box — amber opacity variants */
+  html:not(.dark) .bg-amber-950\/20   { background-color: rgba(255, 251, 235, 0.85); }
+  html:not(.dark) .border-amber-900\/40 { border-color: rgba(217, 119, 6, 0.4); }
+  html:not(.dark) .border-amber-800\/50 { border-color: rgba(217, 119, 6, 0.4); }
+  html:not(.dark) .text-amber-200\/90  { color: rgba(146, 64, 14, 0.9); }
+  html:not(.dark) .text-amber-400\/90  { color: rgba(120, 53, 15, 1); }
+  html:not(.dark) .text-amber-100\/80  { color: rgba(120, 53, 15, 0.85); }
+
+  /* Section card badge borders */
+  html:not(.dark) .border-indigo-800 { border-color: #c7d2fe; }
+  html:not(.dark) .border-sky-800    { border-color: #bae6fd; }
+  html:not(.dark) .border-teal-800   { border-color: #99f6e4; }
+  html:not(.dark) .border-green-800  { border-color: #bbf7d0; }
+  html:not(.dark) .border-red-800    { border-color: #fecaca; }
+  html:not(.dark) .border-purple-800 { border-color: #e9d5ff; }
+  html:not(.dark) .border-violet-800 { border-color: #ddd6fe; }
+  html:not(.dark) .border-amber-800  { border-color: #fde68a; }
+  html:not(.dark) .border-cyan-800   { border-color: #a5f3fc; }
+  html:not(.dark) .border-rose-800   { border-color: #fecdd3; }
+  html:not(.dark) .border-orange-800 { border-color: #fed7aa; }
+  html:not(.dark) .border-lime-800   { border-color: #d9f99d; }
 
   /* Scrollbars */
   ::-webkit-scrollbar {
@@ -46,8 +198,14 @@
     background: #30363d;
     border-radius: 3px;
   }
+  html:not(.dark) ::-webkit-scrollbar-thumb {
+    background: #cbd5e1;
+  }
   ::-webkit-scrollbar-thumb:hover {
     background: #484f58;
+  }
+  html:not(.dark) ::-webkit-scrollbar-thumb:hover {
+    background: #94a3b8;
   }
 
   /* Drag region for frameless windows */

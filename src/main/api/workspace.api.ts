@@ -7,8 +7,8 @@ export function registerWorkspaceHandlers(client: BackendClient): void {
     client.get('/api/workspace/')
   )
 
-  ipcMain.handle('workspace:create', (_event, name: string): Promise<Workspace> =>
-    client.post('/api/workspace/', { name })
+  ipcMain.handle('workspace:create', (_event, name: string, description?: string): Promise<Workspace> =>
+    client.post('/api/workspace/', { name, description })
   )
 
   ipcMain.handle('workspace:rename', (_event, id: string, name: string): Promise<Workspace> =>

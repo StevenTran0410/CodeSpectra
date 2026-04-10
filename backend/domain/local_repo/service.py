@@ -139,6 +139,7 @@ def _row_to_model(row) -> LocalRepo:
         ignore_overrides = []
     return LocalRepo(
         id=row["id"],
+        workspace_id=row["workspace_id"] if "workspace_id" in row.keys() else None,
         path=row["path"],
         name=row["name"],
         source_type=RepoSourceType(row["source_type"]),
@@ -225,22 +226,26 @@ class LocalRepoService:
             raise ValueError(f"Path '{normalized_path}' is not a valid directory")
 
         db = get_db()
-        async with db.execute("SELECT 1 FROM local_repos WHERE path = ?", (normalized_path,)) as cur:
+        async with db.execute(
+            "SELECT 1 FROM local_repos WHERE path = ? AND workspace_id IS ?",
+            (normalized_path, req.workspace_id),
+        ) as cur:
             if await cur.fetchone():
-                raise ConflictError(f"Folder '{normalized_path}' is already added")
+                raise ConflictError(f"Folder '{normalized_path}' is already added to this workspace")
 
         repo_id = new_id()
         now = utc_now_iso()
 
         await db.execute(
             """INSERT INTO local_repos
-               (id, path, name, source_type, is_git_repo, git_branch,
+               (id, workspace_id, path, name, source_type, is_git_repo, git_branch,
                 git_head_hash, git_remote_url, has_size_warning, selected_branch,
                 sync_mode, pinned_ref, ignore_overrides, detect_submodules,
                 added_at, last_validated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 repo_id,
+                req.workspace_id,
                 normalized_path,
                 validation.name,
                 source_type.value,
@@ -264,10 +269,17 @@ class LocalRepoService:
         row = await self._fetch_row(repo_id)
         return _row_to_model(row)
 
-    async def list_all(self) -> list[LocalRepo]:
+    async def list_all(self, workspace_id: str | None = None) -> list[LocalRepo]:
         db = get_db()
-        async with db.execute("SELECT * FROM local_repos ORDER BY added_at ASC") as cur:
-            rows = await cur.fetchall()
+        if workspace_id:
+            async with db.execute(
+                "SELECT * FROM local_repos WHERE workspace_id = ? ORDER BY added_at ASC",
+                (workspace_id,),
+            ) as cur:
+                rows = await cur.fetchall()
+        else:
+            async with db.execute("SELECT * FROM local_repos ORDER BY added_at ASC") as cur:
+                rows = await cur.fetchall()
         return [_row_to_model(r) for r in rows]
 
     async def get_by_id(self, repo_id: str) -> LocalRepo:
@@ -426,13 +438,13 @@ class LocalRepoService:
                 if remote and remote.rstrip("/") == req.url.rstrip("/"):
                     logger.info(f"Destination already contains same repo, reusing: {normalized_dest_path}")
                     try:
-                        return await self.add(AddLocalRepoRequest(path=normalized_dest_path))
+                        return await self.add(AddLocalRepoRequest(path=normalized_dest_path, workspace_id=req.workspace_id))
                     except ConflictError:
-                        # Already registered in DB, return existing row by path
+                        # Already registered in DB for this workspace, return existing row
                         db = get_db()
                         async with db.execute(
-                            "SELECT id FROM local_repos WHERE path = ?",
-                            (normalized_dest_path,),
+                            "SELECT id FROM local_repos WHERE path = ? AND workspace_id IS ?",
+                            (normalized_dest_path, req.workspace_id),
                         ) as cur:
                             row = await cur.fetchone()
                         if row:
@@ -470,7 +482,7 @@ class LocalRepoService:
 
         logger.info(f"Cloned '{req.url}' → {normalized_dest_path}")
         return await self.add(
-            AddLocalRepoRequest(path=normalized_dest_path),
+            AddLocalRepoRequest(path=normalized_dest_path, workspace_id=req.workspace_id),
             source_type=_detect_source_type(req.url),
         )
 
