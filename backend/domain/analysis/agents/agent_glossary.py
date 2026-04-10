@@ -55,13 +55,18 @@ class GlossaryAgent(BaseTypedAgent):
             )
             n_chunks = len(bundle.evidences)
             user_prompt = f"snapshot_id={snapshot_id}\n\nEvidence:\n{render_bundle(bundle)}"
-            data = await self._chat_json_typed(
-                provider_id,
-                model_id,
-                AGENT_I_SYSTEM,
-                user_prompt,
-                AGENT_I_SCHEMA_STR,
+            data = await self._chat_json_with_augment(
+                retrieval=self._retrieval,
+                snapshot_id=snapshot_id,
+                provider_id=provider_id,
+                model_id=model_id,
+                system_prompt=AGENT_I_SYSTEM,
+                user_prompt=user_prompt,
+                schema_hint=AGENT_I_SCHEMA_STR,
                 max_completion_tokens=_profile.tokens_glossary,
+                retrieval_section=RetrievalSection.GLOSSARY,
+                profile=_profile,
+                agent_tag="GlossaryAgent",
             )
             raw_terms = data.get("terms")
             terms: list[dict[str, Any]] = []

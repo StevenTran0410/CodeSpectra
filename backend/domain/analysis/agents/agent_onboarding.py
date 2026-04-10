@@ -104,13 +104,18 @@ class OnboardingAgent(BaseTypedAgent):
             n_chunks = len(bundle.evidences)
             prefix = f"{g_hint}\n\n" if g_hint else ""
             user_prompt = f"{prefix}snapshot_id={snapshot_id}\n\nEvidence:\n{render_bundle(bundle)}"
-            data = await self._chat_json_typed(
-                provider_id,
-                model_id,
-                AGENT_H_SYSTEM,
-                user_prompt,
-                AGENT_H_SCHEMA_STR,
+            data = await self._chat_json_with_augment(
+                retrieval=self._retrieval,
+                snapshot_id=snapshot_id,
+                provider_id=provider_id,
+                model_id=model_id,
+                system_prompt=AGENT_H_SYSTEM,
+                user_prompt=user_prompt,
+                schema_hint=AGENT_H_SCHEMA_STR,
                 max_completion_tokens=_profile.tokens_onboarding,
+                retrieval_section=RetrievalSection.IMPORTANT_FILES,
+                profile=_profile,
+                agent_tag="OnboardingAgent",
             )
             raw_steps = data.get("steps")
             steps: list[dict[str, Any]] = []

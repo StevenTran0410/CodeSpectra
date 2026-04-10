@@ -42,6 +42,45 @@ _DOC_PATTERNS = (
 )
 
 
+async def _fetch_docs_with_fallback(
+    retrieval: "RetrievalService",
+    snapshot_id: str,
+    profile: "AnalysisProfile",
+) -> str:
+    """Fetch documentation files; fall back to code-level retrieval when none found.
+
+    Many repos have no README/CHANGELOG — without this fallback Agent A has nothing
+    to work with and produces low-confidence output for identity/purpose/domain.
+    """
+    docs = await _fetch_files_by_pattern(
+        snapshot_id, _DOC_PATTERNS, char_limit=profile.retrieval_doc_char_limit, max_rows=4
+    )
+    if docs:
+        return docs
+
+    # No doc files — retrieve top-level source context as structural substitute
+    try:
+        bundle = await retrieval.retrieve(
+            RetrieveRequest(
+                snapshot_id=snapshot_id,
+                query="main application entry point module class service domain model purpose",
+                section=RetrievalSection.IMPORTANT_FILES,
+                mode=RetrievalMode.HYBRID,
+                max_results=min(12, profile.retrieval_max_results),
+            )
+        )
+        if not bundle.evidences:
+            return ""
+        from ..prompts import render_bundle  # lazy — avoids circular import at module level
+        fallback_text = render_bundle(bundle, limit=12, excerpt_chars=1000)
+        return (
+            "[No documentation files found — using top-level code context as fallback]\n\n"
+            + fallback_text
+        )
+    except Exception:
+        return ""
+
+
 async def _fetch_files_by_pattern(
     snapshot_id: str,
     patterns: tuple[str, ...],
@@ -126,9 +165,7 @@ async def prefetch_pipeline_context(
         )
     )
     tree_task = fetch_folder_tree(snapshot_id)
-    doc_task = _fetch_files_by_pattern(
-        snapshot_id, _DOC_PATTERNS, char_limit=profile.retrieval_doc_char_limit, max_rows=4
-    )
+    doc_task = _fetch_docs_with_fallback(retrieval, snapshot_id, profile)
     manifest_task = _fetch_files_by_pattern(
         snapshot_id, _MANIFEST_PATTERNS, char_limit=profile.retrieval_manifest_char_limit
     )
