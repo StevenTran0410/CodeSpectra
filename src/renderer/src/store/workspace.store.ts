@@ -18,7 +18,7 @@ interface WorkspaceState {
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   workspaces: [],
   activeWorkspaceId: null,
-  isLoading: false,
+  isLoading: true,  // start true so AppShell waits for first load before deciding wizard
   error: null,
 
   load: async () => {

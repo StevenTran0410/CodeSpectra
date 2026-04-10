@@ -49,6 +49,10 @@ class AnalysisProfile:
     # Pipeline concurrency scaling (applied to _default_concurrency())
     concurrency_scale: float
 
+    # Max additional retrieval rounds per agent when blind_spots signal missing/truncated data
+    # Normal: 2, Large: 5
+    retrieval_augment_rounds: int
+
 
 def _clamp_results(n: int) -> int:
     return min(n, _MAX_RETRIEVAL_RESULTS)
@@ -83,6 +87,7 @@ NORMAL_PROFILE = AnalysisProfile(
     tokens_synthesizer=_clamp_tokens(4000),
     # No concurrency change in normal mode
     concurrency_scale=1.0,
+    retrieval_augment_rounds=2,
 )
 
 # ---------------------------------------------------------------------------
@@ -111,6 +116,7 @@ LARGE_PROFILE = AnalysisProfile(
     tokens_synthesizer=_clamp_tokens(5500),
     # Scale concurrency up by ~45 % for large repos
     concurrency_scale=1.45,
+    retrieval_augment_rounds=5,
 )
 
 

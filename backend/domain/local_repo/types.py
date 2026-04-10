@@ -19,6 +19,7 @@ class LocalRepo(BaseModel):
     """A local folder tracked as a repository source."""
 
     id: str
+    workspace_id: str | None = None
     path: str
     name: str
     source_type: RepoSourceType = RepoSourceType.LOCAL_FOLDER
@@ -110,6 +111,7 @@ class ValidateFolderResponse(BaseModel):
 
 class AddLocalRepoRequest(BaseModel):
     path: str
+    workspace_id: str | None = None
 
     @field_validator("path")
     @classmethod
@@ -123,6 +125,7 @@ class AddLocalRepoRequest(BaseModel):
 class CloneFromUrlRequest(BaseModel):
     url: str
     dest_path: str  # absolute path where the repo should be cloned
+    workspace_id: str | None = None
 
     @field_validator("url")
     @classmethod

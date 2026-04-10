@@ -6,10 +6,10 @@ module.exports = {
     extend: {
       colors: {
         surface: {
-          DEFAULT: '#0f1117',
-          raised: '#161b22',
-          overlay: '#1c2128',
-          border: '#30363d'
+          DEFAULT: 'var(--surface)',
+          raised: 'var(--surface-raised)',
+          overlay: 'var(--surface-overlay)',
+          border: 'var(--surface-border)'
         }
       },
       fontFamily: {

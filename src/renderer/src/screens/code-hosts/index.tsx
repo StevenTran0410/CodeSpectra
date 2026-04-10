@@ -21,6 +21,7 @@ import {
   RotateCcw,
 } from 'lucide-react'
 import { useLocalRepoStore } from '../../store/local-repo.store'
+import { useWorkspaceStore } from '../../store/workspace.store'
 import { ErrorBanner } from '../../components/ui/ErrorBanner'
 import { LoadingRow } from '../../components/ui/LoadingRow'
 import { toErrorMessage } from '../../lib/errors'
@@ -318,7 +319,7 @@ function LocalRepoCard({
 // ──────────────────────────────────────────────────────────────────────────────
 // Add folder panel — folder picker + validation flow
 // ──────────────────────────────────────────────────────────────────────────────
-function AddFolderPanel({ onClose }: { onClose: () => void }) {
+function AddFolderPanel({ onClose, workspaceId }: { onClose: () => void; workspaceId?: string }) {
   const { validate, clearValidation, validation, validating, add, adding, error } = useLocalRepoStore()
 
   const handlePick = async () => {
@@ -329,7 +330,7 @@ function AddFolderPanel({ onClose }: { onClose: () => void }) {
 
   const handleConfirm = async () => {
     if (!validation?.path) return
-    const repo = await add(validation.path)
+    const repo = await add(validation.path, workspaceId)
     if (repo) onClose()
   }
 
@@ -373,7 +374,7 @@ function AddFolderPanel({ onClose }: { onClose: () => void }) {
 // ──────────────────────────────────────────────────────────────────────────────
 // Clone from URL panel
 // ──────────────────────────────────────────────────────────────────────────────
-function CloneFromUrlPanel({ onClose, onCloned }: { onClose: () => void; onCloned: () => void }) {
+function CloneFromUrlPanel({ onClose, onCloned, workspaceId }: { onClose: () => void; onCloned: () => void; workspaceId?: string }) {
   const [url, setUrl] = useState('')
   const [cloning, setCloning] = useState(false)
   const [cloneError, setCloneError] = useState<string | null>(null)
@@ -388,7 +389,7 @@ function CloneFromUrlPanel({ onClose, onCloned }: { onClose: () => void; onClone
     setCloning(true)
     setCloneError(null)
     try {
-      await window.api.folder.cloneFromUrl(trimmed)
+      await window.api.folder.cloneFromUrl(trimmed, workspaceId)
       onCloned()
       onClose()
     } catch (err) {
@@ -587,9 +588,10 @@ function SshKeySettings() {
 // ──────────────────────────────────────────────────────────────────────────────
 export default function CodeHostsSetup(): React.ReactElement {
   const { repos, loading, error, load, remove, revalidate, revalidatingId, clearError } = useLocalRepoStore()
+  const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId)
   const [panel, setPanel] = useState<'none' | 'folder' | 'clone'>('none')
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => { load(activeWorkspaceId ?? undefined) }, [load, activeWorkspaceId])
 
   return (
     <>
@@ -620,13 +622,14 @@ export default function CodeHostsSetup(): React.ReactElement {
         {error && <ErrorBanner message={error} onDismiss={clearError} />}
 
         {panel === 'folder' && (
-          <AddFolderPanel onClose={() => setPanel('none')} />
+          <AddFolderPanel onClose={() => setPanel('none')} workspaceId={activeWorkspaceId ?? undefined} />
         )}
 
         {panel === 'clone' && (
           <CloneFromUrlPanel
             onClose={() => setPanel('none')}
-            onCloned={() => { load(); setPanel('none') }}
+            onCloned={() => { load(activeWorkspaceId ?? undefined); setPanel('none') }}
+            workspaceId={activeWorkspaceId ?? undefined}
           />
         )}
 

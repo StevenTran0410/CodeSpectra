@@ -14,14 +14,22 @@ export function AppShell({ children }: Props): React.ReactElement {
   const isLoading = useWorkspaceStore((s) => s.isLoading)
   const workspaces = useWorkspaceStore((s) => s.workspaces)
   const error = useWorkspaceStore((s) => s.error)
-  const [wizardDismissed, setWizardDismissed] = useState(false)
+  // null = not yet determined (still loading); true = wizard active; false = dismissed
+  const [wizardActive, setWizardActive] = useState<boolean | null>(null)
 
   useEffect(() => {
     load()
   }, [load])
 
-  if (!isLoading && !error && workspaces.length === 0 && !wizardDismissed) {
-    return <OnboardingWizard onDone={() => setWizardDismissed(true)} />
+  // Only decide once, after the first load completes
+  useEffect(() => {
+    if (!isLoading && wizardActive === null) {
+      setWizardActive(workspaces.length === 0)
+    }
+  }, [isLoading, wizardActive])
+
+  if (wizardActive) {
+    return <OnboardingWizard onDone={() => setWizardActive(false)} />
   }
 
   return (

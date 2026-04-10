@@ -1,5 +1,5 @@
 """Local folder repository endpoints."""
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from domain.local_repo.service import LocalRepoService
 from domain.local_repo.types import (
@@ -24,8 +24,8 @@ async def validate_folder(body: ValidateFolderRequest) -> ValidateFolderResponse
 
 
 @router.get("/", response_model=list[LocalRepo])
-async def list_repos() -> list[LocalRepo]:
-    return await _service.list_all()
+async def list_repos(workspace_id: str | None = Query(default=None)) -> list[LocalRepo]:
+    return await _service.list_all(workspace_id=workspace_id)
 
 
 @router.post("/", response_model=LocalRepo, status_code=201)

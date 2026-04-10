@@ -69,7 +69,7 @@ export default function Home(): React.ReactElement {
         {workspaces.map((ws) => (
           <div
             key={ws.id}
-            className={`card p-4 cursor-pointer transition-colors hover:border-gray-600 relative ${
+            className={`card p-4 cursor-pointer transition-colors hover:border-gray-600 relative group ${
               ws.id === activeWorkspaceId ? 'border-blue-700 bg-blue-950/20' : ''
             }`}
             onClick={() => setActive(ws.id)}

@@ -83,22 +83,49 @@ class WorkspaceService:
             if not await cur.fetchone():
                 raise NotFoundError("Workspace", workspace_id)
 
-        # Explicit cascade: delete analysis_reports for jobs linked to repos in this workspace.
-        # TODO(CS-020-follow-up): local_repos has no workspace_id FK so repo rows and their
-        # downstream children (snapshots, manifest_files, code_symbols, graph tables,
-        # retrieval tables) are NOT deleted here. A follow-up migration must add
-        # workspace_id to local_repos before full cascade can be implemented.
-        await db.execute(
-            """
-            DELETE FROM analysis_reports
-            WHERE job_id IN (
-                SELECT id FROM jobs WHERE repo_id IN (
-                    SELECT id FROM local_repos
-                )
-            )
-            """
-        )
+        # Collect all repo IDs and snapshot IDs belonging to this workspace
+        async with db.execute(
+            "SELECT id FROM local_repos WHERE workspace_id = ?", (workspace_id,)
+        ) as cur:
+            repo_rows = await cur.fetchall()
+        repo_ids = [r["id"] for r in repo_rows]
 
+        snapshot_ids: list[str] = []
+        if repo_ids:
+            placeholders = ",".join("?" * len(repo_ids))
+            async with db.execute(
+                f"SELECT id FROM repo_snapshots WHERE local_repo_id IN ({placeholders})",
+                repo_ids,
+            ) as cur:
+                snap_rows = await cur.fetchall()
+            snapshot_ids = [r["id"] for r in snap_rows]
+
+        # Cascade: snapshot children
+        if snapshot_ids:
+            ph = ",".join("?" * len(snapshot_ids))
+            for table in (
+                "manifest_files",
+                "code_symbols",
+                "repo_maps",
+                "structural_graph_edges",
+                "structural_graph_summaries",
+                "retrieval_chunks",
+                "retrieval_indexes",
+            ):
+                await db.execute(f"DELETE FROM {table} WHERE snapshot_id IN ({ph})", snapshot_ids)
+            await db.execute(f"DELETE FROM repo_snapshots WHERE id IN ({ph})", snapshot_ids)
+
+        # Cascade: jobs + analysis_reports for this workspace's repos
+        if repo_ids:
+            ph = ",".join("?" * len(repo_ids))
+            await db.execute(
+                f"DELETE FROM analysis_reports WHERE job_id IN (SELECT id FROM jobs WHERE repo_id IN ({ph}))",
+                repo_ids,
+            )
+            await db.execute(f"DELETE FROM jobs WHERE repo_id IN ({ph})", repo_ids)
+            await db.execute(f"DELETE FROM local_repos WHERE id IN ({ph})", repo_ids)
+
+        # NOTE: provider_configs are global (not workspace-scoped) and are intentionally NOT deleted.
         await db.execute("DELETE FROM workspaces WHERE id = ?", (workspace_id,))
         await db.commit()
         logger.info(f"Deleted workspace {workspace_id}")

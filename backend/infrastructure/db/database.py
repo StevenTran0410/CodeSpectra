@@ -304,6 +304,13 @@ _MIGRATIONS: list[dict[str, Any]] = [
             ALTER TABLE workspaces ADD COLUMN description TEXT DEFAULT NULL;
         """,
     },
+    {
+        "version": 18,
+        "description": "Add workspace_id to local_repos for workspace-scoped repo lists (CS-020)",
+        "sql": """
+            ALTER TABLE local_repos ADD COLUMN workspace_id TEXT;
+        """,
+    },
 ]
 
 TARGET_VERSION = len(_MIGRATIONS) - 1
