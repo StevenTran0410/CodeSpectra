@@ -12,7 +12,7 @@ class WorkspaceService:
     async def list_all(self) -> list[Workspace]:
         db = get_db()
         async with db.execute(
-            "SELECT id, name, created_at, updated_at, settings FROM workspaces ORDER BY created_at ASC"
+            "SELECT id, name, description, created_at, updated_at, settings FROM workspaces ORDER BY created_at ASC"
         ) as cur:
             rows = await cur.fetchall()
         return [self._row_to_workspace(r) for r in rows]
@@ -20,7 +20,7 @@ class WorkspaceService:
     async def get_by_id(self, workspace_id: str) -> Workspace:
         db = get_db()
         async with db.execute(
-            "SELECT id, name, created_at, updated_at, settings FROM workspaces WHERE id = ?",
+            "SELECT id, name, description, created_at, updated_at, settings FROM workspaces WHERE id = ?",
             (workspace_id,),
         ) as cur:
             row = await cur.fetchone()
@@ -28,7 +28,7 @@ class WorkspaceService:
             raise NotFoundError("Workspace", workspace_id)
         return self._row_to_workspace(row)
 
-    async def create(self, name: str) -> Workspace:
+    async def create(self, name: str, description: str | None = None) -> Workspace:
         db = get_db()
 
         # Check for duplicate name
@@ -42,12 +42,12 @@ class WorkspaceService:
         ws_id = new_id()
         now = utc_now_iso()
         await db.execute(
-            "INSERT INTO workspaces (id, name, created_at, updated_at, settings) VALUES (?, ?, ?, ?, ?)",
-            (ws_id, name, now, now, "{}"),
+            "INSERT INTO workspaces (id, name, description, created_at, updated_at, settings) VALUES (?, ?, ?, ?, ?, ?)",
+            (ws_id, name, description, now, now, "{}"),
         )
         await db.commit()
         logger.info(f"Created workspace '{name}' ({ws_id})")
-        return Workspace(id=ws_id, name=name, created_at=now, updated_at=now, settings={})
+        return Workspace(id=ws_id, name=name, description=description, created_at=now, updated_at=now, settings={})
 
     async def rename(self, workspace_id: str, new_name: str) -> Workspace:
         db = get_db()
@@ -75,11 +75,31 @@ class WorkspaceService:
 
     async def delete(self, workspace_id: str) -> None:
         db = get_db()
+
+        # Verify workspace exists before cascade
         async with db.execute(
-            "DELETE FROM workspaces WHERE id = ?", (workspace_id,)
+            "SELECT 1 FROM workspaces WHERE id = ?", (workspace_id,)
         ) as cur:
-            if cur.rowcount == 0:
+            if not await cur.fetchone():
                 raise NotFoundError("Workspace", workspace_id)
+
+        # Explicit cascade: delete analysis_reports for jobs linked to repos in this workspace.
+        # TODO(CS-020-follow-up): local_repos has no workspace_id FK so repo rows and their
+        # downstream children (snapshots, manifest_files, code_symbols, graph tables,
+        # retrieval tables) are NOT deleted here. A follow-up migration must add
+        # workspace_id to local_repos before full cascade can be implemented.
+        await db.execute(
+            """
+            DELETE FROM analysis_reports
+            WHERE job_id IN (
+                SELECT id FROM jobs WHERE repo_id IN (
+                    SELECT id FROM local_repos
+                )
+            )
+            """
+        )
+
+        await db.execute("DELETE FROM workspaces WHERE id = ?", (workspace_id,))
         await db.commit()
         logger.info(f"Deleted workspace {workspace_id}")
 
@@ -90,6 +110,7 @@ class WorkspaceService:
         return Workspace(
             id=row["id"],
             name=row["name"],
+            description=row["description"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             settings=settings,

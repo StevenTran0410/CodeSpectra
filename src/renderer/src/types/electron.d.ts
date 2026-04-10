@@ -35,6 +35,7 @@ export interface Job {
 export interface Workspace {
   id: string
   name: string
+  description?: string
   created_at: string
   updated_at: string
   settings: Record<string, unknown>
@@ -328,7 +329,7 @@ declare global {
     api: {
       workspace: {
         list: () => Promise<Workspace[]>
-        create: (name: string) => Promise<Workspace>
+        create: (name: string, description?: string) => Promise<Workspace>
         rename: (id: string, name: string) => Promise<Workspace>
         delete: (id: string) => Promise<void>
       }

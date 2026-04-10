@@ -10,7 +10,7 @@ import type {
 const api = {
   workspace: {
     list: (): Promise<Workspace[]> => ipcRenderer.invoke('workspace:list'),
-    create: (name: string): Promise<Workspace> => ipcRenderer.invoke('workspace:create', name),
+    create: (name: string, description?: string): Promise<Workspace> => ipcRenderer.invoke('workspace:create', name, description),
     rename: (id: string, name: string): Promise<Workspace> =>
       ipcRenderer.invoke('workspace:rename', id, name),
     delete: (id: string): Promise<void> => ipcRenderer.invoke('workspace:delete', id)

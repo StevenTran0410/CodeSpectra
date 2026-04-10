@@ -8,7 +8,7 @@ interface WorkspaceState {
   error: string | null
 
   load: () => Promise<void>
-  create: (name: string) => Promise<Workspace>
+  create: (name: string, description?: string) => Promise<Workspace>
   rename: (id: string, name: string) => Promise<void>
   remove: (id: string) => Promise<void>
   setActive: (id: string | null) => void
@@ -37,8 +37,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     }
   },
 
-  create: async (name: string) => {
-    const workspace = await window.api.workspace.create(name)
+  create: async (name: string, description?: string) => {
+    const workspace = await window.api.workspace.create(name, description)
     set((s) => ({
       workspaces: [...s.workspaces, workspace],
       activeWorkspaceId: s.activeWorkspaceId ?? workspace.id
