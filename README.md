@@ -57,7 +57,7 @@ The Electron main process is intentionally thin — it spawns the Python server,
 
 For a deep dive into the underlying algorithms, the structural graph analysis logic, and the agent orchestration design, please refer to our formal technical document:
 
-👉 **[Download / View Technical Report (PDF)](./CodeSpectra_Document.pdf)**
+👉 **[Download / View Technical Report (PDF)](./CodeSpectra_Doc.pdf)**
 
 *Note: The document covers the formal verification of the Analysis Pipeline and the native C++ hotspot optimization strategies.*
 
