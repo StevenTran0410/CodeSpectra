@@ -107,8 +107,8 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
     "python": LanguageConfig(
         get_language=_make_python_lang,
         semantic_node_types=frozenset({
-            "function_definition",
-            "async_function_definition",
+            "function_definition",        # covers both sync and async in tree-sitter-python >=0.25
+            "async_function_definition",  # kept for tree-sitter-python <0.25 compatibility
             "class_definition",
             "decorated_definition",
         }),
@@ -127,6 +127,8 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
             "export_statement",
             "lexical_declaration",
             "variable_declaration",
+            "interface_declaration",      # TS interfaces are first-class semantic units
+            "type_alias_declaration",     # type Foo = ... declarations
         }),
         import_node_types=frozenset({
             "import_statement",
@@ -199,6 +201,8 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         }),
         import_node_types=frozenset({
             "preproc_include",
+            "preproc_def",           # #define CONSTANT
+            "preproc_function_def",  # #define MACRO(x) ...
         }),
     ),
     "rust": LanguageConfig(
