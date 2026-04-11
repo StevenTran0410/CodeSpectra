@@ -212,6 +212,19 @@ class StructuralGraphService:
             files = await cur.fetchall()
 
         file_set = {r["rel_path"] for r in files}
+
+        # Build Python module suffix index — lets us resolve absolute imports
+        # when the project places source files under a subdirectory prefix
+        # (e.g. file at backend/domain/x.py, imported as "domain.x").
+        py_suffix_index: dict[str, str] = {}
+        for _f in file_set:
+            if _f.endswith(".py"):
+                _parts = _f.split("/")
+                for _i in range(len(_parts)):
+                    _suffix = "/".join(_parts[_i:])
+                    if _suffix not in py_suffix_index:
+                        py_suffix_index[_suffix] = _f
+
         native_graph = _load_native_graph()
         entrypoints: list[str] = []
         total_edges = 0
@@ -252,9 +265,11 @@ class StructuralGraphService:
                     is_external = dst_path is None
                 else:
                     # Python module-like imports may map to local path.
+                    # Use suffix index so imports resolve regardless of source-root prefix.
                     py_guess = _normalize(imp.replace(".", "/") + ".py")
-                    if py_guess in file_set:
-                        dst_path = py_guess
+                    resolved_path = py_suffix_index.get(py_guess)
+                    if resolved_path:
+                        dst_path = resolved_path
                         is_external = False
 
                 total_edges += 1
@@ -456,32 +471,55 @@ class StructuralGraphService:
         """
         db = get_db()
 
-        # Load internal edges
+        # Load ALL edges — we re-resolve "external" Python absolute imports below,
+        # which fixes existing graph data built before the suffix-index fix.
         async with db.execute(
-            "SELECT src_path, dst_path FROM structural_graph_edges WHERE snapshot_id=? AND is_external=0",
+            "SELECT src_path, dst_path, is_external FROM structural_graph_edges WHERE snapshot_id=?",
             (snapshot_id,),
         ) as cur:
             edge_rows = await cur.fetchall()
 
-        # Load all node paths from manifest (ensures isolated nodes are included)
+        # Load all manifest nodes (ensures isolated nodes are included)
         async with db.execute(
             "SELECT rel_path FROM manifest_files WHERE snapshot_id=? AND category IN ('source','test','infra')",
             (snapshot_id,),
         ) as cur:
             node_rows = await cur.fetchall()
 
-        edge_tuples = [(r["src_path"], r["dst_path"], 1.0) for r in edge_rows]
         node_ids = [r["rel_path"] for r in node_rows]
-        # Also include nodes that appear only in edges
-        edge_node_set = set()
-        for s, d, _ in edge_tuples:
-            edge_node_set.add(s)
-            edge_node_set.add(d)
         node_id_set = set(node_ids)
-        for n in edge_node_set:
-            if n not in node_id_set:
-                node_ids.append(n)
-                node_id_set.add(n)
+
+        # Suffix index — resolve Python absolute imports stored as unresolved externals.
+        # E.g. edge dst_path "domain.structural_graph.service" → "backend/domain/structural_graph/service.py"
+        py_suffix_index: dict[str, str] = {}
+        for node in node_ids:
+            if node.endswith(".py"):
+                parts = node.split("/")
+                for i in range(len(parts)):
+                    suffix = "/".join(parts[i:])
+                    if suffix not in py_suffix_index:
+                        py_suffix_index[suffix] = node
+
+        # Build de-duplicated edge list; attempt to re-resolve external Python imports.
+        edge_set: set[tuple[str, str]] = set()
+        edge_tuples: list[tuple[str, str, float]] = []
+
+        for r in edge_rows:
+            src, dst = r["src_path"], r["dst_path"]
+            if src not in node_id_set or src == dst:
+                continue
+            if not r["is_external"]:
+                # Already-resolved internal edge
+                if dst in node_id_set and (src, dst) not in edge_set:
+                    edge_tuples.append((src, dst, 1.0))
+                    edge_set.add((src, dst))
+            elif src.endswith(".py") and "/" not in dst and not dst.startswith("."):
+                # Unresolved Python absolute import — attempt suffix-based resolution
+                py_guess = dst.replace(".", "/") + ".py"
+                resolved = py_suffix_index.get(py_guess)
+                if resolved and resolved != src and (src, resolved) not in edge_set:
+                    edge_tuples.append((src, resolved, 1.0))
+                    edge_set.add((src, resolved))
 
         # Run Louvain — C++ native first, Python fallback
         native_graph = _load_native_graph()
