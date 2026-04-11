@@ -140,7 +140,7 @@ Example detected path:
 
 For production-native builds, prefer x64 toolchain shell (`Hostx64\x64`) instead of x86.
 
-Graph hotspot features (RPA-033) require the native module. This project does not use a pure-Python fallback for that path.
+The native C++ module provides a performance boost for graph hotspot features (RPA-033). If not built, all graph features fall back to pure-Python automatically.
 
 ### Install and run
 

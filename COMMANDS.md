@@ -198,7 +198,7 @@ cd ..
 
 For packaged builds (EXE), these dependencies are bundled with the backend environment/binary when you build from an up-to-date environment.
 
-### Native graph module build (required for RPA-033 hotspot)
+### Native graph module build (optional, for performance)
 
 Run this in x64 Developer PowerShell/Command Prompt:
 
@@ -212,7 +212,7 @@ cd ..
 Expected artifact (Windows):
 `backend/domain/structural_graph/_native_graph*.pyd`
 
-If this module is missing, graph build/neighbor endpoints return a runtime error by design (no pure-Python fallback for this hotspot).
+If this module is missing, all graph features (scoring, neighbor expansion, Louvain clustering, cycle detection) fall back to pure-Python automatically. The native module provides a performance boost for large repositories.
 
 ---
 
