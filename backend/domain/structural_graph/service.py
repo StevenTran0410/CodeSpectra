@@ -123,6 +123,17 @@ def _normalize(path: str) -> str:
     return path.replace("\\", "/")
 
 
+def _is_init_file(path: str) -> bool:
+    """Return True for Python __init__.py files.
+
+    These are namespace-package markers that carry no structural information —
+    they're either empty or just re-export symbols from sub-modules.  Including
+    them as graph nodes adds noise: they generate singleton communities because
+    they have near-zero import edges.
+    """
+    return path == "__init__.py" or path.endswith("/__init__.py")
+
+
 def _build_py_suffix_index(file_paths: set[str] | list[str]) -> dict[str, str]:
     """Build a suffix-lookup table for Python files.
 
@@ -233,6 +244,7 @@ class StructuralGraphService:
             files = await cur.fetchall()
 
         file_set = {r["rel_path"] for r in files}
+        test_file_set = {r["rel_path"] for r in files if r["category"] == "test"}
 
         py_suffix_index = _build_py_suffix_index(file_set)
 
@@ -247,7 +259,15 @@ class StructuralGraphService:
             rel_path = r["rel_path"]
             language = r["language"]
             category = r["category"]
-            if category not in {"source", "test", "infra"}:
+            if category not in {"source", "infra"}:
+                # Test files are excluded from the structural graph.  They import
+                # everything they test, creating noisy cross-community edges that
+                # distort Louvain clustering.  Test coverage is tracked separately
+                # via manifest_files (category='test') and surfaced in the export.
+                continue
+            # __init__.py files are namespace markers with no structural content.
+            # Excluding them prevents singleton communities for every package dir.
+            if _is_init_file(rel_path):
                 continue
             if _is_entrypoint(rel_path):
                 entrypoints.append(rel_path)
@@ -281,10 +301,11 @@ class StructuralGraphService:
                     resolved_path = py_suffix_index.get(py_guess)
                     if not resolved_path:
                         # 'from domain.pkg import X' targets the package dir, not a .py file.
-                        # Fall back to the package's __init__.py.
-                        pkg_init = _normalize(imp.replace(".", "/") + "/__init__.py")
-                        resolved_path = py_suffix_index.get(pkg_init)
-                    if resolved_path:
+                        # Fall back to the package's __init__.py — but we exclude __init__.py
+                        # from the graph (they are namespace markers with no structural content),
+                        # so this fallback is intentionally left as external/unresolved.
+                        pass
+                    if resolved_path and not _is_init_file(resolved_path):
                         dst_path = resolved_path
                         is_external = False
 
@@ -302,7 +323,10 @@ class StructuralGraphService:
                     (req.snapshot_id, rel_path, dst_store, "import", int(is_external), now),
                 )
 
-        all_nodes = set(file_set)
+        all_nodes = {
+            f for f in file_set
+            if not _is_init_file(f) and f not in test_file_set
+        }
         if native_graph and hasattr(native_graph, "compute_scores"):
             scored_raw = native_graph.compute_scores(sorted(all_nodes), edge_inputs)
         else:
@@ -497,7 +521,7 @@ class StructuralGraphService:
 
         # Load all manifest nodes (ensures isolated nodes are included)
         async with db.execute(
-            "SELECT rel_path FROM manifest_files WHERE snapshot_id=? AND category IN ('source','test','infra')",
+            "SELECT rel_path FROM manifest_files WHERE snapshot_id=? AND category IN ('source','infra')",
             (snapshot_id,),
         ) as cur:
             node_rows = await cur.fetchall()
@@ -505,7 +529,12 @@ class StructuralGraphService:
         # dict.fromkeys preserves insertion order while deduplicating.
         # manifest_files may have duplicate rows (pre-migration-20 DBs); passing
         # duplicates to Louvain inflates iteration count and can skew convergence.
-        node_ids = list(dict.fromkeys(r["rel_path"] for r in node_rows))
+        # __init__.py files and test files are excluded:
+        #   - __init__.py: namespace markers with no edges → singleton communities
+        #   - test files: import everything they test → noisy cross-community edges
+        node_ids = list(dict.fromkeys(
+            r["rel_path"] for r in node_rows if not _is_init_file(r["rel_path"])
+        ))
         node_id_set = set(node_ids)
 
         # Suffix index — resolve Python absolute imports stored as unresolved externals.
@@ -561,12 +590,50 @@ class StructuralGraphService:
             from ._louvain_fallback import compute_louvain_python
             raw = compute_louvain_python(edge_tuples, node_ids, resolution)
 
-        # Compute hub scores: within-community in-degree for each node
+        # ── Singleton absorption ──────────────────────────────────────────────
+        # Louvain often isolates weakly-connected nodes (e.g. __init__.py files,
+        # config files) into singleton communities.  For each singleton, count
+        # "votes" from its internal neighbours and reassign it to the majority
+        # community.  We work from a snapshot of `raw` so absorbed nodes don't
+        # influence each other.  Nodes with no internal neighbours are left as
+        # true singletons and flagged later.
+        _comm_size: dict[int, int] = defaultdict(int)
+        for _cid in raw.values():
+            _comm_size[_cid] += 1
+
+        _node_nbrs: dict[str, list[str]] = defaultdict(list)
+        for _s, _d, _w in edge_tuples:
+            _node_nbrs[_s].append(_d)
+            _node_nbrs[_d].append(_s)
+
+        _raw_snap = dict(raw)
+        for _node, _cid in _raw_snap.items():
+            if _comm_size[_cid] != 1:
+                continue
+            _votes: dict[int, int] = defaultdict(int)
+            for _nbr in _node_nbrs[_node]:
+                _nbr_cid = _raw_snap.get(_nbr, -1)
+                if _nbr_cid >= 0 and _nbr_cid != _cid:
+                    _votes[_nbr_cid] += 1
+            if _votes:
+                raw[_node] = max(_votes, key=_votes.__getitem__)
+
+        # Compute hub scores (intra-community in-degree) and inter-community edges.
         comm_adj: dict[int, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+        # inter_comm_neighbors[cid] = set of community IDs that cid shares an edge with.
+        inter_comm_neighbors: dict[int, set[int]] = defaultdict(set)
+
         for s, d, w in edge_tuples:
             cs, cd = raw.get(s, -1), raw.get(d, -1)
-            if cs == cd and cs >= 0:
+            if cs < 0 or cd < 0:
+                continue
+            if cs == cd:
+                # Intra-community: count in-degree for hub scoring
                 comm_adj[cs][d] += w
+            else:
+                # Inter-community: record adjacency (undirected)
+                inter_comm_neighbors[cs].add(cd)
+                inter_comm_neighbors[cd].add(cs)
 
         # Aggregate: member_count, hub_paths, hub_score per node
         comm_members: dict[int, list[str]] = defaultdict(list)
@@ -583,6 +650,7 @@ class StructuralGraphService:
         for cid, members in sorted(comm_members.items()):
             hub_scores = {n: comm_adj[cid].get(n, 0.0) for n in members}
             top_hubs = sorted(members, key=lambda n: -hub_scores[n])[:3]
+            neighbor_ids = sorted(inter_comm_neighbors.get(cid, set()))
 
             for node in members:
                 await db.execute(
@@ -598,10 +666,14 @@ class StructuralGraphService:
             await db.execute(
                 """
                 INSERT OR REPLACE INTO graph_community_summaries
-                (snapshot_id, community_id, member_count, hub_paths, modularity_contribution, llm_summary, generated_at)
-                VALUES (?, ?, ?, ?, ?, NULL, ?)
+                (snapshot_id, community_id, member_count, hub_paths, modularity_contribution,
+                 neighbor_community_ids, llm_summary, generated_at)
+                VALUES (?, ?, ?, ?, ?, ?, NULL, ?)
                 """,
-                (snapshot_id, cid, len(members), json.dumps(top_hubs), mod_contrib, now),
+                (
+                    snapshot_id, cid, len(members), json.dumps(top_hubs), mod_contrib,
+                    json.dumps(neighbor_ids), now,
+                ),
             )
 
             communities.append(CommunityInfo(
@@ -609,6 +681,8 @@ class StructuralGraphService:
                 member_count=len(members),
                 hub_paths=top_hubs,
                 modularity_contribution=mod_contrib,
+                neighbor_community_ids=neighbor_ids,
+                is_singleton=len(members) == 1,
                 llm_summary=None,
                 generated_at=now,
             ))
@@ -628,7 +702,8 @@ class StructuralGraphService:
 
         async with db.execute(
             """
-            SELECT community_id, member_count, hub_paths, modularity_contribution, llm_summary, generated_at
+            SELECT community_id, member_count, hub_paths, modularity_contribution,
+                   neighbor_community_ids, llm_summary, generated_at
             FROM graph_community_summaries WHERE snapshot_id=?
             ORDER BY community_id ASC
             """,
@@ -650,6 +725,8 @@ class StructuralGraphService:
                 member_count=r["member_count"],
                 hub_paths=json.loads(r["hub_paths"] or "[]"),
                 modularity_contribution=float(r["modularity_contribution"]),
+                neighbor_community_ids=json.loads(r["neighbor_community_ids"] or "[]"),
+                is_singleton=r["member_count"] == 1,
                 llm_summary=r["llm_summary"],
                 generated_at=r["generated_at"],
             )
@@ -743,18 +820,39 @@ class StructuralGraphService:
             member_rows = await cur.fetchall()
 
         async with db.execute(
-            "SELECT rel_path FROM manifest_files WHERE snapshot_id=? AND category IN ('source','test','infra') ORDER BY rel_path",
+            "SELECT rel_path FROM manifest_files WHERE snapshot_id=? AND category IN ('source','infra') ORDER BY rel_path",
             (snapshot_id,),
         ) as cur:
             node_rows = await cur.fetchall()
 
+        async with db.execute(
+            "SELECT rel_path FROM manifest_files WHERE snapshot_id=? AND category='test' ORDER BY rel_path",
+            (snapshot_id,),
+        ) as cur:
+            test_rows = await cur.fetchall()
+
         cycles_resp = await self.cycles(snapshot_id)
 
+        # Test files are tracked separately in the manifest (category='test') and
+        # surfaced as `test_files` metadata in the export.  They are excluded from
+        # the structural graph because their import edges (test→source) distort
+        # community detection without adding architectural information.
+        test_files = list(dict.fromkeys(r["rel_path"] for r in test_rows))
+
         # Deduplicate: pre-migration-20 DBs may have 2× rows per file/edge.
-        nodes = list(dict.fromkeys(r["rel_path"] for r in node_rows))
+        # __init__.py files are excluded from the graph (namespace markers, no edges).
+        nodes = list(dict.fromkeys(
+            r["rel_path"] for r in node_rows if not _is_init_file(r["rel_path"])
+        ))
+        node_set = set(nodes)
         seen_edges: set[tuple[str, str, bool]] = set()
         edges = []
         for r in edge_rows:
+            if _is_init_file(r["src_path"]) or _is_init_file(r["dst_path"]):
+                continue
+            # Drop edges involving nodes excluded from the graph (test files, etc.)
+            if r["src_path"] not in node_set and not bool(r["is_external"]):
+                continue
             key = (r["src_path"], r["dst_path"], bool(r["is_external"]))
             if key not in seen_edges:
                 seen_edges.add(key)
@@ -769,6 +867,31 @@ class StructuralGraphService:
 
         internal_count = sum(1 for e in edges if not e["external"])
 
+        # Compute community-level adjacency: which communities are connected by import edges.
+        # This lets tools and humans see "Community A uses Community B" at a glance,
+        # without having to manually trace individual file edges.
+        inter_comm_counts: dict[tuple[int, int], int] = defaultdict(int)
+        for e in edges:
+            if e["external"]:
+                continue
+            src_cid = communities.get(e["src"])
+            dst_cid = communities.get(e["dst"])
+            if src_cid is None or dst_cid is None or src_cid == dst_cid:
+                continue
+            # Directed: src_community imports dst_community
+            inter_comm_counts[(src_cid, dst_cid)] += 1
+
+        community_edges = [
+            {"src_community": src, "dst_community": dst, "edge_count": cnt}
+            for (src, dst), cnt in sorted(
+                inter_comm_counts.items(), key=lambda kv: -kv[1]
+            )
+        ]
+
+        singleton_community_count = sum(
+            1 for members in community_groups.values() if len(members) == 1
+        )
+
         return {
             "snapshot_id": snapshot_id,
             "exported_at": utc_now_iso(),
@@ -777,11 +900,17 @@ class StructuralGraphService:
                 "total_edge_count": len(edges),
                 "internal_edge_count": internal_count,
                 "community_count": len(community_groups),
+                "singleton_community_count": singleton_community_count,
                 "cycle_count": len(cycles_resp.cycles),
+                "test_file_count": len(test_files),
             },
             "nodes": nodes,
             "edges": edges,
             "communities": communities,
             "community_groups": community_groups,
+            "community_edges": community_edges,
             "cycles": cycles_resp.cycles,
+            # Test files are tracked here for agent context (so agents know tests exist)
+            # but are NOT part of the structural graph — they distort community detection.
+            "test_files": test_files,
         }

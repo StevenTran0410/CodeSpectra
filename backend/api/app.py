@@ -56,6 +56,7 @@ async def get_diagnostics() -> DiagnosticsResponse:
         ("compute_scores",     "Graph centrality scoring (in-degree × 3 + out-degree sort)"),
         ("expand_neighbors",   "BFS graph neighborhood expansion for graph viewer"),
         ("compute_scc",        "Tarjan SCC — circular import cycle detection"),
+        ("compute_louvain",    "Louvain community detection (falls back to Python if absent)"),
         ("scan_keywords_bulk", "Bulk word-boundary keyword scan (TODO/FIXME hotspots)"),
     ]
     try:

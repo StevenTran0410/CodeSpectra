@@ -359,6 +359,14 @@ _MIGRATIONS: list[dict[str, Any]] = [
                 ON manifest_files(snapshot_id, rel_path);
         """,
     },
+    {
+        "version": 21,
+        "description": "Add neighbor_community_ids to graph_community_summaries for inter-community graph",
+        "sql": """
+            ALTER TABLE graph_community_summaries
+                ADD COLUMN neighbor_community_ids TEXT NOT NULL DEFAULT '[]';
+        """,
+    },
 ]
 
 TARGET_VERSION = len(_MIGRATIONS) - 1

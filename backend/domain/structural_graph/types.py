@@ -57,6 +57,12 @@ class CommunityInfo(BaseModel):
     member_count: int
     hub_paths: list[str]
     modularity_contribution: float
+    # IDs of communities that share at least one import edge with this community.
+    # Populated by detect_communities(); empty until that runs.
+    neighbor_community_ids: list[int] = []
+    # True when this community has exactly 1 node AND no internal neighbours
+    # (i.e. the singleton absorption pass could not find a community to absorb it into).
+    is_singleton: bool = False
     llm_summary: str | None = None
     generated_at: str
 
