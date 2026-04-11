@@ -243,6 +243,16 @@ export function registerFolderHandlers(client: BackendClient): void {
   )
 
   ipcMain.handle(
+    'retrieval:retrieveTwoStage',
+    (_event, body: {
+      snapshot_id: string
+      query: string
+      section: 'architecture' | 'conventions' | 'feature_map' | 'important_files' | 'glossary'
+      budget?: number
+    }) => client.post('/api/retrieval/retrieve-two-stage', body)
+  )
+
+  ipcMain.handle(
     'analysis:estimate',
     (_event, repoId: string, snapshotId: string) =>
       client.get(`/api/analysis/estimate/${repoId}/${snapshotId}`)

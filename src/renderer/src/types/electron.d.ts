@@ -300,6 +300,50 @@ export interface RetrievalCompareResponse {
   token_cost_delta: number
 }
 
+export interface TwoStageCandidate {
+  chunk_id: string
+  rel_path: string
+  chunk_index: number
+  bm25_score: number
+  token_estimate: number
+  excerpt: string
+}
+
+export interface TwoStageExpansion {
+  seed_path: string
+  symbol_refs: string[]
+  community_members: string[]
+  neighbor_files: string[]
+  net_new_count: number
+}
+
+export interface TwoStageRankedChunk {
+  chunk_id: string
+  rel_path: string
+  chunk_index: number
+  score: number
+  bm25_component: number
+  symbol_bonus: number
+  module_bonus: number
+  centrality_bonus: number
+  token_estimate: number
+  excerpt: string
+}
+
+export interface TwoStageDebugBundle {
+  snapshot_id: string
+  query: string
+  section: string
+  stage1: { candidates: TwoStageCandidate[] }
+  stage2: { expansions: TwoStageExpansion[] }
+  stage3: {
+    ranked: TwoStageRankedChunk[]
+    used_tokens: number
+    budget_tokens: number
+    used_cpp_ranker: boolean
+  }
+}
+
 export interface ValidateFolderResponse {
   path: string
   name: string
@@ -472,6 +516,12 @@ declare global {
           section: RetrievalSection
           max_results?: number
         }) => Promise<RetrievalCompareResponse>
+        retrieveTwoStage: (body: {
+          snapshot_id: string
+          query: string
+          section: RetrievalSection
+          budget?: number
+        }) => Promise<TwoStageDebugBundle>
       }
       analysis: {
         estimate: (repoId: string, snapshotId: string) => Promise<AnalysisEstimateResponse>

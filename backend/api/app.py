@@ -58,6 +58,7 @@ async def get_diagnostics() -> DiagnosticsResponse:
         ("compute_scc",        "Tarjan SCC — circular import cycle detection"),
         ("compute_louvain",    "Louvain community detection (falls back to Python if absent)"),
         ("scan_keywords_bulk", "Bulk word-boundary keyword scan (TODO/FIXME hotspots)"),
+        ("rank_and_budget",    "Sort + token-budget truncation for 2-stage retrieval re-ranking (CS-203)"),
     ]
     try:
         mod = importlib.import_module("domain.structural_graph._native_graph")

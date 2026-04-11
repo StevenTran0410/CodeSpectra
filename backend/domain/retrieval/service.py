@@ -23,6 +23,8 @@ from .types import (
     RetrievalMode,
     RetrievalSection,
     RetrieveRequest,
+    TwoStageBundle,
+    TwoStageRequest,
 )
 
 _WS = re.compile(r"\s+")
@@ -296,6 +298,24 @@ class RetrievalService:
             raise ValueError("Query must contain searchable terms")
 
         budget = _SECTION_BUDGETS[req.section]
+
+        # Delegate to 2-stage pipeline (CS-203); fall back to legacy single-pass on error.
+        try:
+            from .two_stage_retrieval import retrieve_two_stage_as_bundle
+            return await retrieve_two_stage_as_bundle(
+                snapshot_id=req.snapshot_id,
+                query=req.query,
+                section=req.section,
+                budget=budget,
+                mode=req.mode,
+            )
+        except Exception:
+            logger.warning(
+                "[retrieve] 2-stage pipeline failed for snapshot=%s query=%r — using fallback single-pass",
+                req.snapshot_id, req.query[:60], exc_info=True,
+            )
+
+        logger.info("[retrieve] using fallback single-pass for snapshot=%s", req.snapshot_id)
         category_hints = _SECTION_CATEGORY_HINTS[req.section]
 
         async with get_db().execute(
@@ -433,6 +453,16 @@ class RetrievalService:
             budget_tokens=budget,
             used_tokens=used,
             evidences=picked,
+        )
+
+    async def retrieve_two_stage(self, req: TwoStageRequest) -> TwoStageBundle:
+        from .two_stage_retrieval import retrieve_two_stage as _run
+        budget = req.budget or _SECTION_BUDGETS.get(req.section, 10_000)
+        return await _run(
+            snapshot_id=req.snapshot_id,
+            query=req.query,
+            section=req.section,
+            budget=budget,
         )
 
     async def compare(self, req: RetrieveRequest) -> RetrievalCompareResponse:

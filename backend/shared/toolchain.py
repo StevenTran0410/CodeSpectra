@@ -16,7 +16,7 @@ def detect_cpp_toolchain() -> str | None:
     try:
         mod = importlib.import_module("domain.structural_graph._native_graph")
         # Verify the key functions are present
-        _ALL = ("compute_scores", "compute_scc", "compute_louvain", "scan_keywords_bulk")
+        _ALL = ("compute_scores", "compute_scc", "compute_louvain", "scan_keywords_bulk", "rank_and_budget")
         funcs = [f for f in _ALL if hasattr(mod, f)]
         return f"native ({len(funcs)}/{len(_ALL)} fns)"
     except Exception:

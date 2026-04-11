@@ -113,6 +113,12 @@ const api = {
       section: 'architecture' | 'conventions' | 'feature_map' | 'important_files' | 'glossary'
       max_results?: number
     }) => ipcRenderer.invoke('retrieval:compare', body),
+    retrieveTwoStage: (body: {
+      snapshot_id: string
+      query: string
+      section: 'architecture' | 'conventions' | 'feature_map' | 'important_files' | 'glossary'
+      budget?: number
+    }) => ipcRenderer.invoke('retrieval:retrieveTwoStage', body),
   },
   analysis: {
     estimate: (repoId: string, snapshotId: string) =>
