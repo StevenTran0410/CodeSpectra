@@ -268,7 +268,71 @@ def _get_parser(language: str) -> Any | None:
 # ---------------------------------------------------------------------------
 
 def _extract_name(node: Any, src_bytes: bytes) -> str:
-    """Extract the best-effort symbol name from an AST node."""
+    """Extract the best-effort symbol name from an AST node.
+
+    Node-type-specific rules (language-aware, applied before the generic fallback):
+
+    Go method_declaration:
+        Structure: func <receiver_list> <field_identifier> <params> <result> <body>
+        The method name is the field_identifier child, not an identifier.
+
+    C function_definition:
+        Simple:  int foo(...)       → function_declarator > identifier
+        Pointer: Entry *foo(...)    → pointer_declarator > function_declarator > identifier
+        Without special handling the first type_identifier child ("Entry") would be
+        returned as the name, which is actually the return type.
+
+    Rust impl_item:
+        "impl Trait for Type" has two type_identifier children: trait then type.
+        We want the last one (the type being implemented), not the trait name.
+        "impl Type" has one type_identifier — still the last one, so the same rule applies.
+    """
+    node_type = node.type
+
+    # Go: method name lives in a field_identifier child, not identifier.
+    if node_type == "method_declaration":
+        for child in node.children:
+            if child.type == "field_identifier":
+                try:
+                    return src_bytes[child.start_byte:child.end_byte].decode("utf-8", errors="replace")
+                except Exception:
+                    return ""
+        return ""
+
+    # C: traverse into function_declarator (or pointer_declarator > function_declarator)
+    # to find the actual function name rather than the return type.
+    if node_type == "function_definition":
+        for child in node.children:
+            if child.type == "function_declarator":
+                for gc in child.children:
+                    if gc.type == "identifier":
+                        try:
+                            return src_bytes[gc.start_byte:gc.end_byte].decode("utf-8", errors="replace")
+                        except Exception:
+                            return ""
+            elif child.type == "pointer_declarator":
+                for gc in child.children:
+                    if gc.type == "function_declarator":
+                        for ggc in gc.children:
+                            if ggc.type == "identifier":
+                                try:
+                                    return src_bytes[ggc.start_byte:ggc.end_byte].decode("utf-8", errors="replace")
+                                except Exception:
+                                    return ""
+        # Fall through to generic (handles C++ / other languages using function_definition).
+
+    # Rust: "impl Trait for Type" — take the last type_identifier (the concrete type).
+    if node_type == "impl_item":
+        type_ids = [c for c in node.children if c.type == "type_identifier"]
+        if type_ids:
+            try:
+                last = type_ids[-1]
+                return src_bytes[last.start_byte:last.end_byte].decode("utf-8", errors="replace")
+            except Exception:
+                return ""
+        return ""
+
+    # Generic fallback: first identifier-like child.
     for child in node.children:
         if child.type in ("identifier", "name", "property_identifier", "type_identifier"):
             try:
