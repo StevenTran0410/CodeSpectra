@@ -88,9 +88,14 @@ const api = {
     build: (snapshotId: string, forceRebuild = true) =>
       ipcRenderer.invoke('graph:build', snapshotId, forceRebuild),
     summary: (snapshotId: string) => ipcRenderer.invoke('graph:summary', snapshotId),
-    edges: (snapshotId: string, limit = 2000) => ipcRenderer.invoke('graph:edges', snapshotId, limit),
+    edges: (snapshotId: string, limit = 2000, internalOnly = false) => ipcRenderer.invoke('graph:edges', snapshotId, limit, internalOnly),
     neighbors: (snapshotId: string, seedPath: string, hops = 1, limit = 300) =>
       ipcRenderer.invoke('graph:neighbors', snapshotId, seedPath, hops, limit),
+    communities: (snapshotId: string) => ipcRenderer.invoke('graph:communities', snapshotId),
+    communityForNode: (snapshotId: string, path: string) =>
+      ipcRenderer.invoke('graph:communityForNode', snapshotId, path),
+    cycles: (snapshotId: string) => ipcRenderer.invoke('graph:cycles', snapshotId),
+    exportJson: (snapshotId: string) => ipcRenderer.invoke('graph:exportJson', snapshotId),
   },
   retrieval: {
     buildIndex: (snapshotId: string, forceRebuild = true) =>

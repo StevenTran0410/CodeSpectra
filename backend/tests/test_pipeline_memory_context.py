@@ -129,6 +129,7 @@ async def test_prefetch_uses_profile_arch_max_results(
 ) -> None:
     """prefetch_pipeline_context must pass profile.retrieval_arch_max_results to retrieve."""
     from domain.analysis.agents import _context_builders as cb
+    from domain.retrieval.types import RetrievalSection
 
     monkeypatch.setattr(cb, "fetch_folder_tree", AsyncMock(return_value=""))
     monkeypatch.setattr(cb, "_fetch_files_by_pattern", AsyncMock(return_value=""))
@@ -136,10 +137,14 @@ async def test_prefetch_uses_profile_arch_max_results(
     await prefetch_pipeline_context(
         mock_retrieval, "snap-large", profile=LARGE_PROFILE
     )
-    # Verify the retrieve call used the large profile arch max_results
-    retrieve_call = mock_retrieval.retrieve.call_args
-    req = retrieve_call[0][0]
-    assert req.max_results == LARGE_PROFILE.retrieval_arch_max_results
+    # _fetch_docs_with_fallback may fire an extra retrieve call (IMPORTANT_FILES fallback)
+    # when no doc files are found — find the ARCHITECTURE call specifically.
+    arch_req = next(
+        c[0][0]
+        for c in mock_retrieval.retrieve.call_args_list
+        if c[0][0].section == RetrievalSection.ARCHITECTURE
+    )
+    assert arch_req.max_results == LARGE_PROFILE.retrieval_arch_max_results
 
 
 @pytest.mark.asyncio
@@ -150,10 +155,15 @@ async def test_prefetch_defaults_to_normal_profile(
 ) -> None:
     """prefetch_pipeline_context with profile=None must behave like NORMAL_PROFILE."""
     from domain.analysis.agents import _context_builders as cb
+    from domain.retrieval.types import RetrievalSection
 
     monkeypatch.setattr(cb, "fetch_folder_tree", AsyncMock(return_value=""))
     monkeypatch.setattr(cb, "_fetch_files_by_pattern", AsyncMock(return_value=""))
 
     await prefetch_pipeline_context(mock_retrieval, "snap-default")
-    req = mock_retrieval.retrieve.call_args[0][0]
-    assert req.max_results == NORMAL_PROFILE.retrieval_arch_max_results
+    arch_req = next(
+        c[0][0]
+        for c in mock_retrieval.retrieve.call_args_list
+        if c[0][0].section == RetrievalSection.ARCHITECTURE
+    )
+    assert arch_req.max_results == NORMAL_PROFILE.retrieval_arch_max_results

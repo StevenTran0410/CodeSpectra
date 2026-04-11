@@ -97,57 +97,6 @@ def _is_test_file(rel_path: str) -> bool:
     return bool(_TEST_DIR_PATTERN.search(rel_path) or _TEST_FILE_SUFFIX.search(rel_path))
 
 
-def _tarjan_scc_python(graph: dict[str, set[str]]) -> list[list[str]]:
-    """Pure-Python iterative Tarjan SCC fallback. Returns SCCs with ≥ 2 nodes."""
-    index_counter = [0]
-    stack: list[str] = []
-    on_stack: set[str] = set()
-    index: dict[str, int] = {}
-    lowlink: dict[str, int] = {}
-    sccs: list[list[str]] = []
-
-    # Iterative via explicit call stack to avoid Python recursion limits
-    for root in list(graph.keys()):
-        if root in index:
-            continue
-        call_stack: list[tuple[str, list[str], int]] = []
-        index[root] = lowlink[root] = index_counter[0]
-        index_counter[0] += 1
-        stack.append(root)
-        on_stack.add(root)
-        call_stack.append((root, list(graph.get(root, set())), 0))
-
-        while call_stack:
-            v, neighbours, ei = call_stack[-1]
-            if ei < len(neighbours):
-                call_stack[-1] = (v, neighbours, ei + 1)
-                w = neighbours[ei]
-                if w not in index:
-                    index[w] = lowlink[w] = index_counter[0]
-                    index_counter[0] += 1
-                    stack.append(w)
-                    on_stack.add(w)
-                    call_stack.append((w, list(graph.get(w, set())), 0))
-                elif w in on_stack:
-                    lowlink[v] = min(lowlink[v], index[w])
-            else:
-                call_stack.pop()
-                if call_stack:
-                    parent = call_stack[-1][0]
-                    lowlink[parent] = min(lowlink[parent], lowlink[v])
-                if lowlink[v] == index[v]:
-                    scc: list[str] = []
-                    while True:
-                        w = stack.pop()
-                        on_stack.discard(w)
-                        scc.append(w)
-                        if w == v:
-                            break
-                    if len(scc) >= 2:
-                        sccs.append(scc)
-    return sccs
-
-
 def _compute_scc(edge_tuples: list[tuple[str, str]]) -> list[list[str]]:
     """SCC detection — uses C++ native module when available, falls back to Python."""
     if _native and hasattr(_native, "compute_scc"):
@@ -156,11 +105,8 @@ def _compute_scc(edge_tuples: list[tuple[str, str]]) -> list[list[str]]:
         except Exception as e:
             logger.debug("Native SCC failed, using Python fallback: %s", e)
 
-    # Python fallback
-    graph: dict[str, set[str]] = defaultdict(set)
-    for s, d in edge_tuples:
-        graph[s].add(d)
-    return _tarjan_scc_python(dict(graph))
+    from domain.structural_graph._scc_fallback import compute_scc_python
+    return compute_scc_python(edge_tuples)
 
 
 # ── detectors ─────────────────────────────────────────────────────────────────

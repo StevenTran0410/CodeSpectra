@@ -11,6 +11,7 @@ from shared.logger import logger
 from shared.sql_queries import SQL_SELECT_MANIFEST_FILES_BY_SNAPSHOT
 from shared.utils import new_id, read_utf8_lenient, utc_now_iso
 
+from .chunker_ast import ASTChunker
 from .types import (
     BuildRetrievalIndexRequest,
     BuildRetrievalIndexResponse,
@@ -24,6 +25,14 @@ from .types import (
 
 _WS = re.compile(r"\s+")
 _WORD = re.compile(r"[A-Za-z0-9_]+")
+
+# Languages that get AST-based semantic chunking (CS-101).
+_AST_LANGS: frozenset[str] = frozenset({
+    "python", "typescript", "javascript", "cpp", "go", "java", "c", "rust",
+})
+
+# Module-level singleton — parser/Language objects are cached inside.
+_ast_chunker = ASTChunker()
 
 _SECTION_BUDGETS: dict[RetrievalSection, int] = {
     # Increased from ~2K to 6-10K.
@@ -207,11 +216,16 @@ class RetrievalService:
             if not p.exists() or not p.is_file():
                 continue
             text = read_utf8_lenient(p)
-            text = _normalize_text(text)
-            if not text:
+            if not text.strip():
                 continue
             target_size = _chunk_size_for(category, language)
-            pieces = _split_chunks(text, target_size)
+            lang_key = (language or "").lower()
+            if lang_key in _AST_LANGS and category not in {"docs", "config"}:
+                # AST chunking: operate on raw source — normalization after.
+                ast_chunks = _ast_chunker.chunk(text, lang_key, target_size)
+                pieces = [_normalize_text(c.text) for c in ast_chunks]
+            else:
+                pieces = _split_chunks(_normalize_text(text), target_size)
             files_indexed += 1
             for i, piece in enumerate(pieces):
                 token_est = _token_estimate(piece)

@@ -1,12 +1,15 @@
-"""Structural graph endpoints."""
+"""Structural graph endpoints (RPA-033, CS-102)."""
 from fastapi import APIRouter, HTTPException, Query
 
 from domain.structural_graph.service import StructuralGraphService
 from domain.structural_graph.types import (
     BuildGraphRequest,
     BuildGraphResponse,
+    CyclesResponse,
+    GraphCommunitiesResponse,
     GraphEdgesResponse,
     GraphNeighborsResponse,
+    NodeCommunityResponse,
     StructuralGraphSummary,
 )
 
@@ -30,8 +33,10 @@ async def get_graph_summary(snapshot_id: str) -> StructuralGraphSummary:
 
 
 @router.get("/edges/{snapshot_id}", response_model=GraphEdgesResponse)
-async def list_graph_edges(snapshot_id: str, limit: int = 2000) -> GraphEdgesResponse:
-    return await _service.edges(snapshot_id, limit=limit)
+async def list_graph_edges(
+    snapshot_id: str, limit: int = 2000, internal_only: bool = False
+) -> GraphEdgesResponse:
+    return await _service.edges(snapshot_id, limit=limit, internal_only=internal_only)
 
 
 @router.get("/neighbors/{snapshot_id}", response_model=GraphNeighborsResponse)
@@ -47,3 +52,48 @@ async def graph_neighbors(
         raise HTTPException(status_code=400, detail=str(e))
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
+
+
+# ── CS-102: community detection endpoints ─────────────────────────────────────
+
+@router.get("/communities/{snapshot_id}", response_model=GraphCommunitiesResponse)
+async def list_communities(snapshot_id: str) -> GraphCommunitiesResponse:
+    """Return cached community partition from the last Louvain run."""
+    try:
+        return await _service.list_communities(snapshot_id)
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.get("/community/{snapshot_id}", response_model=NodeCommunityResponse)
+async def community_for_node(
+    snapshot_id: str,
+    path: str = Query(..., description="Node file path"),
+) -> NodeCommunityResponse:
+    """Return community ID and all members for a given node."""
+    try:
+        return await _service.community_for_node(snapshot_id, path)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.get("/cycles/{snapshot_id}", response_model=CyclesResponse)
+async def graph_cycles(snapshot_id: str) -> CyclesResponse:
+    """Return circular import cycles (strongly connected components)."""
+    try:
+        return await _service.cycles(snapshot_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/export/{snapshot_id}")
+async def export_graph_json(snapshot_id: str) -> dict:
+    """Export full graph (nodes, edges, communities, cycles) as a single JSON blob.
+
+    Use for debugging: share the output to diagnose import resolution or
+    community clustering issues.
+    """
+    try:
+        return await _service.export_graph_json(snapshot_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

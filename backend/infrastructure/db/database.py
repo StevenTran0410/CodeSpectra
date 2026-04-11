@@ -311,6 +311,62 @@ _MIGRATIONS: list[dict[str, Any]] = [
             ALTER TABLE local_repos ADD COLUMN workspace_id TEXT;
         """,
     },
+    {
+        "version": 19,
+        "description": "Community detection tables for CS-102 (graph_community_members + graph_community_summaries)",
+        "sql": """
+            CREATE TABLE IF NOT EXISTS graph_community_members (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                snapshot_id  TEXT    NOT NULL,
+                node_path    TEXT    NOT NULL,
+                community_id INTEGER NOT NULL,
+                hub_score    REAL    NOT NULL DEFAULT 0.0,
+                created_at   TEXT    NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_graph_comm_members_node
+                ON graph_community_members(snapshot_id, node_path);
+            CREATE INDEX IF NOT EXISTS idx_graph_comm_members_community
+                ON graph_community_members(snapshot_id, community_id);
+
+            CREATE TABLE IF NOT EXISTS graph_community_summaries (
+                snapshot_id              TEXT    NOT NULL,
+                community_id             INTEGER NOT NULL,
+                member_count             INTEGER NOT NULL,
+                hub_paths                TEXT    NOT NULL DEFAULT '[]',
+                modularity_contribution  REAL    NOT NULL DEFAULT 0.0,
+                llm_summary              TEXT,
+                generated_at             TEXT    NOT NULL,
+                PRIMARY KEY (snapshot_id, community_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_graph_comm_summaries_snapshot
+                ON graph_community_summaries(snapshot_id);
+        """,
+    },
+    {
+        "version": 20,
+        "description": "Dedup manifest_files and add UNIQUE constraint on (snapshot_id, rel_path)",
+        "sql": """
+            -- Remove duplicate rows keeping the lowest-rowid occurrence per (snapshot_id, rel_path).
+            -- Duplicates accumulate when manifest:build is called more than once for the same snapshot
+            -- (e.g. via the UI 'rebuild' button) on a DB that lacked the UNIQUE constraint.
+            DELETE FROM manifest_files
+            WHERE rowid NOT IN (
+                SELECT MIN(rowid) FROM manifest_files GROUP BY snapshot_id, rel_path
+            );
+
+            -- Enforce uniqueness going forward so re-builds can never accumulate duplicates again.
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_manifest_unique_path
+                ON manifest_files(snapshot_id, rel_path);
+        """,
+    },
+    {
+        "version": 21,
+        "description": "Add neighbor_community_ids to graph_community_summaries for inter-community graph",
+        "sql": """
+            ALTER TABLE graph_community_summaries
+                ADD COLUMN neighbor_community_ids TEXT NOT NULL DEFAULT '[]';
+        """,
+    },
 ]
 
 TARGET_VERSION = len(_MIGRATIONS) - 1

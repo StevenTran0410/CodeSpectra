@@ -180,8 +180,8 @@ export function registerFolderHandlers(client: BackendClient): void {
     }
   })
 
-  ipcMain.handle('graph:edges', (_event, snapshotId: string, limit = 2000) =>
-    client.get(`/api/graph/edges/${snapshotId}?limit=${limit}`)
+  ipcMain.handle('graph:edges', (_event, snapshotId: string, limit = 2000, internalOnly = false) =>
+    client.get(`/api/graph/edges/${snapshotId}?limit=${limit}&internal_only=${internalOnly}`)
   )
 
   ipcMain.handle('graph:neighbors', (_event, snapshotId: string, seedPath: string, hops = 1, limit = 300) =>
@@ -189,6 +189,33 @@ export function registerFolderHandlers(client: BackendClient): void {
       `/api/graph/neighbors/${snapshotId}?path=${encodeURIComponent(seedPath)}&hops=${hops}&limit=${limit}`
     )
   )
+
+  ipcMain.handle('graph:communities', (_event, snapshotId: string) =>
+    client.get(`/api/graph/communities/${snapshotId}`)
+  )
+
+  ipcMain.handle('graph:communityForNode', (_event, snapshotId: string, path: string) =>
+    client.get(`/api/graph/community/${snapshotId}?path=${encodeURIComponent(path)}`)
+  )
+
+  ipcMain.handle('graph:cycles', (_event, snapshotId: string) =>
+    client.get(`/api/graph/cycles/${snapshotId}`)
+  )
+
+  ipcMain.handle('graph:exportJson', async (_event, snapshotId: string) => {
+    const data = await client.get<Record<string, unknown>>(`/api/graph/export/${snapshotId}`)
+    const defaultName = `graph-export-${snapshotId.slice(0, 8)}.json`
+    const save = await dialog.showSaveDialog({
+      title: 'Save Graph Export JSON',
+      defaultPath: path.join(app.getPath('desktop'), defaultName),
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+    })
+    if (save.canceled || !save.filePath) {
+      return { saved: false, file_path: null }
+    }
+    await fs.writeFile(save.filePath, JSON.stringify(data, null, 2), 'utf-8')
+    return { saved: true, file_path: save.filePath }
+  })
 
   ipcMain.handle('retrieval:buildIndex', (_event, snapshotId: string, forceRebuild = true) =>
     client.post('/api/retrieval/build-index', { snapshot_id: snapshotId, force_rebuild: forceRebuild })
