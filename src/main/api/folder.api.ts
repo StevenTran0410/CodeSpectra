@@ -190,6 +190,18 @@ export function registerFolderHandlers(client: BackendClient): void {
     )
   )
 
+  ipcMain.handle('graph:communities', (_event, snapshotId: string) =>
+    client.get(`/api/graph/communities/${snapshotId}`)
+  )
+
+  ipcMain.handle('graph:communityForNode', (_event, snapshotId: string, path: string) =>
+    client.get(`/api/graph/community/${snapshotId}?path=${encodeURIComponent(path)}`)
+  )
+
+  ipcMain.handle('graph:cycles', (_event, snapshotId: string) =>
+    client.get(`/api/graph/cycles/${snapshotId}`)
+  )
+
   ipcMain.handle('retrieval:buildIndex', (_event, snapshotId: string, forceRebuild = true) =>
     client.post('/api/retrieval/build-index', { snapshot_id: snapshotId, force_rebuild: forceRebuild })
   )

@@ -311,6 +311,37 @@ _MIGRATIONS: list[dict[str, Any]] = [
             ALTER TABLE local_repos ADD COLUMN workspace_id TEXT;
         """,
     },
+    {
+        "version": 19,
+        "description": "Community detection tables for CS-102 (graph_community_members + graph_community_summaries)",
+        "sql": """
+            CREATE TABLE IF NOT EXISTS graph_community_members (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                snapshot_id  TEXT    NOT NULL,
+                node_path    TEXT    NOT NULL,
+                community_id INTEGER NOT NULL,
+                hub_score    REAL    NOT NULL DEFAULT 0.0,
+                created_at   TEXT    NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_graph_comm_members_node
+                ON graph_community_members(snapshot_id, node_path);
+            CREATE INDEX IF NOT EXISTS idx_graph_comm_members_community
+                ON graph_community_members(snapshot_id, community_id);
+
+            CREATE TABLE IF NOT EXISTS graph_community_summaries (
+                snapshot_id              TEXT    NOT NULL,
+                community_id             INTEGER NOT NULL,
+                member_count             INTEGER NOT NULL,
+                hub_paths                TEXT    NOT NULL DEFAULT '[]',
+                modularity_contribution  REAL    NOT NULL DEFAULT 0.0,
+                llm_summary              TEXT,
+                generated_at             TEXT    NOT NULL,
+                PRIMARY KEY (snapshot_id, community_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_graph_comm_summaries_snapshot
+                ON graph_community_summaries(snapshot_id);
+        """,
+    },
 ]
 
 TARGET_VERSION = len(_MIGRATIONS) - 1

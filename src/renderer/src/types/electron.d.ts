@@ -233,6 +233,34 @@ export interface GraphNeighborsResponse {
   edges: GraphEdge[]
 }
 
+export interface CommunityInfo {
+  community_id: number
+  member_count: number
+  hub_paths: string[]
+  modularity_contribution: number
+  llm_summary: string | null
+  generated_at: string
+}
+
+export interface GraphCommunitiesResponse {
+  snapshot_id: string
+  total_communities: number
+  communities: CommunityInfo[]
+  node_index: Record<string, number>
+}
+
+export interface NodeCommunityResponse {
+  snapshot_id: string
+  node_path: string
+  community_id: number
+  members: string[]
+}
+
+export interface CyclesResponse {
+  snapshot_id: string
+  cycles: string[][]
+}
+
 export type RetrievalMode = 'hybrid' | 'vectorless'
 export type RetrievalSection =
   | 'architecture'
@@ -419,6 +447,9 @@ declare global {
           hops?: number,
           limit?: number
         ) => Promise<GraphNeighborsResponse>
+        communities: (snapshotId: string) => Promise<GraphCommunitiesResponse>
+        communityForNode: (snapshotId: string, path: string) => Promise<NodeCommunityResponse>
+        cycles: (snapshotId: string) => Promise<CyclesResponse>
       }
       retrieval: {
         buildIndex: (snapshotId: string, forceRebuild?: boolean) => Promise<{

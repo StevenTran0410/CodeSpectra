@@ -1,5 +1,15 @@
 # Repo CodeSpectra
 
+[![Electron](https://img.shields.io/badge/Electron-33.x-6366F1?style=flat-square&logo=electron&logoColor=white)](https://www.electronjs.org/)
+[![React](https://img.shields.io/badge/React-19-06B6D4?style=flat-square&logo=react&logoColor=white)](https://react.dev/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3B82F6?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![Python](https://img.shields.io/badge/Python-3.11+-F59E0B?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115-10B981?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![C++](https://img.shields.io/badge/C%2B%2B-17-8B5CF6?style=flat-square&logo=cplusplus&logoColor=white)](https://isocpp.org/)
+[![SQLite](https://img.shields.io/badge/SQLite-WAL-0EA5E9?style=flat-square&logo=sqlite&logoColor=white)](https://www.sqlite.org/)
+[![Platform](https://img.shields.io/badge/Platform-Windows-64748B?style=flat-square&logo=windows&logoColor=white)](https://github.com/StevenTran0410/CodeSpectra/releases)
+[![License](https://img.shields.io/badge/License-Apache%202.0-EF4444?style=flat-square&logo=apache&logoColor=white)](LICENSE)
+
 > A local desktop app that reads a codebase and produces an evidence-backed onboarding report — powered by a fully local LLM or a bring-your-own-key cloud model.
 
 **Author:** Steven Le Minh — steven0410leminh@gmail.com

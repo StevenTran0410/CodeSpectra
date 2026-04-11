@@ -1,10 +1,12 @@
 """Structural graph service (RPA-033)."""
 from __future__ import annotations
 
+import asyncio
 import ast
 import importlib
 import json
 import re
+from collections import defaultdict
 from pathlib import Path
 
 from infrastructure.db.database import get_db
@@ -12,15 +14,19 @@ from shared.errors import NotFoundError
 from shared.logger import logger
 from shared.sql_queries import SQL_SELECT_MANIFEST_FILES_BY_SNAPSHOT
 from shared.toolchain import detect_cpp_toolchain
-from shared.utils import read_utf8_lenient, utc_now_iso
+from shared.utils import new_id, read_utf8_lenient, utc_now_iso
 
 from .types import (
     BuildGraphRequest,
     BuildGraphResponse,
+    CommunityInfo,
+    CyclesResponse,
+    GraphCommunitiesResponse,
     GraphEdge,
     GraphEdgesResponse,
     GraphNeighborsResponse,
     GraphNodeScore,
+    NodeCommunityResponse,
     StructuralGraphSummary,
 )
 
@@ -296,6 +302,17 @@ class StructuralGraphService:
         )
         await db.commit()
 
+        # Fire community detection in the background — does not block build response.
+        # WAL mode allows concurrent writes; failure is logged but non-fatal.
+        async def _background_communities() -> None:
+            try:
+                await self.detect_communities(req.snapshot_id)
+                logger.info("[structural_graph] community detection done for %s", req.snapshot_id)
+            except Exception as exc:
+                logger.warning("[structural_graph] community detection failed: %s", exc)
+
+        asyncio.create_task(_background_communities())
+
         return BuildGraphResponse(
             summary=StructuralGraphSummary(
                 snapshot_id=req.snapshot_id,
@@ -426,3 +443,219 @@ class StructuralGraphService:
             nodes=nodes,
             edges=edges,
         )
+
+    # ── CS-102: community detection ───────────────────────────────────────────
+
+    async def detect_communities(
+        self, snapshot_id: str, resolution: float = 1.0
+    ) -> GraphCommunitiesResponse:
+        """Run Louvain community detection and persist results.
+
+        Uses C++ native compute_louvain if available, falls back to Python.
+        Safe to call concurrently with reads (WAL mode).
+        """
+        db = get_db()
+
+        # Load internal edges
+        async with db.execute(
+            "SELECT src_path, dst_path FROM structural_graph_edges WHERE snapshot_id=? AND is_external=0",
+            (snapshot_id,),
+        ) as cur:
+            edge_rows = await cur.fetchall()
+
+        # Load all node paths from manifest (ensures isolated nodes are included)
+        async with db.execute(
+            "SELECT rel_path FROM manifest_files WHERE snapshot_id=? AND category IN ('source','test','infra')",
+            (snapshot_id,),
+        ) as cur:
+            node_rows = await cur.fetchall()
+
+        edge_tuples = [(r["src_path"], r["dst_path"], 1.0) for r in edge_rows]
+        node_ids = [r["rel_path"] for r in node_rows]
+        # Also include nodes that appear only in edges
+        edge_node_set = set()
+        for s, d, _ in edge_tuples:
+            edge_node_set.add(s)
+            edge_node_set.add(d)
+        node_id_set = set(node_ids)
+        for n in edge_node_set:
+            if n not in node_id_set:
+                node_ids.append(n)
+                node_id_set.add(n)
+
+        # Run Louvain — C++ native first, Python fallback
+        native_graph = _load_native_graph()
+        if native_graph and hasattr(native_graph, "compute_louvain"):
+            try:
+                raw: dict[str, int] = native_graph.compute_louvain(
+                    edge_tuples, node_ids, resolution, 42
+                )
+            except Exception as e:
+                logger.debug("[structural_graph] native compute_louvain failed: %s", e)
+                raw = None
+        else:
+            raw = None
+
+        if raw is None:
+            from ._louvain_fallback import compute_louvain_python
+            raw = compute_louvain_python(edge_tuples, node_ids, resolution)
+
+        # Compute hub scores: within-community in-degree for each node
+        comm_adj: dict[int, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+        for s, d, w in edge_tuples:
+            cs, cd = raw.get(s, -1), raw.get(d, -1)
+            if cs == cd and cs >= 0:
+                comm_adj[cs][d] += w
+
+        # Aggregate: member_count, hub_paths, hub_score per node
+        comm_members: dict[int, list[str]] = defaultdict(list)
+        for node, cid in raw.items():
+            comm_members[cid].append(node)
+
+        now = utc_now_iso()
+
+        # Replace old community rows for this snapshot
+        await db.execute("DELETE FROM graph_community_members WHERE snapshot_id=?", (snapshot_id,))
+        await db.execute("DELETE FROM graph_community_summaries WHERE snapshot_id=?", (snapshot_id,))
+
+        communities: list[CommunityInfo] = []
+        for cid, members in sorted(comm_members.items()):
+            hub_scores = {n: comm_adj[cid].get(n, 0.0) for n in members}
+            top_hubs = sorted(members, key=lambda n: -hub_scores[n])[:3]
+
+            for node in members:
+                await db.execute(
+                    """
+                    INSERT OR REPLACE INTO graph_community_members
+                    (snapshot_id, node_path, community_id, hub_score, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (snapshot_id, node, cid, hub_scores[node], now),
+                )
+
+            mod_contrib = float(len(members)) / max(len(node_ids), 1)
+            await db.execute(
+                """
+                INSERT OR REPLACE INTO graph_community_summaries
+                (snapshot_id, community_id, member_count, hub_paths, modularity_contribution, llm_summary, generated_at)
+                VALUES (?, ?, ?, ?, ?, NULL, ?)
+                """,
+                (snapshot_id, cid, len(members), json.dumps(top_hubs), mod_contrib, now),
+            )
+
+            communities.append(CommunityInfo(
+                community_id=cid,
+                member_count=len(members),
+                hub_paths=top_hubs,
+                modularity_contribution=mod_contrib,
+                llm_summary=None,
+                generated_at=now,
+            ))
+
+        await db.commit()
+
+        return GraphCommunitiesResponse(
+            snapshot_id=snapshot_id,
+            total_communities=len(communities),
+            communities=communities,
+            node_index=raw,
+        )
+
+    async def list_communities(self, snapshot_id: str) -> GraphCommunitiesResponse:
+        """Return cached community data from DB (no recomputation)."""
+        db = get_db()
+
+        async with db.execute(
+            """
+            SELECT community_id, member_count, hub_paths, modularity_contribution, llm_summary, generated_at
+            FROM graph_community_summaries WHERE snapshot_id=?
+            ORDER BY community_id ASC
+            """,
+            (snapshot_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+
+        async with db.execute(
+            "SELECT node_path, community_id FROM graph_community_members WHERE snapshot_id=?",
+            (snapshot_id,),
+        ) as cur:
+            member_rows = await cur.fetchall()
+
+        node_index = {r["node_path"]: r["community_id"] for r in member_rows}
+
+        communities = [
+            CommunityInfo(
+                community_id=r["community_id"],
+                member_count=r["member_count"],
+                hub_paths=json.loads(r["hub_paths"] or "[]"),
+                modularity_contribution=float(r["modularity_contribution"]),
+                llm_summary=r["llm_summary"],
+                generated_at=r["generated_at"],
+            )
+            for r in rows
+        ]
+
+        return GraphCommunitiesResponse(
+            snapshot_id=snapshot_id,
+            total_communities=len(communities),
+            communities=communities,
+            node_index=node_index,
+        )
+
+    async def community_for_node(
+        self, snapshot_id: str, rel_path: str
+    ) -> NodeCommunityResponse:
+        """Return community ID and all members for a given node."""
+        db = get_db()
+
+        async with db.execute(
+            "SELECT community_id FROM graph_community_members WHERE snapshot_id=? AND node_path=?",
+            (snapshot_id, rel_path),
+        ) as cur:
+            row = await cur.fetchone()
+
+        if row is None:
+            raise ValueError(f"Node '{rel_path}' not found in community index for snapshot {snapshot_id}")
+
+        cid = row["community_id"]
+
+        async with db.execute(
+            "SELECT node_path FROM graph_community_members WHERE snapshot_id=? AND community_id=? ORDER BY node_path",
+            (snapshot_id, cid),
+        ) as cur:
+            member_rows = await cur.fetchall()
+
+        return NodeCommunityResponse(
+            snapshot_id=snapshot_id,
+            node_path=rel_path,
+            community_id=cid,
+            members=[r["node_path"] for r in member_rows],
+        )
+
+    async def cycles(self, snapshot_id: str) -> CyclesResponse:
+        """Return circular import cycles (SCCs) via C++ native or Python fallback."""
+        db = get_db()
+
+        async with db.execute(
+            "SELECT src_path, dst_path FROM structural_graph_edges WHERE snapshot_id=? AND is_external=0",
+            (snapshot_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+
+        edge_tuples = [(r["src_path"], r["dst_path"]) for r in rows]
+
+        native_graph = _load_native_graph()
+        if native_graph and hasattr(native_graph, "compute_scc"):
+            try:
+                sccs = native_graph.compute_scc(edge_tuples)
+            except Exception as e:
+                logger.debug("[structural_graph] native compute_scc failed: %s", e)
+                sccs = None
+        else:
+            sccs = None
+
+        if sccs is None:
+            from ._scc_fallback import compute_scc_python
+            sccs = compute_scc_python(edge_tuples)
+
+        return CyclesResponse(snapshot_id=snapshot_id, cycles=sccs)

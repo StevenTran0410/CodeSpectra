@@ -11,6 +11,9 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import type {
+  CommunityInfo,
+  CyclesResponse,
+  GraphCommunitiesResponse,
   GraphEdge,
   RetrievalBundle,
   RetrievalCompareResponse,
@@ -78,9 +81,134 @@ function RetrievalResultPanel({
   )
 }
 
+// ── Community colour helpers ──────────────────────────────────────────────────
+function communityHsl(id: number, total: number): string {
+  const hue = total <= 1 ? 210 : Math.round((id / total) * 360)
+  return `hsl(${hue}, 65%, 45%)`
+}
+function communityBg(id: number, total: number): string {
+  const hue = total <= 1 ? 210 : Math.round((id / total) * 360)
+  return `hsl(${hue}, 30%, 10%)`
+}
+
+// ── GraphModal extracted component ───────────────────────────────────────────
+function GraphModal({
+  open,
+  onClose,
+  loading,
+  nodes,
+  edges,
+  renderNodes,
+  renderEdges,
+  maxNodes,
+  maxEdges,
+  seedPath,
+  onNodeClick,
+  communities,
+  cycles,
+}: {
+  open: boolean
+  onClose: () => void
+  loading: boolean
+  nodes: Node[]
+  edges: Edge[]
+  renderNodes: Node[]
+  renderEdges: Edge[]
+  maxNodes: number
+  maxEdges: number
+  seedPath: string
+  onNodeClick: (nodeId: string) => void
+  communities: GraphCommunitiesResponse | null
+  cycles: string[][]
+}): React.ReactElement | null {
+  if (!open) return null
+  const totalComm = communities?.total_communities ?? 1
+  return (
+    <div className="fixed inset-0 z-50 bg-black/65 flex items-center justify-center p-4">
+      <div className="w-[94vw] h-[86vh] rounded-lg border border-zinc-700 bg-zinc-900 overflow-hidden flex flex-col">
+        <div className="px-3 py-2 border-b border-zinc-700 flex items-center justify-between shrink-0">
+          <div className="text-xs text-zinc-300">
+            Graph Visualization ({seedPath.trim() ? `focused: ${seedPath}` : 'full graph'})
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="text-[11px] text-zinc-500">
+              {renderNodes.length} nodes / {renderEdges.length} edges
+              {(renderNodes.length >= maxNodes || renderEdges.length >= maxEdges) && (
+                <span className="text-amber-400"> (truncated)</span>
+              )}
+            </div>
+            <button
+              onClick={onClose}
+              className="px-2.5 py-1 text-xs border border-zinc-700 rounded text-zinc-300 hover:border-zinc-600"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+        <div className="flex-1 min-h-0">
+          {loading ? (
+            <div className="h-full flex items-center justify-center text-zinc-500 text-sm">
+              <Loader2 size={16} className="animate-spin mr-2" />
+              Loading graph...
+            </div>
+          ) : (
+            <ReactFlow
+              nodes={nodes}
+              edges={edges}
+              fitView
+              fitViewOptions={{ padding: 0.24 }}
+              onNodeClick={(_e, node) => onNodeClick(String(node.id))}
+              minZoom={0.15}
+              maxZoom={2.0}
+            >
+              <Controls />
+              <Background color="#27272a" gap={18} size={1} />
+            </ReactFlow>
+          )}
+        </div>
+        {/* Community legend */}
+        {communities && communities.communities.length > 0 && (
+          <div className="px-3 py-2 border-t border-zinc-800 flex flex-wrap gap-2 shrink-0">
+            {communities.communities.map((c: CommunityInfo) => (
+              <div key={c.community_id} className="flex items-center gap-1 text-[10px] text-zinc-400">
+                <span
+                  className="inline-block w-2.5 h-2.5 rounded-sm shrink-0"
+                  style={{ background: communityHsl(c.community_id, totalComm) }}
+                />
+                <span className="text-zinc-300">C{c.community_id}</span>
+                <span className="text-zinc-600">({c.member_count})</span>
+                {c.llm_summary && (
+                  <span className="text-zinc-500 truncate max-w-[100px]" title={c.llm_summary}>
+                    {c.llm_summary.slice(0, 30)}…
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+        {/* Circular import cycles */}
+        {cycles.length > 0 && (
+          <details className="border-t border-yellow-900/40 px-3 py-1.5 shrink-0">
+            <summary className="text-[11px] text-yellow-400 cursor-pointer select-none">
+              ⚠ {cycles.length} circular import cycle{cycles.length > 1 ? 's' : ''} detected
+            </summary>
+            <div className="mt-1 space-y-0.5 max-h-28 overflow-y-auto pb-1">
+              {cycles.map((scc, i) => (
+                <div key={i} className="font-mono text-[10px] text-zinc-400 truncate">
+                  {scc.join(' → ')}
+                </div>
+              ))}
+            </div>
+          </details>
+        )}
+      </div>
+    </div>
+  )
+}
+
 export default function IndexOverviewScreen(): React.ReactElement {
-  const MAX_RENDER_NODES = 180
-  const MAX_RENDER_EDGES = 320
+  const MAX_RENDER_NODES = 280
+  const MAX_RENDER_EDGES = 500
   const navigate = useNavigate()
   const [params] = useSearchParams()
   const repoId = params.get('repoId') ?? ''
@@ -115,6 +243,9 @@ export default function IndexOverviewScreen(): React.ReactElement {
   const [retrievalBusy, setRetrievalBusy] = useState(false)
   const [retrievalBundle, setRetrievalBundle] = useState<RetrievalBundle | null>(null)
   const [retrievalCompare, setRetrievalCompare] = useState<RetrievalCompareResponse | null>(null)
+  const [communities, setCommunities] = useState<GraphCommunitiesResponse | null>(null)
+  const [cycles, setCycles] = useState<string[][]>([])
+  const [hoveredNode, setHoveredNode] = useState<string | null>(null)
 
   useEffect(() => {
     const run = async () => {
@@ -172,26 +303,35 @@ export default function IndexOverviewScreen(): React.ReactElement {
   )
   const focusedMode = seedPath.trim().length > 0
   const graphNodeOptions = useMemo(() => fullGraphNodes.slice(0, 1000), [fullGraphNodes])
+  const centralityTier = useMemo(() => {
+    const scores = graphSummary?.top_central_files ?? []
+    const highSet = new Set(scores.slice(0, 10).map((s) => s.rel_path))
+    const midSet = new Set(scores.slice(10, 40).map((s) => s.rel_path))
+    return { highSet, midSet }
+  }, [graphSummary])
+
   const graphRenderNodes = useMemo(() => {
     const nodes = (graphModalNodes.length > 0 ? graphModalNodes : fullGraphNodes).slice(0, MAX_RENDER_NODES)
     const srcEdges = (graphModalEdges.length > 0 ? graphModalEdges : fullGraphEdges)
       .slice(0, MAX_RENDER_EDGES)
     const nodeSet = new Set(nodes)
+    const totalComm = communities?.total_communities ?? 1
+    const nodeIndex = communities?.node_index ?? {}
 
     const g = new dagre.graphlib.Graph()
     g.setDefaultEdgeLabel(() => ({}))
     g.setGraph({
       rankdir: focusedMode ? 'LR' : 'TB',
-      nodesep: 36,
-      ranksep: focusedMode ? 90 : 72,
-      marginx: 20,
-      marginy: 20,
+      nodesep: 40,
+      ranksep: focusedMode ? 100 : 80,
+      marginx: 24,
+      marginy: 24,
     })
 
-    const nodeWidth = 210
-    const nodeHeight = 40
     for (const n of nodes) {
-      g.setNode(n, { width: nodeWidth, height: nodeHeight })
+      const isHigh = centralityTier.highSet.has(n)
+      const isMid = centralityTier.midSet.has(n)
+      g.setNode(n, { width: isHigh ? 240 : isMid ? 210 : 180, height: isHigh ? 50 : isMid ? 40 : 34 })
     }
     for (const e of srcEdges) {
       if (!nodeSet.has(e.src_path) || !nodeSet.has(e.dst_path)) continue
@@ -200,54 +340,77 @@ export default function IndexOverviewScreen(): React.ReactElement {
     dagre.layout(g)
 
     return nodes.map((n, i) => {
+      const isHigh = centralityTier.highSet.has(n)
+      const isMid = centralityTier.midSet.has(n)
+      const nodeW = isHigh ? 240 : isMid ? 210 : 180
+      const nodeH = isHigh ? 50 : isMid ? 40 : 34
+
       const p = g.node(n)
-      const x = p ? p.x - nodeWidth / 2 : (i % 8) * 240
-      const y = p ? p.y - nodeHeight / 2 : Math.floor(i / 8) * 90
+      const x = p ? p.x - nodeW / 2 : (i % 8) * 240
+      const y = p ? p.y - nodeH / 2 : Math.floor(i / 8) * 90
+
+      const commId = nodeIndex[n] ?? -1
+      const borderColor = commId >= 0 ? communityHsl(commId, totalComm) : '#3f3f46'
+      const bgColor = commId >= 0 ? communityBg(commId, totalComm) : '#18181b'
+      const glowShadow = isHigh
+        ? `0 0 14px ${borderColor}55, 0 2px 8px rgba(0,0,0,0.35)`
+        : '0 2px 6px rgba(0,0,0,0.25)'
       const tail = n.split('/').slice(-2).join('/')
+
       return {
         id: n,
         position: { x, y },
         data: {
           label: (
-            <div className="w-[190px]">
-              <div className="text-[10px] text-zinc-100 truncate">{tail || n}</div>
-              <div className="text-[9px] text-zinc-500 truncate">{n}</div>
+            <div style={{ width: nodeW - 16 }}>
+              <div className="text-[10px] text-zinc-100 truncate font-medium">{tail || n}</div>
+              {isHigh && <div className="text-[9px] text-zinc-400 truncate">{n}</div>}
             </div>
           ),
         },
         style: {
-          background: '#18181b',
+          background: bgColor,
           color: '#e4e4e7',
-          border: '1px solid #3f3f46',
+          border: `${isHigh ? 2 : 1}px solid ${borderColor}`,
           borderRadius: 8,
-          fontSize: 10,
+          fontSize: isHigh ? 11 : 10,
           padding: 6,
-          width: nodeWidth,
-          boxShadow: '0 2px 10px rgba(0,0,0,0.25)',
+          width: nodeW,
+          height: nodeH,
+          boxShadow: glowShadow,
         },
-        draggable: false,
+        draggable: true,
         selectable: true,
       } as Node
     })
-  }, [graphModalNodes, fullGraphNodes, graphModalEdges, fullGraphEdges, focusedMode])
+  }, [graphModalNodes, fullGraphNodes, graphModalEdges, fullGraphEdges, focusedMode, communities, centralityTier])
   const graphRenderEdges = useMemo(() => {
     const nodeSet = new Set(graphRenderNodes.map((n) => n.id))
     const src = graphModalEdges.length > 0 ? graphModalEdges : fullGraphEdges
+    const nodeIndex = communities?.node_index ?? {}
+    const totalComm = communities?.total_communities ?? 1
     const out: Edge[] = []
     for (const e of src) {
       if (!nodeSet.has(e.src_path) || !nodeSet.has(e.dst_path)) continue
+      const sc = nodeIndex[e.src_path] ?? -1
+      const dc = nodeIndex[e.dst_path] ?? -1
+      const intra = sc >= 0 && sc === dc
       out.push({
         id: `${e.src_path}->${e.dst_path}:${out.length}`,
         source: e.src_path,
         target: e.dst_path,
         type: 'smoothstep',
         animated: false,
-        style: { stroke: '#71717a', strokeWidth: 1.2, opacity: 0.72 },
+        style: {
+          stroke: intra ? communityHsl(sc, totalComm) : '#52525b',
+          strokeWidth: intra ? 1.8 : 1.0,
+          opacity: intra ? 0.8 : 0.4,
+        },
       })
       if (out.length >= MAX_RENDER_EDGES) break
     }
     return out
-  }, [graphModalEdges, fullGraphEdges, graphRenderNodes])
+  }, [graphModalEdges, fullGraphEdges, graphRenderNodes, communities])
 
   useEffect(() => {
     const run = async () => {
@@ -256,6 +419,13 @@ export default function IndexOverviewScreen(): React.ReactElement {
       try {
         const res = await window.api.graph.edges(snapshotId, 5000)
         setFullGraphEdges(res.edges)
+        // Load community + cycle data in parallel (non-blocking; ok if not yet computed)
+        const [commRes, cyclesRes] = await Promise.allSettled([
+          window.api.graph.communities(snapshotId),
+          window.api.graph.cycles(snapshotId),
+        ])
+        if (commRes.status === 'fulfilled') setCommunities(commRes.value)
+        if (cyclesRes.status === 'fulfilled') setCycles(cyclesRes.value.cycles ?? [])
       } catch {
         setFullGraphEdges([])
       } finally {
@@ -686,52 +856,21 @@ export default function IndexOverviewScreen(): React.ReactElement {
           </>
         ) : null}
       </div>
-      {graphModalOpen && (
-        <div className="fixed inset-0 z-50 bg-black/65 flex items-center justify-center p-4">
-          <div className="w-[94vw] h-[86vh] rounded-lg border border-zinc-700 bg-zinc-900 overflow-hidden flex flex-col">
-            <div className="px-3 py-2 border-b border-zinc-700 flex items-center justify-between">
-              <div className="text-xs text-zinc-300">
-                Graph Visualization ({seedPath.trim() ? `focused: ${seedPath}` : 'full graph'})
-              </div>
-              <div className="flex items-center gap-2">
-                <div className="text-[11px] text-zinc-500">
-                  rendered {graphRenderNodes.length} nodes / {graphRenderEdges.length} edges
-                  {(graphRenderNodes.length >= MAX_RENDER_NODES || graphRenderEdges.length >= MAX_RENDER_EDGES) && (
-                    <span className="text-amber-400"> (truncated for performance)</span>
-                  )}
-                </div>
-                <button
-                  onClick={() => setGraphModalOpen(false)}
-                  className="px-2.5 py-1 text-xs border border-zinc-700 rounded text-zinc-300 hover:border-zinc-600"
-                >
-                  Close
-                </button>
-              </div>
-            </div>
-            <div className="flex-1 min-h-0">
-              {graphModalLoading ? (
-                <div className="h-full flex items-center justify-center text-zinc-500 text-sm">
-                  <Loader2 size={16} className="animate-spin mr-2" />
-                  Loading graph...
-                </div>
-              ) : (
-                <ReactFlow
-                  nodes={graphRenderNodes}
-                  edges={graphRenderEdges}
-                  fitView
-                  fitViewOptions={{ padding: 0.24 }}
-                  onNodeClick={(_e, node) => setSeedPath(String(node.id))}
-                  minZoom={0.2}
-                  maxZoom={1.8}
-                >
-                  <Controls />
-                  <Background color="#27272a" gap={18} size={1} />
-                </ReactFlow>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+      <GraphModal
+        open={graphModalOpen}
+        onClose={() => setGraphModalOpen(false)}
+        loading={graphModalLoading}
+        nodes={graphRenderNodes}
+        edges={graphRenderEdges}
+        renderNodes={graphRenderNodes}
+        renderEdges={graphRenderEdges}
+        maxNodes={MAX_RENDER_NODES}
+        maxEdges={MAX_RENDER_EDGES}
+        seedPath={seedPath}
+        onNodeClick={setSeedPath}
+        communities={communities}
+        cycles={cycles}
+      />
     </>
   )
 }

@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <numeric>
 #include <queue>
+#include <random>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -337,10 +338,155 @@ py::list scan_keywords_bulk(const py::list& chunks, const py::list& keywords) {
     return out;
 }
 
+// ── Louvain community detection (Phase 1 modularity optimisation) ─────────────
+//
+// edge_tuples : list of (src:str, dst:str, weight:float) Python tuples
+// node_ids    : list of str — all nodes (superset of nodes appearing in edges)
+// resolution  : float gamma parameter (1.0 = standard modularity)
+// seed        : int RNG seed for reproducibility (default 42)
+//
+// Returns: dict {node_path: community_id}  (community IDs are 0-based integers)
+//
+// Algorithm: Louvain Phase 1 only (greedy node moves maximising modularity gain).
+// Each pass iterates all nodes in a shuffled order and moves each node to the
+// neighbour community that maximises dQ.  Stops when no node moved or after
+// max_passes iterations.  Community IDs are renumbered 0..K-1 by first
+// appearance after convergence.
+py::dict compute_louvain(
+    const py::list& edge_tuples,
+    const py::list& node_ids,
+    double resolution = 1.0,
+    int seed = 42
+) {
+    // ── 1. String intern ─────────────────────────────────────────────────────
+    std::unordered_map<std::string, int> nid;
+    std::vector<std::string> names;
+
+    auto intern = [&](const std::string& s) -> int {
+        auto it = nid.find(s);
+        if (it != nid.end()) return it->second;
+        int id = static_cast<int>(names.size());
+        nid[s] = id;
+        names.push_back(s);
+        return id;
+    };
+
+    // Pre-register all node_ids so isolated nodes are included
+    for (const auto& n : node_ids) intern(py::cast<std::string>(n));
+    int N_seed = static_cast<int>(names.size());
+
+    // ── 2. Parse edges ───────────────────────────────────────────────────────
+    struct WEdge { int u, v; double w; };
+    std::vector<WEdge> edges;
+    edges.reserve(static_cast<size_t>(edge_tuples.size()));
+
+    for (const auto& item : edge_tuples) {
+        auto t = py::cast<py::tuple>(item);
+        if (t.size() < 3) continue;
+        int u = intern(py::cast<std::string>(t[0]));
+        int v = intern(py::cast<std::string>(t[1]));
+        double w = py::cast<double>(t[2]);
+        if (u == v || w <= 0.0) continue;
+        edges.push_back({u, v, w});
+    }
+
+    int N = static_cast<int>(names.size());
+    if (N == 0) return py::dict{};
+
+    // ── 3. Build weighted adjacency ──────────────────────────────────────────
+    std::vector<std::vector<std::pair<int, double>>> adj(N);
+    double m2 = 0.0;  // 2 * total weight
+    for (const auto& e : edges) {
+        adj[e.u].emplace_back(e.v, e.w);
+        adj[e.v].emplace_back(e.u, e.w);
+        m2 += 2.0 * e.w;
+    }
+
+    if (m2 == 0.0) {
+        // No valid edges — each node is its own community
+        py::dict out;
+        for (int i = 0; i < N; ++i) out[names[i].c_str()] = i;
+        return out;
+    }
+
+    // ── 4. Weighted degrees ──────────────────────────────────────────────────
+    std::vector<double> k(N, 0.0);
+    for (int u = 0; u < N; ++u)
+        for (const auto& [v, w] : adj[u]) k[u] += w;
+
+    // ── 5. Initialise: each node in its own community ────────────────────────
+    std::vector<int> community(N);
+    std::iota(community.begin(), community.end(), 0);
+    std::vector<double> sigma_tot = k;  // sum of degrees in community c
+
+    // ── 6. Louvain Phase 1 pass loop ─────────────────────────────────────────
+    std::vector<int> order(N);
+    std::iota(order.begin(), order.end(), 0);
+    std::mt19937 rng(static_cast<unsigned>(seed));
+
+    static const int MAX_PASSES = 20;
+    for (int pass = 0; pass < MAX_PASSES; ++pass) {
+        std::shuffle(order.begin(), order.end(), rng);
+        bool moved = false;
+
+        for (int u : order) {
+            int old_c = community[u];
+
+            // Accumulate weights to each neighbouring community
+            std::unordered_map<int, double> w_to_comm;
+            w_to_comm.reserve(adj[u].size());
+            for (const auto& [v, w] : adj[u])
+                w_to_comm[community[v]] += w;
+
+            // Remove u from its current community
+            sigma_tot[old_c] -= k[u];
+            community[u] = -1;
+
+            int best_c = old_c;
+            double best_dq = 0.0;
+
+            for (const auto& [c, w_in] : w_to_comm) {
+                // Modularity gain of moving u to community c
+                double dq = w_in / m2 - resolution * k[u] * sigma_tot[c] / (m2 * m2);
+                if (dq > best_dq) {
+                    best_dq = dq;
+                    best_c = c;
+                }
+            }
+
+            community[u] = best_c;
+            sigma_tot[best_c] += k[u];
+            if (best_c != old_c) moved = true;
+        }
+
+        if (!moved) break;
+    }
+
+    // ── 7. Renumber communities 0..K-1 by first appearance ──────────────────
+    std::unordered_map<int, int> remap;
+    remap.reserve(N);
+    int next_id = 0;
+    for (int i = 0; i < N; ++i) {
+        int c = community[i];
+        if (remap.find(c) == remap.end()) remap[c] = next_id++;
+    }
+
+    // ── 8. Build output dict — only emit node_ids that were pre-registered ───
+    py::dict out;
+    for (int i = 0; i < N; ++i) {
+        out[names[i].c_str()] = remap[community[i]];
+    }
+    return out;
+}
+
 PYBIND11_MODULE(_native_graph, m) {
     m.doc() = "Native graph hotspot module for CodeSpectra";
     m.def("compute_scores",      &compute_scores,      "Compute graph centrality score list");
     m.def("expand_neighbors",    &expand_neighbors,    "Expand graph neighborhood");
     m.def("compute_scc",         &compute_scc,         "Tarjan SCC — returns circular import cycles (size >= 2)");
     m.def("scan_keywords_bulk",  &scan_keywords_bulk,  "Bulk keyword scanner — word-boundary aware, returns [{rel_path, count}]");
+    m.def("compute_louvain",     &compute_louvain,
+          py::arg("edge_tuples"), py::arg("node_ids"),
+          py::arg("resolution") = 1.0, py::arg("seed") = 42,
+          "Louvain Phase-1 community detection — returns {node_path: community_id}");
 }
