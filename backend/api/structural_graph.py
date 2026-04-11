@@ -33,8 +33,10 @@ async def get_graph_summary(snapshot_id: str) -> StructuralGraphSummary:
 
 
 @router.get("/edges/{snapshot_id}", response_model=GraphEdgesResponse)
-async def list_graph_edges(snapshot_id: str, limit: int = 2000) -> GraphEdgesResponse:
-    return await _service.edges(snapshot_id, limit=limit)
+async def list_graph_edges(
+    snapshot_id: str, limit: int = 2000, internal_only: bool = False
+) -> GraphEdgesResponse:
+    return await _service.edges(snapshot_id, limit=limit, internal_only=internal_only)
 
 
 @router.get("/neighbors/{snapshot_id}", response_model=GraphNeighborsResponse)

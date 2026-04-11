@@ -253,6 +253,7 @@ class StructuralGraphService:
         total_edges = 0
         external_edges = 0
         edge_inputs: list[tuple[str, str, str, int]] = []
+        _edge_rows: list[tuple] = []
         now = utc_now_iso()
 
         for r in files:
@@ -314,14 +315,19 @@ class StructuralGraphService:
                     external_edges += 1
                 dst_store = dst_path if dst_path else imp
                 edge_inputs.append((rel_path, dst_store, "import", int(is_external)))
-                await db.execute(
-                    """
-                    INSERT INTO structural_graph_edges
-                    (snapshot_id, src_path, dst_path, edge_type, is_external, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                    (req.snapshot_id, rel_path, dst_store, "import", int(is_external), now),
+                _edge_rows.append(
+                    (req.snapshot_id, rel_path, dst_store, "import", int(is_external), now)
                 )
+
+        # Batch-insert all edges in one round-trip instead of one await per edge.
+        await db.executemany(
+            """
+            INSERT INTO structural_graph_edges
+            (snapshot_id, src_path, dst_path, edge_type, is_external, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            _edge_rows,
+        )
 
         all_nodes = {
             f for f in file_set
@@ -402,15 +408,14 @@ class StructuralGraphService:
             native_toolchain=detect_cpp_toolchain(),
         )
 
-    async def edges(self, snapshot_id: str, limit: int = 2000) -> GraphEdgesResponse:
+    async def edges(
+        self, snapshot_id: str, limit: int = 2000, internal_only: bool = False
+    ) -> GraphEdgesResponse:
+        where = "WHERE snapshot_id=?" + (" AND is_external=0" if internal_only else "")
         async with get_db().execute(
-            """
-            SELECT snapshot_id, src_path, dst_path, edge_type, is_external
-            FROM structural_graph_edges
-            WHERE snapshot_id=?
-            ORDER BY src_path ASC, dst_path ASC
-            LIMIT ?
-            """,
+            f"SELECT snapshot_id, src_path, dst_path, edge_type, is_external"
+            f" FROM structural_graph_edges {where}"
+            f" ORDER BY src_path ASC, dst_path ASC LIMIT ?",
             (snapshot_id, limit),
         ) as cur:
             rows = await cur.fetchall()
@@ -647,34 +652,22 @@ class StructuralGraphService:
         await db.execute("DELETE FROM graph_community_summaries WHERE snapshot_id=?", (snapshot_id,))
 
         communities: list[CommunityInfo] = []
+        _member_rows: list[tuple] = []
+        _summary_rows: list[tuple] = []
+
         for cid, members in sorted(comm_members.items()):
             hub_scores = {n: comm_adj[cid].get(n, 0.0) for n in members}
             top_hubs = sorted(members, key=lambda n: -hub_scores[n])[:3]
             neighbor_ids = sorted(inter_comm_neighbors.get(cid, set()))
+            mod_contrib = float(len(members)) / max(len(node_ids), 1)
 
             for node in members:
-                await db.execute(
-                    """
-                    INSERT OR REPLACE INTO graph_community_members
-                    (snapshot_id, node_path, community_id, hub_score, created_at)
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (snapshot_id, node, cid, hub_scores[node], now),
-                )
+                _member_rows.append((snapshot_id, node, cid, hub_scores[node], now))
 
-            mod_contrib = float(len(members)) / max(len(node_ids), 1)
-            await db.execute(
-                """
-                INSERT OR REPLACE INTO graph_community_summaries
-                (snapshot_id, community_id, member_count, hub_paths, modularity_contribution,
-                 neighbor_community_ids, llm_summary, generated_at)
-                VALUES (?, ?, ?, ?, ?, ?, NULL, ?)
-                """,
-                (
-                    snapshot_id, cid, len(members), json.dumps(top_hubs), mod_contrib,
-                    json.dumps(neighbor_ids), now,
-                ),
-            )
+            _summary_rows.append((
+                snapshot_id, cid, len(members), json.dumps(top_hubs), mod_contrib,
+                json.dumps(neighbor_ids), now,
+            ))
 
             communities.append(CommunityInfo(
                 community_id=cid,
@@ -686,6 +679,25 @@ class StructuralGraphService:
                 llm_summary=None,
                 generated_at=now,
             ))
+
+        # Batch-insert members and summaries in two round-trips.
+        await db.executemany(
+            """
+            INSERT OR REPLACE INTO graph_community_members
+            (snapshot_id, node_path, community_id, hub_score, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            _member_rows,
+        )
+        await db.executemany(
+            """
+            INSERT OR REPLACE INTO graph_community_summaries
+            (snapshot_id, community_id, member_count, hub_paths, modularity_contribution,
+             neighbor_community_ids, llm_summary, generated_at)
+            VALUES (?, ?, ?, ?, ?, ?, NULL, ?)
+            """,
+            _summary_rows,
+        )
 
         await db.commit()
 

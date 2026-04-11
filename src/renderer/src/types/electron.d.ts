@@ -437,7 +437,7 @@ declare global {
       graph: {
         build: (snapshotId: string, forceRebuild?: boolean) => Promise<{ summary: StructuralGraphSummary }>
         summary: (snapshotId: string) => Promise<StructuralGraphSummary | null>
-        edges: (snapshotId: string, limit?: number) => Promise<{
+        edges: (snapshotId: string, limit?: number, internalOnly?: boolean) => Promise<{
           snapshot_id: string
           edges: GraphEdge[]
         }>

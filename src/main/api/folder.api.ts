@@ -180,8 +180,8 @@ export function registerFolderHandlers(client: BackendClient): void {
     }
   })
 
-  ipcMain.handle('graph:edges', (_event, snapshotId: string, limit = 2000) =>
-    client.get(`/api/graph/edges/${snapshotId}?limit=${limit}`)
+  ipcMain.handle('graph:edges', (_event, snapshotId: string, limit = 2000, internalOnly = false) =>
+    client.get(`/api/graph/edges/${snapshotId}?limit=${limit}&internal_only=${internalOnly}`)
   )
 
   ipcMain.handle('graph:neighbors', (_event, snapshotId: string, seedPath: string, hops = 1, limit = 300) =>

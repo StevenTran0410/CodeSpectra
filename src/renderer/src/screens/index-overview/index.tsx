@@ -431,7 +431,9 @@ export default function IndexOverviewScreen(): React.ReactElement {
       if (!snapshotId || !graphSummary) return
       setLoadingFullGraph(true)
       try {
-        const res = await window.api.graph.edges(snapshotId, 5000)
+        // internal_only=true: skip external edges (to npm/pip packages) — they are
+        // never rendered in the graph view and sending them wastes IPC bandwidth.
+        const res = await window.api.graph.edges(snapshotId, 5000, true)
         setFullGraphEdges(res.edges)
         // Load community + cycle data in parallel (non-blocking; ok if not yet computed)
         const [commRes, cyclesRes] = await Promise.allSettled([
