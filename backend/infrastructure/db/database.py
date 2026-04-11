@@ -380,6 +380,22 @@ _MIGRATIONS: list[dict[str, Any]] = [
             generated_at TEXT NOT NULL
         )""",
     },
+    {
+        "version": 23,
+        "description": "Add symbol_graph_edges table for CS-202 symbol reference edges",
+        "sql": """CREATE TABLE IF NOT EXISTS symbol_graph_edges (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    snapshot_id    TEXT    NOT NULL,
+    src_symbol     TEXT    NOT NULL,
+    dst_symbol     TEXT    NOT NULL,
+    edge_type      TEXT    NOT NULL DEFAULT 'calls',
+    confidence     TEXT    NOT NULL DEFAULT 'high',
+    evidence_lines TEXT    NOT NULL DEFAULT '[]'
+);
+CREATE INDEX IF NOT EXISTS idx_sym_edges_snapshot ON symbol_graph_edges(snapshot_id);
+CREATE INDEX IF NOT EXISTS idx_sym_edges_src ON symbol_graph_edges(snapshot_id, src_symbol);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sym_edges_unique ON symbol_graph_edges(snapshot_id, src_symbol, dst_symbol);""",
+    },
 ]
 
 TARGET_VERSION = len(_MIGRATIONS) - 1
