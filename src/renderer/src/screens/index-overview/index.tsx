@@ -106,6 +106,7 @@ function GraphModal({
   onNodeClick,
   communities,
   cycles,
+  snapshotId,
 }: {
   open: boolean
   onClose: () => void
@@ -120,7 +121,9 @@ function GraphModal({
   onNodeClick: (nodeId: string) => void
   communities: GraphCommunitiesResponse | null
   cycles: string[][]
+  snapshotId: string
 }): React.ReactElement | null {
+  const [exporting, setExporting] = React.useState(false)
   if (!open) return null
   const totalComm = communities?.total_communities ?? 1
   return (
@@ -137,6 +140,17 @@ function GraphModal({
                 <span className="text-amber-400"> (truncated)</span>
               )}
             </div>
+            <button
+              onClick={async () => {
+                setExporting(true)
+                try { await window.api.graph.exportJson(snapshotId) }
+                finally { setExporting(false) }
+              }}
+              disabled={exporting}
+              className="px-2.5 py-1 text-xs border border-zinc-700 rounded text-zinc-400 hover:border-zinc-600 hover:text-zinc-300 disabled:opacity-40"
+            >
+              {exporting ? 'Exporting…' : 'Export JSON'}
+            </button>
             <button
               onClick={onClose}
               className="px-2.5 py-1 text-xs border border-zinc-700 rounded text-zinc-300 hover:border-zinc-600"
@@ -870,6 +884,7 @@ export default function IndexOverviewScreen(): React.ReactElement {
         onNodeClick={setSeedPath}
         communities={communities}
         cycles={cycles}
+        snapshotId={snapshotId}
       />
     </>
   )

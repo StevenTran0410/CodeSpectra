@@ -697,3 +697,64 @@ class StructuralGraphService:
             sccs = compute_scc_python(edge_tuples)
 
         return CyclesResponse(snapshot_id=snapshot_id, cycles=sccs)
+
+    async def export_graph_json(self, snapshot_id: str) -> dict:
+        """Export full graph structure as a single JSON-serialisable dict.
+
+        Includes nodes, all edges (internal + external), community assignments,
+        per-community member lists, and circular import cycles.
+        Designed for copy-paste debugging: share the output to diagnose clustering.
+        """
+        db = get_db()
+
+        async with db.execute(
+            "SELECT src_path, dst_path, is_external FROM structural_graph_edges WHERE snapshot_id=? ORDER BY src_path, dst_path",
+            (snapshot_id,),
+        ) as cur:
+            edge_rows = await cur.fetchall()
+
+        async with db.execute(
+            "SELECT node_path, community_id FROM graph_community_members WHERE snapshot_id=? ORDER BY community_id, node_path",
+            (snapshot_id,),
+        ) as cur:
+            member_rows = await cur.fetchall()
+
+        async with db.execute(
+            "SELECT rel_path FROM manifest_files WHERE snapshot_id=? AND category IN ('source','test','infra') ORDER BY rel_path",
+            (snapshot_id,),
+        ) as cur:
+            node_rows = await cur.fetchall()
+
+        cycles_resp = await self.cycles(snapshot_id)
+
+        nodes = [r["rel_path"] for r in node_rows]
+        edges = [
+            {"src": r["src_path"], "dst": r["dst_path"], "external": bool(r["is_external"])}
+            for r in edge_rows
+        ]
+
+        communities: dict[str, int] = {}
+        community_groups: dict[str, list[str]] = {}
+        for r in member_rows:
+            path, cid = r["node_path"], str(r["community_id"])
+            communities[path] = r["community_id"]
+            community_groups.setdefault(cid, []).append(path)
+
+        internal_count = sum(1 for e in edges if not e["external"])
+
+        return {
+            "snapshot_id": snapshot_id,
+            "exported_at": utc_now_iso(),
+            "stats": {
+                "node_count": len(nodes),
+                "total_edge_count": len(edges),
+                "internal_edge_count": internal_count,
+                "community_count": len(community_groups),
+                "cycle_count": len(cycles_resp.cycles),
+            },
+            "nodes": nodes,
+            "edges": edges,
+            "communities": communities,
+            "community_groups": community_groups,
+            "cycles": cycles_resp.cycles,
+        }

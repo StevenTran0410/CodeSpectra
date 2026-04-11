@@ -95,6 +95,7 @@ const api = {
     communityForNode: (snapshotId: string, path: string) =>
       ipcRenderer.invoke('graph:communityForNode', snapshotId, path),
     cycles: (snapshotId: string) => ipcRenderer.invoke('graph:cycles', snapshotId),
+    exportJson: (snapshotId: string) => ipcRenderer.invoke('graph:exportJson', snapshotId),
   },
   retrieval: {
     buildIndex: (snapshotId: string, forceRebuild = true) =>

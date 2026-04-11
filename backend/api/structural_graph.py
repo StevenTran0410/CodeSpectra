@@ -82,3 +82,16 @@ async def graph_cycles(snapshot_id: str) -> CyclesResponse:
         return await _service.cycles(snapshot_id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/export/{snapshot_id}")
+async def export_graph_json(snapshot_id: str) -> dict:
+    """Export full graph (nodes, edges, communities, cycles) as a single JSON blob.
+
+    Use for debugging: share the output to diagnose import resolution or
+    community clustering issues.
+    """
+    try:
+        return await _service.export_graph_json(snapshot_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

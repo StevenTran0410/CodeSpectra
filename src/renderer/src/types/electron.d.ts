@@ -450,6 +450,7 @@ declare global {
         communities: (snapshotId: string) => Promise<GraphCommunitiesResponse>
         communityForNode: (snapshotId: string, path: string) => Promise<NodeCommunityResponse>
         cycles: (snapshotId: string) => Promise<CyclesResponse>
+        exportJson: (snapshotId: string) => Promise<{ saved: boolean; file_path: string | null }>
       }
       retrieval: {
         buildIndex: (snapshotId: string, forceRebuild?: boolean) => Promise<{

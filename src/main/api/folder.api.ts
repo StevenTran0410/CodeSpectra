@@ -202,6 +202,21 @@ export function registerFolderHandlers(client: BackendClient): void {
     client.get(`/api/graph/cycles/${snapshotId}`)
   )
 
+  ipcMain.handle('graph:exportJson', async (_event, snapshotId: string) => {
+    const data = await client.get<Record<string, unknown>>(`/api/graph/export/${snapshotId}`)
+    const defaultName = `graph-export-${snapshotId.slice(0, 8)}.json`
+    const save = await dialog.showSaveDialog({
+      title: 'Save Graph Export JSON',
+      defaultPath: path.join(app.getPath('desktop'), defaultName),
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+    })
+    if (save.canceled || !save.filePath) {
+      return { saved: false, file_path: null }
+    }
+    await fs.writeFile(save.filePath, JSON.stringify(data, null, 2), 'utf-8')
+    return { saved: true, file_path: save.filePath }
+  })
+
   ipcMain.handle('retrieval:buildIndex', (_event, snapshotId: string, forceRebuild = true) =>
     client.post('/api/retrieval/build-index', { snapshot_id: snapshotId, force_rebuild: forceRebuild })
   )
