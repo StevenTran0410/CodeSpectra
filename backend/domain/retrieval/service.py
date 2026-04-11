@@ -28,7 +28,7 @@ _WORD = re.compile(r"[A-Za-z0-9_]+")
 
 # Languages that get AST-based semantic chunking (CS-101).
 _AST_LANGS: frozenset[str] = frozenset({
-    "python", "typescript", "javascript", "cpp", "go", "java", "c",
+    "python", "typescript", "javascript", "cpp", "go", "java", "c", "rust",
 })
 
 # Module-level singleton — parser/Language objects are cached inside.

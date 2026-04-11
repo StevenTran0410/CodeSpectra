@@ -91,6 +91,18 @@ def _make_java_lang() -> Any:
     return Language(tsjava.language())
 
 
+def _make_c_lang() -> Any:
+    import tree_sitter_c as tsc
+    from tree_sitter import Language
+    return Language(tsc.language())
+
+
+def _make_rust_lang() -> Any:
+    import tree_sitter_rust as tsrust
+    from tree_sitter import Language
+    return Language(tsrust.language())
+
+
 LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
     "python": LanguageConfig(
         get_language=_make_python_lang,
@@ -174,6 +186,34 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         }),
         import_node_types=frozenset({
             "import_declaration",
+        }),
+    ),
+    "c": LanguageConfig(
+        get_language=_make_c_lang,
+        semantic_node_types=frozenset({
+            "function_definition",
+            "struct_specifier",
+            "enum_specifier",
+            "union_specifier",
+            "type_definition",
+        }),
+        import_node_types=frozenset({
+            "preproc_include",
+        }),
+    ),
+    "rust": LanguageConfig(
+        get_language=_make_rust_lang,
+        semantic_node_types=frozenset({
+            "function_item",
+            "impl_item",
+            "struct_item",
+            "enum_item",
+            "trait_item",
+            "mod_item",
+            "type_item",
+        }),
+        import_node_types=frozenset({
+            "use_declaration",
         }),
     ),
 }
