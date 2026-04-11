@@ -123,7 +123,7 @@ function GraphModal({
   cycles: string[][]
   snapshotId: string
 }): React.ReactElement | null {
-  const [exporting, setExporting] = React.useState(false)
+  const [exporting, setExporting] = useState(false)
   if (!open) return null
   const totalComm = communities?.total_communities ?? 1
   return (

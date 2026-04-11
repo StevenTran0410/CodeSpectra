@@ -5,6 +5,7 @@ import asyncio
 import ast
 import importlib
 import json
+import os
 import re
 from collections import defaultdict
 from pathlib import Path
@@ -122,6 +123,24 @@ def _normalize(path: str) -> str:
     return path.replace("\\", "/")
 
 
+def _build_py_suffix_index(file_paths: set[str] | list[str]) -> dict[str, str]:
+    """Build a suffix-lookup table for Python files.
+
+    Enables resolving absolute imports like "domain.x" → "backend/domain/x.py"
+    regardless of the source-root prefix used in the project layout.
+    First-seen suffix wins (insertion order = iteration order of the input).
+    """
+    index: dict[str, str] = {}
+    for f in file_paths:
+        if f.endswith(".py"):
+            parts = f.split("/")
+            for i in range(len(parts)):
+                suffix = "/".join(parts[i:])
+                if suffix not in index:
+                    index[suffix] = f
+    return index
+
+
 def _is_entrypoint(rel_path: str) -> bool:
     low = rel_path.lower()
     name = Path(low).name
@@ -139,7 +158,9 @@ def _is_entrypoint(rel_path: str) -> bool:
 def _resolve_relative_import(src_rel_path: str, target: str, candidates: set[str]) -> str | None:
     src = Path(src_rel_path)
     base = src.parent
-    candidate = _normalize(str((base / target).as_posix()))
+    # os.path.normpath collapses '..' segments that Path.as_posix() leaves raw.
+    # Without this, "screens/analysis/../../store/foo" never matches file_set.
+    candidate = _normalize(os.path.normpath(str(base / target)))
 
     options = [
         candidate,
@@ -213,17 +234,7 @@ class StructuralGraphService:
 
         file_set = {r["rel_path"] for r in files}
 
-        # Build Python module suffix index — lets us resolve absolute imports
-        # when the project places source files under a subdirectory prefix
-        # (e.g. file at backend/domain/x.py, imported as "domain.x").
-        py_suffix_index: dict[str, str] = {}
-        for _f in file_set:
-            if _f.endswith(".py"):
-                _parts = _f.split("/")
-                for _i in range(len(_parts)):
-                    _suffix = "/".join(_parts[_i:])
-                    if _suffix not in py_suffix_index:
-                        py_suffix_index[_suffix] = _f
+        py_suffix_index = _build_py_suffix_index(file_set)
 
         native_graph = _load_native_graph()
         entrypoints: list[str] = []
@@ -268,6 +279,11 @@ class StructuralGraphService:
                     # Use suffix index so imports resolve regardless of source-root prefix.
                     py_guess = _normalize(imp.replace(".", "/") + ".py")
                     resolved_path = py_suffix_index.get(py_guess)
+                    if not resolved_path:
+                        # 'from domain.pkg import X' targets the package dir, not a .py file.
+                        # Fall back to the package's __init__.py.
+                        pkg_init = _normalize(imp.replace(".", "/") + "/__init__.py")
+                        resolved_path = py_suffix_index.get(pkg_init)
                     if resolved_path:
                         dst_path = resolved_path
                         is_external = False
@@ -486,19 +502,15 @@ class StructuralGraphService:
         ) as cur:
             node_rows = await cur.fetchall()
 
-        node_ids = [r["rel_path"] for r in node_rows]
+        # dict.fromkeys preserves insertion order while deduplicating.
+        # manifest_files may have duplicate rows (pre-migration-20 DBs); passing
+        # duplicates to Louvain inflates iteration count and can skew convergence.
+        node_ids = list(dict.fromkeys(r["rel_path"] for r in node_rows))
         node_id_set = set(node_ids)
 
         # Suffix index — resolve Python absolute imports stored as unresolved externals.
         # E.g. edge dst_path "domain.structural_graph.service" → "backend/domain/structural_graph/service.py"
-        py_suffix_index: dict[str, str] = {}
-        for node in node_ids:
-            if node.endswith(".py"):
-                parts = node.split("/")
-                for i in range(len(parts)):
-                    suffix = "/".join(parts[i:])
-                    if suffix not in py_suffix_index:
-                        py_suffix_index[suffix] = node
+        py_suffix_index = _build_py_suffix_index(node_ids)
 
         # Build de-duplicated edge list; attempt to re-resolve external Python imports.
         edge_set: set[tuple[str, str]] = set()
@@ -514,9 +526,20 @@ class StructuralGraphService:
                     edge_tuples.append((src, dst, 1.0))
                     edge_set.add((src, dst))
             elif src.endswith(".py") and "/" not in dst and not dst.startswith("."):
-                # Unresolved Python absolute import — attempt suffix-based resolution
+                # Unresolved Python absolute import stored pre-suffix-fix — re-resolve now.
+                # Also handles package imports: "domain.pkg" → "backend/domain/pkg/__init__.py".
                 py_guess = dst.replace(".", "/") + ".py"
                 resolved = py_suffix_index.get(py_guess)
+                if not resolved:
+                    pkg_init = dst.replace(".", "/") + "/__init__.py"
+                    resolved = py_suffix_index.get(pkg_init)
+                if resolved and resolved != src and (src, resolved) not in edge_set:
+                    edge_tuples.append((src, resolved, 1.0))
+                    edge_set.add((src, resolved))
+            elif dst.startswith("."):
+                # Unresolved relative TS/JS import stored pre-normpath-fix — re-resolve now.
+                # dst holds the raw import string (e.g. "../../store/local-repo.store").
+                resolved = _resolve_relative_import(src, dst, node_id_set)
                 if resolved and resolved != src and (src, resolved) not in edge_set:
                     edge_tuples.append((src, resolved, 1.0))
                     edge_set.add((src, resolved))
@@ -727,11 +750,15 @@ class StructuralGraphService:
 
         cycles_resp = await self.cycles(snapshot_id)
 
-        nodes = [r["rel_path"] for r in node_rows]
-        edges = [
-            {"src": r["src_path"], "dst": r["dst_path"], "external": bool(r["is_external"])}
-            for r in edge_rows
-        ]
+        # Deduplicate: pre-migration-20 DBs may have 2× rows per file/edge.
+        nodes = list(dict.fromkeys(r["rel_path"] for r in node_rows))
+        seen_edges: set[tuple[str, str, bool]] = set()
+        edges = []
+        for r in edge_rows:
+            key = (r["src_path"], r["dst_path"], bool(r["is_external"]))
+            if key not in seen_edges:
+                seen_edges.add(key)
+                edges.append({"src": r["src_path"], "dst": r["dst_path"], "external": key[2]})
 
         communities: dict[str, int] = {}
         community_groups: dict[str, list[str]] = {}

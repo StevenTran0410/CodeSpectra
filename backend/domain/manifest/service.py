@@ -229,10 +229,14 @@ class ManifestService:
 
                 await db.execute(
                     """
-                    INSERT INTO manifest_files
+                    INSERT OR IGNORE INTO manifest_files
                     (id, snapshot_id, rel_path, language, category, size_bytes, mtime_ns, checksum)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
+                    # OR IGNORE: safety net for concurrent calls; the DELETE above this loop
+                    # already cleared the snapshot, so IGNORE only fires if two build() calls
+                    # race on the same snapshot_id (the UNIQUE index on (snapshot_id, rel_path)
+                    # enforces uniqueness; we prefer to skip rather than crash).
                     (new_id(), req.snapshot_id, rel, lang, cat.value, size, mtime_ns, checksum),
                 )
                 total += 1

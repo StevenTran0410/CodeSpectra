@@ -342,6 +342,23 @@ _MIGRATIONS: list[dict[str, Any]] = [
                 ON graph_community_summaries(snapshot_id);
         """,
     },
+    {
+        "version": 20,
+        "description": "Dedup manifest_files and add UNIQUE constraint on (snapshot_id, rel_path)",
+        "sql": """
+            -- Remove duplicate rows keeping the lowest-rowid occurrence per (snapshot_id, rel_path).
+            -- Duplicates accumulate when manifest:build is called more than once for the same snapshot
+            -- (e.g. via the UI 'rebuild' button) on a DB that lacked the UNIQUE constraint.
+            DELETE FROM manifest_files
+            WHERE rowid NOT IN (
+                SELECT MIN(rowid) FROM manifest_files GROUP BY snapshot_id, rel_path
+            );
+
+            -- Enforce uniqueness going forward so re-builds can never accumulate duplicates again.
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_manifest_unique_path
+                ON manifest_files(snapshot_id, rel_path);
+        """,
+    },
 ]
 
 TARGET_VERSION = len(_MIGRATIONS) - 1
