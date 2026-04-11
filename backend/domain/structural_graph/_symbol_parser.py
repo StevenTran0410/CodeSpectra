@@ -343,7 +343,7 @@ class _PythonVisitor(ast.NodeVisitor):
 def _parse_typescript(filename: str, source: str) -> ParsedFile:
     result = ParsedFile(filename=filename, language="typescript")
     try:
-        from backend.domain.repo_map._loaders import _load_ts_language, _ts_parse, _node_text
+        from domain.repo_map._loaders import _load_ts_language, _ts_parse, _node_text
     except ImportError:
         logger.warning("tree-sitter not available; skipping TS parse for %s", filename)
         return result
