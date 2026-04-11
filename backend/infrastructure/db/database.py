@@ -367,6 +367,19 @@ _MIGRATIONS: list[dict[str, Any]] = [
                 ADD COLUMN neighbor_community_ids TEXT NOT NULL DEFAULT '[]';
         """,
     },
+    {
+        "version": 22,
+        "description": "Add retrieval_bm25_stats for CS-201 BM25 IDF pre-computation",
+        "sql": """CREATE TABLE IF NOT EXISTS retrieval_bm25_stats (
+            snapshot_id  TEXT PRIMARY KEY,
+            chunk_count  INTEGER NOT NULL,
+            avgdl        REAL NOT NULL,
+            idf_json     TEXT NOT NULL,
+            k1           REAL NOT NULL DEFAULT 2.0,
+            b            REAL NOT NULL DEFAULT 0.75,
+            generated_at TEXT NOT NULL
+        )""",
+    },
 ]
 
 TARGET_VERSION = len(_MIGRATIONS) - 1
