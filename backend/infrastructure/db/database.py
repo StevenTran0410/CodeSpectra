@@ -367,6 +367,35 @@ _MIGRATIONS: list[dict[str, Any]] = [
                 ADD COLUMN neighbor_community_ids TEXT NOT NULL DEFAULT '[]';
         """,
     },
+    {
+        "version": 22,
+        "description": "Add retrieval_bm25_stats for CS-201 BM25 IDF pre-computation",
+        "sql": """CREATE TABLE IF NOT EXISTS retrieval_bm25_stats (
+            snapshot_id  TEXT PRIMARY KEY,
+            chunk_count  INTEGER NOT NULL,
+            avgdl        REAL NOT NULL,
+            idf_json     TEXT NOT NULL,
+            k1           REAL NOT NULL DEFAULT 2.0,
+            b            REAL NOT NULL DEFAULT 0.75,
+            generated_at TEXT NOT NULL
+        )""",
+    },
+    {
+        "version": 23,
+        "description": "Add symbol_graph_edges table for CS-202 symbol reference edges",
+        "sql": """CREATE TABLE IF NOT EXISTS symbol_graph_edges (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    snapshot_id    TEXT    NOT NULL,
+    src_symbol     TEXT    NOT NULL,
+    dst_symbol     TEXT    NOT NULL,
+    edge_type      TEXT    NOT NULL DEFAULT 'calls',
+    confidence     TEXT    NOT NULL DEFAULT 'high',
+    evidence_lines TEXT    NOT NULL DEFAULT '[]'
+);
+CREATE INDEX IF NOT EXISTS idx_sym_edges_snapshot ON symbol_graph_edges(snapshot_id);
+CREATE INDEX IF NOT EXISTS idx_sym_edges_src ON symbol_graph_edges(snapshot_id, src_symbol);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sym_edges_unique ON symbol_graph_edges(snapshot_id, src_symbol, dst_symbol);""",
+    },
 ]
 
 TARGET_VERSION = len(_MIGRATIONS) - 1

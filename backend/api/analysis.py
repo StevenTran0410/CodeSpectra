@@ -12,6 +12,7 @@ from domain.analysis.types import (
     ReportDiffResponse,
     RerunSectionRequest,
     RerunSectionResponse,
+    SectionSourcesResponse,
     StartAnalysisRequest,
     StartAnalysisResponse,
 )
@@ -94,3 +95,8 @@ async def compare_reports_endpoint(body: CompareRequest) -> ReportDiffResponse:
         return await _service.compare_reports(body.report_id_a, body.report_id_b)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@router.get("/reports/{report_id}/sections/{section_id}/sources", response_model=SectionSourcesResponse)
+async def get_section_sources(report_id: str, section_id: str) -> SectionSourcesResponse:
+    return await _service.get_section_sources(report_id, section_id)

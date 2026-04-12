@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime
 from pathlib import Path
 
 from infrastructure.db.database import get_db
@@ -11,6 +12,7 @@ from shared.logger import logger
 from shared.sql_queries import SQL_SELECT_MANIFEST_FILES_BY_SNAPSHOT
 from shared.utils import new_id, read_utf8_lenient, utc_now_iso
 
+from .bm25_scorer import BM25Scorer
 from .chunker_ast import ASTChunker
 from .types import (
     BuildRetrievalIndexRequest,
@@ -21,6 +23,8 @@ from .types import (
     RetrievalMode,
     RetrievalSection,
     RetrieveRequest,
+    TwoStageBundle,
+    TwoStageRequest,
 )
 
 _WS = re.compile(r"\s+")
@@ -29,6 +33,9 @@ _WORD = re.compile(r"[A-Za-z0-9_]+")
 # Languages that get AST-based semantic chunking (CS-101).
 _AST_LANGS: frozenset[str] = frozenset({
     "python", "typescript", "javascript", "cpp", "go", "java", "c", "rust",
+    "ruby", "php", "csharp", "kotlin", "scala", "bash", "sh", "lua", "zig",
+    "haskell", "elixir", "ocaml", "julia",
+    "yaml", "toml", "html", "css", "json", "markdown", "groovy", "cmake", "svelte", "sql",
 })
 
 # Module-level singleton — parser/Language objects are cached inside.
@@ -71,12 +78,18 @@ def _chunk_size_for(category: str, language: str | None) -> int:
         return 1200
     if category == "test":
         return 1400
-    if language in {"python", "typescript", "javascript"}:
+    if language in {"python", "typescript", "javascript", "ruby", "elixir", "julia"}:
         return 1500
+    if language in {"haskell", "ocaml", "erlang"}:
+        return 1400
     return 1300
 
 
-_BRACE_LANGS = {"javascript", "typescript", "java", "cpp", "c", "go", "rust", "csharp", "kotlin", "swift", "scala"}
+_BRACE_LANGS = {
+    "javascript", "typescript", "java", "cpp", "c", "go", "rust",
+    "csharp", "kotlin", "scala", "groovy",
+    "php", "zig", "dart", "swift",
+}
 
 
 def _ends_mid_function(content: str, language: str | None) -> bool:
@@ -182,6 +195,7 @@ class RetrievalService:
         if req.force_rebuild:
             await db.execute("DELETE FROM retrieval_chunks WHERE snapshot_id=?", (req.snapshot_id,))
             await db.execute("DELETE FROM retrieval_indexes WHERE snapshot_id=?", (req.snapshot_id,))
+            await db.execute("DELETE FROM retrieval_bm25_stats WHERE snapshot_id=?", (req.snapshot_id,))
         else:
             async with db.execute(
                 "SELECT COUNT(*) as c FROM retrieval_chunks WHERE snapshot_id=?",
@@ -189,15 +203,54 @@ class RetrievalService:
             ) as cur:
                 row = await cur.fetchone()
             if row and row["c"] > 0:
+                # Chunks exist — also check BM25 stats are present (may be missing for old snapshots).
+                async with db.execute(
+                    "SELECT 1 FROM retrieval_bm25_stats WHERE snapshot_id=?",
+                    (req.snapshot_id,),
+                ) as cur:
+                    bm25_exists = await cur.fetchone()
+                if bm25_exists:
+                    logger.info(
+                        "[retrieval] snapshot %s already indexed (%d chunks), skipping",
+                        req.snapshot_id, row["c"],
+                    )
+                    return BuildRetrievalIndexResponse(
+                        snapshot_id=req.snapshot_id,
+                        chunk_count=int(row["c"]),
+                        files_indexed=0,
+                        generated_at="cached",
+                    )
+                # BM25 stats missing — rebuild from existing chunks without re-chunking.
                 logger.info(
-                    "[retrieval] snapshot %s already indexed (%d chunks), skipping",
+                    "[retrieval] snapshot %s has %d chunks but no BM25 stats — rebuilding stats only",
                     req.snapshot_id, row["c"],
                 )
+                async with db.execute(
+                    "SELECT content FROM retrieval_chunks WHERE snapshot_id=?",
+                    (req.snapshot_id,),
+                ) as cur:
+                    chunk_rows = await cur.fetchall()
+                tokenized_corpus = [_WORD.findall(r["content"].lower()) for r in chunk_rows]
+                if tokenized_corpus:
+                    avgdl = sum(len(t) for t in tokenized_corpus) / len(tokenized_corpus)
+                    idf = BM25Scorer.build_idf(tokenized_corpus, len(tokenized_corpus))
+                    now_str = datetime.utcnow().isoformat()
+                    await db.execute(
+                        """INSERT OR REPLACE INTO retrieval_bm25_stats
+                           (snapshot_id, chunk_count, avgdl, idf_json, k1, b, generated_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                        (req.snapshot_id, len(tokenized_corpus), avgdl, json.dumps(idf), 2.0, 0.75, now_str),
+                    )
+                    await db.commit()
+                    logger.info(
+                        "BM25 stats rebuilt: %d docs, avgdl=%.1f, vocab=%d",
+                        len(tokenized_corpus), avgdl, len(idf),
+                    )
                 return BuildRetrievalIndexResponse(
                     snapshot_id=req.snapshot_id,
                     chunk_count=int(row["c"]),
                     files_indexed=0,
-                    generated_at="cached",
+                    generated_at="rebuilt-bm25",
                 )
 
         async with db.execute(SQL_SELECT_MANIFEST_FILES_BY_SNAPSHOT, (req.snapshot_id,)) as cur:
@@ -206,6 +259,7 @@ class RetrievalService:
         now = utc_now_iso()
         files_indexed = 0
         chunk_count = 0
+        tokenized_corpus: list[list[str]] = []
         for f in files:
             rel_path = f["rel_path"]
             language = f["language"]
@@ -230,6 +284,9 @@ class RetrievalService:
             for i, piece in enumerate(pieces):
                 token_est = _token_estimate(piece)
                 preview = piece[:500]
+                # Collect tokenized document for BM25 IDF computation
+                tokens = _WORD.findall(piece.lower())
+                tokenized_corpus.append(tokens)
                 await db.execute(
                     """
                     INSERT INTO retrieval_chunks
@@ -260,6 +317,19 @@ class RetrievalService:
                     (new_id(), req.snapshot_id, rel_path, i, preview, now),
                 )
 
+        # Compute and store BM25 IDF stats
+        if tokenized_corpus:
+            avgdl = sum(len(t) for t in tokenized_corpus) / len(tokenized_corpus)
+            idf = BM25Scorer.build_idf(tokenized_corpus, len(tokenized_corpus))
+            now_str = datetime.utcnow().isoformat()
+            await db.execute(
+                """INSERT OR REPLACE INTO retrieval_bm25_stats
+                   (snapshot_id, chunk_count, avgdl, idf_json, k1, b, generated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (req.snapshot_id, len(tokenized_corpus), avgdl, json.dumps(idf), 2.0, 0.75, now_str),
+            )
+            logger.info("BM25 stats built: %d docs, avgdl=%.1f, vocab=%d", len(tokenized_corpus), avgdl, len(idf))
+
         await db.commit()
         return BuildRetrievalIndexResponse(
             snapshot_id=req.snapshot_id,
@@ -276,6 +346,24 @@ class RetrievalService:
             raise ValueError("Query must contain searchable terms")
 
         budget = _SECTION_BUDGETS[req.section]
+
+        # Delegate to 2-stage pipeline (CS-203); fall back to legacy single-pass on error.
+        try:
+            from .two_stage_retrieval import retrieve_two_stage_as_bundle
+            return await retrieve_two_stage_as_bundle(
+                snapshot_id=req.snapshot_id,
+                query=req.query,
+                section=req.section,
+                budget=budget,
+                mode=req.mode,
+            )
+        except Exception:
+            logger.warning(
+                "[retrieve] 2-stage pipeline failed for snapshot=%s query=%r — using fallback single-pass",
+                req.snapshot_id, req.query[:60], exc_info=True,
+            )
+
+        logger.info("[retrieve] using fallback single-pass for snapshot=%s", req.snapshot_id)
         category_hints = _SECTION_CATEGORY_HINTS[req.section]
 
         async with get_db().execute(
@@ -308,24 +396,42 @@ class RetrievalService:
                 if isinstance(rp, str):
                     central_rank[rp] = i + 1
 
+        # Load BM25 scorer
+        bm25_row = None
+        async with get_db().execute(
+            "SELECT avgdl, idf_json, k1, b FROM retrieval_bm25_stats WHERE snapshot_id=?",
+            (req.snapshot_id,),
+        ) as cur:
+            bm25_row = await cur.fetchone()
+        scorer = BM25Scorer.from_stats_row(bm25_row)
+        if scorer is None:
+            logger.warning("BM25 stats not found for snapshot %s — using lexical fallback", req.snapshot_id)
+
         scored: list[tuple[float, RetrievalEvidence]] = []
         for r in rows:
             rel_path = r["rel_path"]
             cat = r["category"]
             content = r["content"] or ""
-            low = content.lower()
             path_low = rel_path.lower()
 
-            lexical_hits = 0
-            for t in terms:
-                lexical_hits += low.count(t)
-                if t in path_low:
-                    lexical_hits += 2
-            if lexical_hits <= 0:
-                continue
-
-            reason_codes: list[str] = ["lexical-hit"]
-            score = float(lexical_hits)
+            if scorer is not None:
+                raw = scorer.score(terms, content.lower(), path_low)
+                if raw <= 0.0:
+                    continue
+                reason_codes: list[str] = ["bm25-hit"]
+                score = raw
+            else:
+                # Cold-start fallback: original lexical hit counting
+                low = content.lower()
+                lexical_hits = 0
+                for t in terms:
+                    lexical_hits += low.count(t)
+                    if t in path_low:
+                        lexical_hits += 2
+                if lexical_hits <= 0:
+                    continue
+                reason_codes = ["lexical-hit"]
+                score = float(lexical_hits)
 
             if cat in category_hints:
                 score += 1.4
@@ -395,6 +501,16 @@ class RetrievalService:
             budget_tokens=budget,
             used_tokens=used,
             evidences=picked,
+        )
+
+    async def retrieve_two_stage(self, req: TwoStageRequest) -> TwoStageBundle:
+        from .two_stage_retrieval import retrieve_two_stage as _run
+        budget = req.budget or _SECTION_BUDGETS.get(req.section, 10_000)
+        return await _run(
+            snapshot_id=req.snapshot_id,
+            query=req.query,
+            section=req.section,
+            budget=budget,
         )
 
     async def compare(self, req: RetrieveRequest) -> RetrievalCompareResponse:

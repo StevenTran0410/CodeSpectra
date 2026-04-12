@@ -7,7 +7,7 @@ from typing import Any
 
 from domain.model_connector.service import ProviderConfigService
 from domain.retrieval.service import RetrievalService
-from domain.retrieval.types import RetrievalMode, RetrievalSection, RetrieveRequest
+from domain.retrieval.types import RetrievalMode, RetrievalSection
 from domain.structural_graph.types import StructuralGraphSummary
 from shared.logger import logger
 
@@ -16,6 +16,7 @@ from ..profiles import NORMAL_PROFILE, AnalysisProfile
 from ..prompts import AGENT_F_SCHEMA_STR, AGENT_F_SYSTEM, render_bundle
 from ..schemas import validate_section
 from ._context_builders import extract_a_identity_context, extract_b_arch_context
+from ._graph_plan import plan_queries, retrieve_multi
 from .base import BaseTypedAgent
 
 _COMBINED_QUERY = (
@@ -55,6 +56,7 @@ class FeatureMapAgent(BaseTypedAgent):
         t0 = time.monotonic()
         n_chunks = 0
         _profile = profile or NORMAL_PROFILE
+        self._session_chunk_ids = []
         try:
             graph_block = ""
             if graph_summary and graph_summary.top_central_files:
@@ -73,15 +75,27 @@ class FeatureMapAgent(BaseTypedAgent):
                 prefix_parts.append(graph_block)
             prefix = "\n\n".join(prefix_parts) + ("\n\n" if prefix_parts else "")
 
-            bundle = await self._retrieval.retrieve(
-                RetrieveRequest(
-                    snapshot_id=snapshot_id,
-                    query=_COMBINED_QUERY,
-                    section=RetrievalSection.FEATURE_MAP,
-                    mode=RetrievalMode.HYBRID,
-                    max_results=_profile.retrieval_max_results,
-                )
+            _plan_goal = (
+                "feature map: routes, controllers, use-case handlers, API endpoints, "
+                "entrypoints, workflows, public methods, feature flags, request/response flow"
             )
+            sub_queries = await plan_queries(
+                goal=_plan_goal,
+                provider_service=self._providers,
+                provider_id=provider_id,
+                model_id=model_id,
+                fallback=[_COMBINED_QUERY],
+            )
+            max_results_each = max(8, _profile.retrieval_max_results // len(sub_queries))
+            bundle = await retrieve_multi(
+                retrieval_service=self._retrieval,
+                snapshot_id=snapshot_id,
+                queries=sub_queries,
+                section=RetrievalSection.FEATURE_MAP,
+                mode=RetrievalMode.HYBRID,
+                max_results_each=max_results_each,
+            )
+            self._record_bundle(bundle)
             n_chunks = len(bundle.evidences)
             user_prompt = f"{prefix}snapshot_id={snapshot_id}\n\nEvidence:\n{render_bundle(bundle)}"
             data = await self._chat_json_with_augment(
@@ -140,6 +154,7 @@ class FeatureMapAgent(BaseTypedAgent):
                     data[key] = []
             data["confidence"] = _normalize_conf(str(data.get("confidence", "medium")))
             validate_section("F", data)
+            data["retrieved_chunk_ids"] = self._pop_chunk_ids()
             ms = int((time.monotonic() - t0) * 1000)
             logger.info("[FeatureMapAgent] %d chunks retrieved, completed in %dms", n_chunks, ms)
             return data

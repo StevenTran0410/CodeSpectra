@@ -103,6 +103,138 @@ def _make_rust_lang() -> Any:
     return Language(tsrust.language())
 
 
+def _make_ruby_lang() -> Any:
+    import tree_sitter_ruby as m
+    from tree_sitter import Language
+    return Language(m.language())
+
+
+def _make_php_lang() -> Any:
+    import tree_sitter_php as m
+    from tree_sitter import Language
+    return Language(m.language_php())
+
+
+def _make_csharp_lang() -> Any:
+    import tree_sitter_c_sharp as m
+    from tree_sitter import Language
+    return Language(m.language())
+
+
+def _make_kotlin_lang() -> Any:
+    import tree_sitter_kotlin as m
+    from tree_sitter import Language
+    return Language(m.language())
+
+
+def _make_scala_lang() -> Any:
+    import tree_sitter_scala as m
+    from tree_sitter import Language
+    return Language(m.language())
+
+
+def _make_bash_lang() -> Any:
+    import tree_sitter_bash as m
+    from tree_sitter import Language
+    return Language(m.language())
+
+
+def _make_lua_lang() -> Any:
+    import tree_sitter_lua as m
+    from tree_sitter import Language
+    return Language(m.language())
+
+
+def _make_zig_lang() -> Any:
+    import tree_sitter_zig as m
+    from tree_sitter import Language
+    return Language(m.language())
+
+
+def _make_haskell_lang() -> Any:
+    import tree_sitter_haskell as m
+    from tree_sitter import Language
+    return Language(m.language())
+
+
+def _make_elixir_lang() -> Any:
+    import tree_sitter_elixir as m
+    from tree_sitter import Language
+    return Language(m.language())
+
+
+def _make_ocaml_lang() -> Any:
+    import tree_sitter_ocaml as m
+    from tree_sitter import Language
+    return Language(m.language_ocaml())
+
+
+def _make_julia_lang() -> Any:
+    import tree_sitter_julia as m
+    from tree_sitter import Language
+    return Language(m.language())
+
+
+def _make_yaml_lang() -> Any:
+    import tree_sitter_yaml as m
+    from tree_sitter import Language
+    return Language(m.language())
+
+
+def _make_toml_lang() -> Any:
+    import tree_sitter_toml as m
+    from tree_sitter import Language
+    return Language(m.language())
+
+
+def _make_html_lang() -> Any:
+    import tree_sitter_html as m
+    from tree_sitter import Language
+    return Language(m.language())
+
+
+def _make_css_lang() -> Any:
+    import tree_sitter_css as m
+    from tree_sitter import Language
+    return Language(m.language())
+
+
+def _make_json_lang() -> Any:
+    import tree_sitter_json as m
+    from tree_sitter import Language
+    return Language(m.language())
+
+
+def _make_markdown_lang() -> Any:
+    import tree_sitter_markdown as m
+    from tree_sitter import Language
+    return Language(m.language())
+
+
+def _make_groovy_lang() -> Any:
+    import tree_sitter_groovy as m
+    from tree_sitter import Language
+    return Language(m.language())
+
+
+def _make_cmake_lang() -> Any:
+    import tree_sitter_cmake as m
+    from tree_sitter import Language
+    return Language(m.language())
+
+
+def _make_svelte_lang() -> Any:
+    import tree_sitter_svelte as m
+    from tree_sitter import Language
+    return Language(m.language())
+
+
+def _make_sql_lang() -> Any:
+    import tree_sitter_sql as m
+    from tree_sitter import Language
+    return Language(m.language())
+
+
 LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
     "python": LanguageConfig(
         get_language=_make_python_lang,
@@ -219,6 +351,256 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         import_node_types=frozenset({
             "use_declaration",
         }),
+    ),
+    "ruby": LanguageConfig(
+        get_language=_make_ruby_lang,
+        semantic_node_types=frozenset({
+            "method",
+            "singleton_method",
+            "class",
+            "module",
+        }),
+        import_node_types=frozenset({
+            "call",  # require / require_relative
+        }),
+    ),
+    "php": LanguageConfig(
+        get_language=_make_php_lang,
+        semantic_node_types=frozenset({
+            "function_definition",
+            "class_declaration",
+            "method_declaration",
+            "interface_declaration",
+            "trait_declaration",
+        }),
+        import_node_types=frozenset({
+            "require_expression",
+            "include_expression",
+        }),
+    ),
+    "csharp": LanguageConfig(
+        get_language=_make_csharp_lang,
+        semantic_node_types=frozenset({
+            "class_declaration",
+            "interface_declaration",
+            "struct_declaration",
+            "record_declaration",
+            "enum_declaration",
+            "method_declaration",
+            "constructor_declaration",
+            "namespace_declaration",
+        }),
+        import_node_types=frozenset({
+            "using_directive",
+        }),
+    ),
+    "kotlin": LanguageConfig(
+        get_language=_make_kotlin_lang,
+        semantic_node_types=frozenset({
+            "class_declaration",
+            "object_declaration",
+            "function_declaration",
+            "secondary_constructor",
+        }),
+        import_node_types=frozenset({
+            "import_header",
+        }),
+    ),
+    "scala": LanguageConfig(
+        get_language=_make_scala_lang,
+        semantic_node_types=frozenset({
+            "class_definition",
+            "object_definition",
+            "trait_definition",
+            "function_definition",
+        }),
+        import_node_types=frozenset({
+            "import_declaration",
+        }),
+    ),
+    "bash": LanguageConfig(
+        get_language=_make_bash_lang,
+        semantic_node_types=frozenset({
+            "function_definition",
+        }),
+        import_node_types=frozenset({
+            "command",  # source / . commands
+        }),
+    ),
+    "sh": LanguageConfig(
+        get_language=_make_bash_lang,
+        semantic_node_types=frozenset({
+            "function_definition",
+        }),
+        import_node_types=frozenset({
+            "command",
+        }),
+    ),
+    "lua": LanguageConfig(
+        get_language=_make_lua_lang,
+        semantic_node_types=frozenset({
+            "function_declaration",
+            "local_function",
+        }),
+        import_node_types=frozenset({
+            "function_call",  # require(...)
+        }),
+    ),
+    "zig": LanguageConfig(
+        get_language=_make_zig_lang,
+        semantic_node_types=frozenset({
+            "function_declaration",
+            "variable_declaration",
+        }),
+        import_node_types=frozenset({
+            "builtin_call",  # @import
+        }),
+    ),
+    "haskell": LanguageConfig(
+        get_language=_make_haskell_lang,
+        semantic_node_types=frozenset({
+            "function",
+            "data_declaration",
+            "type_synonym",
+            "class_declaration",
+            "instance_declaration",
+            "newtype_declaration",
+        }),
+        import_node_types=frozenset({
+            "import",
+        }),
+    ),
+    "elixir": LanguageConfig(
+        get_language=_make_elixir_lang,
+        semantic_node_types=frozenset({
+            "call",  # defmodule, def, defp, defmacro all parse as call
+        }),
+        import_node_types=frozenset({
+            "alias",
+            "import",
+            "require",
+            "use",
+        }),
+    ),
+    "ocaml": LanguageConfig(
+        get_language=_make_ocaml_lang,
+        semantic_node_types=frozenset({
+            "value_definition",
+            "type_definition",
+            "module_definition",
+            "exception_definition",
+            "class_definition",
+        }),
+        import_node_types=frozenset({
+            "open_statement",
+        }),
+    ),
+    "julia": LanguageConfig(
+        get_language=_make_julia_lang,
+        semantic_node_types=frozenset({
+            "function_definition",
+            "short_function_definition",
+            "macro_definition",
+            "struct_definition",
+            "module_definition",
+            "abstract_definition",
+        }),
+        import_node_types=frozenset({
+            "import_statement",
+            "using_statement",
+        }),
+    ),
+    "yaml": LanguageConfig(
+        get_language=_make_yaml_lang,
+        semantic_node_types=frozenset({
+            "block_mapping_pair",
+            "block_sequence",
+        }),
+        import_node_types=frozenset(),
+    ),
+    "toml": LanguageConfig(
+        get_language=_make_toml_lang,
+        semantic_node_types=frozenset({
+            "table",
+            "array_table",
+        }),
+        import_node_types=frozenset(),
+    ),
+    "html": LanguageConfig(
+        get_language=_make_html_lang,
+        semantic_node_types=frozenset({
+            "element",
+            "script_element",
+            "style_element",
+        }),
+        import_node_types=frozenset(),
+    ),
+    "css": LanguageConfig(
+        get_language=_make_css_lang,
+        semantic_node_types=frozenset({
+            "rule_set",
+            "media_statement",
+            "keyframes_statement",
+            "at_rule",
+        }),
+        import_node_types=frozenset({
+            "import_statement",
+        }),
+    ),
+    "json": LanguageConfig(
+        get_language=_make_json_lang,
+        semantic_node_types=frozenset({
+            "object",
+            "array",
+        }),
+        import_node_types=frozenset(),
+    ),
+    "markdown": LanguageConfig(
+        get_language=_make_markdown_lang,
+        semantic_node_types=frozenset({
+            "section",
+            "atx_heading",
+            "setext_heading",
+        }),
+        import_node_types=frozenset(),
+    ),
+    "groovy": LanguageConfig(
+        get_language=_make_groovy_lang,
+        semantic_node_types=frozenset({
+            "class_declaration",
+            "method_declaration",
+            "function_definition",
+            "closure",
+        }),
+        import_node_types=frozenset({
+            "import_declaration",
+        }),
+    ),
+    "cmake": LanguageConfig(
+        get_language=_make_cmake_lang,
+        semantic_node_types=frozenset({
+            "function_def",
+            "macro_def",
+        }),
+        import_node_types=frozenset({
+            "include_command",
+        }),
+    ),
+    "svelte": LanguageConfig(
+        get_language=_make_svelte_lang,
+        semantic_node_types=frozenset({
+            "script_element",
+            "style_element",
+            "element",
+        }),
+        import_node_types=frozenset(),
+    ),
+    "sql": LanguageConfig(
+        get_language=_make_sql_lang,
+        semantic_node_types=frozenset({
+            "statement",
+        }),
+        import_node_types=frozenset(),
     ),
 }
 

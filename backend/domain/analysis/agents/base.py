@@ -72,6 +72,7 @@ def _extract_retrieval_queries(blind_spots: list[str]) -> list[str]:
 class BaseTypedAgent(BaseLLMAgent):
     def __init__(self, provider_service: ProviderConfigService) -> None:
         super().__init__(provider_service)
+        self._session_chunk_ids: list[str] = []
 
     async def _call(
         self,
@@ -199,6 +200,7 @@ class BaseTypedAgent(BaseLLMAgent):
                 used_tokens=0,
                 evidences=unique_evidences[:15],
             )
+            self._record_bundle(augment_bundle)
             augment_block = render_bundle(augment_bundle, limit=15, excerpt_chars=1500)
 
             augmented_prompt = (
@@ -217,3 +219,16 @@ class BaseTypedAgent(BaseLLMAgent):
             )
 
         return data
+
+    def _record_bundle(self, bundle) -> None:
+        """Collect chunk IDs from a retrieval bundle (deduped, order preserved)."""
+        seen = set(self._session_chunk_ids)
+        for ev in bundle.evidences:
+            if ev.chunk_id not in seen:
+                seen.add(ev.chunk_id)
+                self._session_chunk_ids.append(ev.chunk_id)
+
+    def _pop_chunk_ids(self) -> list[str]:
+        ids = self._session_chunk_ids[:]
+        self._session_chunk_ids = []
+        return ids

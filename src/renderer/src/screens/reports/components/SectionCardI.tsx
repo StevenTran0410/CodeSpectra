@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react'
 import type { SectionI } from '../../../types/analysis'
+import { normConf } from '../../../lib/reportUtils'
 import SectionCard, { type SectionCardRerunProps } from './SectionCard'
 
 export default function SectionCardI({
@@ -8,9 +9,7 @@ export default function SectionCardI({
   rerunBusy,
 }: { data: SectionI } & SectionCardRerunProps): React.ReactElement {
   const [query, setQuery] = useState('')
-  const conf = data.confidence === 'high' || data.confidence === 'medium' || data.confidence === 'low'
-    ? data.confidence
-    : 'medium'
+  const conf = normConf(data.confidence)
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()

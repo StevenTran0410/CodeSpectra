@@ -1,10 +1,7 @@
 import React from 'react'
-import type { Confidence, SectionL } from '../../../types/analysis'
+import type { SectionL } from '../../../types/analysis'
+import { normConf } from '../../../lib/reportUtils'
 import SectionCard, { type SectionCardRerunProps } from './SectionCard'
-
-function normConf(c: string | undefined): Confidence {
-  return c === 'high' || c === 'medium' || c === 'low' ? c : 'medium'
-}
 
 const PROSE_FIELDS: { key: keyof SectionL; label: string }[] = [
   { key: 'executive_summary', label: 'Executive Summary' },

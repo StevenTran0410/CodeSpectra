@@ -13,6 +13,7 @@ async def delete_snapshot_artifacts(snapshot_id: str) -> None:
     await db.execute("DELETE FROM structural_graph_summaries WHERE snapshot_id=?", (snapshot_id,))
     await db.execute("DELETE FROM retrieval_chunks WHERE snapshot_id=?", (snapshot_id,))
     await db.execute("DELETE FROM retrieval_indexes WHERE snapshot_id=?", (snapshot_id,))
+    await db.execute("DELETE FROM retrieval_bm25_stats WHERE snapshot_id=?", (snapshot_id,))
     await db.execute("DELETE FROM analysis_reports WHERE snapshot_id=?", (snapshot_id,))
 
 

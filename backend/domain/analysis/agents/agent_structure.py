@@ -62,6 +62,7 @@ class StructureAgent(BaseTypedAgent):
         t0 = time.monotonic()
         n_chunks = 0
         _profile = profile or NORMAL_PROFILE
+        self._session_chunk_ids = []
         try:
             if arch_bundle is not None:
                 bundle = arch_bundle
@@ -85,6 +86,7 @@ class StructureAgent(BaseTypedAgent):
                     ),
                     fetch_folder_tree(snapshot_id),
                 )
+            self._record_bundle(bundle)
             n_chunks = len(bundle.evidences)
             identity_block = extract_a_identity_context(identity_output)
             user_prompt_parts = [f"snapshot_id={snapshot_id}"]
@@ -136,6 +138,7 @@ class StructureAgent(BaseTypedAgent):
                     data[key] = []
             data["confidence"] = _normalize_conf(str(data.get("confidence", "medium")))
             validate_section("C", data)
+            data["retrieved_chunk_ids"] = self._pop_chunk_ids()
             ms = int((time.monotonic() - t0) * 1000)
             logger.info("[StructureAgent] %d chunks retrieved, completed in %dms", n_chunks, ms)
             return data

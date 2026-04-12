@@ -1,12 +1,9 @@
 import React from 'react'
-import type { Confidence, SectionK } from '../../../types/analysis'
+import type { SectionK } from '../../../types/analysis'
+import { normConf } from '../../../lib/reportUtils'
 import SectionCard, { type SectionCardRerunProps } from './SectionCard'
 
 const SECTION_LETTERS = 'ABCDEFGHIJ'.split('') as string[]
-
-function normConf(c: string | undefined): Confidence {
-  return c === 'high' || c === 'medium' || c === 'low' ? c : 'medium'
-}
 
 function scoreChipClass(level: string | undefined): string {
   if (level === 'high') return 'bg-emerald-900/50 text-emerald-300 border-emerald-800'

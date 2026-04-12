@@ -202,6 +202,10 @@ export function registerFolderHandlers(client: BackendClient): void {
     client.get(`/api/graph/cycles/${snapshotId}`)
   )
 
+  ipcMain.handle('graph:exportData', (_event, snapshotId: string) =>
+    client.get(`/api/graph/export/${snapshotId}`)
+  )
+
   ipcMain.handle('graph:exportJson', async (_event, snapshotId: string) => {
     const data = await client.get<Record<string, unknown>>(`/api/graph/export/${snapshotId}`)
     const defaultName = `graph-export-${snapshotId.slice(0, 8)}.json`
@@ -240,6 +244,16 @@ export function registerFolderHandlers(client: BackendClient): void {
       section: 'architecture' | 'conventions' | 'feature_map' | 'important_files' | 'glossary'
       max_results?: number
     }) => client.post('/api/retrieval/compare', body)
+  )
+
+  ipcMain.handle(
+    'retrieval:retrieveTwoStage',
+    (_event, body: {
+      snapshot_id: string
+      query: string
+      section: 'architecture' | 'conventions' | 'feature_map' | 'important_files' | 'glossary'
+      budget?: number
+    }) => client.post('/api/retrieval/retrieve-two-stage', body)
   )
 
   ipcMain.handle(
@@ -364,6 +378,12 @@ export function registerFolderHandlers(client: BackendClient): void {
     'analysis:compareReports',
     (_event, body: { report_id_a: string; report_id_b: string }) =>
       client.post('/api/analysis/compare', body)
+  )
+
+  ipcMain.handle(
+    'analysis:getSectionSources',
+    (_event, reportId: string, sectionId: string) =>
+      client.get(`/api/analysis/reports/${reportId}/sections/${sectionId}/sources`)
   )
 
   // backward-compat typo alias used by some renderer builds

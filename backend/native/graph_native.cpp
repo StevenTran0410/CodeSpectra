@@ -479,6 +479,37 @@ py::dict compute_louvain(
     return out;
 }
 
+py::list rank_and_budget(const py::list& scored_chunks, int token_budget) {
+    struct ScoredChunk {
+        std::string chunk_id;
+        double score;
+        int token_count;
+    };
+    std::vector<ScoredChunk> chunks;
+    chunks.reserve(scored_chunks.size());
+    for (const auto& item : scored_chunks) {
+        auto t = py::cast<py::tuple>(item);
+        if (t.size() < 3) continue;
+        chunks.push_back({
+            py::cast<std::string>(t[0]),
+            py::cast<double>(t[1]),
+            py::cast<int>(t[2])
+        });
+    }
+    std::sort(chunks.begin(), chunks.end(),
+              [](const ScoredChunk& a, const ScoredChunk& b) {
+                  return a.score > b.score;
+              });
+    py::list out;
+    int used = 0;
+    for (const auto& c : chunks) {
+        if (used + c.token_count > token_budget) continue;
+        out.append(c.chunk_id);
+        used += c.token_count;
+    }
+    return out;
+}
+
 PYBIND11_MODULE(_native_graph, m) {
     m.doc() = "Native graph hotspot module for CodeSpectra";
     m.def("compute_scores",      &compute_scores,      "Compute graph centrality score list");
@@ -489,4 +520,7 @@ PYBIND11_MODULE(_native_graph, m) {
           py::arg("edge_tuples"), py::arg("node_ids"),
           py::arg("resolution") = 1.0, py::arg("seed") = 42,
           "Louvain Phase-1 community detection — returns {node_path: community_id}");
+    m.def("rank_and_budget",     &rank_and_budget,
+          py::arg("scored_chunks"), py::arg("token_budget"),
+          "Sort scored chunks by score desc and apply token budget truncation");
 }

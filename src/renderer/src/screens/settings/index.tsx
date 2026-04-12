@@ -35,7 +35,6 @@ export default function SettingsScreen(): React.ReactElement {
       </div>
 
       <div className="p-6 space-y-6 max-w-2xl">
-        {/* App info */}
         <section className="card p-4 space-y-3">
           <h2 className="text-sm font-medium text-gray-300 flex items-center gap-2">
             <Info className="w-4 h-4" />
@@ -55,7 +54,6 @@ export default function SettingsScreen(): React.ReactElement {
           </div>
         </section>
 
-        {/* Privacy defaults placeholder */}
         <section className="card p-4 space-y-3">
           <h2 className="text-sm font-medium text-gray-300">Privacy defaults</h2>
           <p className="text-xs text-gray-500">
@@ -69,7 +67,6 @@ export default function SettingsScreen(): React.ReactElement {
           </div>
         </section>
 
-        {/* Storage placeholder */}
         <section className="card p-4 space-y-3">
           <h2 className="text-sm font-medium text-gray-300 flex items-center gap-2">
             <FolderOpen className="w-4 h-4" />
@@ -80,7 +77,6 @@ export default function SettingsScreen(): React.ReactElement {
           </p>
         </section>
 
-        {/* Native engine diagnostics */}
         <section className="card p-4 space-y-3">
           <h2 className="text-sm font-medium text-gray-300 flex items-center gap-2">
             <Cpu className="w-4 h-4" />
@@ -97,7 +93,6 @@ export default function SettingsScreen(): React.ReactElement {
 
           {diagnostics && (
             <div className="space-y-2 text-sm">
-              {/* overall status */}
               <div className="flex justify-between items-center py-1.5 border-b border-surface-border">
                 <span className="text-gray-400">Module status</span>
                 {diagnostics.native_module_loaded ? (
@@ -115,7 +110,6 @@ export default function SettingsScreen(): React.ReactElement {
                 <span className="text-gray-200 font-mono text-xs">{diagnostics.python_version}</span>
               </div>
 
-              {/* per-function table */}
               <div className="pt-1 space-y-1">
                 {diagnostics.native_functions.map((fn) => (
                   <div key={fn.name} className="flex items-start gap-2 py-1 border-b border-surface-border last:border-0">

@@ -8,6 +8,8 @@ from domain.retrieval.types import (
     RetrievalCompareResponse,
     RetrievalBundle,
     RetrieveRequest,
+    TwoStageBundle,
+    TwoStageRequest,
 )
 
 router = APIRouter(tags=["retrieval"])
@@ -34,5 +36,13 @@ async def retrieve_context(body: RetrieveRequest) -> RetrievalBundle:
 async def compare_retrieval_modes(body: RetrieveRequest) -> RetrievalCompareResponse:
     try:
         return await _service.compare(body)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/retrieve-two-stage", response_model=TwoStageBundle)
+async def retrieve_two_stage(body: TwoStageRequest) -> TwoStageBundle:
+    try:
+        return await _service.retrieve_two_stage(body)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

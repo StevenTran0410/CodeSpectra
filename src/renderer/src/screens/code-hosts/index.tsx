@@ -27,9 +27,6 @@ import { LoadingRow } from '../../components/ui/LoadingRow'
 import { toErrorMessage } from '../../lib/errors'
 import type { LocalRepo, ValidateFolderResponse } from '../../types/electron'
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Validation preview card — shown after folder picker before saving
-// ──────────────────────────────────────────────────────────────────────────────
 function ValidationPreview({
   result,
   onConfirm,
@@ -124,9 +121,6 @@ function ValidationPreview({
   )
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Inline branch picker dropdown
-// ──────────────────────────────────────────────────────────────────────────────
 function BranchPicker({ repo }: { repo: LocalRepo }) {
   const { branchesMap, loadingBranchesId, loadBranches, setBranch } = useLocalRepoStore()
   const [open, setOpen] = useState(false)
@@ -231,9 +225,6 @@ function BranchPicker({ repo }: { repo: LocalRepo }) {
   )
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Repo card — shows a saved local folder
-// ──────────────────────────────────────────────────────────────────────────────
 function LocalRepoCard({
   repo,
   onRemove,
@@ -316,9 +307,6 @@ function LocalRepoCard({
   )
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Add folder panel — folder picker + validation flow
-// ──────────────────────────────────────────────────────────────────────────────
 function AddFolderPanel({ onClose, workspaceId }: { onClose: () => void; workspaceId?: string }) {
   const { validate, clearValidation, validation, validating, add, adding, error } = useLocalRepoStore()
 
@@ -371,9 +359,6 @@ function AddFolderPanel({ onClose, workspaceId }: { onClose: () => void; workspa
   )
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Clone from URL panel
-// ──────────────────────────────────────────────────────────────────────────────
 function CloneFromUrlPanel({ onClose, onCloned, workspaceId }: { onClose: () => void; onCloned: () => void; workspaceId?: string }) {
   const [url, setUrl] = useState('')
   const [cloning, setCloning] = useState(false)
@@ -461,9 +446,6 @@ function CloneFromUrlPanel({ onClose, onCloned, workspaceId }: { onClose: () => 
   )
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// SSH key settings — collapsible row at the bottom of the screen
-// ──────────────────────────────────────────────────────────────────────────────
 function SshKeySettings() {
   const [keyPath, setKeyPath] = useState<string | null>(null)
   const [open, setOpen] = useState(false)
@@ -583,9 +565,6 @@ function SshKeySettings() {
   )
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Main screen
-// ──────────────────────────────────────────────────────────────────────────────
 export default function CodeHostsSetup(): React.ReactElement {
   const { repos, loading, error, load, remove, revalidate, revalidatingId, clearError } = useLocalRepoStore()
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId)

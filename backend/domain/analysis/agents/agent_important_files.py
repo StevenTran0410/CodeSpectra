@@ -60,6 +60,7 @@ class ImportantFilesAgent(BaseTypedAgent):
         n_chunks = 0
         paths: list[str] = []
         _profile = profile or NORMAL_PROFILE
+        self._session_chunk_ids = []
         try:
             graph_lines: list[str] = []
             if graph_summary and graph_summary.top_central_files:
@@ -76,6 +77,7 @@ class ImportantFilesAgent(BaseTypedAgent):
                     max_results=_profile.retrieval_max_results,
                 )
             )
+            self._record_bundle(bundle)
             n_chunks = len(bundle.evidences)
             paths = [e.rel_path for e in bundle.evidences]
             prefix = f"{graph_block}\n\n" if graph_block else ""
@@ -132,6 +134,7 @@ class ImportantFilesAgent(BaseTypedAgent):
                     data[key] = [str(x) for x in raw if x is not None]
             data["confidence"] = _normalize_conf(str(data.get("confidence", "medium")))
             validate_section("G", data)
+            data["retrieved_chunk_ids"] = self._pop_chunk_ids()
             ms = int((time.monotonic() - t0) * 1000)
             logger.info(
                 "[ImportantFilesAgent] %d chunks retrieved, completed in %dms", n_chunks, ms

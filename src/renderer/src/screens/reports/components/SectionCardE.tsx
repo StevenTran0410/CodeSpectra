@@ -1,10 +1,7 @@
 import React, { useState } from 'react'
 import type { ForbiddenRule, SectionE } from '../../../types/analysis'
+import { normConf } from '../../../lib/reportUtils'
 import SectionCard, { type SectionCardRerunProps } from './SectionCard'
-
-function normConf(c: string | undefined): 'high' | 'medium' | 'low' {
-  return c === 'high' || c === 'medium' || c === 'low' ? c : 'medium'
-}
 
 function ruleSeverityClass(sev: string | undefined): string {
   const s = (sev || 'weak').toLowerCase()

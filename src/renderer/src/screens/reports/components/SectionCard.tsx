@@ -15,6 +15,7 @@ export interface SectionCardProps {
   onRerun?: SectionCardRerunProps['onRerun']
   rerunBusy?: boolean
   headerExtra?: React.ReactNode
+  onShowSources?: () => void
 }
 
 const BADGE_COLORS: Record<string, string> = {
@@ -48,6 +49,7 @@ export default function SectionCard({
   onRerun,
   rerunBusy = false,
   headerExtra,
+  onShowSources,
 }: SectionCardProps): React.ReactElement {
   const [collapsed, setCollapsed] = useState(defaultCollapsed)
   const badge = BADGE_COLORS[sectionId] ?? 'bg-zinc-800 text-zinc-300 border-zinc-700'
@@ -65,6 +67,16 @@ export default function SectionCard({
         </div>
         <div className="flex items-center gap-2 shrink-0">
           {headerExtra}
+          {onShowSources && (
+            <button
+              type="button"
+              title="Show retrieved source chunks"
+              onClick={onShowSources}
+              className="p-1 rounded border border-zinc-700 text-zinc-500 hover:border-indigo-700/80 hover:text-indigo-300/90 text-[10px] leading-none"
+            >
+              src
+            </button>
+          )}
           {onRerun && (
             <button
               type="button"

@@ -82,6 +82,7 @@ class ProjectIdentityAgent(BaseTypedAgent):
         t0 = time.monotonic()
         n_chunks = 0
         _profile = profile or NORMAL_PROFILE
+        self._session_chunk_ids = []
         try:
             if mem_ctx is not None:
                 bundle = await self._retrieval.retrieve(
@@ -107,6 +108,7 @@ class ProjectIdentityAgent(BaseTypedAgent):
                 bundle, doc_ctx, manifest_ctx, folder_tree = await _gather_context(
                     self._retrieval, snapshot_id, _profile
                 )
+            self._record_bundle(bundle)
             n_chunks = len(bundle.evidences)
             hint = f"repo_name={repo_name}\n" if repo_name else ""
             user_prompt_parts = [f"{hint}snapshot_id={snapshot_id}"]
@@ -146,6 +148,7 @@ class ProjectIdentityAgent(BaseTypedAgent):
                     data[key] = [str(x) for x in raw if x is not None]
             data["confidence"] = _normalize_conf(str(data.get("confidence", "medium")))
             validate_section("A", data)
+            data["retrieved_chunk_ids"] = self._pop_chunk_ids()
             ms = int((time.monotonic() - t0) * 1000)
             logger.info(
                 "[ProjectIdentityAgent] %d chunks retrieved, completed in %dms", n_chunks, ms

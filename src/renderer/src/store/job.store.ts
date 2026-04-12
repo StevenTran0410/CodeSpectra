@@ -2,15 +2,10 @@ import { create } from 'zustand'
 import type { Job } from '../types/electron'
 
 interface JobState {
-  // active job being polled
   activeJob: Job | null
   polling: boolean
-
-  // recent job history
   history: Job[]
   historyLoading: boolean
-
-  // actions
   startPolling: (jobId: string) => void
   stopPolling: () => void
   cancel: (jobId: string) => Promise<void>

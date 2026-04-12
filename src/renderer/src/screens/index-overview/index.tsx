@@ -1,20 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { ArrowLeft, Loader2, Save, Search } from 'lucide-react'
-import dagre from '@dagrejs/dagre'
-import {
-  Background,
-  Controls,
-  ReactFlow,
-  type Edge,
-  type Node,
-} from '@xyflow/react'
-import '@xyflow/react/dist/style.css'
 import type {
-  CommunityInfo,
-  CyclesResponse,
-  GraphCommunitiesResponse,
-  GraphEdge,
   RetrievalBundle,
   RetrievalCompareResponse,
   RetrievalMode,
@@ -22,6 +9,10 @@ import type {
   RepoMapSummary,
   StructuralGraphSummary,
   SymbolRecord,
+  TwoStageDebugBundle,
+  TwoStageCandidate,
+  TwoStageExpansion,
+  TwoStageRankedChunk,
 } from '../../types/electron'
 import { ErrorBanner } from '../../components/ui/ErrorBanner'
 import { toErrorMessage } from '../../lib/errors'
@@ -81,148 +72,134 @@ function RetrievalResultPanel({
   )
 }
 
-// ── Community colour helpers ──────────────────────────────────────────────────
-function communityHsl(id: number, total: number): string {
-  const hue = total <= 1 ? 210 : Math.round((id / total) * 360)
-  return `hsl(${hue}, 65%, 45%)`
-}
-function communityBg(id: number, total: number): string {
-  const hue = total <= 1 ? 210 : Math.round((id / total) * 360)
-  return `hsl(${hue}, 30%, 10%)`
+function Stage1Panel({ candidates }: { candidates: TwoStageCandidate[] }): React.ReactElement {
+  const [expanded, setExpanded] = React.useState<string | null>(null)
+  return (
+    <div className="p-2 space-y-1 max-h-80 overflow-y-auto">
+      {candidates.map((c) => {
+        const key = `${c.rel_path}#${c.chunk_index}`
+        const isOpen = expanded === key
+        return (
+          <div key={key} className="border border-zinc-800 rounded">
+            <button
+              className="w-full text-left px-2 py-1 flex items-center gap-1.5 hover:bg-zinc-800/40 transition-colors text-[11px]"
+              onClick={() => setExpanded(isOpen ? null : key)}
+            >
+              <span className={`shrink-0 text-[9px] transition-transform ${isOpen ? 'rotate-90' : ''}`}>▶</span>
+              <span className="text-zinc-300 font-mono truncate flex-1">{c.rel_path}</span>
+              <span className="shrink-0 text-zinc-600 font-mono">chunk#{c.chunk_index}</span>
+              <span className="shrink-0 text-zinc-700 mx-1">|</span>
+              <span className="shrink-0 text-zinc-400 font-mono">bm25={c.bm25_score.toFixed(2)}</span>
+              <span className="shrink-0 text-zinc-700 mx-1">|</span>
+              <span className="shrink-0 text-zinc-500 font-mono">{c.token_estimate} tok</span>
+            </button>
+            {isOpen && (
+              <pre className="mx-2 mb-2 p-2 bg-zinc-950 border border-zinc-800 rounded text-[10px] text-zinc-300 font-mono whitespace-pre-wrap break-all max-h-40 overflow-y-auto leading-4">
+                {c.excerpt || '(no excerpt)'}
+              </pre>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
 }
 
-// ── GraphModal extracted component ───────────────────────────────────────────
-function GraphModal({
-  open,
-  onClose,
-  loading,
-  nodes,
-  edges,
-  renderNodes,
-  renderEdges,
-  maxNodes,
-  maxEdges,
-  seedPath,
-  onNodeClick,
-  communities,
-  cycles,
-  snapshotId,
-}: {
-  open: boolean
-  onClose: () => void
-  loading: boolean
-  nodes: Node[]
-  edges: Edge[]
-  renderNodes: Node[]
-  renderEdges: Edge[]
-  maxNodes: number
-  maxEdges: number
-  seedPath: string
-  onNodeClick: (nodeId: string) => void
-  communities: GraphCommunitiesResponse | null
-  cycles: string[][]
-  snapshotId: string
-}): React.ReactElement | null {
-  const [exporting, setExporting] = useState(false)
-  if (!open) return null
-  const totalComm = communities?.total_communities ?? 1
+function Stage2Panel({ expansions }: { expansions: TwoStageExpansion[] }): React.ReactElement {
+  const [expanded, setExpanded] = React.useState<string | null>(null)
   return (
-    <div className="fixed inset-0 z-50 bg-black/65 flex items-center justify-center p-4">
-      <div className="w-[94vw] h-[86vh] rounded-lg border border-zinc-700 bg-zinc-900 overflow-hidden flex flex-col">
-        <div className="px-3 py-2 border-b border-zinc-700 flex items-center justify-between shrink-0">
-          <div className="text-xs text-zinc-300">
-            Graph Visualization ({seedPath.trim() ? `focused: ${seedPath}` : 'full graph'})
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="text-[11px] text-zinc-500">
-              {renderNodes.length} nodes / {renderEdges.length} edges
-              {(renderNodes.length >= maxNodes || renderEdges.length >= maxEdges) && (
-                <span className="text-amber-400"> (truncated)</span>
-              )}
-            </div>
+    <div className="p-2 space-y-1 max-h-80 overflow-y-auto">
+      {expansions.map((e) => {
+        const isOpen = expanded === e.seed_path
+        return (
+          <div key={e.seed_path} className="border border-zinc-800 rounded">
             <button
-              onClick={async () => {
-                setExporting(true)
-                try { await window.api.graph.exportJson(snapshotId) }
-                finally { setExporting(false) }
-              }}
-              disabled={exporting}
-              className="px-2.5 py-1 text-xs border border-zinc-700 rounded text-zinc-400 hover:border-zinc-600 hover:text-zinc-300 disabled:opacity-40"
+              className="w-full text-left px-2 py-1 flex items-center gap-1.5 hover:bg-zinc-800/40 transition-colors text-[11px]"
+              onClick={() => setExpanded(isOpen ? null : e.seed_path)}
             >
-              {exporting ? 'Exporting…' : 'Export JSON'}
+              <span className={`shrink-0 text-[9px] transition-transform ${isOpen ? 'rotate-90' : ''}`}>▶</span>
+              <span className="text-zinc-300 font-mono truncate flex-1">{e.seed_path}</span>
+              <span className="shrink-0 text-zinc-500">
+                {e.symbol_refs.length} sym / {e.community_members.length} comm / {e.neighbor_files.length} nbr / +{e.net_new_count} new
+              </span>
             </button>
-            <button
-              onClick={onClose}
-              className="px-2.5 py-1 text-xs border border-zinc-700 rounded text-zinc-300 hover:border-zinc-600"
-            >
-              Close
-            </button>
-          </div>
-        </div>
-        <div className="flex-1 min-h-0">
-          {loading ? (
-            <div className="h-full flex items-center justify-center text-zinc-500 text-sm">
-              <Loader2 size={16} className="animate-spin mr-2" />
-              Loading graph...
-            </div>
-          ) : (
-            <ReactFlow
-              nodes={nodes}
-              edges={edges}
-              fitView
-              fitViewOptions={{ padding: 0.24 }}
-              onNodeClick={(_e, node) => onNodeClick(String(node.id))}
-              minZoom={0.15}
-              maxZoom={2.0}
-            >
-              <Controls />
-              <Background color="#27272a" gap={18} size={1} />
-            </ReactFlow>
-          )}
-        </div>
-        {/* Community legend */}
-        {communities && communities.communities.length > 0 && (
-          <div className="px-3 py-2 border-t border-zinc-800 flex flex-wrap gap-2 shrink-0">
-            {communities.communities.map((c: CommunityInfo) => (
-              <div key={c.community_id} className="flex items-center gap-1 text-[10px] text-zinc-400">
-                <span
-                  className="inline-block w-2.5 h-2.5 rounded-sm shrink-0"
-                  style={{ background: communityHsl(c.community_id, totalComm) }}
-                />
-                <span className="text-zinc-300">C{c.community_id}</span>
-                <span className="text-zinc-600">({c.member_count})</span>
-                {c.llm_summary && (
-                  <span className="text-zinc-500 truncate max-w-[100px]" title={c.llm_summary}>
-                    {c.llm_summary.slice(0, 30)}…
-                  </span>
+            {isOpen && (
+              <div className="mx-2 mb-2 p-2 bg-zinc-950 border border-zinc-800 rounded text-[10px] text-zinc-400 space-y-1">
+                {e.symbol_refs.length > 0 && (
+                  <div><span className="text-zinc-500">symbol refs:</span> {e.symbol_refs.join(', ')}</div>
+                )}
+                {e.community_members.length > 0 && (
+                  <div><span className="text-zinc-500">community:</span> {e.community_members.join(', ')}</div>
+                )}
+                {e.neighbor_files.length > 0 && (
+                  <div><span className="text-zinc-500">neighbors:</span> {e.neighbor_files.join(', ')}</div>
                 )}
               </div>
-            ))}
+            )}
           </div>
-        )}
-        {/* Circular import cycles */}
-        {cycles.length > 0 && (
-          <details className="border-t border-yellow-900/40 px-3 py-1.5 shrink-0">
-            <summary className="text-[11px] text-yellow-400 cursor-pointer select-none">
-              ⚠ {cycles.length} circular import cycle{cycles.length > 1 ? 's' : ''} detected
-            </summary>
-            <div className="mt-1 space-y-0.5 max-h-28 overflow-y-auto pb-1">
-              {cycles.map((scc, i) => (
-                <div key={i} className="font-mono text-[10px] text-zinc-400 truncate">
-                  {scc.join(' → ')}
-                </div>
-              ))}
+        )
+      })}
+    </div>
+  )
+}
+
+function Stage3Panel({
+  ranked,
+  usedTokens,
+  budgetTokens,
+  usedCpp,
+}: {
+  ranked: TwoStageRankedChunk[]
+  usedTokens: number
+  budgetTokens: number
+  usedCpp: boolean
+}): React.ReactElement {
+  const [expanded, setExpanded] = React.useState<string | null>(null)
+  return (
+    <div className="p-2 space-y-1.5">
+      <div className="flex items-center gap-2 text-[11px] text-zinc-500">
+        <span>tokens=<span className="text-zinc-300">{usedTokens}/{budgetTokens}</span></span>
+        <span className="text-zinc-700">|</span>
+        <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono ${usedCpp ? 'bg-emerald-900/40 text-emerald-400' : 'bg-zinc-800 text-zinc-500'}`}>
+          {usedCpp ? 'C++' : 'Python'}
+        </span>
+        <span className="text-zinc-600">{ranked.length} chunks</span>
+      </div>
+      <div className="max-h-80 overflow-y-auto space-y-1">
+        {ranked.map((c) => {
+          const key = `${c.rel_path}#${c.chunk_index}`
+          const isOpen = expanded === key
+          return (
+            <div key={key} className="border border-zinc-800 rounded">
+              <button
+                className="w-full text-left px-2 py-1 flex items-center gap-1 hover:bg-zinc-800/40 transition-colors text-[11px]"
+                onClick={() => setExpanded(isOpen ? null : key)}
+              >
+                <span className={`shrink-0 text-[9px] transition-transform ${isOpen ? 'rotate-90' : ''}`}>▶</span>
+                <span className="text-zinc-300 font-mono truncate flex-1">{c.rel_path}</span>
+                <span className="shrink-0 text-zinc-600 font-mono">#{c.chunk_index}</span>
+                <span className="shrink-0 text-zinc-700 mx-1">|</span>
+                <span className="shrink-0 text-zinc-400 font-mono">{c.score.toFixed(2)}</span>
+                <span className="shrink-0 text-zinc-700 mx-0.5">/</span>
+                <span className="shrink-0 text-zinc-600 font-mono text-[10px]">bm25={c.bm25_component.toFixed(2)} sym={c.symbol_bonus.toFixed(1)} mod={c.module_bonus.toFixed(1)} cent={c.centrality_bonus.toFixed(1)}</span>
+                <span className="shrink-0 text-zinc-700 mx-1">|</span>
+                <span className="shrink-0 text-zinc-500 font-mono">{c.token_estimate}tok</span>
+              </button>
+              {isOpen && (
+                <pre className="mx-2 mb-2 p-2 bg-zinc-950 border border-zinc-800 rounded text-[10px] text-zinc-300 font-mono whitespace-pre-wrap break-all max-h-40 overflow-y-auto leading-4">
+                  {c.excerpt || '(no excerpt)'}
+                </pre>
+              )}
             </div>
-          </details>
-        )}
+          )
+        })}
       </div>
     </div>
   )
 }
 
+
 export default function IndexOverviewScreen(): React.ReactElement {
-  const MAX_RENDER_NODES = 280
-  const MAX_RENDER_EDGES = 500
   const navigate = useNavigate()
   const [params] = useSearchParams()
   const repoId = params.get('repoId') ?? ''
@@ -238,28 +215,16 @@ export default function IndexOverviewScreen(): React.ReactElement {
   const [query, setQuery] = useState('')
   const [hits, setHits] = useState<SymbolRecord[]>([])
   const [searching, setSearching] = useState(false)
-  const [seedPath, setSeedPath] = useState('')
-  const [neighborHops, setNeighborHops] = useState(1)
-  const [loadingNeighbors, setLoadingNeighbors] = useState(false)
-  const [neighborNodes, setNeighborNodes] = useState<string[]>([])
-  const [neighborEdges, setNeighborEdges] = useState<GraphEdge[]>([])
-  const [loadingFullGraph, setLoadingFullGraph] = useState(false)
-  const [fullGraphEdges, setFullGraphEdges] = useState<GraphEdge[]>([])
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
-  const [graphModalOpen, setGraphModalOpen] = useState(false)
-  const [graphModalLoading, setGraphModalLoading] = useState(false)
-  const [graphModalEdges, setGraphModalEdges] = useState<GraphEdge[]>([])
-  const [graphModalNodes, setGraphModalNodes] = useState<string[]>([])
   const [retrievalQuery, setRetrievalQuery] = useState('')
   const [retrievalSection, setRetrievalSection] = useState<RetrievalSection>('architecture')
   const [retrievalMode, setRetrievalMode] = useState<RetrievalMode>('hybrid')
   const [retrievalBusy, setRetrievalBusy] = useState(false)
   const [retrievalBundle, setRetrievalBundle] = useState<RetrievalBundle | null>(null)
   const [retrievalCompare, setRetrievalCompare] = useState<RetrievalCompareResponse | null>(null)
-  const [communities, setCommunities] = useState<GraphCommunitiesResponse | null>(null)
-  const [cycles, setCycles] = useState<string[][]>([])
-  const [hoveredNode, setHoveredNode] = useState<string | null>(null)
+  const [twoStageBundle, setTwoStageBundle] = React.useState<TwoStageDebugBundle | null>(null)
+  const [twoStageBusy, setTwoStageBusy] = React.useState(false)
 
   useEffect(() => {
     const run = async () => {
@@ -303,153 +268,6 @@ export default function IndexOverviewScreen(): React.ReactElement {
 
   const byKind = useMemo(() => Object.entries(summary?.kind_breakdown ?? {}), [summary])
   const byLang = useMemo(() => Object.entries(summary?.language_breakdown ?? {}), [summary])
-  const fullGraphNodes = useMemo(() => {
-    const set = new Set<string>()
-    for (const e of fullGraphEdges) {
-      set.add(e.src_path)
-      set.add(e.dst_path)
-    }
-    return Array.from(set).sort((a, b) => a.localeCompare(b))
-  }, [fullGraphEdges])
-  const focusedEdges = useMemo(
-    () => fullGraphEdges.filter((e) => e.src_path === seedPath || e.dst_path === seedPath),
-    [fullGraphEdges, seedPath],
-  )
-  const focusedMode = seedPath.trim().length > 0
-  const graphNodeOptions = useMemo(() => fullGraphNodes.slice(0, 1000), [fullGraphNodes])
-  const centralityTier = useMemo(() => {
-    const scores = graphSummary?.top_central_files ?? []
-    const highSet = new Set(scores.slice(0, 10).map((s) => s.rel_path))
-    const midSet = new Set(scores.slice(10, 40).map((s) => s.rel_path))
-    return { highSet, midSet }
-  }, [graphSummary])
-
-  const graphRenderNodes = useMemo(() => {
-    const nodes = (graphModalNodes.length > 0 ? graphModalNodes : fullGraphNodes).slice(0, MAX_RENDER_NODES)
-    const srcEdges = (graphModalEdges.length > 0 ? graphModalEdges : fullGraphEdges)
-      .slice(0, MAX_RENDER_EDGES)
-    const nodeSet = new Set(nodes)
-    const totalComm = communities?.total_communities ?? 1
-    const nodeIndex = communities?.node_index ?? {}
-
-    const g = new dagre.graphlib.Graph()
-    g.setDefaultEdgeLabel(() => ({}))
-    g.setGraph({
-      rankdir: focusedMode ? 'LR' : 'TB',
-      nodesep: 40,
-      ranksep: focusedMode ? 100 : 80,
-      marginx: 24,
-      marginy: 24,
-    })
-
-    for (const n of nodes) {
-      const isHigh = centralityTier.highSet.has(n)
-      const isMid = centralityTier.midSet.has(n)
-      g.setNode(n, { width: isHigh ? 240 : isMid ? 210 : 180, height: isHigh ? 50 : isMid ? 40 : 34 })
-    }
-    for (const e of srcEdges) {
-      if (!nodeSet.has(e.src_path) || !nodeSet.has(e.dst_path)) continue
-      g.setEdge(e.src_path, e.dst_path)
-    }
-    dagre.layout(g)
-
-    return nodes.map((n, i) => {
-      const isHigh = centralityTier.highSet.has(n)
-      const isMid = centralityTier.midSet.has(n)
-      const nodeW = isHigh ? 240 : isMid ? 210 : 180
-      const nodeH = isHigh ? 50 : isMid ? 40 : 34
-
-      const p = g.node(n)
-      const x = p ? p.x - nodeW / 2 : (i % 8) * 240
-      const y = p ? p.y - nodeH / 2 : Math.floor(i / 8) * 90
-
-      const commId = nodeIndex[n] ?? -1
-      const borderColor = commId >= 0 ? communityHsl(commId, totalComm) : '#3f3f46'
-      const bgColor = commId >= 0 ? communityBg(commId, totalComm) : '#18181b'
-      const glowShadow = isHigh
-        ? `0 0 14px ${borderColor}55, 0 2px 8px rgba(0,0,0,0.35)`
-        : '0 2px 6px rgba(0,0,0,0.25)'
-      const tail = n.split('/').slice(-2).join('/')
-
-      return {
-        id: n,
-        position: { x, y },
-        data: {
-          label: (
-            <div style={{ width: nodeW - 16 }}>
-              <div className="text-[10px] text-zinc-100 truncate font-medium">{tail || n}</div>
-              {isHigh && <div className="text-[9px] text-zinc-400 truncate">{n}</div>}
-            </div>
-          ),
-        },
-        style: {
-          background: bgColor,
-          color: '#e4e4e7',
-          border: `${isHigh ? 2 : 1}px solid ${borderColor}`,
-          borderRadius: 8,
-          fontSize: isHigh ? 11 : 10,
-          padding: 6,
-          width: nodeW,
-          height: nodeH,
-          boxShadow: glowShadow,
-        },
-        draggable: true,
-        selectable: true,
-      } as Node
-    })
-  }, [graphModalNodes, fullGraphNodes, graphModalEdges, fullGraphEdges, focusedMode, communities, centralityTier])
-  const graphRenderEdges = useMemo(() => {
-    const nodeSet = new Set(graphRenderNodes.map((n) => n.id))
-    const src = graphModalEdges.length > 0 ? graphModalEdges : fullGraphEdges
-    const nodeIndex = communities?.node_index ?? {}
-    const totalComm = communities?.total_communities ?? 1
-    const out: Edge[] = []
-    for (const e of src) {
-      if (!nodeSet.has(e.src_path) || !nodeSet.has(e.dst_path)) continue
-      const sc = nodeIndex[e.src_path] ?? -1
-      const dc = nodeIndex[e.dst_path] ?? -1
-      const intra = sc >= 0 && sc === dc
-      out.push({
-        id: `${e.src_path}->${e.dst_path}:${out.length}`,
-        source: e.src_path,
-        target: e.dst_path,
-        type: 'smoothstep',
-        animated: false,
-        style: {
-          stroke: intra ? communityHsl(sc, totalComm) : '#52525b',
-          strokeWidth: intra ? 1.8 : 1.0,
-          opacity: intra ? 0.8 : 0.4,
-        },
-      })
-      if (out.length >= MAX_RENDER_EDGES) break
-    }
-    return out
-  }, [graphModalEdges, fullGraphEdges, graphRenderNodes, communities])
-
-  useEffect(() => {
-    const run = async () => {
-      if (!snapshotId || !graphSummary) return
-      setLoadingFullGraph(true)
-      try {
-        // internal_only=true: skip external edges (to npm/pip packages) — they are
-        // never rendered in the graph view and sending them wastes IPC bandwidth.
-        const res = await window.api.graph.edges(snapshotId, 5000, true)
-        setFullGraphEdges(res.edges)
-        // Load community + cycle data in parallel (non-blocking; ok if not yet computed)
-        const [commRes, cyclesRes] = await Promise.allSettled([
-          window.api.graph.communities(snapshotId),
-          window.api.graph.cycles(snapshotId),
-        ])
-        if (commRes.status === 'fulfilled') setCommunities(commRes.value)
-        if (cyclesRes.status === 'fulfilled') setCycles(cyclesRes.value.cycles ?? [])
-      } catch {
-        setFullGraphEdges([])
-      } finally {
-        setLoadingFullGraph(false)
-      }
-    }
-    run()
-  }, [snapshotId, graphSummary])
 
   return (
     <>
@@ -585,121 +403,20 @@ export default function IndexOverviewScreen(): React.ReactElement {
                   <div className="text-[11px] text-zinc-500">
                     Entrypoints: {graphSummary.entrypoints.length > 0 ? graphSummary.entrypoints.join(', ') : '-'}
                   </div>
-                  <div className="bg-zinc-950 border border-zinc-800 rounded-md p-2 space-y-2">
-                    <div className="text-[11px] text-zinc-400">
-                      Graph view ({focusedMode ? 'node focused' : 'full graph'})
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <input
-                        value={seedPath}
-                        onChange={(e) => setSeedPath(e.target.value)}
-                        list="graph-node-options"
-                        placeholder="Type node path to focus graph (leave empty for full graph)"
-                        className="flex-1 bg-zinc-900 border border-zinc-700 rounded-md px-2 py-1.5 text-xs text-zinc-200"
-                      />
-                      <datalist id="graph-node-options">
-                        {graphNodeOptions.map((n) => (
-                          <option key={n} value={n} />
-                        ))}
-                      </datalist>
-                      <select
-                        value={neighborHops}
-                        onChange={(e) => setNeighborHops(Number(e.target.value))}
-                        className="bg-zinc-900 border border-zinc-700 rounded-md px-2 py-1.5 text-xs text-zinc-200"
-                      >
-                        <option value={1}>1 hop</option>
-                        <option value={2}>2 hops</option>
-                        <option value={3}>3 hops</option>
-                      </select>
-                      <button
-                        onClick={async () => {
-                          if (!snapshotId) return
-                          setGraphModalOpen(true)
-                          if (!seedPath.trim()) {
-                            setNeighborNodes(fullGraphNodes)
-                            setNeighborEdges(fullGraphEdges)
-                            setGraphModalNodes(fullGraphNodes)
-                            setGraphModalEdges(fullGraphEdges)
-                            return
-                          }
-                          setGraphModalLoading(true)
-                          setLoadingNeighbors(true)
-                          setError(null)
-                          try {
-                            const res = await window.api.graph.neighbors(
-                              snapshotId,
-                              seedPath.trim(),
-                              neighborHops,
-                              250
-                            )
-                            setNeighborNodes(res.nodes)
-                            setNeighborEdges(res.edges)
-                            setGraphModalNodes(res.nodes)
-                            setGraphModalEdges(res.edges)
-                          } catch (err) {
-                            setError(toErrorMessage(err))
-                          } finally {
-                            setLoadingNeighbors(false)
-                            setGraphModalLoading(false)
-                          }
-                        }}
-                        disabled={loadingNeighbors}
-                        className="px-2.5 py-1.5 text-xs border border-zinc-700 rounded-md text-zinc-300 hover:border-zinc-600 disabled:opacity-50"
-                      >
-                        {loadingNeighbors ? 'Loading...' : 'Show graph'}
-                      </button>
-                    </div>
-                    {loadingFullGraph ? (
-                      <div className="text-[11px] text-zinc-500 inline-flex items-center gap-1.5">
-                        <Loader2 size={11} className="animate-spin" />
-                        Loading full graph...
-                      </div>
-                    ) : (
-                      <div className="text-[11px] text-zinc-500">
-                        Full graph: <span className="text-zinc-300">{fullGraphNodes.length}</span> nodes
-                        <span className="mx-2 text-zinc-700">|</span>
-                        <span className="text-zinc-300">{fullGraphEdges.length}</span> edges
-                      </div>
-                    )}
-                    {(neighborNodes.length > 0 || neighborEdges.length > 0) && (
-                      <div className="text-[11px] text-zinc-500">
-                        Nodes: <span className="text-zinc-300">{neighborNodes.length}</span>
-                        <span className="mx-2 text-zinc-700">|</span>
-                        Edges: <span className="text-zinc-300">{neighborEdges.length}</span>
-                      </div>
-                    )}
-                    <div className="grid grid-cols-2 gap-2">
-                      <div className="bg-zinc-900/60 border border-zinc-800 rounded-md p-2">
-                        <div className="text-[11px] text-zinc-400 mb-1">
-                          {focusedMode ? 'Focused node links' : 'Full graph links'}
+                  <button
+                    onClick={() => navigate(`/graph?snapshotId=${snapshotId}`)}
+                    className="px-2.5 py-1.5 text-xs border border-indigo-700 text-indigo-300 rounded-md hover:border-indigo-500 hover:text-indigo-100"
+                  >
+                    Open Graph
+                  </button>
+                  <div className="bg-zinc-950 border border-zinc-800 rounded-md p-2">
+                    <div className="text-[11px] text-zinc-400 mb-1">Top central files</div>
+                    <div className="max-h-40 overflow-auto space-y-1">
+                      {graphSummary.top_central_files.slice(0, 20).map((n) => (
+                        <div key={n.rel_path} className="text-[11px] font-mono text-zinc-400">
+                          {n.rel_path}
                         </div>
-                        <div className="max-h-40 overflow-auto space-y-1">
-                          {(focusedMode ? focusedEdges : fullGraphEdges).slice(0, 220).map((e, i) => (
-                            <div key={`${e.src_path}-${e.dst_path}-${i}`} className="text-[11px] font-mono text-zinc-400">
-                              <span className="text-zinc-300">{e.src_path}</span>
-                              <span className="mx-1 text-zinc-600">-&gt;</span>
-                              <span>{e.dst_path}</span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                      <div className="bg-zinc-900/60 border border-zinc-800 rounded-md p-2">
-                        <div className="text-[11px] text-zinc-400 mb-1">
-                          {focusedMode ? 'Expanded neighborhood' : 'Top nodes'}
-                        </div>
-                        <div className="max-h-40 overflow-auto space-y-1">
-                          {(focusedMode
-                            ? neighborNodes
-                            : graphSummary.top_central_files.map((n) => n.rel_path)
-                          )
-                            .slice(0, 220)
-                            .map((n) => (
-                              <div key={n} className="text-[11px] font-mono text-zinc-400">
-                                {n}
-                              </div>
-                            ))}
-                        </div>
-                      </div>
+                      ))}
                     </div>
                   </div>
                 </>
@@ -869,25 +586,67 @@ export default function IndexOverviewScreen(): React.ReactElement {
                 </div>
               )}
             </div>
+            <div className="bg-zinc-900/60 border border-zinc-700 rounded-lg p-3 space-y-2">
+              <div className="text-xs font-semibold text-zinc-100">2-Stage Retrieval Debug</div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={async () => {
+                    if (!snapshotId) return
+                    setTwoStageBusy(true)
+                    setError(null)
+                    setTwoStageBundle(null)
+                    try {
+                      await window.api.retrieval.buildIndex(snapshotId, false)
+                      const out = await window.api.retrieval.retrieveTwoStage({
+                        snapshot_id: snapshotId,
+                        query: retrievalQuery.trim(),
+                        section: retrievalSection,
+                      })
+                      setTwoStageBundle(out)
+                    } catch (err) {
+                      setError(toErrorMessage(err))
+                    } finally {
+                      setTwoStageBusy(false)
+                    }
+                  }}
+                  disabled={twoStageBusy || !retrievalQuery.trim()}
+                  className="px-2.5 py-1.5 text-xs border border-zinc-700 rounded-md text-zinc-300 hover:border-zinc-600 disabled:opacity-50"
+                >
+                  {twoStageBusy ? 'Running...' : 'Run 2-stage retrieval'}
+                </button>
+                <span className="text-[11px] text-zinc-600">Uses same query field as Retrieval Debug</span>
+              </div>
+              {twoStageBundle && (
+                <div className="space-y-1.5">
+                  <details className="border border-zinc-800 rounded">
+                    <summary className="px-2 py-1 text-[11px] text-zinc-400 cursor-pointer hover:text-zinc-200">
+                      Stage 1 — BM25 top {twoStageBundle.stage1.candidates.length} candidates
+                    </summary>
+                    <Stage1Panel candidates={twoStageBundle.stage1.candidates} />
+                  </details>
+                  <details className="border border-zinc-800 rounded">
+                    <summary className="px-2 py-1 text-[11px] text-zinc-400 cursor-pointer hover:text-zinc-200">
+                      Stage 2 — Graph expansion (top 20 seeds)
+                    </summary>
+                    <Stage2Panel expansions={twoStageBundle.stage2.expansions} />
+                  </details>
+                  <details open className="border border-zinc-800 rounded">
+                    <summary className="px-2 py-1 text-[11px] text-zinc-400 cursor-pointer hover:text-zinc-200">
+                      Stage 3 — Re-ranked ({twoStageBundle.stage3.ranked.length} chunks)
+                    </summary>
+                    <Stage3Panel
+                      ranked={twoStageBundle.stage3.ranked}
+                      usedTokens={twoStageBundle.stage3.used_tokens}
+                      budgetTokens={twoStageBundle.stage3.budget_tokens}
+                      usedCpp={twoStageBundle.stage3.used_cpp_ranker}
+                    />
+                  </details>
+                </div>
+              )}
+            </div>
           </>
         ) : null}
       </div>
-      <GraphModal
-        open={graphModalOpen}
-        onClose={() => setGraphModalOpen(false)}
-        loading={graphModalLoading}
-        nodes={graphRenderNodes}
-        edges={graphRenderEdges}
-        renderNodes={graphRenderNodes}
-        renderEdges={graphRenderEdges}
-        maxNodes={MAX_RENDER_NODES}
-        maxEdges={MAX_RENDER_EDGES}
-        seedPath={seedPath}
-        onNodeClick={setSeedPath}
-        communities={communities}
-        cycles={cycles}
-        snapshotId={snapshotId}
-      />
     </>
   )
 }

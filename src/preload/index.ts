@@ -95,6 +95,7 @@ const api = {
     communityForNode: (snapshotId: string, path: string) =>
       ipcRenderer.invoke('graph:communityForNode', snapshotId, path),
     cycles: (snapshotId: string) => ipcRenderer.invoke('graph:cycles', snapshotId),
+    exportData: (snapshotId: string) => ipcRenderer.invoke('graph:exportData', snapshotId),
     exportJson: (snapshotId: string) => ipcRenderer.invoke('graph:exportJson', snapshotId),
   },
   retrieval: {
@@ -113,6 +114,12 @@ const api = {
       section: 'architecture' | 'conventions' | 'feature_map' | 'important_files' | 'glossary'
       max_results?: number
     }) => ipcRenderer.invoke('retrieval:compare', body),
+    retrieveTwoStage: (body: {
+      snapshot_id: string
+      query: string
+      section: 'architecture' | 'conventions' | 'feature_map' | 'important_files' | 'glossary'
+      budget?: number
+    }) => ipcRenderer.invoke('retrieval:retrieveTwoStage', body),
   },
   analysis: {
     estimate: (repoId: string, snapshotId: string) =>
@@ -150,6 +157,8 @@ const api = {
     }) => ipcRenderer.invoke('analysis:rerunSection', body),
     compareReports: (body: { report_id_a: string; report_id_b: string }) =>
       ipcRenderer.invoke('analysis:compareReports', body),
+    getSectionSources: (reportId: string, sectionId: string) =>
+      ipcRenderer.invoke('analysis:getSectionSources', reportId, sectionId),
     onSectionDone: (cb: (event: unknown, data: unknown) => void) => {
       ipcRenderer.on('analysis:section_done', cb)
     },

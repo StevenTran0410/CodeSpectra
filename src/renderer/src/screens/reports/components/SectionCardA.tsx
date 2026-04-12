@@ -1,5 +1,6 @@
 import React from 'react'
 import type { SectionA } from '../../../types/analysis'
+import { normConf } from '../../../lib/reportUtils'
 import SectionCard, { type SectionCardRerunProps } from './SectionCard'
 
 const RUNTIME_COLORS: Record<string, string> = {
@@ -21,9 +22,7 @@ export default function SectionCardA({
 }: { data: SectionA } & SectionCardRerunProps): React.ReactElement {
   const rt = String(data.runtime_type ?? 'unknown')
   const rtClass = RUNTIME_COLORS[rt] ?? RUNTIME_COLORS.unknown
-  const conf = data.confidence === 'high' || data.confidence === 'medium' || data.confidence === 'low'
-    ? data.confidence
-    : 'medium'
+  const conf = normConf(data.confidence)
 
   return (
     <SectionCard
