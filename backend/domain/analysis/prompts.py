@@ -2,7 +2,41 @@
 
 from __future__ import annotations
 
+import re
+
 from domain.retrieval.types import RetrievalBundle
+
+
+# Characters that can break JSON serialization or are rejected by LLM provider parsers.
+# Compiled once at module load — applied to every chunk excerpt before prompt embedding.
+#
+# What's blocked (surgical — only the offending codepoint, surrounding text untouched):
+#   \x00           — NUL byte: OpenAI JSON parser rejects \u0000 in string values
+#   \x01-\x08      — C0 control: SOH … BS  (non-printable, no valid code use)
+#   \x0b           — VT  (vertical tab)
+#   \x0c           — FF  (form feed)
+#   \x0e-\x1f      — C0 control: SO … US (non-printable, no valid code use)
+#   \x7f           — DEL
+#   \x80-\x9f      — C1 control range: appears in Windows-1252 files mis-decoded as UTF-8
+#   \ud800-\udfff  — lone UTF-16 surrogates: produced by files read with surrogateescape
+#   \ufeff         — BOM / zero-width no-break space
+#   \ufffe\uffff   — Unicode non-characters: guaranteed-invalid code points
+#
+# What's kept (valid in source code):
+#   \x09 (\t)  \x0a (\n)  \x0d (\r)  — whitespace meaningful in code
+#   All printable ASCII and Unicode \u0100+
+_UNSAFE_CHARS = re.compile(
+    r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\x80-\x9f\ud800-\udfff\ufeff\ufffe\uffff]'
+)
+
+
+def sanitize_chunk_text(text: str) -> str:
+    """Strip characters that break JSON serialization at LLM provider endpoints.
+
+    Applied to every chunk excerpt before it is embedded in an agent prompt.
+    Only the offending codepoint is removed — surrounding text is untouched.
+    """
+    return _UNSAFE_CHARS.sub('', text)
 
 # Appended to every system prompt — keeps JSON enforcement fresh in context window.
 _JSON_ENFORCEMENT = """\
@@ -23,7 +57,7 @@ def render_bundle(bundle: RetrievalBundle, limit: int = 40, excerpt_chars: int =
     """
     parts: list[str] = []
     for i, ev in enumerate(bundle.evidences[:limit], start=1):
-        excerpt = (ev.excerpt or "").strip()
+        excerpt = sanitize_chunk_text((ev.excerpt or "").strip())
         cap = excerpt_chars * 2 if "boundary-expanded" in ev.reason_codes else excerpt_chars
         if len(excerpt) > cap:
             excerpt = excerpt[:cap].rstrip() + "..."

@@ -1,6 +1,8 @@
 """Shared base for all cloud provider adapters."""
 import httpx
 
+from shared.logger import logger
+
 from .errors import ProviderError, ProviderErrorCode
 from .types import ProviderConfig
 
@@ -47,6 +49,14 @@ class CloudAdapterBase:
             429: ProviderErrorCode.RATE_LIMITED,
         }
         code = code_map.get(status, ProviderErrorCode.UNKNOWN)
+        # 4xx errors are client-side bugs (bad request, auth, model not found) — log at ERROR
+        # so they surface clearly in the terminal, not hidden among INFO/WARNING noise.
+        # 429 is excluded because it is expected under load and handled by callers.
+        if 400 <= status < 500 and status != 429:
+            logger.error(
+                "[provider:%s] HTTP %d from %s — %s",
+                self.config.id, status, self.config.base_url, msg,
+            )
         return ProviderError(code, f"HTTP {status}: {msg}", provider_id=self.config.id)
 
     def _map_connect_error(self, e: httpx.ConnectError) -> ProviderError:

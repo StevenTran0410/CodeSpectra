@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import type {
   AnalysisReport,
@@ -20,7 +20,7 @@ import {
   type SectionL,
 } from '../../types/analysis'
 import { ErrorBanner } from '../../components/ui/ErrorBanner'
-import { Button, ConfirmDialog, Modal, useToastStore } from '../../components/ui'
+import { Button, ConfirmDialog, Modal, useToastStore, ErrorBoundary } from '../../components/ui'
 import { toErrorMessage } from '../../lib/errors'
 import EvidencePanel from '../../components/EvidencePanel'
 import SectionCardA from './components/SectionCardA'
@@ -85,7 +85,6 @@ export default function ReportViewerScreen(): React.ReactElement {
   const [deleting, setDeleting] = useState(false)
   const [exportingMd, setExportingMd] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [success, setSuccess] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [hideDeleteWarning, setHideDeleteWarning] = useState(
     localStorage.getItem('reports.deleteWarningHidden') === '1'
@@ -103,7 +102,7 @@ export default function ReportViewerScreen(): React.ReactElement {
     loading: boolean
   } | null>(null)
 
-  const showSources = async (sectionId: string) => {
+  const showSources = useCallback(async (sectionId: string) => {
     if (!report) return
     setSourcesPanel({ sectionId, sources: [], loading: true })
     try {
@@ -112,7 +111,7 @@ export default function ReportViewerScreen(): React.ReactElement {
     } catch {
       setSourcesPanel({ sectionId, sources: [], loading: false })
     }
-  }
+  }, [report])
 
   const refreshList = async (preferredReportId?: string) => {
     setLoading(true)
@@ -143,9 +142,11 @@ export default function ReportViewerScreen(): React.ReactElement {
       const deletedId = report.summary.id
       await window.api.analysis.deleteReport(deletedId)
       setConfirmDelete(false)
-      const next = reports.find((r) => r.id !== deletedId)?.id
-      await refreshList(next)
+      // Navigate first so reportIdInUrl is cleared before refreshList updates
+      // selectedReportId — otherwise the fetch effect would try to load the
+      // just-deleted report (it prefers reportIdInUrl over selectedReportId).
       navigate('/reports')
+      await refreshList()
     } catch (err) {
       setError(toErrorMessage(err))
     } finally {
@@ -153,7 +154,7 @@ export default function ReportViewerScreen(): React.ReactElement {
     }
   }
 
-  const rerunSection = async (letter: string) => {
+  const rerunSection = useCallback(async (letter: string) => {
     if (!report) return
     setRerunLetter(letter)
     setError(null)
@@ -171,7 +172,7 @@ export default function ReportViewerScreen(): React.ReactElement {
     } finally {
       setRerunLetter(null)
     }
-  }
+  }, [report])
 
   const exportAudit = async () => {
     if (!report) return
@@ -262,6 +263,11 @@ export default function ReportViewerScreen(): React.ReactElement {
     return getReportSections(report.report as unknown)
   }, [report])
 
+  const diffChangedSections = useMemo(() => {
+    if (!diffResult) return []
+    return Object.entries(diffResult.section_diffs).filter(([, d]) => d.changed)
+  }, [diffResult])
+
   const v2Ok = (letter: string): boolean => {
     if (!sectionsV2)
       return false
@@ -272,19 +278,13 @@ export default function ReportViewerScreen(): React.ReactElement {
   }
 
   return (
-    <>
+    <div className="flex flex-col h-full">
       <div className="screen-header">
         <h1 className="screen-title">Reports</h1>
         <p className="screen-subtitle">View generated analysis artifacts</p>
       </div>
-      <div className="h-[calc(100vh-10rem)] overflow-y-auto p-4 space-y-3">
+      <div className="flex-1 overflow-y-auto p-4 space-y-3">
         {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
-        {success && (
-          <div className="rounded-md border border-emerald-800/60 bg-emerald-950/30 px-3 py-2 text-xs text-emerald-300">
-            {success}
-          </div>
-        )}
-
         {!isDetailMode ? (
           <div className="bg-zinc-900/60 border border-zinc-700 rounded-xl p-3 space-y-2">
             <div className="text-xs font-semibold text-zinc-100">Selection Only</div>
@@ -336,7 +336,7 @@ export default function ReportViewerScreen(): React.ReactElement {
             {report ? (
               <>
                 <div className="flex items-center justify-between gap-2">
-                  <div className="text-xs text-zinc-400">
+                  <div className="text-xs text-zinc-300">
                     repo: <span className="text-zinc-200 font-mono">{report.summary.repo_name || report.summary.repo_id}</span>
                     <span className="mx-2 text-zinc-700">|</span>
                     branch: <span className="text-zinc-200 font-mono">{report.summary.branch || 'unknown'}</span>
@@ -401,7 +401,7 @@ export default function ReportViewerScreen(): React.ReactElement {
                         >
                           {diffResult.quality_trend}
                         </span>
-                        <span className="text-[11px] text-zinc-400">
+                        <span className="text-[11px] text-zinc-300">
                           {diffResult.identical
                             ? 'No section differences'
                             : `${diffResult.sections_changed} section(s) changed`}
@@ -416,9 +416,7 @@ export default function ReportViewerScreen(): React.ReactElement {
                       </button>
                     </div>
                     <div className="max-h-56 overflow-y-auto space-y-1">
-                      {Object.entries(diffResult.section_diffs)
-                        .filter(([, d]) => d.changed)
-                        .map(([letter, d]) => (
+                      {diffChangedSections.map(([letter, d]) => (
                           <div
                             key={letter}
                             className={`text-[11px] rounded border px-2 py-1.5 ${
@@ -431,7 +429,7 @@ export default function ReportViewerScreen(): React.ReactElement {
                           >
                             <span className="font-mono font-semibold text-zinc-200">{letter}</span>
                             {d.confidence_delta && (
-                              <span className="text-zinc-400"> · {d.confidence_delta}</span>
+                              <span className="text-zinc-300"> · {d.confidence_delta}</span>
                             )}
                             {d.list_added.length > 0 && (
                               <span className="text-emerald-400/90"> · +{d.list_added.length}</span>
@@ -447,20 +445,41 @@ export default function ReportViewerScreen(): React.ReactElement {
                 {sectionsV2 ? (
                   <div className="space-y-2">
                     {REPORT_SECTION_ORDER.map((letter) => {
+                      // Section L: if absent, show a generate prompt instead of nothing
+                      if (letter === 'L' && !v2Ok('L')) {
+                        return (
+                          <div key="L" className="rounded-xl border border-zinc-700/50 bg-zinc-900/40 px-4 py-3 flex items-center justify-between gap-3">
+                            <div>
+                              <div className="text-sm font-semibold text-zinc-300">Synthesis Report</div>
+                              <div className="text-xs text-zinc-500 mt-0.5">Not generated for this run — generates an executive summary across all sections.</div>
+                            </div>
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              onClick={() => void rerunSection('L')}
+                              loading={rerunLetter === 'L'}
+                              disabled={!!rerunLetter}
+                            >
+                              Generate
+                            </Button>
+                          </div>
+                        )
+                      }
                       if (!v2Ok(letter)) return null
                       const Comp = SECTION_COMPONENTS[letter]
                       if (!Comp) return null
                       const extraCtx: ExtraPropsCtx = { exportAudit, exportAuditBusy }
                       const extraProps = SECTION_EXTRA_PROPS[letter]?.(extraCtx) ?? {}
                       return (
-                        <Comp
-                          key={letter}
-                          data={sectionsV2[letter] as never}
-                          onRerun={() => void rerunSection(letter)}
-                          rerunBusy={rerunLetter === letter}
-                          onShowSources={() => showSources(letter)}
-                          {...extraProps}
-                        />
+                        <ErrorBoundary key={letter} fallback={<div className="rounded-lg border border-red-900/50 bg-red-950/20 px-3 py-2 text-xs text-red-400">Section {letter} failed to render</div>}>
+                          <Comp
+                            data={sectionsV2[letter] as never}
+                            onRerun={() => void rerunSection(letter)}
+                            rerunBusy={rerunLetter === letter}
+                            onShowSources={() => showSources(letter)}
+                            {...extraProps}
+                          />
+                        </ErrorBoundary>
                       )
                     })}
                   </div>
@@ -481,7 +500,7 @@ export default function ReportViewerScreen(): React.ReactElement {
         <Modal.Panel className="w-full max-w-md">
           <Modal.Header>Compare reports</Modal.Header>
           <div className="px-4 py-3 space-y-3 border-b border-zinc-700">
-            <div className="text-xs text-zinc-400">
+            <div className="text-xs text-zinc-300">
               Select another run from the same repository to diff against this report.
             </div>
             <select
@@ -549,6 +568,6 @@ export default function ReportViewerScreen(): React.ReactElement {
           />
         </>
       )}
-    </>
+    </div>
   )
 }

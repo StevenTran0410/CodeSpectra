@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { ErrorBanner } from '../../components/ui/ErrorBanner'
@@ -88,6 +88,8 @@ function renderLiveSection(letter: AnalysisSectionId, data: unknown): React.Reac
 export default function AnalysisRunScreen(): React.ReactElement {
   const navigate = useNavigate()
   const toast = useToastStore()
+  const toastSuccess = useToastStore((s) => s.success)
+  const toastedJobRef = useRef<string | null>(null)
   const persisted = (() => {
     try {
       return JSON.parse(localStorage.getItem('analysis.runConfig.v1') ?? '{}') as {
@@ -98,6 +100,7 @@ export default function AnalysisRunScreen(): React.ReactElement {
         providerId?: string
         modelId?: string
         largecodebaseMode?: boolean
+        includeSynthesis?: boolean
       }
     } catch {
       return {}
@@ -133,12 +136,11 @@ export default function AnalysisRunScreen(): React.ReactElement {
     commit_hash: string | null
     status: 'pending' | 'syncing' | 'ready' | 'failed'
   }>>([])
-  const [estimating, setEstimating] = useState(false)
-  const [estimate, setEstimate] = useState<{ file_count: number; estimated_tokens: number } | null>(null)
-  const [starting, setStarting] = useState(false)
+const [starting, setStarting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [forceRerun, setForceRerun] = useState(false)
   const [largecodebaseMode, setLargecodebaseMode] = useState(persisted.largecodebaseMode ?? false)
+  const [includeSynthesis, setIncludeSynthesis] = useState(persisted.includeSynthesis ?? false)
   const [latestReportId, setLatestReportId] = useState<string | null>(null)
   const [modelWarning, setModelWarning] = useState<{
     code: string
@@ -199,25 +201,11 @@ export default function AnalysisRunScreen(): React.ReactElement {
         providerId,
         modelId,
         largecodebaseMode,
+        includeSynthesis,
       }),
     )
-  }, [repoId, snapshotId, scanMode, privacyMode, providerId, modelId, largecodebaseMode])
+  }, [repoId, snapshotId, scanMode, privacyMode, providerId, modelId, largecodebaseMode, includeSynthesis])
 
-  useEffect(() => {
-    const run = async () => {
-      if (!repoId || !snapshotId) return
-      setEstimating(true)
-      try {
-        const est = await window.api.analysis.estimate(repoId, snapshotId)
-        setEstimate(est)
-      } catch {
-        setEstimate(null)
-      } finally {
-        setEstimating(false)
-      }
-    }
-    run()
-  }, [repoId, snapshotId])
 
   const selectedProvider = useMemo(
     () => providers.find((p) => p.id === providerId) ?? null,
@@ -252,22 +240,24 @@ export default function AnalysisRunScreen(): React.ReactElement {
     (privacyMode !== 'byok_cloud' || cloudConsentGiven || cloudWarningAck)
 
   useEffect(() => {
-    const run = async () => {
-      if (!activeJob || activeJob.type !== 'analysis' || activeJob.status !== 'done') return
-      const out = await window.api.analysis.getReportByJob(activeJob.id)
-      setLatestReportId(out.summary.id)
-      toast.success('Analysis complete — report ready')
-    }
-    run().catch(() => null)
-  }, [activeJob, toast])
+    if (!activeJob || activeJob.type !== 'analysis' || activeJob.status !== 'done') return
+    if (toastedJobRef.current === activeJob.id) return
+    toastedJobRef.current = activeJob.id
+    window.api.analysis.getReportByJob(activeJob.id)
+      .then((out) => {
+        setLatestReportId(out.summary.id)
+        toastSuccess('Analysis complete — report ready')
+      })
+      .catch(() => null)
+  }, [activeJob?.id, activeJob?.type, activeJob?.status, toastSuccess])
 
   return (
-    <>
+    <div className="flex flex-col h-full">
       <div className="screen-header">
         <h1 className="screen-title">Analysis</h1>
         <p className="screen-subtitle">Run analysis on a repository and track progress</p>
       </div>
-      <div className="h-[calc(100vh-10rem)] overflow-y-auto p-4 space-y-3">
+      <div className="flex-1 overflow-y-auto p-4 space-y-3">
         {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
 
         {modelWarning && (
@@ -332,21 +322,20 @@ export default function AnalysisRunScreen(): React.ReactElement {
             </FormGroup>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-            <div className="flex gap-1.5">
-              <FormGroup label="Model" className="flex-1">
-                <Select value={modelId} onChange={(e) => setModelId(e.target.value)}>
-                  {(modelOptions.length > 0 ? modelOptions : ['']).map((m) => (
-                    <option key={m} value={m}>{m || '(no model)'}</option>
-                  ))}
-                </Select>
-              </FormGroup>
+          <div>
+            <label className="block text-xs text-gray-400 mb-1.5">Model</label>
+            <div className="flex gap-1.5 items-center">
+              <Select value={modelId} onChange={(e) => setModelId(e.target.value)} className="flex-1">
+                {(modelOptions.length > 0 ? modelOptions : ['']).map((m) => (
+                  <option key={m} value={m}>{m || '(no model)'}</option>
+                ))}
+              </Select>
               <button
                 type="button"
                 title="Fetch available models from provider"
                 disabled={!providerId || !!loadingModels[providerId]}
                 onClick={() => providerId && fetchModels(providerId)}
-                className="shrink-0 flex items-center justify-center w-8 h-8 mt-0.5 rounded-md border border-zinc-700 bg-zinc-950 text-zinc-400 hover:text-zinc-100 hover:border-zinc-500 disabled:opacity-40 transition-colors"
+                className="shrink-0 flex items-center justify-center w-8 h-8 rounded-md border border-zinc-700 bg-zinc-950 text-zinc-400 hover:text-zinc-100 hover:border-zinc-500 disabled:opacity-40 transition-colors"
               >
                 <Loader2
                   size={14}
@@ -355,17 +344,8 @@ export default function AnalysisRunScreen(): React.ReactElement {
               </button>
             </div>
             {modelErrors[providerId] && (
-              <div className="col-span-full text-[11px] text-rose-400 -mt-1">{modelErrors[providerId]}</div>
+              <div className="text-[11px] text-rose-400 mt-1">{modelErrors[providerId]}</div>
             )}
-            <div className="text-xs text-zinc-500 flex items-center">
-              {estimating ? (
-                <span className="inline-flex items-center gap-1"><Loader2 size={12} className="animate-spin" /> Estimating...</span>
-              ) : estimate ? (
-                <span>~ {estimate.file_count.toLocaleString()} files · ~ {estimate.estimated_tokens.toLocaleString()} tokens</span>
-              ) : (
-                <span>Scope estimate unavailable</span>
-              )}
-            </div>
           </div>
 
           {privacyMode === 'byok_cloud' && !dontShowCloudWarning && (
@@ -412,6 +392,18 @@ export default function AnalysisRunScreen(): React.ReactElement {
               />
               Large codebase mode
             </label>
+            <label
+              className="inline-flex items-center gap-1.5 cursor-pointer select-none"
+              title="Agent L synthesises all other sections into a final executive summary. Uncheck to skip it and save time."
+            >
+              <input
+                type="checkbox"
+                checked={includeSynthesis}
+                onChange={(e) => setIncludeSynthesis(e.target.checked)}
+                className="accent-indigo-500"
+              />
+              Include synthesis agent (L)
+            </label>
           </div>
 
           {snapshotId && !snapshotReady && selectedSnapshot && (
@@ -450,6 +442,7 @@ export default function AnalysisRunScreen(): React.ReactElement {
                     model_id: modelId,
                     force_rerun: forceRerun,
                     large_codebase_mode: largecodebaseMode,
+                    skip_synthesis: !includeSynthesis,
                   })
                   setModelWarning((job as unknown as { warning?: { code: string; message: string; severity: string } | null }).warning ?? null)
                   toast.info('Analysis started')
@@ -533,6 +526,6 @@ export default function AnalysisRunScreen(): React.ReactElement {
           </div>
         )}
       </div>
-    </>
+    </div>
   )
 }

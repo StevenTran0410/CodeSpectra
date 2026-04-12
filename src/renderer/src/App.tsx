@@ -30,7 +30,7 @@ export default function App(): React.ReactElement {
   return (
     <ErrorBoundary>
       <ToastContainer />
-      <HashRouter>
+      <HashRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <AppShell>
           <Suspense fallback={<PageFallback />}>
             <Routes>

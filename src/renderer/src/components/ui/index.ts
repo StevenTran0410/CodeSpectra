@@ -1,5 +1,4 @@
 export { Button } from './Button'
-export { Button } from './Button'
 export { Modal } from './Modal'
 export { Spinner } from './Spinner'
 export { ConfirmDialog } from './ConfirmDialog'
@@ -10,6 +9,7 @@ export { Select } from './Select'
 export { FormGroup } from './FormGroup'
 export { PageLoading } from './PageLoading'
 export { SectionLoading } from './SectionLoading'
+export { ErrorBoundary } from './ErrorBoundary'
 
 export { useToastStore } from '../../store/toast.store'
 export type { Toast } from '../../store/toast.store'

@@ -33,6 +33,7 @@ class StartAnalysisRequest(BaseModel):
     model_id: str
     force_rerun: bool = False
     large_codebase_mode: bool = False
+    skip_synthesis: bool = False
 
 
 class ModelWarning(BaseModel):
