@@ -37,6 +37,8 @@ backend/dist/
 backend/.pytest_cache/
 backend/.ruff_cache/
 *.db
+*.db-shm
+*.db-wal
 
 # Editor
 .idea/
