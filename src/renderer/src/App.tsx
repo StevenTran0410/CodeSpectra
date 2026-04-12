@@ -12,6 +12,7 @@ const SnapshotViewerScreen = lazy(() => import('./screens/snapshot-viewer'))
 const IndexOverviewScreen = lazy(() => import('./screens/index-overview'))
 const AnalysisRunScreen = lazy(() => import('./screens/analysis'))
 const ReportViewerScreen = lazy(() => import('./screens/reports'))
+const GraphScreen = lazy(() => import('./screens/graph'))
 const SettingsScreen = lazy(() => import('./screens/settings'))
 
 function PageFallback(): React.ReactElement {
@@ -39,6 +40,7 @@ export default function App(): React.ReactElement {
               <Route path="/index-overview" element={<IndexOverviewScreen />} />
               <Route path="/analysis" element={<AnalysisRunScreen />} />
               <Route path="/reports" element={<ReportViewerScreen />} />
+              <Route path="/graph" element={<GraphScreen />} />
               <Route path="/settings" element={<SettingsScreen />} />
             </Routes>
           </Suspense>

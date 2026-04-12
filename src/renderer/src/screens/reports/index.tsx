@@ -21,6 +21,7 @@ import {
 } from '../../types/analysis'
 import { ErrorBanner } from '../../components/ui/ErrorBanner'
 import { toErrorMessage } from '../../lib/errors'
+import EvidencePanel from '../../components/EvidencePanel'
 import SectionCardA from './components/SectionCardA'
 import SectionCardB from './components/SectionCardB'
 import SectionCardC from './components/SectionCardC'
@@ -83,6 +84,22 @@ export default function ReportViewerScreen(): React.ReactElement {
   const [compareOtherId, setCompareOtherId] = useState('')
   const [compareBusy, setCompareBusy] = useState(false)
   const [diffResult, setDiffResult] = useState<ReportDiffResult | null>(null)
+  const [sourcesPanel, setSourcesPanel] = useState<{
+    sectionId: string
+    sources: Array<{ chunk_id: string; rel_path: string; chunk_index: number; snippet: string }>
+    loading: boolean
+  } | null>(null)
+
+  const showSources = async (sectionId: string) => {
+    if (!report) return
+    setSourcesPanel({ sectionId, sources: [], loading: true })
+    try {
+      const res = await window.api.analysis.getSectionSources(report.summary.id, sectionId)
+      setSourcesPanel({ sectionId, sources: res.sources, loading: false })
+    } catch {
+      setSourcesPanel({ sectionId, sources: [], loading: false })
+    }
+  }
 
   const refreshList = async (preferredReportId?: string) => {
     setLoading(true)
@@ -428,6 +445,7 @@ export default function ReportViewerScreen(): React.ReactElement {
                               data={sectionsV2.L as SectionL}
                               onRerun={() => void rerunSection('L')}
                               rerunBusy={rerunLetter === 'L'}
+                              onShowSources={() => { void showSources('L') }}
                             />
                           )
                         case 'A':
@@ -437,6 +455,7 @@ export default function ReportViewerScreen(): React.ReactElement {
                               data={sectionsV2.A as SectionA}
                               onRerun={() => void rerunSection('A')}
                               rerunBusy={rerunLetter === 'A'}
+                              onShowSources={() => { void showSources('A') }}
                             />
                           )
                         case 'B':
@@ -446,6 +465,7 @@ export default function ReportViewerScreen(): React.ReactElement {
                               data={sectionsV2.B as SectionB}
                               onRerun={() => void rerunSection('B')}
                               rerunBusy={rerunLetter === 'B'}
+                              onShowSources={() => { void showSources('B') }}
                             />
                           )
                         case 'C':
@@ -455,6 +475,7 @@ export default function ReportViewerScreen(): React.ReactElement {
                               data={sectionsV2.C as SectionC}
                               onRerun={() => void rerunSection('C')}
                               rerunBusy={rerunLetter === 'C'}
+                              onShowSources={() => { void showSources('C') }}
                             />
                           )
                         case 'D':
@@ -464,6 +485,7 @@ export default function ReportViewerScreen(): React.ReactElement {
                               data={sectionsV2.D as SectionD}
                               onRerun={() => void rerunSection('D')}
                               rerunBusy={rerunLetter === 'D'}
+                              onShowSources={() => { void showSources('D') }}
                             />
                           )
                         case 'E':
@@ -473,6 +495,7 @@ export default function ReportViewerScreen(): React.ReactElement {
                               data={sectionsV2.E as SectionE}
                               onRerun={() => void rerunSection('E')}
                               rerunBusy={rerunLetter === 'E'}
+                              onShowSources={() => { void showSources('E') }}
                             />
                           )
                         case 'F':
@@ -482,6 +505,7 @@ export default function ReportViewerScreen(): React.ReactElement {
                               data={sectionsV2.F as SectionF}
                               onRerun={() => void rerunSection('F')}
                               rerunBusy={rerunLetter === 'F'}
+                              onShowSources={() => { void showSources('F') }}
                             />
                           )
                         case 'G':
@@ -491,6 +515,7 @@ export default function ReportViewerScreen(): React.ReactElement {
                               data={sectionsV2.G as SectionG}
                               onRerun={() => void rerunSection('G')}
                               rerunBusy={rerunLetter === 'G'}
+                              onShowSources={() => { void showSources('G') }}
                             />
                           )
                         case 'H':
@@ -500,6 +525,7 @@ export default function ReportViewerScreen(): React.ReactElement {
                               data={sectionsV2.H as SectionH}
                               onRerun={() => void rerunSection('H')}
                               rerunBusy={rerunLetter === 'H'}
+                              onShowSources={() => { void showSources('H') }}
                             />
                           )
                         case 'I':
@@ -509,6 +535,7 @@ export default function ReportViewerScreen(): React.ReactElement {
                               data={sectionsV2.I as SectionI}
                               onRerun={() => void rerunSection('I')}
                               rerunBusy={rerunLetter === 'I'}
+                              onShowSources={() => { void showSources('I') }}
                             />
                           )
                         case 'J':
@@ -518,6 +545,7 @@ export default function ReportViewerScreen(): React.ReactElement {
                               data={sectionsV2.J as SectionJ}
                               onRerun={() => void rerunSection('J')}
                               rerunBusy={rerunLetter === 'J'}
+                              onShowSources={() => { void showSources('J') }}
                             />
                           )
                         case 'K':
@@ -529,6 +557,7 @@ export default function ReportViewerScreen(): React.ReactElement {
                               rerunBusy={rerunLetter === 'K'}
                               onExportAudit={() => void exportAudit()}
                               exportAuditBusy={exportAuditBusy}
+                              onShowSources={() => { void showSources('K') }}
                             />
                           )
                         default:
@@ -627,6 +656,20 @@ export default function ReportViewerScreen(): React.ReactElement {
             </div>
           </div>
         </div>
+      )}
+      {sourcesPanel && (
+        <>
+          <div
+            className="fixed inset-0 bg-black/40 z-40"
+            onClick={() => setSourcesPanel(null)}
+          />
+          <EvidencePanel
+            sectionId={sourcesPanel.sectionId}
+            sources={sourcesPanel.sources}
+            loading={sourcesPanel.loading}
+            onClose={() => setSourcesPanel(null)}
+          />
+        </>
       )}
     </>
   )
