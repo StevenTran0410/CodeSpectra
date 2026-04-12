@@ -8,6 +8,8 @@
   --surface-raised: #ffffff;
   --surface-overlay: #e8eaed;
   --surface-border: #d0d7de;
+  background-color: #f0f2f5;
+  color-scheme: light;
 }
 
 /* Dark mode */
@@ -16,6 +18,8 @@
   --surface-raised: #161b22;
   --surface-overlay: #1c2128;
   --surface-border: #30363d;
+  background-color: #0f1117;
+  color-scheme: dark;
 }
 
 @layer base {

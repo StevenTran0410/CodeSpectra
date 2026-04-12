@@ -69,7 +69,7 @@ function ValidationPreview({
                 {result.git_branch ?? 'detached HEAD'}
               </span>
               {result.git_head_hash && (
-                <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-mono bg-zinc-700/60 text-zinc-400 border border-zinc-600">
+                <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-mono bg-zinc-700/60 text-zinc-300 border border-zinc-600">
                   <GitCommit size={11} />
                   {result.git_head_hash}
                 </span>
@@ -131,6 +131,7 @@ function BranchPicker({ repo }: { repo: LocalRepo }) {
   const ref = useRef<HTMLDivElement>(null)
 
   const branches = branchesMap[repo.id]
+  // Client-side filter only — no debounce needed (no network call per keystroke)
   const filtered = (branches ?? []).filter((b) => b.toLowerCase().includes(query.trim().toLowerCase()))
   const activeBranch = repo.selected_branch ?? repo.git_branch ?? 'HEAD'
   const isLoading = loadingBranchesId === repo.id
@@ -419,7 +420,7 @@ function CloneFromUrlPanel({ onClose, onCloned, workspaceId }: { onClose: () => 
       {repoName && (
         <p className="text-xs text-zinc-500">
           Will clone into{' '}
-          <code className="text-zinc-400 bg-zinc-800 px-1 py-0.5 rounded">
+          <code className="text-zinc-300 bg-zinc-800 px-1 py-0.5 rounded">
             ~/CodeSpectra/repos/{repoName}
           </code>
         </p>
@@ -428,7 +429,7 @@ function CloneFromUrlPanel({ onClose, onCloned, workspaceId }: { onClose: () => 
       {cloneError && <ErrorBanner message={cloneError} onDismiss={() => setCloneError(null)} />}
 
       {cloning && (
-        <div className="flex items-center gap-2 text-xs text-zinc-400 py-2">
+        <div className="flex items-center gap-2 text-xs text-zinc-300 py-2">
           <Loader2 size={13} className="animate-spin" />
           Cloning… this may take a moment
         </div>
@@ -510,7 +511,7 @@ function SshKeySettings() {
         className="w-full flex items-center gap-2.5 px-4 py-3 text-left hover:bg-zinc-800/40 transition-colors"
       >
         <KeyRound size={14} className="text-zinc-500 shrink-0" />
-        <span className="text-xs font-medium text-zinc-400 flex-1">SSH Key for Git Clone</span>
+        <span className="text-xs font-medium text-zinc-300 flex-1">SSH Key for Git Clone</span>
         {keyPath && (
           <span className="text-xs text-emerald-400 font-mono truncate max-w-[180px]">
             {keyPath.split(/[\\/]/).pop()}
@@ -528,10 +529,10 @@ function SshKeySettings() {
       {open && (
         <div className="px-4 pb-4 space-y-3 border-t border-zinc-800">
           <p className="text-xs text-zinc-500 pt-3 leading-relaxed">
-            Used for <code className="text-zinc-400 bg-zinc-800 px-1 rounded">git@</code> and{' '}
-            <code className="text-zinc-400 bg-zinc-800 px-1 rounded">ssh://</code> URLs.
+            Used for <code className="text-zinc-300 bg-zinc-800 px-1 rounded">git@</code> and{' '}
+            <code className="text-zinc-300 bg-zinc-800 px-1 rounded">ssh://</code> URLs.
             If not set, git uses your system SSH agent or default{' '}
-            <code className="text-zinc-400 bg-zinc-800 px-1 rounded">~/.ssh/id_*</code> keys.
+            <code className="text-zinc-300 bg-zinc-800 px-1 rounded">~/.ssh/id_*</code> keys.
           </p>
 
           <div className="flex items-center gap-2">
@@ -660,7 +661,7 @@ export default function CodeHostsSetup(): React.ReactElement {
             <div className="w-12 h-12 rounded-xl bg-zinc-800 border border-zinc-700 flex items-center justify-center mx-auto mb-4">
               <FolderOpen size={22} className="text-zinc-500" />
             </div>
-            <p className="text-sm font-medium text-zinc-400">No repositories added yet</p>
+            <p className="text-sm font-medium text-zinc-300">No repositories added yet</p>
             <p className="text-xs text-zinc-600 mt-1 max-w-xs mx-auto">
               Open any local folder or clone from a git URL. Authentication uses your existing SSH keys or credential manager — no tokens needed.
             </p>

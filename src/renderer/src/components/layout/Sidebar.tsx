@@ -9,6 +9,8 @@ import {
   FileText,
   Settings,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   Plus,
   Sun,
   Moon
@@ -31,17 +33,24 @@ export function Sidebar(): React.ReactElement {
   const { workspaces, activeWorkspaceId, setActive, create } = useWorkspaceStore()
   const [showWorkspacePicker, setShowWorkspacePicker] = useState(false)
   const [showCreateModal, setShowCreateModal] = useState(false)
+  const [isCollapsed, setIsCollapsed] = useState(() => localStorage.getItem('sidebar.collapsed') === '1')
   const navigate = useNavigate()
   const { isDark, toggle } = useTheme()
 
   const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId)
 
+  const toggleCollapse = () => {
+    const newState = !isCollapsed
+    setIsCollapsed(newState)
+    localStorage.setItem('sidebar.collapsed', newState ? '1' : '0')
+  }
+
   return (
     <>
-      <aside className="w-52 shrink-0 flex flex-col bg-surface border-r border-surface-border">
+      <aside className={`${isCollapsed ? 'w-14' : 'w-52'} shrink-0 flex flex-col bg-surface border-r border-surface-border transition-[width] duration-200 ease-in-out overflow-hidden`}>
         {/* App header */}
         <div className="h-12 flex items-center px-4 border-b border-surface-border drag-region">
-          <span className="font-semibold text-gray-100 text-sm no-drag">CodeSpectra</span>
+          {!isCollapsed && <span className="font-semibold text-gray-100 text-sm no-drag">CodeSpectra</span>}
         </div>
 
         {/* Workspace picker */}
@@ -49,19 +58,24 @@ export function Sidebar(): React.ReactElement {
           <button
             className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-surface-overlay transition-colors text-left"
             onClick={() => setShowWorkspacePicker((v) => !v)}
+            title={isCollapsed ? (activeWorkspace?.name ?? 'Select workspace') : undefined}
           >
             <div className="w-5 h-5 rounded bg-blue-600 flex items-center justify-center shrink-0">
               <span className="text-white text-xs font-bold leading-none">
                 {activeWorkspace?.name?.[0]?.toUpperCase() ?? '?'}
               </span>
             </div>
-            <span className="text-sm text-gray-200 truncate flex-1 min-w-0">
-              {activeWorkspace?.name ?? 'Select workspace'}
-            </span>
-            <ChevronDown className="w-3.5 h-3.5 text-gray-500 shrink-0" />
+            {!isCollapsed && (
+              <>
+                <span className="text-sm text-gray-200 truncate flex-1 min-w-0">
+                  {activeWorkspace?.name ?? 'Select workspace'}
+                </span>
+                <ChevronDown className="w-3.5 h-3.5 text-gray-500 shrink-0" />
+              </>
+            )}
           </button>
 
-          {showWorkspacePicker && (
+          {showWorkspacePicker && !isCollapsed && (
             <div className="mt-1 rounded-md border border-surface-border bg-surface-overlay shadow-lg">
               {workspaces.map((ws) => (
                 <button
@@ -106,15 +120,26 @@ export function Sidebar(): React.ReactElement {
                     : 'text-gray-400 hover:bg-surface-overlay hover:text-gray-200'
                 }`
               }
+              title={isCollapsed ? label : undefined}
             >
               <Icon className="w-4 h-4 shrink-0" />
-              {label}
+              {!isCollapsed && <span>{label}</span>}
             </NavLink>
           ))}
         </nav>
 
         {/* Settings + theme toggle at bottom */}
         <div className="px-2 py-2 border-t border-surface-border space-y-0.5">
+          <button
+            className="btn-ghost w-full justify-start px-2.5 py-2 text-sm"
+            aria-label={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            aria-expanded={!isCollapsed}
+            onClick={toggleCollapse}
+            title={isCollapsed ? 'Expand' : 'Collapse'}
+          >
+            {isCollapsed ? <ChevronRight className="w-4 h-4 shrink-0" /> : <ChevronLeft className="w-4 h-4 shrink-0" />}
+            {!isCollapsed && (isCollapsed ? 'Expand' : 'Collapse')}
+          </button>
           <NavLink
             to="/settings"
             className={({ isActive }) =>
@@ -124,17 +149,19 @@ export function Sidebar(): React.ReactElement {
                   : 'text-gray-400 hover:bg-surface-overlay hover:text-gray-200'
               }`
             }
+            title={isCollapsed ? 'Settings' : undefined}
           >
             <Settings className="w-4 h-4 shrink-0" />
-            Settings
+            {!isCollapsed && <span>Settings</span>}
           </NavLink>
           <button
             className="btn-ghost w-full justify-start px-2.5 py-2 text-sm"
             aria-label="Toggle theme"
             onClick={toggle}
+            title={isCollapsed ? (isDark ? 'Light mode' : 'Dark mode') : undefined}
           >
             {isDark ? <Sun className="w-4 h-4 shrink-0" /> : <Moon className="w-4 h-4 shrink-0" />}
-            {isDark ? 'Light mode' : 'Dark mode'}
+            {!isCollapsed && (isDark ? 'Light mode' : 'Dark mode')}
           </button>
         </div>
       </aside>

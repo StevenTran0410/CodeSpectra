@@ -29,6 +29,9 @@ interface ModalFooterProps {
 
 const ModalOverlay: React.FC<ModalOverlayProps> = ({ onClick, children }) => (
   <div
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="modal-title"
     className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center"
     onClick={onClick}
   >
@@ -38,7 +41,7 @@ const ModalOverlay: React.FC<ModalOverlayProps> = ({ onClick, children }) => (
 
 const ModalPanel: React.FC<ModalPanelProps> = ({ className = 'max-w-lg', children }) => (
   <div
-    className={`relative w-full mx-4 shadow-2xl rounded-lg bg-surface ${className}`}
+    className={`relative w-full mx-4 shadow-2xl rounded-lg bg-surface animate-modal-in ${className}`}
     onClick={(e) => e.stopPropagation()}
   >
     {children}
@@ -47,7 +50,7 @@ const ModalPanel: React.FC<ModalPanelProps> = ({ className = 'max-w-lg', childre
 
 const ModalHeader: React.FC<ModalHeaderProps> = ({ title, onClose }) => (
   <div className="flex items-center justify-between p-5 border-b border-surface-border">
-    <h2 className="text-base font-semibold text-gray-100">{title}</h2>
+    <h2 id="modal-title" className="text-base font-semibold text-gray-100">{title}</h2>
     {onClose && (
       <button
         type="button"

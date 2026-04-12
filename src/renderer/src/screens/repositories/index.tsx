@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useState, useRef } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { AlertTriangle, CheckCircle2, FolderOpen, GitBranch, Loader2, RefreshCw, Trash2 } from 'lucide-react'
 import { EmptyState } from '../../components/ui/EmptyState'
@@ -39,6 +39,7 @@ export default function RepositoriesScreen(): React.ReactElement {
   const [estimate, setEstimate] = useState<EstimateFileCountResponse | null>(null)
   const [estimating, setEstimating] = useState(false)
   const runtimeHasSyncApi = Boolean((window as Window).api?.sync)
+  const syncTimerRef = useRef<ReturnType<typeof setTimeout>>()
 
   const selectedRepo = useMemo(
     () => repos.find((r) => r.id === selectedRepoId) ?? null,
@@ -98,13 +99,15 @@ export default function RepositoriesScreen(): React.ReactElement {
     [snapshots, selectedSnapshotId],
   )
 
+  useEffect(() => () => clearTimeout(syncTimerRef.current), [])
+
   return (
-    <>
+    <div className="flex flex-col h-full">
       <div className="screen-header">
         <h1 className="screen-title">Repositories</h1>
         <p className="screen-subtitle">Manage repository connections and snapshots</p>
       </div>
-      <div className="h-[calc(100vh-10rem)] overflow-y-auto p-6 space-y-4">
+      <div className="flex-1 overflow-y-auto p-6 space-y-4">
         {error && <ErrorBanner message={error} onDismiss={clearError} />}
         {screenError && <ErrorBanner message={screenError} onDismiss={() => setScreenError(null)} />}
         {!runtimeHasSyncApi && (
@@ -156,7 +159,7 @@ export default function RepositoriesScreen(): React.ReactElement {
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                       <div>
-                        <label className="text-xs text-zinc-400 mb-1 block">Branch / ref</label>
+                        <label className="text-xs text-zinc-300 mb-1 block">Branch / ref</label>
                         <div className="flex gap-2">
                           <select
                             className="min-w-0 flex-1 bg-zinc-900 border border-zinc-700 rounded-md px-2 py-2 text-sm text-zinc-100"
@@ -177,7 +180,7 @@ export default function RepositoriesScreen(): React.ReactElement {
                       </div>
 
                       <div>
-                        <label className="text-xs text-zinc-400 mb-1 block">Clone policy</label>
+                        <label className="text-xs text-zinc-300 mb-1 block">Clone policy</label>
                         <select
                           className="min-w-0 w-full bg-zinc-900 border border-zinc-700 rounded-md px-2 py-2 text-sm text-zinc-100"
                           value={clonePolicy}
@@ -192,7 +195,7 @@ export default function RepositoriesScreen(): React.ReactElement {
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                       <div>
-                        <label className="text-xs text-zinc-400 mb-1 block">Sync mode</label>
+                        <label className="text-xs text-zinc-300 mb-1 block">Sync mode</label>
                         <select
                           className="w-full bg-zinc-900 border border-zinc-700 rounded-md px-2 py-2 text-sm text-zinc-100"
                           value={syncMode}
@@ -204,7 +207,7 @@ export default function RepositoriesScreen(): React.ReactElement {
                       </div>
 
                       <div>
-                        <label className="text-xs text-zinc-400 mb-1 block">Pinned ref / commit SHA</label>
+                        <label className="text-xs text-zinc-300 mb-1 block">Pinned ref / commit SHA</label>
                         <input
                           className="w-full bg-zinc-900 border border-zinc-700 rounded-md px-2 py-2 text-sm text-zinc-100 font-mono disabled:opacity-50"
                           value={pinnedRef}
@@ -216,7 +219,7 @@ export default function RepositoriesScreen(): React.ReactElement {
                     </div>
 
                     <div>
-                      <label className="text-xs text-zinc-400 mb-1 block">Repo-specific ignore overrides (one per line)</label>
+                      <label className="text-xs text-zinc-300 mb-1 block">Repo-specific ignore overrides (one per line)</label>
                       <textarea
                         rows={4}
                         className="w-full bg-zinc-900 border border-zinc-700 rounded-md px-2 py-2 text-xs text-zinc-200 font-mono"
@@ -243,7 +246,7 @@ export default function RepositoriesScreen(): React.ReactElement {
                     )}
 
                     {estimate && (
-                      <div className="text-xs text-zinc-400 space-y-1">
+                      <div className="text-xs text-zinc-300 space-y-1">
                         <div>Estimated files after ignore rules: <span className="text-zinc-200 font-semibold">{estimate.estimated_file_count.toLocaleString()}</span></div>
                         <div className="text-zinc-500">Effective ignores: {estimate.effective_ignores.join(', ') || '(none)'}</div>
                       </div>
@@ -339,7 +342,7 @@ export default function RepositoriesScreen(): React.ReactElement {
                             setScreenError(toErrorMessage(err))
                           } finally {
                             clearInterval(progressTimer)
-                            setTimeout(() => setSyncProgress(0), 350)
+                            syncTimerRef.current = setTimeout(() => setSyncProgress(0), 350)
                             setSyncing(false)
                           }
                         }}
@@ -380,7 +383,7 @@ export default function RepositoriesScreen(): React.ReactElement {
                             <CheckCircle2 size={12} className={s.status === 'ready' ? 'text-emerald-400' : 'text-zinc-600'} />
                             <span className="text-zinc-300">{s.branch ?? 'HEAD'}</span>
                             <span className="text-zinc-600">·</span>
-                            <span className="font-mono text-zinc-400">{s.commit_hash ?? 'pending'}</span>
+                            <span className="font-mono text-zinc-300">{s.commit_hash ?? 'pending'}</span>
                             <span className="text-zinc-600">·</span>
                             <span className="text-zinc-500">{s.clone_policy}</span>
                             {s.id === selectedRepo.active_snapshot_id && (
@@ -464,6 +467,6 @@ export default function RepositoriesScreen(): React.ReactElement {
         confirmVariant="danger"
         loading={deletingSnapshot}
       />
-    </>
+    </div>
   )
 }

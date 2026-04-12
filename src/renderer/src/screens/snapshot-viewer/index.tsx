@@ -217,12 +217,12 @@ export default function SnapshotViewerScreen(): React.ReactElement {
   const lines = fileContent.split('\n')
 
   return (
-    <>
+    <div className="flex flex-col h-full">
       <div className="screen-header">
         <h1 className="screen-title">Snapshot Viewer</h1>
         <p className="screen-subtitle">Read-only source tree and code preview</p>
       </div>
-      <div className="h-[calc(100vh-10rem)] p-4 space-y-3">
+      <div className="flex-1 overflow-y-auto p-4 space-y-3">
         {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
 
         <div className="flex items-center justify-between bg-zinc-900/60 border border-zinc-700 rounded-lg px-3 py-2">
@@ -408,6 +408,6 @@ export default function SnapshotViewerScreen(): React.ReactElement {
         description={`Add "${confirmIgnorePath}" to manual ignores?`}
         confirmLabel="Ignore"
       />
-    </>
+    </div>
   )
 }
