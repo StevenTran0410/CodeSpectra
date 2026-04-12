@@ -4,6 +4,7 @@ import { useWorkspaceStore } from '../../store/workspace.store'
 import { WorkspaceModal } from '../../components/workspace/WorkspaceModal'
 import { EmptyState } from '../../components/ui/EmptyState'
 import { CardSkeleton } from '../../components/ui/LoadingSkeleton'
+import { ConfirmDialog } from '../../components/ui'
 
 type ModalState =
   | { type: 'none' }
@@ -166,33 +167,23 @@ export default function Home(): React.ReactElement {
       )}
 
       {modal.type === 'delete' && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
-          onClick={(e) => e.target === e.currentTarget && setModal({ type: 'none' })}
-        >
-          <div className="card w-full max-w-sm p-5 shadow-2xl">
-            <h2 className="text-base font-semibold text-gray-100">Delete workspace?</h2>
-            <p className="text-sm text-gray-400 mt-2">
-              <strong className="text-gray-200">{modal.name}</strong> will be permanently deleted.
+        <ConfirmDialog
+          open={true}
+          onClose={() => setModal({ type: 'none' })}
+          onConfirm={() => {
+            remove(modal.id)
+            setModal({ type: 'none' })
+          }}
+          title="Delete workspace?"
+          description={
+            <>
+              <strong>{modal.name}</strong> will be permanently deleted.
               All repository connections and analysis history will be lost.
-            </p>
-            <div className="flex gap-2 justify-end mt-5">
-              <button className="btn-secondary" onClick={() => setModal({ type: 'none' })}>
-                Cancel
-              </button>
-              <button
-                className="btn-danger"
-                onClick={() => {
-                  remove(modal.id)
-                  setModal({ type: 'none' })
-                }}
-              >
-                <Trash2 className="w-4 h-4" />
-                Delete
-              </button>
-            </div>
-          </div>
-        </div>
+            </>
+          }
+          confirmLabel="Delete"
+          confirmVariant="danger"
+        />
       )}
     </>
   )

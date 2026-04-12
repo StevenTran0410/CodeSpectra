@@ -3,6 +3,7 @@ import { Loader2 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { ErrorBanner } from '../../components/ui/ErrorBanner'
 import { JobProgressPanel } from '../../components/ui/JobProgressPanel'
+import { Button } from '../../components/ui'
 import type { AnalysisSectionId } from '../../hooks/useAnalysisSectionEvents'
 import { useAnalysisSectionEvents } from '../../hooks/useAnalysisSectionEvents'
 import { toErrorMessage } from '../../lib/errors'
@@ -431,7 +432,11 @@ export default function AnalysisRunScreen(): React.ReactElement {
           )}
 
           <div className="flex items-center gap-2">
-            <button
+            <Button
+              variant="primary"
+              size="sm"
+              disabled={!canStart}
+              loading={starting}
               onClick={async () => {
                 if (!canStart) return
                 setStarting(true)
@@ -461,26 +466,26 @@ export default function AnalysisRunScreen(): React.ReactElement {
                   setStarting(false)
                 }
               }}
-              disabled={!canStart || starting}
-              className="px-3 py-2 text-xs bg-indigo-600 hover:bg-indigo-500 rounded-md text-white disabled:opacity-50"
             >
-              {starting ? 'Starting...' : 'Start analysis'}
-            </button>
+              Start analysis
+            </Button>
             {activeJob && (
-              <button
+              <Button
+                variant="secondary"
+                size="sm"
                 onClick={() => clearActive()}
-                className="px-3 py-2 text-xs border border-zinc-700 rounded-md text-zinc-300 hover:border-zinc-600"
               >
                 Clear active
-              </button>
+              </Button>
             )}
             {latestReportId && (
-              <button
+              <Button
+                variant="secondary"
+                size="sm"
                 onClick={() => navigate(`/reports?reportId=${encodeURIComponent(latestReportId)}`)}
-                className="px-3 py-2 text-xs border border-emerald-700 rounded-md text-emerald-300 hover:border-emerald-600"
               >
                 View report
-              </button>
+              </Button>
             )}
           </div>
         </div>

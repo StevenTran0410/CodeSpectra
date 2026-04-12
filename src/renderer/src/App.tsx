@@ -3,6 +3,7 @@ import { HashRouter, Routes, Route } from 'react-router-dom'
 import { AppShell } from './components/layout/AppShell'
 import { ErrorBoundary } from './components/ui/ErrorBoundary'
 import { Skeleton } from './components/ui/LoadingSkeleton'
+import { ToastContainer } from './components/ui'
 
 const Home = lazy(() => import('./screens/home'))
 const ProvidersSetup = lazy(() => import('./screens/providers'))
@@ -28,6 +29,7 @@ function PageFallback(): React.ReactElement {
 export default function App(): React.ReactElement {
   return (
     <ErrorBoundary>
+      <ToastContainer />
       <HashRouter>
         <AppShell>
           <Suspense fallback={<PageFallback />}>
