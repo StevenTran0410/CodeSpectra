@@ -26,10 +26,31 @@ _DEFAULT_IGNORES = [
 ]
 
 _LANG_BY_EXT = {
+    # Core languages (existing)
     ".py": "python", ".ts": "typescript", ".tsx": "typescript", ".js": "javascript", ".jsx": "javascript",
-    ".java": "java", ".go": "go", ".rs": "rust", ".cpp": "cpp", ".cc": "cpp", ".c": "c", ".h": "c",
-    ".cs": "csharp", ".rb": "ruby", ".php": "php", ".swift": "swift", ".kt": "kotlin",
-    ".sql": "sql", ".sh": "shell", ".yaml": "yaml", ".yml": "yaml", ".json": "json", ".toml": "toml", ".ini": "ini", ".md": "markdown",
+    ".java": "java", ".go": "go", ".rs": "rust", ".cpp": "cpp", ".cc": "cpp", ".cxx": "cpp", ".c": "c", ".h": "c", ".hpp": "cpp",
+    # New languages
+    ".cs": "csharp", ".rb": "ruby", ".php": "php", ".kt": "kotlin", ".kts": "kotlin",
+    ".scala": "scala", ".sc": "scala",
+    ".sh": "bash", ".bash": "bash",
+    ".lua": "lua",
+    ".zig": "zig",
+    ".hs": "haskell", ".lhs": "haskell",
+    ".ex": "elixir", ".exs": "elixir",
+    ".ml": "ocaml", ".mli": "ocaml",
+    ".jl": "julia",
+    ".groovy": "groovy", ".gradle": "groovy",
+    ".svelte": "svelte",
+    # Config / data / markup
+    ".yaml": "yaml", ".yml": "yaml",
+    ".toml": "toml",
+    ".html": "html", ".htm": "html",
+    ".css": "css", ".scss": "css", ".sass": "css",
+    ".json": "json", ".jsonc": "json",
+    ".md": "markdown", ".mdx": "markdown",
+    ".sql": "sql",
+    ".cmake": "cmake",
+    ".ini": "ini",
 }
 
 _SECRET_FILE_HINTS = [".env", "id_rsa", "id_ed25519", "credentials", "secret", "token", "key"]
@@ -63,6 +84,8 @@ def _checksum(path: Path) -> str:
 
 
 def _language(path: Path) -> str | None:
+    if path.name == "CMakeLists.txt":
+        return "cmake"
     ext = path.suffix.lower()
     if ext in _LANG_BY_EXT:
         return _LANG_BY_EXT[ext]
@@ -74,8 +97,10 @@ def _language(path: Path) -> str | None:
                 return "python"
             if "node" in first or "deno" in first:
                 return "javascript"
-            if "bash" in first or "sh" in first:
-                return "shell"
+            if "bash" in first:
+                return "bash"
+            if "sh" in first:
+                return "bash"
     except Exception:
         pass
     return None

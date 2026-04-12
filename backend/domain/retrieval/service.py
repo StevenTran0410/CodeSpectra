@@ -33,6 +33,9 @@ _WORD = re.compile(r"[A-Za-z0-9_]+")
 # Languages that get AST-based semantic chunking (CS-101).
 _AST_LANGS: frozenset[str] = frozenset({
     "python", "typescript", "javascript", "cpp", "go", "java", "c", "rust",
+    "ruby", "php", "csharp", "kotlin", "scala", "bash", "sh", "lua", "zig",
+    "haskell", "elixir", "ocaml", "julia",
+    "yaml", "toml", "html", "css", "json", "markdown", "groovy", "cmake", "svelte", "sql",
 })
 
 # Module-level singleton — parser/Language objects are cached inside.
@@ -75,12 +78,18 @@ def _chunk_size_for(category: str, language: str | None) -> int:
         return 1200
     if category == "test":
         return 1400
-    if language in {"python", "typescript", "javascript"}:
+    if language in {"python", "typescript", "javascript", "ruby", "elixir", "julia"}:
         return 1500
+    if language in {"haskell", "ocaml", "erlang"}:
+        return 1400
     return 1300
 
 
-_BRACE_LANGS = {"javascript", "typescript", "java", "cpp", "c", "go", "rust", "csharp", "kotlin", "swift", "scala"}
+_BRACE_LANGS = {
+    "javascript", "typescript", "java", "cpp", "c", "go", "rust",
+    "csharp", "kotlin", "scala", "groovy",
+    "php", "zig", "dart", "swift",
+}
 
 
 def _ends_mid_function(content: str, language: str | None) -> bool:
@@ -194,15 +203,54 @@ class RetrievalService:
             ) as cur:
                 row = await cur.fetchone()
             if row and row["c"] > 0:
+                # Chunks exist — also check BM25 stats are present (may be missing for old snapshots).
+                async with db.execute(
+                    "SELECT 1 FROM retrieval_bm25_stats WHERE snapshot_id=?",
+                    (req.snapshot_id,),
+                ) as cur:
+                    bm25_exists = await cur.fetchone()
+                if bm25_exists:
+                    logger.info(
+                        "[retrieval] snapshot %s already indexed (%d chunks), skipping",
+                        req.snapshot_id, row["c"],
+                    )
+                    return BuildRetrievalIndexResponse(
+                        snapshot_id=req.snapshot_id,
+                        chunk_count=int(row["c"]),
+                        files_indexed=0,
+                        generated_at="cached",
+                    )
+                # BM25 stats missing — rebuild from existing chunks without re-chunking.
                 logger.info(
-                    "[retrieval] snapshot %s already indexed (%d chunks), skipping",
+                    "[retrieval] snapshot %s has %d chunks but no BM25 stats — rebuilding stats only",
                     req.snapshot_id, row["c"],
                 )
+                async with db.execute(
+                    "SELECT content FROM retrieval_chunks WHERE snapshot_id=?",
+                    (req.snapshot_id,),
+                ) as cur:
+                    chunk_rows = await cur.fetchall()
+                tokenized_corpus = [_WORD.findall(r["content"].lower()) for r in chunk_rows]
+                if tokenized_corpus:
+                    avgdl = sum(len(t) for t in tokenized_corpus) / len(tokenized_corpus)
+                    idf = BM25Scorer.build_idf(tokenized_corpus, len(tokenized_corpus))
+                    now_str = datetime.utcnow().isoformat()
+                    await db.execute(
+                        """INSERT OR REPLACE INTO retrieval_bm25_stats
+                           (snapshot_id, chunk_count, avgdl, idf_json, k1, b, generated_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                        (req.snapshot_id, len(tokenized_corpus), avgdl, json.dumps(idf), 2.0, 0.75, now_str),
+                    )
+                    await db.commit()
+                    logger.info(
+                        "BM25 stats rebuilt: %d docs, avgdl=%.1f, vocab=%d",
+                        len(tokenized_corpus), avgdl, len(idf),
+                    )
                 return BuildRetrievalIndexResponse(
                     snapshot_id=req.snapshot_id,
                     chunk_count=int(row["c"]),
                     files_indexed=0,
-                    generated_at="cached",
+                    generated_at="rebuilt-bm25",
                 )
 
         async with db.execute(SQL_SELECT_MANIFEST_FILES_BY_SNAPSHOT, (req.snapshot_id,)) as cur:

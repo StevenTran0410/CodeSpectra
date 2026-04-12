@@ -109,3 +109,16 @@ class ReportDiffResponse(BaseModel):
     sections_changed: int
     identical: bool
     section_diffs: dict[str, dict[str, Any]]
+
+
+class ChunkSource(BaseModel):
+    chunk_id: str
+    rel_path: str
+    chunk_index: int
+    snippet: str
+
+
+class SectionSourcesResponse(BaseModel):
+    report_id: str
+    section_id: str
+    sources: list[ChunkSource]

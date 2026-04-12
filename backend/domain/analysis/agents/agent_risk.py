@@ -7,7 +7,7 @@ from typing import Any
 
 from domain.model_connector.service import ProviderConfigService
 from domain.retrieval.service import RetrievalService
-from domain.retrieval.types import RetrievalMode, RetrievalSection, RetrieveRequest
+from domain.retrieval.types import RetrievalMode, RetrievalSection
 from shared.logger import logger
 
 from ..agent_pipeline import _normalize_conf
@@ -15,7 +15,10 @@ from ..profiles import NORMAL_PROFILE, AnalysisProfile
 from ..prompts import AGENT_J_SCHEMA_STR, AGENT_J_SYSTEM, render_bundle
 from ..schemas import validate_section
 from ..static_risk import RiskReport
+from ._graph_plan import plan_queries, retrieve_multi
 from .base import BaseTypedAgent
+
+_RISK_FALLBACK_QUERY = "risk complexity large file deep nesting TODO FIXME hotspot"
 
 
 class RiskAgent(BaseTypedAgent):
@@ -70,16 +73,29 @@ class RiskAgent(BaseTypedAgent):
         n_chunks = 0
         _profile = profile or NORMAL_PROFILE
         static_ctx = static_risk.as_context_text() if static_risk else "No static risk data."
+        self._session_chunk_ids = []
         try:
-            bundle = await self._retrieval.retrieve(
-                RetrieveRequest(
-                    snapshot_id=snapshot_id,
-                    query="risk complexity large file deep nesting TODO FIXME hotspot",
-                    section=RetrievalSection.IMPORTANT_FILES,
-                    mode=RetrievalMode.HYBRID,
-                    max_results=_profile.retrieval_max_results,
-                )
+            _plan_goal = (
+                "risk and complexity: large files, deep nesting, TODO/FIXME hotspots, "
+                "blast radius of changes, circular dependencies, high fan-in modules"
             )
+            sub_queries = await plan_queries(
+                goal=_plan_goal,
+                provider_service=self._providers,
+                provider_id=provider_id,
+                model_id=model_id,
+                fallback=[_RISK_FALLBACK_QUERY],
+            )
+            max_results_each = max(8, _profile.retrieval_max_results // len(sub_queries))
+            bundle = await retrieve_multi(
+                retrieval_service=self._retrieval,
+                snapshot_id=snapshot_id,
+                queries=sub_queries,
+                section=RetrievalSection.IMPORTANT_FILES,
+                mode=RetrievalMode.HYBRID,
+                max_results_each=max_results_each,
+            )
+            self._record_bundle(bundle)
             n_chunks = len(bundle.evidences)
             user_prompt = (
                 f"Static risk findings (FACTS — do not contradict):\n{static_ctx}\n\n"
@@ -126,6 +142,7 @@ class RiskAgent(BaseTypedAgent):
                     data[key] = [str(x) for x in raw if x is not None]
             data["confidence"] = _normalize_conf(str(data.get("confidence", "medium")))
             validate_section("J", data)
+            data["retrieved_chunk_ids"] = self._pop_chunk_ids()
             ms = int((time.monotonic() - t0) * 1000)
             logger.info("[RiskAgent] %d chunks retrieved, completed in %dms", n_chunks, ms)
             return data

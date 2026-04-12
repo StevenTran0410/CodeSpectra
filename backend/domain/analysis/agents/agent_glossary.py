@@ -43,6 +43,7 @@ class GlossaryAgent(BaseTypedAgent):
         t0 = time.monotonic()
         n_chunks = 0
         _profile = profile or NORMAL_PROFILE
+        self._session_chunk_ids = []
         try:
             bundle = await self._retrieval.retrieve(
                 RetrieveRequest(
@@ -53,6 +54,7 @@ class GlossaryAgent(BaseTypedAgent):
                     max_results=_profile.retrieval_max_results,
                 )
             )
+            self._record_bundle(bundle)
             n_chunks = len(bundle.evidences)
             user_prompt = f"snapshot_id={snapshot_id}\n\nEvidence:\n{render_bundle(bundle)}"
             data = await self._chat_json_with_augment(
@@ -92,6 +94,7 @@ class GlossaryAgent(BaseTypedAgent):
                 data["blind_spots"] = [str(x) for x in raw_bs if x is not None]
             data["confidence"] = _normalize_conf(str(data.get("confidence", "medium")))
             validate_section("I", data)
+            data["retrieved_chunk_ids"] = self._pop_chunk_ids()
             ms = int((time.monotonic() - t0) * 1000)
             logger.info("[GlossaryAgent] %d chunks retrieved, completed in %dms", n_chunks, ms)
             return data

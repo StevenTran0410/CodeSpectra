@@ -212,7 +212,7 @@ def _compute_chunk_score(
         low = content.lower()
         bm25 = float(sum(low.count(t) for t in terms) + sum(2 for t in terms if t in path_low))
 
-    if r.get("category") in category_hints:
+    if r["category"] in category_hints:
         bm25 += _CATEGORY_HINT_BONUS
 
     sym_bonus = _SYMBOL_OVERLAP_BONUS if r["rel_path"] in seed_files else 1.0

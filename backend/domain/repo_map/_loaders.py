@@ -29,6 +29,52 @@ def _load_ts_language(name: str) -> Any | None:
             import tree_sitter_c as m  # type: ignore[no-redef]
         elif name in ("cpp", "c++"):
             import tree_sitter_cpp as m  # type: ignore[no-redef]
+        elif name == "ruby":
+            import tree_sitter_ruby as m  # type: ignore[no-redef]
+        elif name == "php":
+            import tree_sitter_php as m  # type: ignore[no-redef]
+            return Language(m.language_php())
+        elif name in ("csharp", "c_sharp", "cs"):
+            import tree_sitter_c_sharp as m  # type: ignore[no-redef]
+        elif name == "kotlin":
+            import tree_sitter_kotlin as m  # type: ignore[no-redef]
+        elif name == "scala":
+            import tree_sitter_scala as m  # type: ignore[no-redef]
+        elif name in ("bash", "sh", "shell"):
+            import tree_sitter_bash as m  # type: ignore[no-redef]
+        elif name == "lua":
+            import tree_sitter_lua as m  # type: ignore[no-redef]
+        elif name == "zig":
+            import tree_sitter_zig as m  # type: ignore[no-redef]
+        elif name == "haskell":
+            import tree_sitter_haskell as m  # type: ignore[no-redef]
+        elif name == "elixir":
+            import tree_sitter_elixir as m  # type: ignore[no-redef]
+        elif name == "ocaml":
+            import tree_sitter_ocaml as m  # type: ignore[no-redef]
+            return Language(m.language_ocaml())
+        elif name == "julia":
+            import tree_sitter_julia as m  # type: ignore[no-redef]
+        elif name == "yaml":
+            import tree_sitter_yaml as m  # type: ignore[no-redef]
+        elif name == "toml":
+            import tree_sitter_toml as m  # type: ignore[no-redef]
+        elif name == "html":
+            import tree_sitter_html as m  # type: ignore[no-redef]
+        elif name == "css":
+            import tree_sitter_css as m  # type: ignore[no-redef]
+        elif name == "json":
+            import tree_sitter_json as m  # type: ignore[no-redef]
+        elif name == "markdown":
+            import tree_sitter_markdown as m  # type: ignore[no-redef]
+        elif name == "groovy":
+            import tree_sitter_groovy as m  # type: ignore[no-redef]
+        elif name == "cmake":
+            import tree_sitter_cmake as m  # type: ignore[no-redef]
+        elif name == "svelte":
+            import tree_sitter_svelte as m  # type: ignore[no-redef]
+        elif name == "sql":
+            import tree_sitter_sql as m  # type: ignore[no-redef]
         else:
             return None
         return Language(m.language())

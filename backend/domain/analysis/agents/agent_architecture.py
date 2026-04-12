@@ -55,6 +55,7 @@ class ArchitectureAgent(BaseTypedAgent):
         t0 = time.monotonic()
         n_chunks = 0
         _profile = profile or NORMAL_PROFILE
+        self._session_chunk_ids = []
         try:
             graph_block = ""
             if graph_summary and graph_summary.top_central_files:
@@ -81,6 +82,7 @@ class ArchitectureAgent(BaseTypedAgent):
                         max_results=_profile.retrieval_max_results,
                     )
                 )
+            self._record_bundle(bundle)
             n_chunks = len(bundle.evidences)
             identity_block = extract_a_identity_context(identity_output)
             prefix_parts = []
@@ -133,6 +135,7 @@ class ArchitectureAgent(BaseTypedAgent):
                 ]
             data["confidence"] = _normalize_conf(str(data.get("confidence", "medium")))
             validate_section("B", data)
+            data["retrieved_chunk_ids"] = self._pop_chunk_ids()
             ms = int((time.monotonic() - t0) * 1000)
             logger.info("[ArchitectureAgent] %d chunks retrieved, completed in %dms", n_chunks, ms)
             return data

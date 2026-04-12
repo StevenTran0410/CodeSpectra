@@ -1,4 +1,7 @@
-"""Go, Java, Rust, C/C++ tree-sitter walkers."""
+"""Systems-language tree-sitter walkers: Go, Rust, C/C++, Zig, Bash/sh.
+
+Java has been moved to _walkers_jvm.py.
+"""
 
 from typing import Any
 
@@ -151,4 +154,64 @@ def _walk_c_cpp(root: Any, is_cpp: bool = False) -> list[_Symbol]:
             walk(ch)
 
     walk(root)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Zig
+# ---------------------------------------------------------------------------
+
+def _walk_zig(root: Any) -> list[_Symbol]:
+    out: list[_Symbol] = []
+
+    def walk(node: Any) -> None:
+        t = node.type
+        if t == "function_declaration":
+            name_node = node.child_by_field_name("name")
+            name = _node_text(name_node) if name_node else None
+            if name:
+                s, e = _lines(node)
+                out.append((name, SymbolKind.FUNCTION, s, e, None, None, ExtractSource.AST))
+        elif t == "variable_declaration":
+            # const Foo = struct/union/enum { ... }
+            name_node = node.child_by_field_name("name")
+            name = _node_text(name_node) if name_node else None
+            if name:
+                val = next(
+                    (c for c in node.children if c.type in (
+                        "struct_declaration", "union_declaration", "enum_declaration"
+                    )),
+                    None,
+                )
+                if val:
+                    kind_map = {
+                        "struct_declaration": SymbolKind.CLASS,
+                        "union_declaration": SymbolKind.CLASS,
+                        "enum_declaration": SymbolKind.ENUM,
+                    }
+                    s, e = _lines(node)
+                    out.append((name, kind_map[val.type], s, e, None, None, ExtractSource.AST))
+        for ch in node.children:
+            walk(ch)
+
+    walk(root)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Bash / sh
+# ---------------------------------------------------------------------------
+
+def _walk_bash(root: Any) -> list[_Symbol]:
+    out: list[_Symbol] = []
+
+    for node in root.children:
+        if node.type == "function_definition":
+            # name is a 'word' child
+            name_node = next((c for c in node.children if c.type == "word"), None)
+            name = _node_text(name_node) if name_node else None
+            if name:
+                s, e = _lines(node)
+                out.append((name, SymbolKind.FUNCTION, s, e, None, None, ExtractSource.AST))
+
     return out

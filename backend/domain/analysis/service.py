@@ -564,6 +564,48 @@ class AnalysisService:
             section_diffs=cr.section_diffs,
         )
 
+    async def get_section_sources(self, report_id: str, section_id: str) -> Any:
+        from .types import ChunkSource, SectionSourcesResponse
+
+        db = get_db()
+        async with db.execute(
+            "SELECT report_json FROM analysis_reports WHERE id=?", (report_id,)
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            raise NotFoundError("AnalysisReport", report_id)
+
+        raw = json.loads(row["report_json"] or "{}")
+
+        sections = raw.get("sections") or raw.get("sections_v2") or {}
+        section_data = sections.get(section_id, {})
+        chunk_ids: list[str] = section_data.get("retrieved_chunk_ids", [])
+
+        if not chunk_ids:
+            return SectionSourcesResponse(report_id=report_id, section_id=section_id, sources=[])
+
+        placeholders = ",".join("?" * len(chunk_ids))
+        async with db.execute(
+            f"SELECT id, rel_path, chunk_index, content FROM retrieval_chunks WHERE id IN ({placeholders})",
+            chunk_ids,
+        ) as cur:
+            rows = await cur.fetchall()
+
+        order = {cid: i for i, cid in enumerate(chunk_ids)}
+        sources = sorted(
+            [
+                ChunkSource(
+                    chunk_id=r["id"],
+                    rel_path=r["rel_path"],
+                    chunk_index=r["chunk_index"],
+                    snippet=r["content"][:300],
+                )
+                for r in rows
+            ],
+            key=lambda s: order.get(s.chunk_id, 999),
+        )
+        return SectionSourcesResponse(report_id=report_id, section_id=section_id, sources=sources)
+
     async def _persist_report_json(self, report_id: str, payload: dict[str, Any]) -> None:
         db = get_db()
         await db.execute(

@@ -64,6 +64,7 @@ class ViolationsAgent(BaseTypedAgent):
         t0 = time.monotonic()
         n_chunks = 0
         _profile = profile or NORMAL_PROFILE
+        self._session_chunk_ids = []
         try:
             prefix_parts: list[str] = []
             cb = build_convention_block(static_convention)
@@ -86,6 +87,7 @@ class ViolationsAgent(BaseTypedAgent):
                     max_results=_profile.retrieval_max_results,
                 )
             )
+            self._record_bundle(bundle)
             n_chunks = len(bundle.evidences)
             user_prompt = f"{prefix}snapshot_id={snapshot_id}\n\nEvidence:\n{render_bundle(bundle)}"
             data = await self._chat_json_with_augment(
@@ -161,6 +163,7 @@ class ViolationsAgent(BaseTypedAgent):
                     data[key] = []
             data["confidence"] = _normalize_conf(str(data.get("confidence", "medium")))
             validate_section("E", data)
+            data["retrieved_chunk_ids"] = self._pop_chunk_ids()
             ms = int((time.monotonic() - t0) * 1000)
             logger.info("[ViolationsAgent] %d chunks retrieved, completed in %dms", n_chunks, ms)
             return data

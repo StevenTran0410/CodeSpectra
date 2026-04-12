@@ -86,6 +86,7 @@ class OnboardingAgent(BaseTypedAgent):
         t0 = time.monotonic()
         n_chunks = 0
         _profile = profile or NORMAL_PROFILE
+        self._session_chunk_ids = []
         try:
             g_hint = (
                 _extract_g_hint(important_files_output)
@@ -101,6 +102,7 @@ class OnboardingAgent(BaseTypedAgent):
                     max_results=_profile.retrieval_max_results,
                 )
             )
+            self._record_bundle(bundle)
             n_chunks = len(bundle.evidences)
             prefix = f"{g_hint}\n\n" if g_hint else ""
             user_prompt = f"{prefix}snapshot_id={snapshot_id}\n\nEvidence:\n{render_bundle(bundle)}"
@@ -152,6 +154,7 @@ class OnboardingAgent(BaseTypedAgent):
                     data[key] = []
             data["confidence"] = _normalize_conf(str(data.get("confidence", "medium")))
             validate_section("H", data)
+            data["retrieved_chunk_ids"] = self._pop_chunk_ids()
             ms = int((time.monotonic() - t0) * 1000)
             logger.info("[OnboardingAgent] %d chunks retrieved, completed in %dms", n_chunks, ms)
             return data
