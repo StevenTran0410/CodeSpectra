@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { X } from 'lucide-react'
+import { Button } from '../ui'
 
 interface Props {
   mode: 'create' | 'rename'
@@ -46,9 +47,9 @@ export function WorkspaceModal({ mode, initialName = '', onConfirm, onClose }: P
           <h2 className="text-base font-semibold text-gray-100">
             {mode === 'create' ? 'New Workspace' : 'Rename Workspace'}
           </h2>
-          <button className="btn-ghost p-1" onClick={onClose} disabled={loading}>
+          <Button variant="ghost" size="sm" onClick={onClose} disabled={loading}>
             <X className="w-4 h-4" />
-          </button>
+          </Button>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -82,16 +83,17 @@ export function WorkspaceModal({ mode, initialName = '', onConfirm, onClose }: P
           )}
 
           <div className="flex gap-2 justify-end pt-1">
-            <button type="button" className="btn-secondary" onClick={onClose} disabled={loading}>
+            <Button type="button" variant="secondary" onClick={onClose} disabled={loading}>
               Cancel
-            </button>
-            <button
+            </Button>
+            <Button
               type="submit"
-              className="btn-primary"
+              variant="primary"
               disabled={!name.trim() || loading}
+              loading={loading}
             >
-              {loading ? 'Saving…' : mode === 'create' ? 'Create' : 'Rename'}
-            </button>
+              {mode === 'create' ? 'Create' : 'Rename'}
+            </Button>
           </div>
         </form>
       </div>

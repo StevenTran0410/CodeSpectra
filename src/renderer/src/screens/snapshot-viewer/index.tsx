@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { ArrowLeft, ChevronDown, ChevronRight, FileText, Folder, Loader2 } from 'lucide-react'
 import type { ManifestTreeNode } from '../../types/electron'
 import { ErrorBanner } from '../../components/ui/ErrorBanner'
+import { Button, ConfirmDialog, PageLoading } from '../../components/ui'
 import { toErrorMessage } from '../../lib/errors'
 
 type TreeNode = {
@@ -69,6 +70,7 @@ export default function SnapshotViewerScreen(): React.ReactElement {
   const [showConfirmBuild, setShowConfirmBuild] = useState(false)
   const [buildingIndex, setBuildingIndex] = useState(false)
   const [buildProgress, setBuildProgress] = useState(0)
+  const [confirmIgnorePath, setConfirmIgnorePath] = useState<string | null>(null)
 
   const tree = useMemo(() => buildTree(treeNodes), [treeNodes])
 
@@ -293,10 +295,7 @@ export default function SnapshotViewerScreen(): React.ReactElement {
               Explorer
             </div>
             {loadingTree ? (
-              <div className="p-3 text-xs text-zinc-500 inline-flex items-center gap-2">
-                <Loader2 size={12} className="animate-spin" />
-                Loading tree...
-              </div>
+              <PageLoading label="Loading..." />
             ) : tree.length === 0 ? (
               <div className="p-3 text-xs text-zinc-500">No indexed files.</div>
             ) : (
@@ -391,6 +390,24 @@ export default function SnapshotViewerScreen(): React.ReactElement {
           </div>
         </div>
       )}
+      <ConfirmDialog
+        open={confirmIgnorePath !== null}
+        onClose={() => setConfirmIgnorePath(null)}
+        onConfirm={async () => {
+          if (!confirmIgnorePath) return
+          setIgnoredPaths((prev) => {
+            const next = new Set(prev)
+            if (next.has(confirmIgnorePath)) next.delete(confirmIgnorePath)
+            else next.add(confirmIgnorePath)
+            return next
+          })
+          setCompleteDone(false)
+          setConfirmIgnorePath(null)
+        }}
+        title="Ignore file"
+        description={`Add "${confirmIgnorePath}" to manual ignores?`}
+        confirmLabel="Ignore"
+      />
     </>
   )
 }

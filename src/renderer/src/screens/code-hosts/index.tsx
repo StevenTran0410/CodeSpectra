@@ -24,6 +24,7 @@ import { useLocalRepoStore } from '../../store/local-repo.store'
 import { useWorkspaceStore } from '../../store/workspace.store'
 import { ErrorBanner } from '../../components/ui/ErrorBanner'
 import { LoadingRow } from '../../components/ui/LoadingRow'
+import { Button, ConfirmDialog, Spinner, useToastStore } from '../../components/ui'
 import { toErrorMessage } from '../../lib/errors'
 import type { LocalRepo, ValidateFolderResponse } from '../../types/electron'
 
@@ -102,20 +103,22 @@ function ValidationPreview({
       )}
 
       <div className="flex items-center gap-2 pt-1">
-        <button
+        <Button
+          variant="secondary"
           onClick={onCancel}
-          className="flex-1 py-2 text-sm text-zinc-400 hover:text-zinc-200 border border-zinc-700 hover:border-zinc-600 rounded-lg transition-colors"
+          className="flex-1"
         >
           Cancel
-        </button>
-        <button
+        </Button>
+        <Button
+          variant="primary"
           onClick={onConfirm}
           disabled={!ok || adding}
-          className="flex-1 py-2 text-sm font-medium bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg transition-colors flex items-center justify-center gap-2"
+          loading={adding}
+          className="flex-1"
         >
-          {adding ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
-          {adding ? 'Adding…' : 'Add folder'}
-        </button>
+          {ok ? 'Add folder' : 'Add folder'}
+        </Button>
       </div>
     </div>
   )
@@ -161,7 +164,7 @@ function BranchPicker({ repo }: { repo: LocalRepo }) {
           }`}
         title="Click to change analysis branch"
       >
-        {isLoading ? <Loader2 size={10} className="animate-spin" /> : <GitBranch size={10} />}
+        {isLoading ? <Spinner size="sm" /> : <GitBranch size={10} />}
         {activeBranch}
         {repo.selected_branch && repo.selected_branch !== repo.git_branch && (
           <span className="text-indigo-500/70 text-xs">≠ HEAD</span>
@@ -227,14 +230,14 @@ function BranchPicker({ repo }: { repo: LocalRepo }) {
 
 function LocalRepoCard({
   repo,
-  onRemove,
   onRevalidate,
   isRevalidating,
+  onConfirmRemove,
 }: {
   repo: LocalRepo
-  onRemove: () => void
   onRevalidate: () => void
   isRevalidating: boolean
+  onConfirmRemove: (id: string) => void
 }) {
   return (
     <div className="bg-zinc-800/40 border border-zinc-700/70 rounded-xl p-4 hover:border-zinc-600 transition-colors">
@@ -295,7 +298,7 @@ function LocalRepoCard({
             <RefreshCw size={13} className={isRevalidating ? 'animate-spin' : ''} />
           </button>
           <button
-            onClick={onRemove}
+            onClick={() => onConfirmRemove(repo.id)}
             title="Remove folder"
             className="p-1.5 text-zinc-500 hover:text-red-400 hover:bg-red-500/10 rounded-md transition-colors"
           >
@@ -319,7 +322,11 @@ function AddFolderPanel({ onClose, workspaceId }: { onClose: () => void; workspa
   const handleConfirm = async () => {
     if (!validation?.path) return
     const repo = await add(validation.path, workspaceId)
-    if (repo) onClose()
+    if (repo) {
+      const toast = useToastStore()
+      toast.success('Folder added')
+      onClose()
+    }
   }
 
   return (
@@ -375,6 +382,8 @@ function CloneFromUrlPanel({ onClose, onCloned, workspaceId }: { onClose: () => 
     setCloneError(null)
     try {
       await window.api.folder.cloneFromUrl(trimmed, workspaceId)
+      const toast = useToastStore()
+      toast.success('Repository cloned')
       onCloned()
       onClose()
     } catch (err) {
@@ -426,21 +435,23 @@ function CloneFromUrlPanel({ onClose, onCloned, workspaceId }: { onClose: () => 
       )}
 
       <div className="flex items-center gap-2 pt-1">
-        <button
+        <Button
+          variant="secondary"
           onClick={onClose}
           disabled={cloning}
-          className="flex-1 py-2 text-sm text-zinc-400 hover:text-zinc-200 border border-zinc-700 hover:border-zinc-600 rounded-lg transition-colors disabled:opacity-50"
+          className="flex-1"
         >
           Cancel
-        </button>
-        <button
+        </Button>
+        <Button
+          variant="primary"
           onClick={handleClone}
           disabled={!url.trim() || cloning}
-          className="flex-1 py-2 text-sm font-medium bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg transition-colors flex items-center justify-center gap-2"
+          loading={cloning}
+          className="flex-1"
         >
-          {cloning ? <Loader2 size={14} className="animate-spin" /> : <ArrowDownToLine size={14} />}
-          {cloning ? 'Cloning…' : 'Clone'}
-        </button>
+          Clone
+        </Button>
       </div>
     </div>
   )
@@ -540,23 +551,25 @@ function SshKeySettings() {
           </div>
 
           <div className="flex items-center gap-2">
-            <button
+            <Button
+              variant="primary"
+              size="sm"
               onClick={handleSave}
               disabled={!isDirty || saving}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-lg transition-colors"
+              loading={saving}
             >
-              {saving ? <Loader2 size={12} className="animate-spin" /> : saved ? <Check size={12} /> : null}
               {saved ? 'Saved' : 'Save'}
-            </button>
+            </Button>
             {keyPath && (
-              <button
+              <Button
+                variant="secondary"
+                size="sm"
                 onClick={handleClear}
                 disabled={saving}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-zinc-500 hover:text-red-400 border border-zinc-700 hover:border-red-500/30 rounded-lg transition-colors"
               >
                 <X size={12} />
                 Clear
-              </button>
+              </Button>
             )}
           </div>
         </div>
@@ -568,7 +581,9 @@ function SshKeySettings() {
 export default function CodeHostsSetup(): React.ReactElement {
   const { repos, loading, error, load, remove, revalidate, revalidatingId, clearError } = useLocalRepoStore()
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId)
+  const toast = useToastStore()
   const [panel, setPanel] = useState<'none' | 'folder' | 'clone'>('none')
+  const [confirmRemoveId, setConfirmRemoveId] = useState<string | null>(null)
 
   useEffect(() => { load(activeWorkspaceId ?? undefined) }, [load, activeWorkspaceId])
 
@@ -585,14 +600,14 @@ export default function CodeHostsSetup(): React.ReactElement {
         </div>
         {panel === 'none' && (
           <div className="flex items-center gap-2">
-            <button className="btn-secondary text-xs" onClick={() => setPanel('clone')}>
+            <Button variant="secondary" size="sm" onClick={() => setPanel('clone')}>
               <ArrowDownToLine className="w-3.5 h-3.5" />
               Clone URL
-            </button>
-            <button className="btn-primary" onClick={() => setPanel('folder')}>
+            </Button>
+            <Button variant="primary" onClick={() => setPanel('folder')}>
               <Plus className="w-4 h-4" />
               Open Folder
-            </button>
+            </Button>
           </div>
         )}
       </div>
@@ -618,11 +633,27 @@ export default function CodeHostsSetup(): React.ReactElement {
           <LocalRepoCard
             key={repo.id}
             repo={repo}
-            onRemove={() => remove(repo.id)}
             onRevalidate={() => revalidate(repo.id)}
             isRevalidating={revalidatingId === repo.id}
+            onConfirmRemove={setConfirmRemoveId}
           />
         ))}
+
+        <ConfirmDialog
+          open={confirmRemoveId !== null}
+          onClose={() => setConfirmRemoveId(null)}
+          onConfirm={async () => {
+            if (confirmRemoveId) {
+              await remove(confirmRemoveId)
+              toast.success('Repository removed')
+              setConfirmRemoveId(null)
+            }
+          }}
+          title="Remove repository"
+          description="This will remove the repository from CodeSpectra. Your local files will not be deleted."
+          confirmLabel="Remove"
+          confirmVariant="danger"
+        />
 
         {!loading && repos.length === 0 && panel === 'none' && (
           <div className="border border-dashed border-zinc-700 rounded-xl p-10 text-center">
@@ -634,14 +665,14 @@ export default function CodeHostsSetup(): React.ReactElement {
               Open any local folder or clone from a git URL. Authentication uses your existing SSH keys or credential manager — no tokens needed.
             </p>
             <div className="flex items-center justify-center gap-2 mt-4">
-              <button className="btn-secondary text-xs" onClick={() => setPanel('clone')}>
+              <Button variant="secondary" size="sm" onClick={() => setPanel('clone')}>
                 <ArrowDownToLine size={13} />
                 Clone URL
-              </button>
-              <button className="btn-primary text-sm" onClick={() => setPanel('folder')}>
+              </Button>
+              <Button variant="primary" onClick={() => setPanel('folder')}>
                 <FolderOpen size={14} />
                 Open Folder
-              </button>
+              </Button>
             </div>
           </div>
         )}

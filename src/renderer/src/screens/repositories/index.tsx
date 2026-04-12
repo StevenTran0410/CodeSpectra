@@ -4,6 +4,7 @@ import { AlertTriangle, CheckCircle2, FolderOpen, GitBranch, Loader2, RefreshCw,
 import { EmptyState } from '../../components/ui/EmptyState'
 import { ErrorBanner } from '../../components/ui/ErrorBanner'
 import { LoadingRow } from '../../components/ui/LoadingRow'
+import { Button, ConfirmDialog, FormGroup, Select, useToastStore } from '../../components/ui'
 import { toErrorMessage } from '../../lib/errors'
 import type {
   ClonePolicy,
@@ -435,49 +436,34 @@ export default function RepositoriesScreen(): React.ReactElement {
           </div>
         )}
       </div>
-      {confirmDeleteSnapshotId && (
-        <div className="fixed inset-0 z-50 bg-black/55 flex items-center justify-center p-4">
-          <div className="w-full max-w-md rounded-lg border border-zinc-700 bg-zinc-900 p-4 space-y-3">
-            <div className="text-sm font-semibold text-zinc-100">Delete snapshot?</div>
-            <div className="text-xs text-zinc-400">
-              This will remove the snapshot and related index artifacts (manifest, symbols, graph).
-            </div>
-            <div className="text-[11px] text-zinc-500 font-mono break-all">{confirmDeleteSnapshotId}</div>
-            <div className="flex items-center justify-end gap-2">
-              <button
-                onClick={() => setConfirmDeleteSnapshotId(null)}
-                disabled={deletingSnapshot}
-                className="px-3 py-1.5 text-xs border border-zinc-700 rounded-md text-zinc-300 hover:border-zinc-600 disabled:opacity-50"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={async () => {
-                  if (!selectedRepo || !confirmDeleteSnapshotId) return
-                  setDeletingSnapshot(true)
-                  setScreenError(null)
-                  try {
-                    await window.api.sync.deleteSnapshot(confirmDeleteSnapshotId)
-                    const rows = await window.api.sync.listForRepo(selectedRepo.id)
-                    setSnapshots(rows)
-                    setSelectedSnapshotId(rows[0]?.id ?? null)
-                    await load()
-                    setConfirmDeleteSnapshotId(null)
-                  } catch (err) {
-                    setScreenError(toErrorMessage(err))
-                  } finally {
-                    setDeletingSnapshot(false)
-                  }
-                }}
-                disabled={deletingSnapshot}
-                className="px-3 py-1.5 text-xs bg-rose-600 hover:bg-rose-500 rounded-md text-white disabled:opacity-50"
-              >
-                {deletingSnapshot ? 'Deleting...' : 'Delete'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <ConfirmDialog
+        open={confirmDeleteSnapshotId !== null}
+        onClose={() => setConfirmDeleteSnapshotId(null)}
+        onConfirm={async () => {
+          if (!selectedRepo || !confirmDeleteSnapshotId) return
+          setDeletingSnapshot(true)
+          setScreenError(null)
+          try {
+            await window.api.sync.deleteSnapshot(confirmDeleteSnapshotId)
+            const toast = useToastStore()
+            toast.success('Snapshot deleted')
+            const rows = await window.api.sync.listForRepo(selectedRepo.id)
+            setSnapshots(rows)
+            setSelectedSnapshotId(rows[0]?.id ?? null)
+            await load()
+            setConfirmDeleteSnapshotId(null)
+          } catch (err) {
+            setScreenError(toErrorMessage(err))
+          } finally {
+            setDeletingSnapshot(false)
+          }
+        }}
+        title="Delete snapshot?"
+        description="This will remove the snapshot and related index artifacts (manifest, symbols, graph)."
+        confirmLabel="Delete"
+        confirmVariant="danger"
+        loading={deletingSnapshot}
+      />
     </>
   )
 }

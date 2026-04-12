@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { ErrorBanner } from '../../components/ui/ErrorBanner'
+import { Badge, Button, ConfirmDialog, useToastStore } from '../../components/ui'
 import {
   Plus,
   Trash2,
@@ -33,19 +34,19 @@ const CLOUD_MODEL_PRESETS: Record<string, string[]> = {
 
 function LocalBadge() {
   return (
-    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+    <div className="inline-flex items-center gap-1">
       <Shield size={10} />
-      Strict Local
-    </span>
+      <Badge variant="success">Strict Local</Badge>
+    </div>
   )
 }
 
 function CloudBadge() {
   return (
-    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-amber-500/10 text-amber-400 border border-amber-500/20">
+    <div className="inline-flex items-center gap-1">
       <Cloud size={10} />
-      BYOK Cloud
-    </span>
+      <Badge variant="warning">BYOK Cloud</Badge>
+    </div>
   )
 }
 
@@ -157,6 +158,7 @@ interface ProviderFormProps {
 
 function ProviderForm({ kind, initial, onClose }: ProviderFormProps) {
   const { create, update, testConnection, fetchModels, testing, testResults, modelLists, loadingModels, modelErrors } = useProviderStore()
+  const toast = useToastStore()
 
   const isEdit = !!initial
   const defaults = KIND_DEFAULTS[kind]
@@ -200,6 +202,7 @@ function ProviderForm({ kind, initial, onClose }: ProviderFormProps) {
         }
         await create(req)
       }
+      toast.success('Provider saved')
       onClose()
     } catch (err) {
       setFormError(String(err))
@@ -337,6 +340,8 @@ function ProviderForm({ kind, initial, onClose }: ProviderFormProps) {
         </div>
       )}
 
+      {/* Test connection only available in edit mode — new providers have no persisted ID
+          to route the test call against until after the first save. */}
       {isEdit && (
         <div className="space-y-2">
           <button
@@ -356,20 +361,17 @@ function ProviderForm({ kind, initial, onClose }: ProviderFormProps) {
       )}
 
       <div className="flex gap-2 justify-end pt-2">
-        <button
-          onClick={onClose}
-          className="px-4 py-2 text-sm text-zinc-400 hover:text-zinc-200 transition-colors"
-        >
+        <Button variant="secondary" onClick={onClose}>
           Cancel
-        </button>
-        <button
+        </Button>
+        <Button
+          variant="primary"
           onClick={handleSave}
           disabled={saving}
-          className="flex items-center gap-2 px-4 py-2 text-sm bg-violet-600 hover:bg-violet-500 text-white rounded-md transition-colors disabled:opacity-50"
+          loading={saving}
         >
-          {saving && <Loader2 size={14} className="animate-spin" />}
           {isEdit ? 'Save changes' : 'Add provider'}
-        </button>
+        </Button>
       </div>
     </div>
   )
@@ -377,6 +379,7 @@ function ProviderForm({ kind, initial, onClose }: ProviderFormProps) {
 
 function ProviderCard({ config }: { config: ProviderConfig }) {
   const { remove, testConnection, testing, testResults } = useProviderStore()
+  const toast = useToastStore()
   const [editing, setEditing] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
 
@@ -442,23 +445,19 @@ function ProviderCard({ config }: { config: ProviderConfig }) {
         {testResult && <TestStatus ok={testResult.ok} message={testResult.message} />}
       </div>
 
-      {confirmDelete && (
-        <div className="flex items-center gap-3 bg-red-500/5 border border-red-500/20 rounded-lg px-4 py-3">
-          <span className="text-xs text-red-400 flex-1">Remove this provider?</span>
-          <button
-            onClick={() => { remove(config.id); setConfirmDelete(false) }}
-            className="text-xs px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white rounded transition-colors"
-          >
-            Remove
-          </button>
-          <button
-            onClick={() => setConfirmDelete(false)}
-            className="text-xs px-3 py-1.5 text-zinc-400 hover:text-zinc-200 transition-colors"
-          >
-            Cancel
-          </button>
-        </div>
-      )}
+      <ConfirmDialog
+        open={confirmDelete}
+        onClose={() => setConfirmDelete(false)}
+        onConfirm={async () => {
+          await remove(config.id)
+          toast.success('Provider removed')
+          setConfirmDelete(false)
+        }}
+        title="Remove provider?"
+        description={`Remove ${config.display_name}? This cannot be undone.`}
+        confirmLabel="Remove"
+        confirmVariant="danger"
+      />
     </div>
   )
 }
@@ -489,13 +488,10 @@ function CloudSection({ kind, title, description, providers: list, adding, onAdd
           <p className="text-xs text-zinc-500 mt-0.5">{description}</p>
         </div>
         {adding !== kind && (
-          <button
-            onClick={() => onAdd(kind)}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-zinc-700 hover:bg-zinc-600 text-zinc-300 rounded-md transition-colors"
-          >
+          <Button variant="secondary" size="sm" onClick={() => onAdd(kind)}>
             <Plus size={13} />
             Add {title}
-          </button>
+          </Button>
         )}
       </div>
       <div className="space-y-3">
@@ -595,13 +591,10 @@ export default function ProvidersScreen() {
               <p className="text-xs text-zinc-500 mt-0.5">Run open-source models locally via Ollama's REST API</p>
             </div>
             {adding !== 'ollama' && (
-              <button
-                onClick={() => setAdding('ollama')}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-zinc-700 hover:bg-zinc-600 text-zinc-300 rounded-md transition-colors"
-              >
+              <Button variant="secondary" size="sm" onClick={() => setAdding('ollama')}>
                 <Plus size={13} />
                 Add Ollama
-              </button>
+              </Button>
             )}
           </div>
 
@@ -635,13 +628,10 @@ export default function ProvidersScreen() {
               <p className="text-xs text-zinc-500 mt-0.5">OpenAI-compatible local server via LM Studio</p>
             </div>
             {adding !== 'lmstudio' && (
-              <button
-                onClick={() => setAdding('lmstudio')}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-zinc-700 hover:bg-zinc-600 text-zinc-300 rounded-md transition-colors"
-              >
+              <Button variant="secondary" size="sm" onClick={() => setAdding('lmstudio')}>
                 <Plus size={13} />
                 Add LM Studio
-              </button>
+              </Button>
             )}
           </div>
 

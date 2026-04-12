@@ -3,7 +3,7 @@ import { Loader2 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { ErrorBanner } from '../../components/ui/ErrorBanner'
 import { JobProgressPanel } from '../../components/ui/JobProgressPanel'
-import { Button } from '../../components/ui'
+import { Button, FormGroup, Select, useToastStore } from '../../components/ui'
 import type { AnalysisSectionId } from '../../hooks/useAnalysisSectionEvents'
 import { useAnalysisSectionEvents } from '../../hooks/useAnalysisSectionEvents'
 import { toErrorMessage } from '../../lib/errors'
@@ -87,6 +87,7 @@ function renderLiveSection(letter: AnalysisSectionId, data: unknown): React.Reac
 
 export default function AnalysisRunScreen(): React.ReactElement {
   const navigate = useNavigate()
+  const toast = useToastStore()
   const persisted = (() => {
     try {
       return JSON.parse(localStorage.getItem('analysis.runConfig.v1') ?? '{}') as {
@@ -255,9 +256,10 @@ export default function AnalysisRunScreen(): React.ReactElement {
       if (!activeJob || activeJob.type !== 'analysis' || activeJob.status !== 'done') return
       const out = await window.api.analysis.getReportByJob(activeJob.id)
       setLatestReportId(out.summary.id)
+      toast.success('Analysis complete — report ready')
     }
     run().catch(() => null)
-  }, [activeJob])
+  }, [activeJob, toast])
 
   return (
     <>
@@ -285,69 +287,60 @@ export default function AnalysisRunScreen(): React.ReactElement {
           <div className="text-sm font-semibold text-zinc-200">Run Configuration</div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-            <select
-              value={repoId}
-              onChange={(e) => setRepoId(e.target.value)}
-              className="bg-zinc-950 border border-zinc-700 rounded-md px-2 py-2 text-sm text-zinc-100"
-            >
-              {repos.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
-            </select>
-            <select
-              value={snapshotId}
-              onChange={(e) => setSnapshotId(e.target.value)}
-              className="bg-zinc-950 border border-zinc-700 rounded-md px-2 py-2 text-sm text-zinc-100"
-            >
-              {snapshots.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {(s.branch ?? 'HEAD')} · {(s.commit_hash ?? 'pending').slice(0, 10)} · {s.status}
-                </option>
-              ))}
-            </select>
+            <FormGroup label="Repository">
+              <Select value={repoId} onChange={(e) => setRepoId(e.target.value)}>
+                {repos.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+              </Select>
+            </FormGroup>
+            <FormGroup label="Snapshot">
+              <Select value={snapshotId} onChange={(e) => setSnapshotId(e.target.value)}>
+                {snapshots.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {(s.branch ?? 'HEAD')} · {(s.commit_hash ?? 'pending').slice(0, 10)} · {s.status}
+                  </option>
+                ))}
+              </Select>
+            </FormGroup>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
-            <select
-              value={scanMode}
-              onChange={(e) => setScanMode(e.target.value as 'quick' | 'full')}
-              className="bg-zinc-950 border border-zinc-700 rounded-md px-2 py-2 text-sm text-zinc-100"
-            >
-              <option value="quick">Quick scan</option>
-              <option value="full">Full scan</option>
-            </select>
-            <select
-              value={privacyMode}
-              onChange={(e) => setPrivacyMode(e.target.value as 'strict_local' | 'byok_cloud')}
-              className="bg-zinc-950 border border-zinc-700 rounded-md px-2 py-2 text-sm text-zinc-100"
-            >
-              <option value="strict_local">Strict Local</option>
-              <option value="byok_cloud">BYOK Cloud</option>
-            </select>
-            <select
-              value={providerId}
-              onChange={async (e) => {
-                const id = e.target.value
-                setProviderId(id)
-                const provider = providers.find((p) => p.id === id)
-                setModelId(provider?.model_id ?? '')
-                await fetchModels(id)
-              }}
-              className="bg-zinc-950 border border-zinc-700 rounded-md px-2 py-2 text-sm text-zinc-100"
-            >
-              {providers.map((p) => <option key={p.id} value={p.id}>{p.display_name}</option>)}
-            </select>
+            <FormGroup label="Scan mode">
+              <Select value={scanMode} onChange={(e) => setScanMode(e.target.value as 'quick' | 'full')}>
+                <option value="quick">Quick scan</option>
+                <option value="full">Full scan</option>
+              </Select>
+            </FormGroup>
+            <FormGroup label="Privacy mode">
+              <Select value={privacyMode} onChange={(e) => setPrivacyMode(e.target.value as 'strict_local' | 'byok_cloud')}>
+                <option value="strict_local">Strict Local</option>
+                <option value="byok_cloud">BYOK Cloud</option>
+              </Select>
+            </FormGroup>
+            <FormGroup label="Provider">
+              <Select
+                value={providerId}
+                onChange={async (e) => {
+                  const id = e.target.value
+                  setProviderId(id)
+                  const provider = providers.find((p) => p.id === id)
+                  setModelId(provider?.model_id ?? '')
+                  await fetchModels(id)
+                }}
+              >
+                {providers.map((p) => <option key={p.id} value={p.id}>{p.display_name}</option>)}
+              </Select>
+            </FormGroup>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
             <div className="flex gap-1.5">
-              <select
-                value={modelId}
-                onChange={(e) => setModelId(e.target.value)}
-                className="flex-1 min-w-0 bg-zinc-950 border border-zinc-700 rounded-md px-2 py-2 text-sm text-zinc-100"
-              >
-                {(modelOptions.length > 0 ? modelOptions : ['']).map((m) => (
-                  <option key={m} value={m}>{m || '(no model)'}</option>
-                ))}
-              </select>
+              <FormGroup label="Model" className="flex-1">
+                <Select value={modelId} onChange={(e) => setModelId(e.target.value)}>
+                  {(modelOptions.length > 0 ? modelOptions : ['']).map((m) => (
+                    <option key={m} value={m}>{m || '(no model)'}</option>
+                  ))}
+                </Select>
+              </FormGroup>
               <button
                 type="button"
                 title="Fetch available models from provider"
@@ -459,6 +452,7 @@ export default function AnalysisRunScreen(): React.ReactElement {
                     large_codebase_mode: largecodebaseMode,
                   })
                   setModelWarning((job as unknown as { warning?: { code: string; message: string; severity: string } | null }).warning ?? null)
+                  toast.info('Analysis started')
                   startPolling(job.id)
                 } catch (err) {
                   setError(toErrorMessage(err))
