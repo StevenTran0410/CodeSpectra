@@ -1,5 +1,6 @@
 import React from 'react'
 import type { FolderRole, SectionC } from '../../../types/analysis'
+import { normConf } from '../../../lib/reportUtils'
 import SectionCard, { type SectionCardRerunProps } from './SectionCard'
 
 const ROLE_BADGE: Record<string, string> = {
@@ -10,10 +11,6 @@ const ROLE_BADGE: Record<string, string> = {
   test: 'bg-amber-900/40 text-amber-300 border-amber-800/50',
   generated: 'bg-purple-900/50 text-purple-300 border-purple-800/60',
   unknown: 'bg-zinc-800/80 text-zinc-500 border-zinc-700',
-}
-
-function normConf(c: string | undefined): 'high' | 'medium' | 'low' {
-  return c === 'high' || c === 'medium' || c === 'low' ? c : 'medium'
 }
 
 function roleClass(role: FolderRole | string | undefined): string {

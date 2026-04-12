@@ -228,12 +228,10 @@ export default function AnalysisRunScreen(): React.ReactElement {
     return []
   }, [modelLists, providerId, selectedProvider])
 
-  // Auto-fetch model list whenever provider changes (including on mount)
   useEffect(() => {
     if (providerId) fetchModels(providerId)
   }, [providerId, fetchModels])
 
-  // Once model list loads, pick first option if current modelId is not in the list
   useEffect(() => {
     if (modelOptions.length > 0 && !modelOptions.includes(modelId)) {
       setModelId(modelOptions[0])

@@ -31,10 +31,6 @@ const CLOUD_MODEL_PRESETS: Record<string, string[]> = {
   deepseek: ['deepseek-chat', 'deepseek-reasoner'],
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Sub-components
-// ──────────────────────────────────────────────────────────────────────────────
-
 function LocalBadge() {
   return (
     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
@@ -106,9 +102,6 @@ function TestStatus({ ok, message, warning }: TestResult) {
   )
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// LM Studio setup guide
-// ──────────────────────────────────────────────────────────────────────────────
 function LMStudioSetupGuide() {
   const [open, setOpen] = useState(false)
   return (
@@ -147,9 +140,6 @@ function LMStudioSetupGuide() {
   )
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Add / Edit form
-// ──────────────────────────────────────────────────────────────────────────────
 const KIND_DEFAULTS: Record<string, Omit<CreateProviderRequest, 'kind'>> = {
   ollama:    { display_name: 'Ollama (local)',     base_url: 'http://localhost:11434',                     model_id: '' },
   lmstudio:  { display_name: 'LM Studio (local)', base_url: 'http://localhost:1234',                      model_id: '' },
@@ -187,9 +177,6 @@ function ProviderForm({ kind, initial, onClose }: ProviderFormProps) {
   const models = modelLists[tempId] ?? []
   const isLoadingModels = loadingModels[tempId] ?? false
   const modelFetchError = modelErrors[tempId] ?? ''
-
-  // For new providers we need a temporary saved ID to test — we skip inline test for new
-  // Instead show test button only after save.
 
   const handleSave = async () => {
     setFormError(null)
@@ -246,7 +233,6 @@ function ProviderForm({ kind, initial, onClose }: ProviderFormProps) {
         <PrivacyBadge kind={kind} />
       </div>
 
-      {/* Display name */}
       <div>
         <label className="block text-xs font-medium text-zinc-400 mb-1">Display name</label>
         <input
@@ -257,7 +243,6 @@ function ProviderForm({ kind, initial, onClose }: ProviderFormProps) {
         />
       </div>
 
-      {/* Base URL */}
       <div>
         <label className="block text-xs font-medium text-zinc-400 mb-1">Base URL</label>
         <input
@@ -268,7 +253,6 @@ function ProviderForm({ kind, initial, onClose }: ProviderFormProps) {
         />
       </div>
 
-      {/* API Key (cloud only) */}
       {isCloud && (
         <div>
           <label className="block text-xs font-medium text-zinc-400 mb-1">
@@ -296,7 +280,6 @@ function ProviderForm({ kind, initial, onClose }: ProviderFormProps) {
         </div>
       )}
 
-      {/* Model ID */}
       <div>
         <label className="block text-xs font-medium text-zinc-400 mb-1">Model ID</label>
         <div className="flex gap-2">
@@ -323,7 +306,6 @@ function ProviderForm({ kind, initial, onClose }: ProviderFormProps) {
         )}
       </div>
 
-      {/* Model picker dropdown */}
       {showModelPicker && displayModels.length > 0 && (
         <div className="border border-zinc-700 rounded-md bg-zinc-800 divide-y divide-zinc-700 max-h-48 overflow-y-auto">
           {displayModels.map((m) => {
@@ -355,7 +337,6 @@ function ProviderForm({ kind, initial, onClose }: ProviderFormProps) {
         </div>
       )}
 
-      {/* Test connection (edit mode only) */}
       {isEdit && (
         <div className="space-y-2">
           <button
@@ -374,7 +355,6 @@ function ProviderForm({ kind, initial, onClose }: ProviderFormProps) {
         <p className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded px-3 py-2">{formError}</p>
       )}
 
-      {/* Actions */}
       <div className="flex gap-2 justify-end pt-2">
         <button
           onClick={onClose}
@@ -395,9 +375,6 @@ function ProviderForm({ kind, initial, onClose }: ProviderFormProps) {
   )
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Provider card
-// ──────────────────────────────────────────────────────────────────────────────
 function ProviderCard({ config }: { config: ProviderConfig }) {
   const { remove, testConnection, testing, testResults } = useProviderStore()
   const [editing, setEditing] = useState(false)
@@ -486,9 +463,6 @@ function ProviderCard({ config }: { config: ProviderConfig }) {
   )
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Cloud provider section (shared across OpenAI / Anthropic / Gemini / DeepSeek)
-// ──────────────────────────────────────────────────────────────────────────────
 interface CloudSectionProps {
   kind: 'openai' | 'anthropic' | 'gemini' | 'deepseek'
   title: string
@@ -544,9 +518,6 @@ function CloudSection({ kind, title, description, providers: list, adding, onAdd
   )
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Main screen
-// ──────────────────────────────────────────────────────────────────────────────
 type AddKind = string | null
 
 export default function ProvidersScreen() {
@@ -596,7 +567,6 @@ export default function ProvidersScreen() {
           onDismiss={() => { setShowConsent(false); pendingKindRef.current = null }}
         />
       )}
-      {/* Header */}
       <div className="shrink-0 px-8 pt-8 pb-4 border-b border-zinc-800">
         <div className="flex items-start justify-between">
           <div>
@@ -608,7 +578,6 @@ export default function ProvidersScreen() {
         </div>
       </div>
 
-      {/* Content */}
       <div className="flex-1 overflow-y-auto px-8 py-6 space-y-8">
         {error && <ErrorBanner message={error} onDismiss={clearError} />}
 
@@ -619,7 +588,6 @@ export default function ProvidersScreen() {
           </div>
         )}
 
-        {/* Ollama section */}
         <section>
           <div className="flex items-center justify-between mb-3">
             <div>
@@ -660,7 +628,6 @@ export default function ProvidersScreen() {
           </div>
         </section>
 
-        {/* LM Studio section */}
         <section>
           <div className="flex items-center justify-between mb-3">
             <div>
@@ -702,7 +669,6 @@ export default function ProvidersScreen() {
           </div>
         </section>
 
-        {/* Cloud provider divider */}
         <div className="flex items-center gap-3 pt-2">
           <div className="flex-1 h-px bg-zinc-800" />
           <div className="flex items-center gap-1.5 text-xs text-zinc-500 font-medium">

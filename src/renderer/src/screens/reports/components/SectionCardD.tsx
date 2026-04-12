@@ -1,10 +1,7 @@
 import React from 'react'
 import type { ConventionAspect, SectionD } from '../../../types/analysis'
+import { normConf } from '../../../lib/reportUtils'
 import SectionCard, { type SectionCardRerunProps } from './SectionCard'
-
-function normConf(c: string | undefined): 'high' | 'medium' | 'low' {
-  return c === 'high' || c === 'medium' || c === 'low' ? c : 'medium'
-}
 
 const ROWS: { key: keyof Pick<
   SectionD,

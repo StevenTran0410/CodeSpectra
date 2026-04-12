@@ -1,10 +1,7 @@
 import React from 'react'
 import type { SectionH } from '../../../types/analysis'
+import { normConf } from '../../../lib/reportUtils'
 import SectionCard, { type SectionCardRerunProps } from './SectionCard'
-
-function normConf(c: string | undefined): 'high' | 'medium' | 'low' {
-  return c === 'high' || c === 'medium' || c === 'low' ? c : 'medium'
-}
 
 export default function SectionCardH({
   data,

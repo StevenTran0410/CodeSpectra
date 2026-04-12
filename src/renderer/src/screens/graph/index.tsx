@@ -13,7 +13,6 @@ import '@xyflow/react/dist/style.css'
 import dagre from '@dagrejs/dagre'
 import { Loader2, AlertCircle, Save } from 'lucide-react'
 
-// TypeScript types
 type ExportJson = {
   nodes: string[]
   edges: Array<{ src: string; dst: string; external: boolean }>
@@ -61,7 +60,6 @@ const COMMUNITY_COLORS = [
 
 const MAX_NODES_DISPLAY = 500
 
-// Helper: build graph nodes and edges for React Flow
 function buildFlowGraph(
   data: ExportJson,
   nodeIndex: Record<string, number>,
@@ -113,7 +111,6 @@ function buildFlowGraph(
   return { nodes, edges }
 }
 
-// Helper: apply dagre layout to nodes
 function applyDagreLayout(nodes: Node[], edges: Edge[]): Node[] {
   const g = new dagre.graphlib.Graph()
   g.setGraph({ rankdir: 'LR', nodesep: 40, ranksep: 80 })
@@ -130,7 +127,6 @@ function applyDagreLayout(nodes: Node[], edges: Edge[]): Node[] {
   })
 }
 
-// Left panel detail component
 interface LeftPanelProps {
   selectedNode: string | null
   graphData: ExportJson | null
@@ -268,7 +264,6 @@ function LeftPanel({
   )
 }
 
-// Legend component
 interface LegendProps {
   communityCount: number
 }
@@ -324,7 +319,6 @@ export default function GraphScreen(): React.ReactElement {
   const [neighborLoading, setNeighborLoading] = useState(false)
   const [exporting, setExporting] = useState(false)
 
-  // Load graph data on mount or snapshotId change
   const loadGraph = useCallback(async () => {
     if (!snapshotId) {
       setError('No snapshot ID provided')
@@ -353,7 +347,6 @@ export default function GraphScreen(): React.ReactElement {
     }
   }, [snapshotId, loadGraph])
 
-  // Node click handler
   const onNodeClick = useCallback(
     async (_: React.MouseEvent, node: Node) => {
       const path = node.id
@@ -373,11 +366,9 @@ export default function GraphScreen(): React.ReactElement {
     [snapshotId]
   )
 
-  // communities is node_path -> community_id directly — use as nodeIndex
   const nodeIndex = graphData?.communities ?? {}
   const communityCount = Object.keys(graphData?.community_groups ?? {}).length
 
-  // Build React Flow graph
   const { nodes: rawNodes, edges } = useMemo(() => {
     if (!graphData) return { nodes: [], edges: [] }
 
@@ -389,7 +380,6 @@ export default function GraphScreen(): React.ReactElement {
     const neighborSet = new Set(neighborData?.nodes ?? [])
     if (selectedNode) neighborSet.add(selectedNode)
 
-    // Cap nodes for performance
     const cappedNodes = graphData.nodes.slice(0, MAX_NODES_DISPLAY)
     const cappedNodeSet = new Set(cappedNodes)
     const cappedData =
@@ -404,7 +394,6 @@ export default function GraphScreen(): React.ReactElement {
     return buildFlowGraph(cappedData, nodeIndex, selectedNode, neighborSet, cycleNodes)
   }, [graphData, nodeIndex, selectedNode, neighborData])
 
-  // Apply dagre layout
   const nodes = useMemo(() => {
     if (rawNodes.length === 0) return []
     return applyDagreLayout(rawNodes, edges)

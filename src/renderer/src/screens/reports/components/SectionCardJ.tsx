@@ -1,6 +1,7 @@
 import React from 'react'
 import type { RiskFinding, SectionJ } from '../../../types/analysis'
 import { SEVERITY_COLORS, SEVERITY_DOT } from '../constants'
+import { normConf } from '../../../lib/reportUtils'
 import SectionCard, { type SectionCardRerunProps } from './SectionCard'
 
 export default function SectionCardJ({
@@ -8,9 +9,7 @@ export default function SectionCardJ({
   onRerun,
   rerunBusy,
 }: { data: SectionJ } & SectionCardRerunProps): React.ReactElement {
-  const conf = data.confidence === 'high' || data.confidence === 'medium' || data.confidence === 'low'
-    ? data.confidence
-    : 'medium'
+  const conf = normConf(data.confidence)
 
   const grouped: Record<string, RiskFinding[]> = { high: [], medium: [], low: [] }
   for (const f of data.findings ?? []) {

@@ -94,7 +94,6 @@ export default function Home(): React.ReactElement {
                 </div>
               </div>
 
-              {/* Context menu */}
               <div className="relative shrink-0">
                 <button
                   className="btn-ghost p-1 opacity-0 group-hover:opacity-100 hover:opacity-100"
@@ -145,7 +144,6 @@ export default function Home(): React.ReactElement {
         ))}
       </div>
 
-      {/* Click outside to close menu */}
       {menuOpenId && (
         <div className="fixed inset-0 z-10" onClick={() => setMenuOpenId(null)} />
       )}

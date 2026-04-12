@@ -9,6 +9,7 @@
     "dev:backend": "python backend/main.py --port 7868",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
+    "test": "vitest",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json",
     "package:win": "electron-vite build && electron-builder --win --x64",
     "package:mac": "electron-vite build && electron-builder --mac",
@@ -27,17 +28,22 @@
     "zustand": "^4.5.5"
   },
   "devDependencies": {
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
     "@types/node": "^20.16.0",
     "@types/react": "^18.3.5",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.1",
+    "@vitest/ui": "^4.1.4",
     "autoprefixer": "^10.4.20",
     "electron": "^31.0.0",
     "electron-builder": "^25.0.0",
     "electron-vite": "^2.3.0",
+    "jsdom": "^27.0.1",
     "postcss": "^8.4.41",
     "tailwindcss": "^3.4.10",
-    "typescript": "^5.5.4"
+    "typescript": "^5.5.4",
+    "vitest": "^4.1.4"
   },
   "build": {
     "appId": "com.codespectra.app",
@@ -71,7 +77,14 @@
       }
     ],
     "win": {
-      "target": [{ "target": "nsis", "arch": ["x64"] }],
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
       "requestedExecutionLevel": "asInvoker"
     },
     "nsis": {
@@ -81,12 +94,27 @@
       "createStartMenuShortcut": true
     },
     "mac": {
-      "target": [{ "target": "dmg", "arch": ["x64", "arm64"] }],
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
       "hardenedRuntime": true,
       "gatekeeperAssess": false
     },
     "linux": {
-      "target": [{ "target": "AppImage", "arch": ["x64"] }],
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
       "category": "Development"
     }
   }

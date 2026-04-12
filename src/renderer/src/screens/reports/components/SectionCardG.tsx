@@ -1,5 +1,6 @@
 import React, { useState } from 'react'
 import type { SectionG, SectionRadarSlot } from '../../../types/analysis'
+import { normConf } from '../../../lib/reportUtils'
 import SectionCard, { type SectionCardRerunProps } from './SectionCard'
 
 function lastTwoSegments(path: string): string {
@@ -25,9 +26,7 @@ export default function SectionCardG({
   rerunBusy,
 }: { data: SectionG } & SectionCardRerunProps): React.ReactElement {
   const [showOther, setShowOther] = useState(false)
-  const conf = data.confidence === 'high' || data.confidence === 'medium' || data.confidence === 'low'
-    ? data.confidence
-    : 'medium'
+  const conf = normConf(data.confidence)
 
   const renderSlot = (label: string, slot: SectionRadarSlot | undefined) => {
     const s = slot ?? { file: '', reason: '' }
