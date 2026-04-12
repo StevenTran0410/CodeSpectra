@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any
 
 from domain.model_connector.service import ProviderConfigService
 from domain.retrieval.service import RetrievalService
-from domain.retrieval.types import RetrievalMode, RetrievalSection
+from domain.retrieval.types import RetrievalBundle, RetrievalMode, RetrievalSection, RetrieveRequest
 from domain.structural_graph.types import StructuralGraphSummary
 from shared.logger import logger
 
@@ -16,13 +17,17 @@ from ..profiles import NORMAL_PROFILE, AnalysisProfile
 from ..prompts import AGENT_F_SCHEMA_STR, AGENT_F_SYSTEM, render_bundle
 from ..schemas import validate_section
 from ._context_builders import extract_a_identity_context, extract_b_arch_context
-from ._graph_plan import plan_queries, retrieve_multi
+from ._graph_plan import merge_bundles, plan_queries, retrieve_multi
 from .base import BaseTypedAgent
 
 _COMBINED_QUERY = (
     "route definition controller use_case handler service public method "
     "routes.py router.ts views.py use_case feature flag entrypoint "
     "API endpoint handler request response workflow"
+)
+
+_QUERY_FRONTEND_SCREENS = (
+    "screen view page component navigation route hook useEffect"
 )
 
 
@@ -52,6 +57,7 @@ class FeatureMapAgent(BaseTypedAgent):
         identity_output: dict | None = None,
         architecture_output: dict | None = None,
         profile: AnalysisProfile | None = None,
+        folder_tree: str = "",
     ) -> dict[str, Any]:
         t0 = time.monotonic()
         n_chunks = 0
@@ -71,13 +77,16 @@ class FeatureMapAgent(BaseTypedAgent):
                 prefix_parts.append(identity_block)
             if arch_block:
                 prefix_parts.append(arch_block)
+            if folder_tree:
+                prefix_parts.append(f"Repository structure:\n{folder_tree}")
             if graph_block:
                 prefix_parts.append(graph_block)
             prefix = "\n\n".join(prefix_parts) + ("\n\n" if prefix_parts else "")
 
             _plan_goal = (
                 "feature map: routes, controllers, use-case handlers, API endpoints, "
-                "entrypoints, workflows, public methods, feature flags, request/response flow"
+                "entrypoints, workflows, public methods, feature flags, request/response flow, "
+                "screens, views, pages, components, navigation, user interactions"
             )
             sub_queries = await plan_queries(
                 goal=_plan_goal,
@@ -87,7 +96,8 @@ class FeatureMapAgent(BaseTypedAgent):
                 fallback=[_COMBINED_QUERY],
             )
             max_results_each = max(8, _profile.retrieval_max_results // len(sub_queries))
-            bundle = await retrieve_multi(
+            # Run backend sub-queries and frontend screen query in parallel
+            backend_task = retrieve_multi(
                 retrieval_service=self._retrieval,
                 snapshot_id=snapshot_id,
                 queries=sub_queries,
@@ -95,6 +105,22 @@ class FeatureMapAgent(BaseTypedAgent):
                 mode=RetrievalMode.HYBRID,
                 max_results_each=max_results_each,
             )
+            frontend_task = self._retrieval.retrieve(
+                RetrieveRequest(
+                    snapshot_id=snapshot_id,
+                    query=_QUERY_FRONTEND_SCREENS,
+                    section=RetrievalSection.FEATURE_MAP,
+                    mode=RetrievalMode.HYBRID,
+                    max_results=max_results_each,
+                )
+            )
+            backend_result, frontend_result = await asyncio.gather(
+                backend_task, frontend_task, return_exceptions=True
+            )
+            to_merge = [b for b in [backend_result, frontend_result] if isinstance(b, RetrievalBundle)]
+            if not to_merge:
+                return self._fallback("all retrieval queries failed")
+            bundle = merge_bundles(to_merge, section=RetrievalSection.FEATURE_MAP)
             self._record_bundle(bundle)
             n_chunks = len(bundle.evidences)
             user_prompt = f"{prefix}snapshot_id={snapshot_id}\n\nEvidence:\n{render_bundle(bundle)}"

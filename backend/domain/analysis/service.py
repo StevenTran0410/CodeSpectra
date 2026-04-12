@@ -13,6 +13,7 @@ from domain.job.types import CreateJobRequest, StepName
 from domain.manifest.service import ManifestService
 from domain.manifest.types import BuildManifestRequest
 from domain.model_connector.service import ProviderConfigService
+from domain.model_connector.types import ChatMessage, ChatRequest
 from domain.repo_map.service import RepoMapService
 from domain.repo_map.types import BuildRepoMapRequest
 from domain.retrieval.service import RetrievalService
@@ -26,6 +27,11 @@ from shared.utils import new_id, utc_now_iso
 
 from .agent_pipeline import REPORT_VERSION as _REPORT_V2
 from .agent_pipeline import AnalysisAgentPipeline
+from .diagram_builder import (
+    build_architecture_diagram,
+    build_feature_diagram,
+    build_structure_diagram,
+)
 from .diff import compare_reports as diff_compare_payloads
 from .diff import compute_section_hash
 from .model_guard import check_model_capability
@@ -333,13 +339,21 @@ def _render_report_markdown(report: AnalysisReport) -> str:
                 lines.append(f"## {letter} — (section)")
                 lines.append("")
                 for k, v in sec.items():
-                    if k in ("confidence", "evidence_files", "blind_spots"):
+                    if k in ("confidence", "evidence_files", "blind_spots", "mermaid_diagram"):
                         continue
                     if isinstance(v, list):
                         lines.append(f"**{k}:** " + ", ".join(str(i) for i in v[:20]))
                     else:
                         lines.append(f"**{k}:** {v}")
                 _section_footer(sec, lines)
+                # Append mermaid diagram block for sections B, C, F when present
+                if letter in ("B", "C", "F"):
+                    diagram = sec.get("mermaid_diagram")
+                    if diagram and isinstance(diagram, str):
+                        lines.append("")
+                        lines.append("```mermaid")
+                        lines.append(diagram)
+                        lines.append("```")
                 lines.append("")
     else:
         lines.append("_No analysis section data found. Re-run analysis to generate sections._")
@@ -606,6 +620,202 @@ class AnalysisService:
         )
         return SectionSourcesResponse(report_id=report_id, section_id=section_id, sources=sources)
 
+    async def _fetch_manifest_paths(self, snapshot_id: str) -> list[str]:
+        """Return all rel_path values from manifest_files for a snapshot."""
+        db = get_db()
+        try:
+            async with db.execute(
+                "SELECT rel_path FROM manifest_files WHERE snapshot_id=?",
+                (snapshot_id,),
+            ) as cur:
+                rows = await cur.fetchall()
+            return [row["rel_path"] for row in rows]
+        except Exception:
+            return []
+
+    async def _generate_diagrams_llm(
+        self,
+        provider_id: str,
+        model_id: str,
+        b_data: dict[str, Any],
+        c_data: dict[str, Any],
+        f_data: dict[str, Any],
+    ) -> tuple[str | None, str | None, str | None]:
+        """Generate C4 Mermaid diagrams via LLM (single call for all 3 sections).
+
+        Falls back to Python builders silently on any LLM failure.
+        Returns (b_diagram, c_diagram, f_diagram) — None on failure.
+        """
+        # ── Prompt ────────────────────────────────────────────────────────────
+        system_prompt = """You are an expert software architect generating C4 model diagram data.
+
+Output a JSON object with keys "B", "C", "F". Each value is itself a JSON object with:
+  - "nodes": array of node objects
+  - "edges": array of edge objects
+
+NODE SCHEMA:
+{
+  "id": "unique_snake_case_id",
+  "type": "person" | "container" | "containerDb" | "component" | "systemExt",
+  "label": "Short Name",          // max 24 chars
+  "technology": "React/TS",       // max 20 chars, optional
+  "description": "Brief purpose"  // max 40 chars, optional
+}
+
+EDGE SCHEMA:
+{
+  "id": "unique_edge_id",
+  "source": "node_id",
+  "target": "node_id",
+  "label": "IPC",                 // max 15 chars, optional
+  "bidirectional": false          // true when both sides call each other
+}
+
+SECTION B — C4 Container (C2 level):
+- One "person" node for the developer
+- "container" nodes for each runtime process/layer (max 7)
+- "containerDb" for databases/storage
+- "systemExt" ONLY for truly external cloud services (LLM APIs, Git hosting) — NOT for IPC, subprocess, HTTP
+- Edges reflect the data/control flow: person→UI→[IPC]→main→[spawns]→backend→db
+- Use bidirectional:true when two containers genuinely call each other both ways
+
+SECTION C — C4 Component (C3 level, repo structure):
+- Group folders by top-level directory using "component" nodes
+- One node per major subdirectory (max 10 total)
+- Edges only between top-level groups (backend→src relationships), max 3 edges
+
+SECTION F — C4 Component (C3 level, feature map):
+- One "component" node per feature (max 6 features)
+- No edges needed — features are independent slices
+- Use technology field for the main tech (React/TS, Python, etc.)
+- Use description field for a one-line feature summary
+
+RULES:
+- ASCII only — no unicode, no em-dash, no smart quotes
+- IDs must be snake_case, unique across the whole response
+- Keep it minimal: fewer nodes and edges = cleaner diagram
+- Do NOT output any text outside the JSON object"""
+
+        # ── Input data ────────────────────────────────────────────────────────
+        b_summary = {
+            "main_layers": b_data.get("main_layers", [])[:7],
+            "frameworks": b_data.get("frameworks", [])[:6],
+            "external_integrations": b_data.get("external_integrations", [])[:4],
+            "database_hints": b_data.get("database_hints", [])[:2],
+            "main_services": [
+                {"name": s.get("name", ""), "path": s.get("path", ""), "role": (s.get("role") or "")[:60]}
+                for s in (b_data.get("main_services") or [])[:6]
+            ],
+        }
+        c_summary = {
+            "summary": (c_data.get("summary") or "")[:200],
+            "folders": [
+                {"path": f.get("path", ""), "role": f.get("role", ""), "description": (f.get("description") or "")[:60]}
+                for f in (c_data.get("folders") or [])[:14]
+            ],
+        }
+        f_summary = {
+            "features": [
+                {"name": feat.get("name", ""), "description": (feat.get("description") or "")[:60],
+                 "entrypoint": feat.get("entrypoint", "")}
+                for feat in (f_data.get("features") or [])[:6]
+            ],
+        }
+
+        user_prompt = (
+            "Generate C4 diagram JSON for these three sections.\n\n"
+            f"SECTION B (Architecture):\n{json.dumps(b_summary, indent=2)}\n\n"
+            f"SECTION C (Repo Structure):\n{json.dumps(c_summary, indent=2)}\n\n"
+            f"SECTION F (Features):\n{json.dumps(f_summary, indent=2)}\n\n"
+            'Return ONLY the JSON object: {"B": {"nodes": [...], "edges": [...]}, "C": {...}, "F": {...}}'
+        )
+
+        try:
+            text = await self._provider.chat(
+                ChatRequest(
+                    provider_id=provider_id,
+                    model_id=model_id,
+                    messages=[
+                        ChatMessage(role="system", content=system_prompt),
+                        ChatMessage(role="user", content=user_prompt),
+                    ],
+                    max_completion_tokens=4000,
+                    temperature=0.2,
+                    json_mode=True,
+                    stream=False,
+                )
+            )
+            text = (text.content or "").strip()
+
+            # Strip markdown fences if present
+            raw = text
+            if raw.startswith("```"):
+                lines = raw.split("\n")
+                raw = "\n".join(
+                    l for l in lines if not l.strip().startswith("```") and l.strip() != "json"
+                ).strip()
+
+            obj = json.loads(raw)
+            if not isinstance(obj, dict):
+                raise ValueError("LLM response is not a JSON object")
+
+            def _valid_diagram(v: object) -> bool:
+                return (
+                    isinstance(v, dict)
+                    and isinstance(v.get("nodes"), list)
+                    and len(v["nodes"]) > 0
+                )
+
+            b_diag = obj.get("B") if _valid_diagram(obj.get("B")) else None
+            c_diag = obj.get("C") if _valid_diagram(obj.get("C")) else None
+            f_diag = obj.get("F") if _valid_diagram(obj.get("F")) else None
+
+            b_valid = b_diag is not None
+            c_valid = c_diag is not None
+            f_valid = f_diag is not None
+
+            result = (
+                (b_diag if b_valid else None),
+                (c_diag if c_valid else None),
+                (f_diag if f_valid else None),
+            )
+
+            logger.info(
+                "[DiagramGeneratorLLM] generated diagrams (B=%s C=%s F=%s)",
+                "ok" if b_valid else "invalid",
+                "ok" if c_valid else "invalid",
+                "ok" if f_valid else "invalid",
+            )
+
+            return result
+
+        except Exception as exc:
+            logger.warning("[DiagramGeneratorLLM] LLM call failed, falling back to Python builders: %s", exc)
+            # Fall back to Python builders
+            # Python builder fallback — no snapshot_id available here so valid_paths is empty
+            b_diag = build_architecture_diagram(b_data, frozenset())
+            c_diag = build_structure_diagram(c_data, frozenset())
+            f_diag = build_feature_diagram(f_data, frozenset())
+            return b_diag or None, c_diag or None, f_diag or None
+
+    async def _generate_diagrams(
+        self,
+        snapshot_id: str,
+        b_data: dict[str, Any],
+        c_data: dict[str, Any],
+        f_data: dict[str, Any],
+    ) -> tuple[str | None, str | None, str | None]:
+        """Generate Mermaid diagrams for sections B, C, F in parallel.
+
+        One manifest read is shared across all three builders to avoid redundant DB round-trips.
+        Returns (b_diagram, c_diagram, f_diagram) — None on any individual build error.
+        """
+        valid_paths = frozenset(await self._fetch_manifest_paths(snapshot_id))
+        b_diag = build_architecture_diagram(b_data, valid_paths)
+        c_diag = build_structure_diagram(c_data, valid_paths)
+        f_diag = build_feature_diagram(f_data, valid_paths)
+        return b_diag or None, c_diag or None, f_diag or None
+
     async def _persist_report_json(self, report_id: str, payload: dict[str, Any]) -> None:
         db = get_db()
         await db.execute(
@@ -779,6 +989,37 @@ class AnalysisService:
         sh = raw.setdefault("section_hashes", {})
         if isinstance(sh, dict):
             sh[letter] = compute_section_hash(out)
+
+        # Regenerate Mermaid diagram for sections that have one (B, C, F).
+        # We need current data for all three builders even when only one was rerun.
+        if letter in ("B", "C", "F"):
+            try:
+                b_data = _dsec(sections, "B") or {}
+                c_data = _dsec(sections, "C") or {}
+                f_data = _dsec(sections, "F") or {}
+                # Use freshly rerun output for the section that just ran
+                if letter == "B":
+                    b_data = out
+                elif letter == "C":
+                    c_data = out
+                elif letter == "F":
+                    f_data = out
+                b_diag, c_diag, f_diag = await self._generate_diagrams_llm(
+                    provider_id, model_id, b_data, c_data, f_data
+                )
+                for sec_key, diag in (("B", b_diag), ("C", c_diag), ("F", f_diag)):
+                    if sec_key in sec_blob and isinstance(sec_blob[sec_key], dict) and diag:
+                        sec_blob[sec_key]["mermaid_diagram"] = diag
+                # Also inject into the returned `out` so the frontend sees it immediately
+                if letter == "B" and b_diag:
+                    out = {**out, "mermaid_diagram": b_diag}
+                elif letter == "C" and c_diag:
+                    out = {**out, "mermaid_diagram": c_diag}
+                elif letter == "F" and f_diag:
+                    out = {**out, "mermaid_diagram": f_diag}
+            except Exception:
+                pass  # diagrams are non-fatal
+
         await self._persist_report_json(report_id, raw)
         duration_ms = int((time.monotonic() - t0) * 1000)
         return RerunSectionResponse(section=letter, data=out, duration_ms=duration_ms)
@@ -990,6 +1231,43 @@ class AnalysisService:
                 ),
             )
             await get_db().commit()
+
+            # Generate Mermaid diagrams and patch them into the persisted report
+            try:
+                _sections = report.get("sections") or {}
+                _b = _sections.get("B") if isinstance(_sections, dict) else None
+                _c = _sections.get("C") if isinstance(_sections, dict) else None
+                _f = _sections.get("F") if isinstance(_sections, dict) else None
+                if isinstance(_b, dict) and isinstance(_c, dict) and isinstance(_f, dict):
+                    # Find the report_id just inserted so we can patch it
+                    async with get_db().execute(
+                        "SELECT id FROM analysis_reports WHERE job_id=? ORDER BY created_at DESC LIMIT 1",
+                        (job_id,),
+                    ) as _cur:
+                        _row = await _cur.fetchone()
+                    if _row:
+                        _report_id = _row["id"]
+                        _b_diag, _c_diag, _f_diag = await self._generate_diagrams_llm(
+                            req.provider_id, req.model_id, _b, _c, _f
+                        )
+                        if any(d is not None for d in (_b_diag, _c_diag, _f_diag)):
+                            if _b_diag:
+                                _b["mermaid_diagram"] = _b_diag
+                            if _c_diag:
+                                _c["mermaid_diagram"] = _c_diag
+                            if _f_diag:
+                                _f["mermaid_diagram"] = _f_diag
+                            await self._persist_report_json(_report_id, report)
+                            logger.info(
+                                "[analysis:%s] mermaid diagrams generated (B=%s C=%s F=%s)",
+                                job_id,
+                                "ok" if _b_diag else "skip",
+                                "ok" if _c_diag else "skip",
+                                "ok" if _f_diag else "skip",
+                            )
+            except Exception as _diag_err:
+                logger.warning("[analysis:%s] diagram generation failed (non-fatal): %s", job_id, _diag_err)
+
             await asyncio.sleep(0.08)
             await self._jobs.update_step(job_id, StepName.EXPORT.value, 100, "Report assembled")
 

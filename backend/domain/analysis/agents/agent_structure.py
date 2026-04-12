@@ -15,7 +15,7 @@ from ..agent_pipeline import _normalize_conf
 from ..profiles import NORMAL_PROFILE, AnalysisProfile
 from ..prompts import AGENT_C_SCHEMA_STR, AGENT_C_SYSTEM, render_bundle
 from ..schemas import validate_section
-from ._context_builders import extract_a_identity_context, fetch_folder_tree
+from ._context_builders import extract_a_identity_context, build_folder_summary
 from .base import BaseTypedAgent
 
 _ALLOWED_FOLDER_ROLES = frozenset(
@@ -71,7 +71,7 @@ class StructureAgent(BaseTypedAgent):
                     len(arch_bundle.evidences),
                 )
                 if not folder_tree:
-                    folder_tree = await fetch_folder_tree(snapshot_id)
+                    folder_tree = await build_folder_summary(snapshot_id)
             else:
                 logger.info("[StructureAgent] arch_bundle not in mem_ctx, using own retrieval")
                 bundle, folder_tree = await asyncio.gather(
@@ -84,7 +84,7 @@ class StructureAgent(BaseTypedAgent):
                             max_results=_profile.retrieval_max_results,
                         )
                     ),
-                    fetch_folder_tree(snapshot_id),
+                    build_folder_summary(snapshot_id),
                 )
             self._record_bundle(bundle)
             n_chunks = len(bundle.evidences)

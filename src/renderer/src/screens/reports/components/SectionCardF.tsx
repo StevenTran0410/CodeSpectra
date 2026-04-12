@@ -1,7 +1,9 @@
 import React, { useState } from 'react'
-import { Beaker, FileText } from 'lucide-react'
+import { Beaker, FileText, Maximize2 } from 'lucide-react'
 import type { FeatureMapItem, SectionF } from '../../../types/analysis'
 import { normConf } from '../../../lib/reportUtils'
+import C4DiagramView from '../../../components/C4DiagramView'
+import DiagramModal from '../../../components/DiagramModal'
 import SectionCard, { type SectionCardRerunProps } from './SectionCard'
 
 export default function SectionCardF({
@@ -10,7 +12,10 @@ export default function SectionCardF({
   rerunBusy,
 }: { data: SectionF } & SectionCardRerunProps): React.ReactElement {
   const conf = normConf(data.confidence)
+  const hasDiagram = !!data.mermaid_diagram
   const [expanded, setExpanded] = useState<Set<number>>(() => new Set())
+  const [activeTab, setActiveTab] = useState<'details' | 'diagram'>('details')
+  const [diagramOpen, setDiagramOpen] = useState(false)
 
   const toggle = (idx: number) => {
     setExpanded((prev) => {
@@ -30,6 +35,43 @@ export default function SectionCardF({
       onRerun={onRerun}
       rerunBusy={rerunBusy}
     >
+      {hasDiagram && (
+        <div className="flex items-center gap-2 mb-3 border-b border-zinc-800 pb-2">
+          {(['details', 'diagram'] as const).map((tab) => (
+            <button
+              key={tab}
+              onClick={() => setActiveTab(tab)}
+              className={`text-[10px] uppercase tracking-wide px-2 py-0.5 rounded ${
+                activeTab === tab
+                  ? 'bg-zinc-700 text-zinc-100'
+                  : 'text-zinc-500 hover:text-zinc-300'
+              }`}
+            >
+              {tab}
+            </button>
+          ))}
+          {activeTab === 'diagram' && (
+            <button
+              onClick={() => setDiagramOpen(true)}
+              className="ml-auto flex items-center gap-1 text-[10px] text-zinc-500 hover:text-zinc-300 transition-colors"
+              title="Open fullscreen"
+            >
+              <Maximize2 size={12} />
+            </button>
+          )}
+        </div>
+      )}
+      {hasDiagram && data.mermaid_diagram && (
+        <DiagramModal
+          open={diagramOpen}
+          onClose={() => setDiagramOpen(false)}
+          diagramData={data.mermaid_diagram}
+          title="Feature Map"
+        />
+      )}
+      {activeTab === 'diagram' && data.mermaid_diagram ? (
+        <C4DiagramView data={data.mermaid_diagram} />
+      ) : (
       <div className="space-y-3">
         {!data.features || data.features.length === 0 ? (
           <div className="text-zinc-500 italic text-xs">No features detected</div>
@@ -134,6 +176,7 @@ export default function SectionCardF({
           </div>
         )}
       </div>
+      )}
     </SectionCard>
   )
 }

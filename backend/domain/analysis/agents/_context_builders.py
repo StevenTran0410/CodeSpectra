@@ -164,7 +164,7 @@ async def prefetch_pipeline_context(
             max_results=profile.retrieval_arch_max_results,
         )
     )
-    tree_task = fetch_folder_tree(snapshot_id)
+    tree_task = build_folder_summary(snapshot_id)
     doc_task = _fetch_docs_with_fallback(retrieval, snapshot_id, profile)
     manifest_task = _fetch_files_by_pattern(
         snapshot_id, _MANIFEST_PATTERNS, char_limit=profile.retrieval_manifest_char_limit
@@ -224,22 +224,60 @@ def extract_b_arch_context(b_output: dict[str, Any] | None) -> str:
     return "\n".join(lines)
 
 
-async def fetch_folder_tree(snapshot_id: str, max_files: int = 60) -> str:
-    """Compact top-level file listing from manifest_files for a snapshot."""
+async def build_folder_summary(snapshot_id: str, max_depth: int = 3) -> str:
+    """Build an indented directory tree with per-directory file counts.
+
+    The old ``fetch_folder_tree`` used ``ORDER BY rel_path ASC LIMIT 60`` which
+    returned only backend/ paths on CodeSpectra (backend/ fills all 60 slots before
+    src/ appears alphabetically), making src/renderer/src/screens/ invisible to agents.
+
+    This implementation fetches all rel_paths once and groups them in Python by
+    directory prefix at each depth level, producing an indented tree, e.g.:
+
+        backend/ (117 files)
+          backend/domain/ (89 files)
+            backend/domain/analysis/ (34 files)
+        src/ (76 files)
+          src/renderer/ (65 files)
+            src/renderer/src/ (58 files)
+
+    Args:
+        snapshot_id: The snapshot to summarise.
+        max_depth: Maximum directory depth levels to include (default 3).
+    """
     db = get_db()
-    rows = []
     try:
         async with db.execute(
-            """SELECT rel_path FROM manifest_files
-               WHERE snapshot_id=?
-               ORDER BY rel_path ASC
-               LIMIT ?""",
-            (snapshot_id, max_files),
+            "SELECT rel_path FROM manifest_files WHERE snapshot_id=?",
+            (snapshot_id,),
         ) as cur:
             rows = await cur.fetchall()
     except Exception:
-        pass
-    return "\n".join(row["rel_path"] for row in rows) if rows else ""
+        return ""
+
+    if not rows:
+        return ""
+
+    # Count files per directory prefix at each depth level (1 to max_depth).
+    # A path "a/b/c/d.py" at depth=2 contributes to prefix "a/b/".
+    all_dirs: dict[str, int] = {}
+    for row in rows:
+        path: str = row["rel_path"]
+        parts = path.split("/")
+        # parts[-1] is the filename; parts[:-1] are directory segments
+        for depth in range(1, min(max_depth, len(parts) - 1) + 1):
+            prefix = "/".join(parts[:depth]) + "/"
+            all_dirs[prefix] = all_dirs.get(prefix, 0) + 1
+
+    if not all_dirs:
+        return ""
+
+    lines: list[str] = []
+    for prefix in sorted(all_dirs.keys()):
+        depth = prefix.count("/") - 1  # trailing slash adds one extra slash
+        indent = "  " * depth
+        lines.append(f"{indent}{prefix} ({all_dirs[prefix]} files)")
+    return "\n".join(lines)
 
 
 def build_convention_block(report: ConventionReport | None) -> str:
