@@ -1,5 +1,8 @@
 import { app, BrowserWindow, dialog } from 'electron'
-import { electronApp, optimizer } from '@electron-toolkit/utils'
+import { electronApp, is, optimizer } from '@electron-toolkit/utils'
+
+// Suppress Electron security warnings in dev (unsafe-eval is required by Vite HMR)
+if (is.dev) process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = 'true'
 import { createMainWindow } from './window'
 import { startPythonServer, stopPythonServer } from './infrastructure/python-server/server'
 import { registerWorkspaceHandlers } from './api/workspace.api'

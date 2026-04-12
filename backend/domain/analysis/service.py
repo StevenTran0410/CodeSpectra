@@ -955,6 +955,7 @@ class AnalysisService:
                     repo_name=repo_name,
                     on_section_done=_on_section_done,
                     large_codebase_mode=req.large_codebase_mode,
+                    skip_synthesis=req.skip_synthesis,
                 )
             if await _cancelled():
                 return

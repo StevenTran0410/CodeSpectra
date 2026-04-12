@@ -12,6 +12,7 @@ import {
 import '@xyflow/react/dist/style.css'
 import dagre from '@dagrejs/dagre'
 import { Loader2, AlertCircle, Save } from 'lucide-react'
+import { Button, PageLoading, useToastStore } from '../../components/ui'
 
 type ExportJson = {
   nodes: string[]
@@ -308,6 +309,7 @@ function Legend({ communityCount }: LegendProps) {
 export default function GraphScreen(): React.ReactElement {
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
+  const toast = useToastStore()
   const snapshotId = searchParams.get('snapshotId') ?? ''
 
   const [graphData, setGraphData] = useState<ExportJson | null>(null)
@@ -407,26 +409,16 @@ export default function GraphScreen(): React.ReactElement {
         <div className="text-center space-y-4">
           <AlertCircle size={32} className="text-zinc-500 mx-auto" />
           <div className="text-zinc-400">No snapshot ID provided</div>
-          <button
-            onClick={() => navigate('/index-overview')}
-            className="px-4 py-2 bg-indigo-700 text-white rounded text-sm hover:bg-indigo-600"
-          >
+          <Button variant="primary" onClick={() => navigate('/index-overview')}>
             Go back
-          </button>
+          </Button>
         </div>
       </div>
     )
   }
 
   if (loading) {
-    return (
-      <div className="h-full flex items-center justify-center bg-zinc-950">
-        <div className="flex items-center gap-3 text-zinc-400">
-          <Loader2 size={20} className="animate-spin" />
-          <span>Loading graph...</span>
-        </div>
-      </div>
-    )
+    return <PageLoading label="Loading graph..." />
   }
 
   if (error || !graphData || !communityData) {
@@ -435,12 +427,9 @@ export default function GraphScreen(): React.ReactElement {
         <div className="text-center space-y-4">
           <AlertCircle size={32} className="text-red-500 mx-auto" />
           <div className="text-red-400">{error || 'Failed to load graph'}</div>
-          <button
-            onClick={() => loadGraph()}
-            className="px-4 py-2 bg-indigo-700 text-white rounded text-sm hover:bg-indigo-600"
-          >
+          <Button variant="primary" onClick={() => loadGraph()}>
             Retry
-          </button>
+          </Button>
         </div>
       </div>
     )
@@ -473,24 +462,34 @@ export default function GraphScreen(): React.ReactElement {
             )}
           </div>
           <div className="flex items-center gap-2">
-            <button
+            <Button
+              variant="secondary"
+              size="sm"
               onClick={async () => {
                 setExporting(true)
-                try { await window.api.graph.exportJson(snapshotId) }
-                finally { setExporting(false) }
+                try {
+                  const result = await window.api.graph.exportJson(snapshotId)
+                  if (result.saved) {
+                    toast.success('Graph JSON exported')
+                  }
+                } catch {
+                  toast.error('Export failed')
+                } finally {
+                  setExporting(false)
+                }
               }}
-              disabled={exporting}
-              className="px-2.5 py-1 text-xs border border-zinc-700 rounded text-zinc-400 hover:border-zinc-600 hover:text-zinc-300 disabled:opacity-40 inline-flex items-center gap-1"
+              loading={exporting}
             >
               <Save size={11} />
-              {exporting ? 'Exporting…' : 'Export JSON'}
-            </button>
-            <button
+              Export JSON
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
               onClick={() => navigate(-1)}
-              className="px-2.5 py-1 text-xs border border-zinc-700 rounded text-zinc-300 hover:border-zinc-600"
             >
               Back
-            </button>
+            </Button>
           </div>
         </div>
 

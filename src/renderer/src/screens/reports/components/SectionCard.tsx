@@ -39,7 +39,9 @@ const CONF_DOT: Record<string, string> = {
   low: 'bg-zinc-500',
 }
 
-export default function SectionCard({
+// Note: children (React.ReactNode) cannot bail out of memo; this memo targets
+// primitive prop changes (rerunBusy, confidence, evidenceCount) from unrelated parent state.
+const SectionCard = React.memo(function SectionCard({
   sectionId,
   sectionName,
   confidence,
@@ -119,4 +121,6 @@ export default function SectionCard({
       {!collapsed && <div className="px-3 py-3">{children}</div>}
     </div>
   )
-}
+})
+
+export default SectionCard

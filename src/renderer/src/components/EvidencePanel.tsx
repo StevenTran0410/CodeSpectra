@@ -19,13 +19,14 @@ export default function EvidencePanel({
   onClose: () => void
 }): React.ReactElement {
   return (
-    <div className="fixed inset-y-0 right-0 w-96 bg-zinc-950 border-l border-zinc-800 flex flex-col z-50 shadow-2xl">
+    <div role="region" aria-label="Evidence sources" className="fixed inset-y-0 right-0 w-96 bg-zinc-950 border-l border-zinc-800 flex flex-col z-50 shadow-2xl animate-slide-in-right">
       <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-800">
         <span className="text-sm font-semibold text-zinc-200">
           Sources — Section {sectionId}
         </span>
         <button
           onClick={onClose}
+          aria-label="Close evidence panel"
           className="text-zinc-500 hover:text-zinc-200 text-xs border border-zinc-700 px-2 py-1 rounded"
         >
           ✕

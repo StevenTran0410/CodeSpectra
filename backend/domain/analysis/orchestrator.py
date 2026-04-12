@@ -39,6 +39,7 @@ class RunDirectorAgent:
         repo_name: str = "",
         on_section_done: SectionDoneCallback | None = None,
         large_codebase_mode: bool = False,
+        skip_synthesis: bool = False,
     ) -> dict[str, Any]:
         db = get_db()
         static_risk = None
@@ -83,6 +84,7 @@ class RunDirectorAgent:
             static_convention=static_conv,
             on_section_done=on_section_done,
             large_codebase_mode=large_codebase_mode,
+            skip_synthesis=skip_synthesis,
         )
         sections = out.get("sections")
         if isinstance(sections, dict):

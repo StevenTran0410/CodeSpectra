@@ -454,6 +454,7 @@ class AnalysisAgentPipeline:
         static_convention: ConventionReport | None = None,
         on_section_done: SectionDoneCallback | None = None,
         large_codebase_mode: bool = False,
+        skip_synthesis: bool = False,
     ) -> dict[str, Any]:
         profile = get_profile(large_codebase_mode)
         sections: dict[str, Any] = {}
@@ -694,32 +695,33 @@ class AnalysisAgentPipeline:
                 on_section_done,
             ),
         )
-        pipeline.add_component(
-            "synthesizer",
-            _SectionAgentComponent(
-                "L",
-                lambda c, d: self._synthesizer.run(
-                    c["provider_id"],
-                    c["model_id"],
-                    {
-                        "A": d.get("identity_output"),
-                        "B": d.get("architecture_output"),
-                        "C": d.get("structure_output"),
-                        "D": d.get("conventions_output"),
-                        "E": d.get("violations_output"),
-                        "F": d.get("feature_map_output"),
-                        "G": d.get("important_files_output"),
-                        "H": d.get("onboarding_output"),
-                        "I": d.get("glossary_output"),
-                        "J": d.get("risk_output"),
-                        "K": d.get("auditor_output"),
-                    },
-                    profile=c.get("profile"),
+        if not skip_synthesis:
+            pipeline.add_component(
+                "synthesizer",
+                _SectionAgentComponent(
+                    "L",
+                    lambda c, d: self._synthesizer.run(
+                        c["provider_id"],
+                        c["model_id"],
+                        {
+                            "A": d.get("identity_output"),
+                            "B": d.get("architecture_output"),
+                            "C": d.get("structure_output"),
+                            "D": d.get("conventions_output"),
+                            "E": d.get("violations_output"),
+                            "F": d.get("feature_map_output"),
+                            "G": d.get("important_files_output"),
+                            "H": d.get("onboarding_output"),
+                            "I": d.get("glossary_output"),
+                            "J": d.get("risk_output"),
+                            "K": d.get("auditor_output"),
+                        },
+                        profile=c.get("profile"),
+                    ),
+                    lambda _c, _d: _section_l_pipeline_fallback(),
+                    on_section_done,
                 ),
-                lambda _c, _d: _section_l_pipeline_fallback(),
-                on_section_done,
-            ),
-        )
+            )
         pipeline.connect("conventions.output", "violations.conventions_output")
         pipeline.connect("important_files.output", "onboarding.important_files_output")
         pipeline.connect("project_identity.output", "auditor.identity_output")
@@ -736,17 +738,18 @@ class AnalysisAgentPipeline:
         pipeline.connect("project_identity.output", "structure.identity_output")
         pipeline.connect("project_identity.output", "feature_map.identity_output")
         pipeline.connect("architecture.output", "feature_map.architecture_output")
-        pipeline.connect("auditor.output", "synthesizer.auditor_output")
-        pipeline.connect("project_identity.output", "synthesizer.identity_output")
-        pipeline.connect("architecture.output", "synthesizer.architecture_output")
-        pipeline.connect("structure.output", "synthesizer.structure_output")
-        pipeline.connect("conventions.output", "synthesizer.conventions_output")
-        pipeline.connect("violations.output", "synthesizer.violations_output")
-        pipeline.connect("feature_map.output", "synthesizer.feature_map_output")
-        pipeline.connect("important_files.output", "synthesizer.important_files_output")
-        pipeline.connect("onboarding.output", "synthesizer.onboarding_output")
-        pipeline.connect("glossary.output", "synthesizer.glossary_output")
-        pipeline.connect("risk.output", "synthesizer.risk_output")
+        if not skip_synthesis:
+            pipeline.connect("auditor.output", "synthesizer.auditor_output")
+            pipeline.connect("project_identity.output", "synthesizer.identity_output")
+            pipeline.connect("architecture.output", "synthesizer.architecture_output")
+            pipeline.connect("structure.output", "synthesizer.structure_output")
+            pipeline.connect("conventions.output", "synthesizer.conventions_output")
+            pipeline.connect("violations.output", "synthesizer.violations_output")
+            pipeline.connect("feature_map.output", "synthesizer.feature_map_output")
+            pipeline.connect("important_files.output", "synthesizer.important_files_output")
+            pipeline.connect("onboarding.output", "synthesizer.onboarding_output")
+            pipeline.connect("glossary.output", "synthesizer.glossary_output")
+            pipeline.connect("risk.output", "synthesizer.risk_output")
         names = {
             "project_identity",
             "architecture",
@@ -759,7 +762,7 @@ class AnalysisAgentPipeline:
             "glossary",
             "risk",
             "auditor",
-            "synthesizer",
+            *([] if skip_synthesis else ["synthesizer"]),
         }
         data = {name: {"ctx": ctx} for name in names}
         effective_concurrency = max(1, int(self._concurrency_limit * profile.concurrency_scale))

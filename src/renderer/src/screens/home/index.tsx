@@ -4,6 +4,7 @@ import { useWorkspaceStore } from '../../store/workspace.store'
 import { WorkspaceModal } from '../../components/workspace/WorkspaceModal'
 import { EmptyState } from '../../components/ui/EmptyState'
 import { CardSkeleton } from '../../components/ui/LoadingSkeleton'
+import { ConfirmDialog, Button, useToastStore } from '../../components/ui'
 
 type ModalState =
   | { type: 'none' }
@@ -14,6 +15,7 @@ type ModalState =
 export default function Home(): React.ReactElement {
   const { workspaces, activeWorkspaceId, isLoading, setActive, create, rename, remove } =
     useWorkspaceStore()
+  const toast = useToastStore()
   const [modal, setModal] = useState<ModalState>({ type: 'none' })
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null)
 
@@ -35,16 +37,19 @@ export default function Home(): React.ReactElement {
           title="No workspaces yet"
           description="A workspace groups your repository connections, analysis runs, and reports."
           action={
-            <button className="btn-primary" onClick={() => setModal({ type: 'create' })}>
+            <Button variant="primary" onClick={() => setModal({ type: 'create' })}>
               <Plus className="w-4 h-4" />
               Create workspace
-            </button>
+            </Button>
           }
         />
         {modal.type === 'create' && (
           <WorkspaceModal
             mode="create"
-            onConfirm={(name, description) => create(name, description).then(() => {})}
+            onConfirm={(name, description) => create(name, description).then(() => {
+              toast.success('Workspace created')
+              setModal({ type: 'none' })
+            })}
             onClose={() => setModal({ type: 'none' })}
           />
         )}
@@ -59,10 +64,10 @@ export default function Home(): React.ReactElement {
           <h1 className="screen-title">Workspaces</h1>
           <p className="screen-subtitle">{workspaces.length} workspace{workspaces.length !== 1 ? 's' : ''}</p>
         </div>
-        <button className="btn-primary" onClick={() => setModal({ type: 'create' })}>
+        <Button variant="primary" onClick={() => setModal({ type: 'create' })}>
           <Plus className="w-4 h-4" />
           New
-        </button>
+        </Button>
       </div>
 
       <div className="p-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -95,15 +100,17 @@ export default function Home(): React.ReactElement {
               </div>
 
               <div className="relative shrink-0">
-                <button
-                  className="btn-ghost p-1 opacity-0 group-hover:opacity-100 hover:opacity-100"
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="p-1 opacity-0 group-hover:opacity-100 hover:opacity-100"
                   onClick={(e) => {
                     e.stopPropagation()
                     setMenuOpenId(menuOpenId === ws.id ? null : ws.id)
                   }}
                 >
                   <MoreHorizontal className="w-4 h-4" />
-                </button>
+                </Button>
 
                 {menuOpenId === ws.id && (
                   <div className="absolute right-0 top-7 z-20 w-36 rounded-md border border-surface-border bg-surface-overlay shadow-lg py-1">
@@ -151,7 +158,10 @@ export default function Home(): React.ReactElement {
       {modal.type === 'create' && (
         <WorkspaceModal
           mode="create"
-          onConfirm={(name, description) => create(name, description).then(() => {})}
+          onConfirm={(name, description) => create(name, description).then(() => {
+            toast.success('Workspace created')
+            setModal({ type: 'none' })
+          })}
           onClose={() => setModal({ type: 'none' })}
         />
       )}
@@ -166,33 +176,24 @@ export default function Home(): React.ReactElement {
       )}
 
       {modal.type === 'delete' && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
-          onClick={(e) => e.target === e.currentTarget && setModal({ type: 'none' })}
-        >
-          <div className="card w-full max-w-sm p-5 shadow-2xl">
-            <h2 className="text-base font-semibold text-gray-100">Delete workspace?</h2>
-            <p className="text-sm text-gray-400 mt-2">
-              <strong className="text-gray-200">{modal.name}</strong> will be permanently deleted.
+        <ConfirmDialog
+          open={true}
+          onClose={() => setModal({ type: 'none' })}
+          onConfirm={async () => {
+            await remove(modal.id)
+            toast.success('Workspace deleted')
+            setModal({ type: 'none' })
+          }}
+          title="Delete workspace?"
+          description={
+            <>
+              <strong>{modal.name}</strong> will be permanently deleted.
               All repository connections and analysis history will be lost.
-            </p>
-            <div className="flex gap-2 justify-end mt-5">
-              <button className="btn-secondary" onClick={() => setModal({ type: 'none' })}>
-                Cancel
-              </button>
-              <button
-                className="btn-danger"
-                onClick={() => {
-                  remove(modal.id)
-                  setModal({ type: 'none' })
-                }}
-              >
-                <Trash2 className="w-4 h-4" />
-                Delete
-              </button>
-            </div>
-          </div>
-        </div>
+            </>
+          }
+          confirmLabel="Delete"
+          confirmVariant="danger"
+        />
       )}
     </>
   )

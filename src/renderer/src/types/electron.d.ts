@@ -437,7 +437,7 @@ declare global {
           }
         ) => Promise<LocalRepo>
         estimateFileCount: (id: string) => Promise<EstimateFileCountResponse>
-        cloneFromUrl: (url: string) => Promise<LocalRepo>
+        cloneFromUrl: (url: string, workspaceId?: string) => Promise<LocalRepo>
       }
       sync: {
         prepare: (body: {
@@ -534,6 +534,7 @@ declare global {
           model_id: string
           force_rerun?: boolean
           large_codebase_mode?: boolean
+          skip_synthesis?: boolean
         }) => Promise<Job>
         listReports: (repoId?: string, limit?: number) => Promise<AnalysisReportSummary[]>
         getReport: (reportId: string) => Promise<AnalysisReport>
