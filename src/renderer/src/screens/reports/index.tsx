@@ -477,6 +477,12 @@ export default function ReportViewerScreen(): React.ReactElement {
                       if (!Comp) return null
                       const extraCtx: ExtraPropsCtx = { exportAudit, exportAuditBusy }
                       const extraProps = SECTION_EXTRA_PROPS[letter]?.(extraCtx) ?? {}
+                      // Section A gets enrichment from B (entrypoints) and F (feature names)
+                      const sectionAExtras = letter === 'A' ? {
+                        featureNames: ((sectionsV2['F'] as SectionF | undefined)?.features ?? [])
+                          .map((f) => f.name).filter(Boolean),
+                        entrypoints: (sectionsV2['B'] as SectionB | undefined)?.entrypoints ?? [],
+                      } : {}
                       return (
                         <ErrorBoundary key={letter} fallback={<div className="rounded-lg border border-red-900/50 bg-red-950/20 px-3 py-2 text-xs text-red-400">Section {letter} failed to render</div>}>
                           <Comp
@@ -485,6 +491,7 @@ export default function ReportViewerScreen(): React.ReactElement {
                             rerunBusy={rerunLetter === letter}
                             onShowSources={() => showSources(letter)}
                             {...extraProps}
+                            {...sectionAExtras}
                           />
                         </ErrorBoundary>
                       )

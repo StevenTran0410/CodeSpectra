@@ -138,6 +138,17 @@ def parse_plantuml_c4(text: str) -> dict[str, Any]:
                 edge["bidirectional"] = True
             edges.append(edge)
 
+    # ── hard caps (large-codebase safety) ────────────────────────────────────
+    # Prevents unreadable diagrams when LLM ignores node-count rules.
+    _MAX_NODES = 12
+    _MAX_EDGES = 20
+    if len(nodes) > _MAX_NODES:
+        kept_ids = {n["id"] for n in nodes[:_MAX_NODES]}
+        nodes = nodes[:_MAX_NODES]
+        edges = [e for e in edges if e["source"] in kept_ids and e["target"] in kept_ids]
+    if len(edges) > _MAX_EDGES:
+        edges = edges[:_MAX_EDGES]
+
     # ── filter orphan nodes ───────────────────────────────────────────────────
     # Remove nodes that appear in no edge (neither source nor target).
     # This keeps the diagram clean when the LLM forgets to generate some Rel() calls.

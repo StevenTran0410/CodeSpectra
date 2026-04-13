@@ -754,8 +754,19 @@ RULES:
         parts.append(f"Output ONLY the requested section(s) with their === SECTION X === markers.")
         user_prompt = "\n\n".join(parts)
 
-        # Scale token budget: ~1000 per section
-        max_tokens = len(sections) * 1000 + 500
+        # Scale token budget based on actual data complexity, not just section count.
+        # Each PlantUML node line ~80 tokens, each Rel ~40 tokens, overhead ~300.
+        _tok = 300
+        if "B" in sections:
+            _n = len(b_data.get("main_layers") or []) + len(b_data.get("external_integrations") or [])
+            _tok += max(_n * 130, 900)
+        if "C" in sections:
+            _n = len(c_data.get("folders") or [])
+            _tok += max(_n * 110, 800)
+        if "F" in sections:
+            _n = len(f_data.get("features") or [])
+            _tok += max(_n * 110, 700)
+        max_tokens = min(_tok, 4000)  # hard cap — avoid runaway costs
 
         try:
             resp = await self._provider.chat(

@@ -5,7 +5,7 @@
  * Each node is a "step" box representing one file in the feature's reading_order.
  * ELK lays them out top-to-bottom with orthogonal edges.
  */
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ReactFlow,
   Background,
@@ -142,14 +142,35 @@ interface Props {
 }
 
 export default function SequenceFlowView({ data }: Props): React.ReactElement | null {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [visible, setVisible] = useState(false)
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([])
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([])
   const [loading, setLoading] = useState(true)
 
+  // Only run ELK when the component scrolls into view — avoids running 6 layout
+  // calls simultaneously when all feature cards are collapsed / off-screen.
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const obs = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          setVisible(true)
+          obs.disconnect()
+        }
+      },
+      { threshold: 0.1 },
+    )
+    obs.observe(el)
+    return () => obs.disconnect()
+  }, [])
+
   const { nodes: rawNodes, edges: rawEdges } = useMemo(() => buildElements(data), [data])
 
   useEffect(() => {
-    if (rawNodes.length === 0) {
+    if (!visible || rawNodes.length === 0) {
+      if (!visible) return   // wait for intersection
       setLoading(false)
       return
     }
@@ -161,22 +182,21 @@ export default function SequenceFlowView({ data }: Props): React.ReactElement | 
         setLoading(false)
       })
       .catch(() => setLoading(false))
-  }, [rawNodes, rawEdges])
+  }, [rawNodes, rawEdges, visible])
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center py-3 text-[10px] text-zinc-600">
-        Loading…
-      </div>
-    )
-  }
-
-  if (nodes.length === 0) return null
-
-  // Height scales with node count (more steps = taller diagram), capped at 420px
-  const height = Math.min(80 + nodes.length * (STEP_H + 36) + 40, 420)
+  // Height scales with step count, capped at 420px
+  const height = Math.min(80 + data.nodes.length * (STEP_H + 36) + 40, 420)
 
   return (
+    <div ref={containerRef} style={{ minHeight: 40 }}>
+    {!visible || loading ? (
+      <div
+        style={{ height: Math.min(height, 120), background: '#18181b', borderRadius: 6, border: '1px solid #27272a' }}
+        className="flex items-center justify-center"
+      >
+        <span className="text-[10px] text-zinc-700">{visible ? 'Laying out…' : ''}</span>
+      </div>
+    ) : nodes.length === 0 ? null : (
     <div
       style={{
         height,
@@ -205,6 +225,8 @@ export default function SequenceFlowView({ data }: Props): React.ReactElement | 
       >
         <Background color="#2d2d2d" gap={20} />
       </ReactFlow>
+    </div>
+    )}
     </div>
   )
 }
