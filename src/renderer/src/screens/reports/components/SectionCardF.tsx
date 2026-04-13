@@ -4,6 +4,7 @@ import type { FeatureMapItem, SectionF } from '../../../types/analysis'
 import { normConf } from '../../../lib/reportUtils'
 import C4DiagramView from '../../../components/C4DiagramView'
 import DiagramModal from '../../../components/DiagramModal'
+import SequenceFlowView from '../../../components/SequenceFlowView'
 import SectionCard, { type SectionCardRerunProps } from './SectionCard'
 
 export default function SectionCardF({
@@ -155,6 +156,14 @@ export default function SectionCardF({
                               </li>
                             ))}
                           </ol>
+                        </div>
+                      )}
+                      {feat.sequence_diagram && feat.sequence_diagram.nodes.length >= 2 && (
+                        <div>
+                          <div className="text-[10px] uppercase tracking-wide text-zinc-500 mb-1">
+                            Call flow
+                          </div>
+                          <SequenceFlowView data={feat.sequence_diagram} />
                         </div>
                       )}
                     </div>

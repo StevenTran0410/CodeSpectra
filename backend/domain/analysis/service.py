@@ -31,6 +31,7 @@ from .c4_parser import parse_three_sections
 from .diagram_builder import (
     build_architecture_diagram,
     build_feature_diagram,
+    build_feature_sequence_diagrams,
     build_structure_diagram,
 )
 from .diff import compare_reports as diff_compare_payloads
@@ -1013,6 +1014,17 @@ RULES:
                 # Also inject into the returned `out` so the frontend sees it immediately
                 if diag:
                     out = {**out, "mermaid_diagram": diag}
+
+                # Attach per-feature sequence diagrams when Section F reruns
+                if letter == "F":
+                    seq_diagrams = build_feature_sequence_diagrams(out)
+                    enriched: list[dict] = []
+                    for feat, seq in zip(out.get("features") or [], seq_diagrams):
+                        enriched.append({**feat, "sequence_diagram": seq} if seq else feat)
+                    if enriched:
+                        out = {**out, "features": enriched}
+                        if "F" in sec_blob and isinstance(sec_blob["F"], dict):
+                            sec_blob["F"]["features"] = enriched
             except Exception:
                 pass  # diagrams are non-fatal
 
@@ -1253,6 +1265,16 @@ RULES:
                                 _c["mermaid_diagram"] = _c_diag
                             if _f_diag:
                                 _f["mermaid_diagram"] = _f_diag
+                        # Attach per-feature sequence diagrams (pure Python, always runs)
+                        _seq = build_feature_sequence_diagrams(_f)
+                        _f_feats = _f.get("features") or []
+                        _enriched = [
+                            {**ft, "sequence_diagram": sq} if sq else ft
+                            for ft, sq in zip(_f_feats, _seq)
+                        ]
+                        if _enriched:
+                            _f["features"] = _enriched
+                        if any(d is not None for d in (_b_diag, _c_diag, _f_diag)) or _enriched:
                             await self._persist_report_json(_report_id, report)
                             logger.info(
                                 "[analysis:%s] mermaid diagrams generated (B=%s C=%s F=%s)",
