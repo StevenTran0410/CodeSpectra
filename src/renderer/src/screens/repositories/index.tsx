@@ -448,8 +448,7 @@ export default function RepositoriesScreen(): React.ReactElement {
           setScreenError(null)
           try {
             await window.api.sync.deleteSnapshot(confirmDeleteSnapshotId)
-            const toast = useToastStore()
-            toast.success('Snapshot deleted')
+            useToastStore.getState().success('Snapshot deleted')
             const rows = await window.api.sync.listForRepo(selectedRepo.id)
             setSnapshots(rows)
             setSelectedSnapshotId(rows[0]?.id ?? null)

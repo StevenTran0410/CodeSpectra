@@ -30,6 +30,19 @@ export interface AnalysisSectionEventsResult {
   liveSections: Record<AnalysisSectionId, unknown>
 }
 
+function applyEvent(
+  evt: SectionDoneEvent,
+  setStates: React.Dispatch<React.SetStateAction<Record<AnalysisSectionId, SectionStatus>>>,
+  setLive: React.Dispatch<React.SetStateAction<Record<AnalysisSectionId, unknown>>>,
+) {
+  const section = evt.section as AnalysisSectionId
+  if (!ALL_SECTIONS.includes(section)) return
+  setStates((prev) => ({ ...prev, [section]: evt.status }))
+  if (evt.status === 'done') {
+    setLive((prev) => ({ ...prev, [section]: evt.data ?? null }))
+  }
+}
+
 export function useAnalysisSectionEvents(
   activeJobId: string | undefined,
   isRunning: boolean
@@ -49,13 +62,18 @@ export function useAnalysisSectionEvents(
       Object.fromEntries(ALL_SECTIONS.map((s) => [s, null])) as Record<AnalysisSectionId, unknown>
     )
 
+    // Catch up on events that happened while component was unmounted
+    window.api.analysis.pollEvents(activeJobId, 0)
+      .then((res) => {
+        for (const evt of res.events) {
+          applyEvent(evt, setSectionStates, setLiveSections)
+        }
+      })
+      .catch(() => {})
+
+    // Listen for new events going forward
     const handler = (_event: unknown, evt: SectionDoneEvent) => {
-      const section = evt.section as AnalysisSectionId
-      if (!ALL_SECTIONS.includes(section)) return
-      setSectionStates((prev) => ({ ...prev, [section]: evt.status }))
-      if (evt.status === 'done') {
-        setLiveSections((prev) => ({ ...prev, [section]: evt.data ?? null }))
-      }
+      applyEvent(evt, setSectionStates, setLiveSections)
     }
 
     window.api.analysis.onSectionDone(handler)

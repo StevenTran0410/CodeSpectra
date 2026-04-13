@@ -161,6 +161,8 @@ const api = {
       ipcRenderer.invoke('analysis:getSectionSources', reportId, sectionId),
     getStaleness: (reportId: string) =>
       ipcRenderer.invoke('analysis:getStaleness', reportId),
+    pollEvents: (jobId: string, fromIdx?: number) =>
+      ipcRenderer.invoke('analysis:pollEvents', jobId, fromIdx ?? 0),
     onSectionDone: (cb: (event: unknown, data: unknown) => void) => {
       ipcRenderer.on('analysis:section_done', cb)
     },

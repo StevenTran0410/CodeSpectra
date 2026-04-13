@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import { RefreshCw } from 'lucide-react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import type {
   AnalysisReport,
@@ -268,16 +269,30 @@ export default function ReportViewerScreen(): React.ReactElement {
     run()
   }, [isDetailMode, selectedReportId, reportIdInUrl])
 
+  const [stalenessManual, setStalenessManual] = useState(false)
+  const checkStaleness = useCallback((manual = false) => {
+    if (!report) return
+    setStalenessLoading(true)
+    if (manual) setStalenessManual(true)
+    window.api.analysis.getStaleness(report.summary.id)
+      .then((res) => {
+        setStaleness(res)
+        if (manual && !res.stale) {
+          useToastStore.getState().success('Up to date — no changes detected')
+        }
+      })
+      .catch((err) => {
+        if (manual) useToastStore.getState().error(`Staleness check failed: ${err}`)
+      })
+      .finally(() => { setStalenessLoading(false); setStalenessManual(false) })
+  }, [report?.summary.id])
+
   useEffect(() => {
     if (!report) {
       setStaleness(null)
       return
     }
-    setStalenessLoading(true)
-    window.api.analysis.getStaleness(report.summary.id)
-      .then(setStaleness)
-      .catch(() => {})
-      .finally(() => setStalenessLoading(false))
+    checkStaleness()
   }, [report?.summary.id])
 
   const sectionsV2 = useMemo(() => {
@@ -362,6 +377,21 @@ export default function ReportViewerScreen(): React.ReactElement {
                     repo: <span className="text-zinc-200 font-mono">{report.summary.repo_name || report.summary.repo_id}</span>
                     <span className="mx-2 text-zinc-700">|</span>
                     branch: <span className="text-zinc-200 font-mono">{report.summary.branch || 'unknown'}</span>
+                    {report.summary.commit_hash && (
+                      <>
+                        <span className="mx-2 text-zinc-700">|</span>
+                        commit: <span className="text-zinc-200 font-mono">{report.summary.commit_hash.slice(0, 7)}</span>
+                        <button
+                          type="button"
+                          onClick={() => checkStaleness(true)}
+                          disabled={stalenessLoading}
+                          title="Check if repo has changed since this analysis"
+                          className="ml-1.5 inline-flex items-center text-zinc-500 hover:text-zinc-300 transition-colors disabled:opacity-40"
+                        >
+                          <RefreshCw size={11} className={stalenessLoading ? 'animate-spin' : ''} />
+                        </button>
+                      </>
+                    )}
                     <span className="mx-2 text-zinc-700">|</span>
                     model: <span className="text-zinc-200 font-mono">{report.summary.model_id}</span>
                   </div>

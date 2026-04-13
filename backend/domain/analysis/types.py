@@ -61,6 +61,7 @@ class AnalysisReportSummary(BaseModel):
     repo_name: str | None = None
     snapshot_id: str
     branch: str | None = None
+    commit_hash: str | None = None
     provider_id: str
     model_id: str
     scan_mode: ScanMode
