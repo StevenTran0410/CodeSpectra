@@ -641,19 +641,23 @@ class AnalysisService:
         b_data: dict[str, Any],
         c_data: dict[str, Any],
         f_data: dict[str, Any],
+        sections: frozenset[str] | None = None,
     ) -> tuple[dict | None, dict | None, dict | None]:
         """Generate C4 diagrams via LLM using PlantUML C4 syntax, parsed into
         {nodes, edges} JSON for the React Flow + ELK renderer.
+
+        ``sections`` controls which sections to regenerate (default: all three).
+        Pass ``frozenset({"B"})`` to regenerate only section B, etc.
 
         LLM outputs standard PlantUML C4 macros (Person, Container, Rel, …).
         We parse the text — no fragile JSON schema for the LLM to follow.
         Falls back to Python builders silently on any failure.
         """
-        # ── System prompt ─────────────────────────────────────────────────────
-        system_prompt = """You are an expert software architect. Generate PlantUML C4 diagrams.
+        if sections is None:
+            sections = frozenset({"B", "C", "F"})
 
-Output exactly three sections separated by markers. Use ONLY standard PlantUML C4 macros.
-
+        # ── Section templates (only include requested sections) ────────────────
+        _tmpl_b = """\
 === SECTION B ===
 @startuml
 !include C4_Container.puml
@@ -664,69 +668,93 @@ ContainerDb(alias, "Label", "Technology", "Description")
 System_Ext(alias, "Label", "Description")
 Rel(from, to, "label")
 BiRel(from, to, "label")
-@enduml
+@enduml"""
 
+        _tmpl_c = """\
 === SECTION C ===
 @startuml
 !include C4_Component.puml
 ' C4 Component diagram (C3 level) — top-level repo folders
 Component(alias, "Label", "Technology", "Description")
 Rel(from, to, "label")
-@enduml
+@enduml"""
 
+        _tmpl_f = """\
 === SECTION F ===
 @startuml
 !include C4_Component.puml
 ' C4 Component diagram (C3 level) — features / capabilities
 Component(alias, "Label", "Technology", "Description")
-@enduml
+Rel(from, to, "label")
+@enduml"""
+
+        templates = "\n\n".join(
+            t for key, t in (("B", _tmpl_b), ("C", _tmpl_c), ("F", _tmpl_f))
+            if key in sections
+        )
+        sec_list = " and ".join(sorted(sections))
+
+        system_prompt = f"""You are an expert software architect. Generate PlantUML C4 diagrams.
+
+Output exactly {len(sections)} section(s) separated by markers. Use ONLY standard PlantUML C4 macros.
+
+{templates}
 
 RULES:
-- Aliases: snake_case, unique across ALL three sections
+- Aliases: snake_case, unique across all sections
 - Labels: max 24 chars, ASCII only
 - Descriptions: max 40 chars, ASCII only
 - SECTION B: 1 Person + max 7 Container/ContainerDb + max 3 System_Ext + edges showing data flow
 - SECTION B: System_Ext ONLY for real external cloud services (LLM APIs, git hosts) — not for IPC
-- SECTION C: max 10 Component nodes (one per top-level folder) + max 4 Rel edges
-- SECTION F: max 6 Component nodes (one per feature) — no edges needed
-- Output NOTHING outside the three sections"""
+- SECTION C: max 10 Component nodes (one per top-level folder) + 3–6 Rel edges showing how components call/use each other
+- SECTION F: max 6 Component nodes (one per feature) + 2–5 Rel edges showing how features depend on or trigger each other
+- CRITICAL: Every node MUST appear in at least one Rel() call. Never create a node with no edges.
+- Output ONLY the requested section(s) ({sec_list}) with their === SECTION X === markers."""
 
-        # ── Input summaries ───────────────────────────────────────────────────
-        b_summary = {
-            "main_layers":            b_data.get("main_layers", [])[:7],
-            "frameworks":             b_data.get("frameworks", [])[:6],
-            "external_integrations":  b_data.get("external_integrations", [])[:4],
-            "database_hints":         b_data.get("database_hints", [])[:2],
-            "main_services": [
-                {"name": s.get("name", ""), "path": s.get("path", ""),
-                 "role": (s.get("role") or "")[:60]}
-                for s in (b_data.get("main_services") or [])[:6]
-            ],
-        }
-        c_summary = {
-            "summary": (c_data.get("summary") or "")[:200],
-            "folders": [
-                {"path": f.get("path", ""), "role": f.get("role", ""),
-                 "description": (f.get("description") or "")[:60]}
-                for f in (c_data.get("folders") or [])[:14]
-            ],
-        }
-        f_summary = {
-            "features": [
-                {"name": feat.get("name", ""),
-                 "description": (feat.get("description") or "")[:60],
-                 "entrypoint": feat.get("entrypoint", "")}
-                for feat in (f_data.get("features") or [])[:6]
-            ],
-        }
+        # ── Input summaries (only build what's needed) ────────────────────────
+        parts: list[str] = [f"Generate PlantUML C4 diagram(s) for section(s): {sec_list}.\n"]
 
-        user_prompt = (
-            "Generate PlantUML C4 diagrams for these three sections.\n\n"
-            f"SECTION B (Architecture):\n{json.dumps(b_summary, indent=2)}\n\n"
-            f"SECTION C (Repo Structure):\n{json.dumps(c_summary, indent=2)}\n\n"
-            f"SECTION F (Features):\n{json.dumps(f_summary, indent=2)}\n\n"
-            "Output ONLY the three sections with their === SECTION X === markers."
-        )
+        if "B" in sections:
+            b_summary = {
+                "main_layers":            b_data.get("main_layers", [])[:7],
+                "frameworks":             b_data.get("frameworks", [])[:6],
+                "external_integrations":  b_data.get("external_integrations", [])[:4],
+                "database_hints":         b_data.get("database_hints", [])[:2],
+                "main_services": [
+                    {"name": s.get("name", ""), "path": s.get("path", ""),
+                     "role": (s.get("role") or "")[:60]}
+                    for s in (b_data.get("main_services") or [])[:6]
+                ],
+            }
+            parts.append(f"SECTION B (Architecture):\n{json.dumps(b_summary, indent=2)}")
+
+        if "C" in sections:
+            c_summary = {
+                "summary": (c_data.get("summary") or "")[:200],
+                "folders": [
+                    {"path": f.get("path", ""), "role": f.get("role", ""),
+                     "description": (f.get("description") or "")[:60]}
+                    for f in (c_data.get("folders") or [])[:14]
+                ],
+            }
+            parts.append(f"SECTION C (Repo Structure):\n{json.dumps(c_summary, indent=2)}")
+
+        if "F" in sections:
+            f_summary = {
+                "features": [
+                    {"name": feat.get("name", ""),
+                     "description": (feat.get("description") or "")[:60],
+                     "entrypoint": feat.get("entrypoint", "")}
+                    for feat in (f_data.get("features") or [])[:6]
+                ],
+            }
+            parts.append(f"SECTION F (Features):\n{json.dumps(f_summary, indent=2)}")
+
+        parts.append(f"Output ONLY the requested section(s) with their === SECTION X === markers.")
+        user_prompt = "\n\n".join(parts)
+
+        # Scale token budget: ~1000 per section
+        max_tokens = len(sections) * 1000 + 500
 
         try:
             resp = await self._provider.chat(
@@ -737,7 +765,7 @@ RULES:
                         ChatMessage(role="system", content=system_prompt),
                         ChatMessage(role="user",   content=user_prompt),
                     ],
-                    max_completion_tokens=3000,
+                    max_completion_tokens=max_tokens,
                     temperature=0.2,
                     json_mode=False,
                     stream=False,
@@ -745,16 +773,17 @@ RULES:
             )
             raw = (resp.content or "").strip()
 
-            sections = parse_three_sections(raw)
-            b_diag = sections.get("B")
-            c_diag = sections.get("C")
-            f_diag = sections.get("F")
+            parsed = parse_three_sections(raw)
+            b_diag = parsed.get("B") if "B" in sections else None
+            c_diag = parsed.get("C") if "C" in sections else None
+            f_diag = parsed.get("F") if "F" in sections else None
 
             logger.info(
-                "[DiagramGeneratorLLM] PlantUML parse done (B=%s C=%s F=%s)",
-                f"{len(b_diag['nodes'])}n" if b_diag else "empty",
-                f"{len(c_diag['nodes'])}n" if c_diag else "empty",
-                f"{len(f_diag['nodes'])}n" if f_diag else "empty",
+                "[DiagramGeneratorLLM] sections=%s parse done (B=%s C=%s F=%s)",
+                sec_list,
+                f"{len(b_diag['nodes'])}n" if b_diag else "skip",
+                f"{len(c_diag['nodes'])}n" if c_diag else "skip",
+                f"{len(f_diag['nodes'])}n" if f_diag else "skip",
             )
             return b_diag, c_diag, f_diag
 
@@ -762,9 +791,9 @@ RULES:
             logger.warning(
                 "[DiagramGeneratorLLM] failed, falling back to Python builders: %s", exc
             )
-            b_fb = build_architecture_diagram(b_data, frozenset())
-            c_fb = build_structure_diagram(c_data, frozenset())
-            f_fb = build_feature_diagram(f_data, frozenset())
+            b_fb = build_architecture_diagram(b_data, frozenset()) if "B" in sections else None
+            c_fb = build_structure_diagram(c_data, frozenset()) if "C" in sections else None
+            f_fb = build_feature_diagram(f_data, frozenset()) if "F" in sections else None
             return b_fb or None, c_fb or None, f_fb or None
 
     async def _generate_diagrams(
@@ -974,18 +1003,16 @@ RULES:
                 elif letter == "F":
                     f_data = out
                 b_diag, c_diag, f_diag = await self._generate_diagrams_llm(
-                    provider_id, model_id, b_data, c_data, f_data
+                    provider_id, model_id, b_data, c_data, f_data,
+                    sections=frozenset({letter}),
                 )
-                for sec_key, diag in (("B", b_diag), ("C", c_diag), ("F", f_diag)):
-                    if sec_key in sec_blob and isinstance(sec_blob[sec_key], dict) and diag:
-                        sec_blob[sec_key]["mermaid_diagram"] = diag
+                # Only update the section that was rerun — don't touch B/C/F diagrams
+                diag = b_diag if letter == "B" else c_diag if letter == "C" else f_diag
+                if diag and letter in sec_blob and isinstance(sec_blob[letter], dict):
+                    sec_blob[letter]["mermaid_diagram"] = diag
                 # Also inject into the returned `out` so the frontend sees it immediately
-                if letter == "B" and b_diag:
-                    out = {**out, "mermaid_diagram": b_diag}
-                elif letter == "C" and c_diag:
-                    out = {**out, "mermaid_diagram": c_diag}
-                elif letter == "F" and f_diag:
-                    out = {**out, "mermaid_diagram": f_diag}
+                if diag:
+                    out = {**out, "mermaid_diagram": diag}
             except Exception:
                 pass  # diagrams are non-fatal
 
