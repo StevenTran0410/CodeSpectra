@@ -4,6 +4,7 @@ import type {
   AnalysisReport,
   AnalysisReportSummary,
   ReportDiffResult,
+  StalenessResult,
 } from '../../types/electron'
 import {
   type SectionA,
@@ -101,6 +102,8 @@ export default function ReportViewerScreen(): React.ReactElement {
     sources: Array<{ chunk_id: string; rel_path: string; chunk_index: number; snippet: string }>
     loading: boolean
   } | null>(null)
+  const [staleness, setStaleness] = useState<StalenessResult | null>(null)
+  const [stalenessLoading, setStalenessLoading] = useState(false)
 
   const showSources = useCallback(async (sectionId: string) => {
     if (!report) return
@@ -264,6 +267,18 @@ export default function ReportViewerScreen(): React.ReactElement {
     }
     run()
   }, [isDetailMode, selectedReportId, reportIdInUrl])
+
+  useEffect(() => {
+    if (!report) {
+      setStaleness(null)
+      return
+    }
+    setStalenessLoading(true)
+    window.api.analysis.getStaleness(report.summary.id)
+      .then(setStaleness)
+      .catch(() => {})
+      .finally(() => setStalenessLoading(false))
+  }, [report?.summary.id])
 
   const sectionsV2 = useMemo(() => {
     if (!report?.report) return null
@@ -449,6 +464,26 @@ export default function ReportViewerScreen(): React.ReactElement {
                     </div>
                   </div>
                 )}
+                {staleness && staleness.stale && (staleness.changed_files_count ?? 0) > 0 && (
+                  <div className={`rounded-lg border px-3 py-2 text-xs ${
+                    staleness.recommend_new_snapshot
+                      ? 'border-amber-800/60 bg-amber-950/30 text-amber-200'
+                      : 'border-yellow-800/60 bg-yellow-950/30 text-yellow-200'
+                  }`}>
+                    {staleness.recommend_new_snapshot ? (
+                      <div>
+                        <strong>{staleness.changed_files_count} files</strong> changed since analysis ({staleness.insertions} insertions, {staleness.deletions} deletions) — recommend rebuilding snapshot before re-running sections
+                      </div>
+                    ) : (
+                      <div>
+                        <strong>{staleness.changed_files_count} files</strong> changed since analysis
+                        {staleness.sections_affected && staleness.sections_affected.length > 0 && (
+                          <span> — sections {staleness.sections_affected.join(', ')} may be stale</span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
                 {sectionsV2 ? (
                   <div className="space-y-2">
                     {REPORT_SECTION_ORDER.map((letter) => {
@@ -483,6 +518,7 @@ export default function ReportViewerScreen(): React.ReactElement {
                           .map((f) => f.name).filter(Boolean),
                         entrypoints: (sectionsV2['B'] as SectionB | undefined)?.entrypoints ?? [],
                       } : {}
+                      const isStale = staleness?.stale && staleness.sections_affected?.includes(letter)
                       return (
                         <ErrorBoundary key={letter} fallback={<div className="rounded-lg border border-red-900/50 bg-red-950/20 px-3 py-2 text-xs text-red-400">Section {letter} failed to render</div>}>
                           <Comp
@@ -490,6 +526,7 @@ export default function ReportViewerScreen(): React.ReactElement {
                             onRerun={() => void rerunSection(letter)}
                             rerunBusy={rerunLetter === letter}
                             onShowSources={() => showSources(letter)}
+                            isStale={isStale}
                             {...extraProps}
                             {...sectionAExtras}
                           />

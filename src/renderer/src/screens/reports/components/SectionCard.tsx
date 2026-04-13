@@ -16,6 +16,7 @@ export interface SectionCardProps {
   rerunBusy?: boolean
   headerExtra?: React.ReactNode
   onShowSources?: () => void
+  isStale?: boolean
 }
 
 const BADGE_COLORS: Record<string, string> = {
@@ -52,6 +53,7 @@ const SectionCard = React.memo(function SectionCard({
   rerunBusy = false,
   headerExtra,
   onShowSources,
+  isStale = false,
 }: SectionCardProps): React.ReactElement {
   const [collapsed, setCollapsed] = useState(defaultCollapsed)
   const badge = BADGE_COLORS[sectionId] ?? 'bg-zinc-800 text-zinc-300 border-zinc-700'
@@ -66,6 +68,12 @@ const SectionCard = React.memo(function SectionCard({
             {sectionId}
           </span>
           <span className="text-sm font-semibold text-zinc-200 truncate">{sectionName}</span>
+          {isStale && (
+            <span
+              className="shrink-0 inline-block w-2 h-2 rounded-full bg-amber-500"
+              title="This section may be stale — codebase has changed"
+            />
+          )}
         </div>
         <div className="flex items-center gap-2 shrink-0">
           {headerExtra}

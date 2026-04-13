@@ -123,3 +123,14 @@ class SectionSourcesResponse(BaseModel):
     report_id: str
     section_id: str
     sources: list[ChunkSource]
+
+
+class StalenessResult(BaseModel):
+    stale: bool
+    old_commit: str | None = None
+    current_commit: str | None = None
+    changed_files_count: int = 0
+    insertions: int = 0
+    deletions: int = 0
+    sections_affected: list[str] = []
+    recommend_new_snapshot: bool = False

@@ -344,6 +344,17 @@ export interface TwoStageDebugBundle {
   }
 }
 
+export interface StalenessResult {
+  stale: boolean
+  old_commit?: string
+  current_commit?: string
+  changed_files_count?: number
+  insertions?: number
+  deletions?: number
+  sections_affected?: string[]
+  recommend_new_snapshot?: boolean
+}
+
 export interface ValidateFolderResponse {
   path: string
   name: string
@@ -558,6 +569,8 @@ declare global {
           report_id_a: string
           report_id_b: string
         }) => Promise<ReportDiffResult>
+        getSectionSources: (reportId: string, sectionId: string) => Promise<unknown>
+        getStaleness: (reportId: string) => Promise<StalenessResult>
         onSectionDone: (cb: (event: unknown, data: SectionDoneEvent) => void) => void
         offSectionDone: (cb: (event: unknown, data: SectionDoneEvent) => void) => void
         deleteRepot: (reportId: string) => Promise<void>

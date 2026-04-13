@@ -159,6 +159,8 @@ const api = {
       ipcRenderer.invoke('analysis:compareReports', body),
     getSectionSources: (reportId: string, sectionId: string) =>
       ipcRenderer.invoke('analysis:getSectionSources', reportId, sectionId),
+    getStaleness: (reportId: string) =>
+      ipcRenderer.invoke('analysis:getStaleness', reportId),
     onSectionDone: (cb: (event: unknown, data: unknown) => void) => {
       ipcRenderer.on('analysis:section_done', cb)
     },

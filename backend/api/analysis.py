@@ -13,6 +13,7 @@ from domain.analysis.types import (
     RerunSectionRequest,
     RerunSectionResponse,
     SectionSourcesResponse,
+    StalenessResult,
     StartAnalysisRequest,
     StartAnalysisResponse,
 )
@@ -100,3 +101,8 @@ async def compare_reports_endpoint(body: CompareRequest) -> ReportDiffResponse:
 @router.get("/reports/{report_id}/sections/{section_id}/sources", response_model=SectionSourcesResponse)
 async def get_section_sources(report_id: str, section_id: str) -> SectionSourcesResponse:
     return await _service.get_section_sources(report_id, section_id)
+
+
+@router.get("/staleness", response_model=StalenessResult)
+async def get_staleness(report_id: str = Query(...)) -> StalenessResult:
+    return await _service.check_staleness(report_id)
