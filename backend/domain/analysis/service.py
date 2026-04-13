@@ -27,6 +27,7 @@ from shared.utils import new_id, utc_now_iso
 
 from .agent_pipeline import REPORT_VERSION as _REPORT_V2
 from .agent_pipeline import AnalysisAgentPipeline
+from .c4_parser import parse_three_sections
 from .diagram_builder import (
     build_architecture_diagram,
     build_feature_diagram,
@@ -640,163 +641,131 @@ class AnalysisService:
         b_data: dict[str, Any],
         c_data: dict[str, Any],
         f_data: dict[str, Any],
-    ) -> tuple[str | None, str | None, str | None]:
-        """Generate C4 Mermaid diagrams via LLM (single call for all 3 sections).
+    ) -> tuple[dict | None, dict | None, dict | None]:
+        """Generate C4 diagrams via LLM using PlantUML C4 syntax, parsed into
+        {nodes, edges} JSON for the React Flow + ELK renderer.
 
-        Falls back to Python builders silently on any LLM failure.
-        Returns (b_diagram, c_diagram, f_diagram) — None on failure.
+        LLM outputs standard PlantUML C4 macros (Person, Container, Rel, …).
+        We parse the text — no fragile JSON schema for the LLM to follow.
+        Falls back to Python builders silently on any failure.
         """
-        # ── Prompt ────────────────────────────────────────────────────────────
-        system_prompt = """You are an expert software architect generating C4 model diagram data.
+        # ── System prompt ─────────────────────────────────────────────────────
+        system_prompt = """You are an expert software architect. Generate PlantUML C4 diagrams.
 
-Output a JSON object with keys "B", "C", "F". Each value is itself a JSON object with:
-  - "nodes": array of node objects
-  - "edges": array of edge objects
+Output exactly three sections separated by markers. Use ONLY standard PlantUML C4 macros.
 
-NODE SCHEMA:
-{
-  "id": "unique_snake_case_id",
-  "type": "person" | "container" | "containerDb" | "component" | "systemExt",
-  "label": "Short Name",          // max 24 chars
-  "technology": "React/TS",       // max 20 chars, optional
-  "description": "Brief purpose"  // max 40 chars, optional
-}
+=== SECTION B ===
+@startuml
+!include C4_Container.puml
+' C4 Container diagram (C2 level) — runtime processes and data stores
+Person(alias, "Label", "Description")
+Container(alias, "Label", "Technology", "Description")
+ContainerDb(alias, "Label", "Technology", "Description")
+System_Ext(alias, "Label", "Description")
+Rel(from, to, "label")
+BiRel(from, to, "label")
+@enduml
 
-EDGE SCHEMA:
-{
-  "id": "unique_edge_id",
-  "source": "node_id",
-  "target": "node_id",
-  "label": "IPC",                 // max 15 chars, optional
-  "bidirectional": false          // true when both sides call each other
-}
+=== SECTION C ===
+@startuml
+!include C4_Component.puml
+' C4 Component diagram (C3 level) — top-level repo folders
+Component(alias, "Label", "Technology", "Description")
+Rel(from, to, "label")
+@enduml
 
-SECTION B — C4 Container (C2 level):
-- One "person" node for the developer
-- "container" nodes for each runtime process/layer (max 7)
-- "containerDb" for databases/storage
-- "systemExt" ONLY for truly external cloud services (LLM APIs, Git hosting) — NOT for IPC, subprocess, HTTP
-- Edges reflect the data/control flow: person→UI→[IPC]→main→[spawns]→backend→db
-- Use bidirectional:true when two containers genuinely call each other both ways
-
-SECTION C — C4 Component (C3 level, repo structure):
-- Group folders by top-level directory using "component" nodes
-- One node per major subdirectory (max 10 total)
-- Edges only between top-level groups (backend→src relationships), max 3 edges
-
-SECTION F — C4 Component (C3 level, feature map):
-- One "component" node per feature (max 6 features)
-- No edges needed — features are independent slices
-- Use technology field for the main tech (React/TS, Python, etc.)
-- Use description field for a one-line feature summary
+=== SECTION F ===
+@startuml
+!include C4_Component.puml
+' C4 Component diagram (C3 level) — features / capabilities
+Component(alias, "Label", "Technology", "Description")
+@enduml
 
 RULES:
-- ASCII only — no unicode, no em-dash, no smart quotes
-- IDs must be snake_case, unique across the whole response
-- Keep it minimal: fewer nodes and edges = cleaner diagram
-- Do NOT output any text outside the JSON object"""
+- Aliases: snake_case, unique across ALL three sections
+- Labels: max 24 chars, ASCII only
+- Descriptions: max 40 chars, ASCII only
+- SECTION B: 1 Person + max 7 Container/ContainerDb + max 3 System_Ext + edges showing data flow
+- SECTION B: System_Ext ONLY for real external cloud services (LLM APIs, git hosts) — not for IPC
+- SECTION C: max 10 Component nodes (one per top-level folder) + max 4 Rel edges
+- SECTION F: max 6 Component nodes (one per feature) — no edges needed
+- Output NOTHING outside the three sections"""
 
-        # ── Input data ────────────────────────────────────────────────────────
+        # ── Input summaries ───────────────────────────────────────────────────
         b_summary = {
-            "main_layers": b_data.get("main_layers", [])[:7],
-            "frameworks": b_data.get("frameworks", [])[:6],
-            "external_integrations": b_data.get("external_integrations", [])[:4],
-            "database_hints": b_data.get("database_hints", [])[:2],
+            "main_layers":            b_data.get("main_layers", [])[:7],
+            "frameworks":             b_data.get("frameworks", [])[:6],
+            "external_integrations":  b_data.get("external_integrations", [])[:4],
+            "database_hints":         b_data.get("database_hints", [])[:2],
             "main_services": [
-                {"name": s.get("name", ""), "path": s.get("path", ""), "role": (s.get("role") or "")[:60]}
+                {"name": s.get("name", ""), "path": s.get("path", ""),
+                 "role": (s.get("role") or "")[:60]}
                 for s in (b_data.get("main_services") or [])[:6]
             ],
         }
         c_summary = {
             "summary": (c_data.get("summary") or "")[:200],
             "folders": [
-                {"path": f.get("path", ""), "role": f.get("role", ""), "description": (f.get("description") or "")[:60]}
+                {"path": f.get("path", ""), "role": f.get("role", ""),
+                 "description": (f.get("description") or "")[:60]}
                 for f in (c_data.get("folders") or [])[:14]
             ],
         }
         f_summary = {
             "features": [
-                {"name": feat.get("name", ""), "description": (feat.get("description") or "")[:60],
+                {"name": feat.get("name", ""),
+                 "description": (feat.get("description") or "")[:60],
                  "entrypoint": feat.get("entrypoint", "")}
                 for feat in (f_data.get("features") or [])[:6]
             ],
         }
 
         user_prompt = (
-            "Generate C4 diagram JSON for these three sections.\n\n"
+            "Generate PlantUML C4 diagrams for these three sections.\n\n"
             f"SECTION B (Architecture):\n{json.dumps(b_summary, indent=2)}\n\n"
             f"SECTION C (Repo Structure):\n{json.dumps(c_summary, indent=2)}\n\n"
             f"SECTION F (Features):\n{json.dumps(f_summary, indent=2)}\n\n"
-            'Return ONLY the JSON object: {"B": {"nodes": [...], "edges": [...]}, "C": {...}, "F": {...}}'
+            "Output ONLY the three sections with their === SECTION X === markers."
         )
 
         try:
-            text = await self._provider.chat(
+            resp = await self._provider.chat(
                 ChatRequest(
                     provider_id=provider_id,
                     model_id=model_id,
                     messages=[
                         ChatMessage(role="system", content=system_prompt),
-                        ChatMessage(role="user", content=user_prompt),
+                        ChatMessage(role="user",   content=user_prompt),
                     ],
-                    max_completion_tokens=4000,
+                    max_completion_tokens=3000,
                     temperature=0.2,
-                    json_mode=True,
+                    json_mode=False,
                     stream=False,
                 )
             )
-            text = (text.content or "").strip()
+            raw = (resp.content or "").strip()
 
-            # Strip markdown fences if present
-            raw = text
-            if raw.startswith("```"):
-                lines = raw.split("\n")
-                raw = "\n".join(
-                    l for l in lines if not l.strip().startswith("```") and l.strip() != "json"
-                ).strip()
-
-            obj = json.loads(raw)
-            if not isinstance(obj, dict):
-                raise ValueError("LLM response is not a JSON object")
-
-            def _valid_diagram(v: object) -> bool:
-                return (
-                    isinstance(v, dict)
-                    and isinstance(v.get("nodes"), list)
-                    and len(v["nodes"]) > 0
-                )
-
-            b_diag = obj.get("B") if _valid_diagram(obj.get("B")) else None
-            c_diag = obj.get("C") if _valid_diagram(obj.get("C")) else None
-            f_diag = obj.get("F") if _valid_diagram(obj.get("F")) else None
-
-            b_valid = b_diag is not None
-            c_valid = c_diag is not None
-            f_valid = f_diag is not None
-
-            result = (
-                (b_diag if b_valid else None),
-                (c_diag if c_valid else None),
-                (f_diag if f_valid else None),
-            )
+            sections = parse_three_sections(raw)
+            b_diag = sections.get("B")
+            c_diag = sections.get("C")
+            f_diag = sections.get("F")
 
             logger.info(
-                "[DiagramGeneratorLLM] generated diagrams (B=%s C=%s F=%s)",
-                "ok" if b_valid else "invalid",
-                "ok" if c_valid else "invalid",
-                "ok" if f_valid else "invalid",
+                "[DiagramGeneratorLLM] PlantUML parse done (B=%s C=%s F=%s)",
+                f"{len(b_diag['nodes'])}n" if b_diag else "empty",
+                f"{len(c_diag['nodes'])}n" if c_diag else "empty",
+                f"{len(f_diag['nodes'])}n" if f_diag else "empty",
             )
-
-            return result
+            return b_diag, c_diag, f_diag
 
         except Exception as exc:
-            logger.warning("[DiagramGeneratorLLM] LLM call failed, falling back to Python builders: %s", exc)
-            # Fall back to Python builders
-            # Python builder fallback — no snapshot_id available here so valid_paths is empty
-            b_diag = build_architecture_diagram(b_data, frozenset())
-            c_diag = build_structure_diagram(c_data, frozenset())
-            f_diag = build_feature_diagram(f_data, frozenset())
-            return b_diag or None, c_diag or None, f_diag or None
+            logger.warning(
+                "[DiagramGeneratorLLM] failed, falling back to Python builders: %s", exc
+            )
+            b_fb = build_architecture_diagram(b_data, frozenset())
+            c_fb = build_structure_diagram(c_data, frozenset())
+            f_fb = build_feature_diagram(f_data, frozenset())
+            return b_fb or None, c_fb or None, f_fb or None
 
     async def _generate_diagrams(
         self,

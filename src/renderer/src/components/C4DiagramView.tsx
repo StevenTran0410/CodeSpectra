@@ -13,6 +13,8 @@ import {
   Background,
   Controls,
   MiniMap,
+  Handle,
+  Position,
   useNodesState,
   useEdgesState,
   MarkerType,
@@ -60,6 +62,8 @@ function C4NodeBox({ data }: { data: C4Node }) {
     data.type === 'component'   ? 'component'    :
     data.type === 'systemExt'   ? 'external system' : ''
 
+  const handleStyle: React.CSSProperties = { background: 'transparent', border: 'none' }
+
   return (
     <div
       style={{
@@ -78,6 +82,7 @@ function C4NodeBox({ data }: { data: C4Node }) {
         position: 'relative',
       }}
     >
+      <Handle type="target" position={Position.Top} style={handleStyle} />
       {isPerson && (
         <div style={{ fontSize: 20, marginBottom: 2 }}>👤</div>
       )}
@@ -102,6 +107,9 @@ function C4NodeBox({ data }: { data: C4Node }) {
           {data.description}
         </div>
       )}
+      <Handle type="source" position={Position.Bottom} style={handleStyle} />
+      <Handle type="source" position={Position.Right} style={handleStyle} id="right" />
+      <Handle type="target" position={Position.Left} style={handleStyle} id="left" />
     </div>
   )
 }
