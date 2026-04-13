@@ -15,6 +15,7 @@ class RetrievalSection(str, Enum):
     FEATURE_MAP = "feature_map"
     IMPORTANT_FILES = "important_files"
     GLOSSARY = "glossary"
+    QA = "qa"
 
 
 class BuildRetrievalIndexRequest(BaseModel):

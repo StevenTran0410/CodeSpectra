@@ -190,6 +190,16 @@ const api = {
     listForRepo: (repoId: string) => ipcRenderer.invoke('job:listForRepo', repoId),
     listRecent: () => ipcRenderer.invoke('job:listRecent'),
   },
+  qa: {
+    ask: (body: {
+      snapshot_id: string
+      question: string
+      provider_id: string
+      model_id: string
+      report_id?: string
+      include_debug?: boolean
+    }) => ipcRenderer.invoke('qa:ask', body),
+  },
   app: {
     getVersion: (): Promise<string> => ipcRenderer.invoke('app:get-version'),
     getUserDataPath: (): Promise<string> => ipcRenderer.invoke('app:get-user-data-path'),

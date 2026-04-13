@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { ArrowLeft, ChevronDown, ChevronRight, FileText, Folder, Loader2 } from 'lucide-react'
 import type { ManifestTreeNode } from '../../types/electron'
@@ -54,6 +54,8 @@ export default function SnapshotViewerScreen(): React.ReactElement {
   const [params] = useSearchParams()
   const repoId = params.get('repoId') ?? ''
   const snapshotId = params.get('snapshotId') ?? ''
+  const fileParam = params.get('file') ?? ''
+  const lineParam = params.get('line') ? parseInt(params.get('line')!, 10) : null
 
   const [loadingTree, setLoadingTree] = useState(false)
   const [loadingFile, setLoadingFile] = useState(false)
@@ -66,13 +68,21 @@ export default function SnapshotViewerScreen(): React.ReactElement {
   const [ignoredPaths, setIgnoredPaths] = useState<Set<string>>(new Set())
   const [completing, setCompleting] = useState(false)
   const [completeDone, setCompleteDone] = useState(false)
-  const [focusedLine, setFocusedLine] = useState<number | null>(null)
+  const [focusedLine, setFocusedLine] = useState<number | null>(lineParam)
   const [showConfirmBuild, setShowConfirmBuild] = useState(false)
   const [buildingIndex, setBuildingIndex] = useState(false)
   const [buildProgress, setBuildProgress] = useState(0)
   const [confirmIgnorePath, setConfirmIgnorePath] = useState<string | null>(null)
+  const focusedLineRef = useRef<HTMLDivElement | null>(null)
 
   const tree = useMemo(() => buildTree(treeNodes), [treeNodes])
+
+  // Scroll to focused line after file content loads
+  useEffect(() => {
+    if (focusedLine && focusedLineRef.current) {
+      focusedLineRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }
+  }, [focusedLine, fileContent])
 
   useEffect(() => {
     const run = async () => {
@@ -84,15 +94,30 @@ export default function SnapshotViewerScreen(): React.ReactElement {
         const restoredIgnores = snap.manual_ignores ?? []
         setIgnoredPaths(new Set(restoredIgnores))
         setCompleteDone(true)
-        await window.api.manifest.build(snapshotId, restoredIgnores)
-        const res = await window.api.manifest.tree(snapshotId)
-        setTreeNodes(res.nodes)
-        const firstFile = res.nodes.find((n) => !n.is_dir)?.path ?? null
-        setSelectedFilePath(firstFile)
 
+        // Try loading existing tree first — only rebuild if empty
+        let res = await window.api.manifest.tree(snapshotId)
+        if (!res.nodes || res.nodes.length === 0) {
+          await window.api.manifest.build(snapshotId, restoredIgnores)
+          res = await window.api.manifest.tree(snapshotId)
+        }
+        setTreeNodes(res.nodes)
+
+        // If a specific file was requested via URL param, select it; else select first file
+        const targetFile = fileParam || res.nodes.find((n) => !n.is_dir)?.path || null
+        setSelectedFilePath(targetFile)
+
+        // Expand top-level directories + all parent dirs of the target file
         const defaults = new Set<string>()
         for (const n of res.nodes) {
-          if (n.is_dir) defaults.add(n.path)
+          if (n.is_dir && !n.path.includes('/')) defaults.add(n.path)
+        }
+        if (fileParam) {
+          // Expand every ancestor folder so the file is visible in the tree
+          const parts = fileParam.split('/')
+          for (let i = 1; i < parts.length; i++) {
+            defaults.add(parts.slice(0, i).join('/'))
+          }
         }
         setExpanded(defaults)
       } catch (err) {
@@ -102,7 +127,7 @@ export default function SnapshotViewerScreen(): React.ReactElement {
       }
     }
     run()
-  }, [snapshotId])
+  }, [snapshotId, fileParam])
 
   useEffect(() => {
     const run = async () => {
@@ -332,6 +357,7 @@ export default function SnapshotViewerScreen(): React.ReactElement {
                     {lines.map((line, i) => (
                       <div
                         key={`lc-${i + 1}`}
+                        ref={focusedLine === i + 1 ? focusedLineRef : null}
                         className={focusedLine === i + 1 ? 'bg-amber-500/15' : ''}
                       >
                         {line || ' '}

@@ -20,6 +20,7 @@ from api.job import router as job_router
 from api.local_repo import router as local_repo_router
 from api.manifest import router as manifest_router
 from api.provider import router as provider_router
+from api.qa import router as qa_router
 from api.retrieval import router as retrieval_router
 from api.repo_map import router as repo_map_router
 from api.structural_graph import router as structural_graph_router
@@ -85,6 +86,7 @@ def create_app() -> FastAPI:
     app.include_router(structural_graph_router, prefix="/api/graph")
     app.include_router(retrieval_router, prefix="/api/retrieval")
     app.include_router(analysis_router, prefix="/api/analysis")
+    app.include_router(qa_router, prefix="/api/qa")
     app.include_router(job_router, prefix="/api/job")
 
     @app.exception_handler(ProviderError)

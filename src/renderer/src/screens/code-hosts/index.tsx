@@ -324,8 +324,7 @@ function AddFolderPanel({ onClose, workspaceId }: { onClose: () => void; workspa
     if (!validation?.path) return
     const repo = await add(validation.path, workspaceId)
     if (repo) {
-      const toast = useToastStore()
-      toast.success('Folder added')
+      useToastStore.getState().success('Folder added')
       onClose()
     }
   }
@@ -383,8 +382,7 @@ function CloneFromUrlPanel({ onClose, onCloned, workspaceId }: { onClose: () => 
     setCloneError(null)
     try {
       await window.api.folder.cloneFromUrl(trimmed, workspaceId)
-      const toast = useToastStore()
-      toast.success('Repository cloned')
+      useToastStore.getState().success('Repository cloned')
       onCloned()
       onClose()
     } catch (err) {

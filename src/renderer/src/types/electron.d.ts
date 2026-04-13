@@ -356,6 +356,22 @@ export interface StalenessResult {
   recommend_new_snapshot?: boolean
 }
 
+export interface QACitation {
+  file: string
+  line_start: number | null
+  line_end: number | null
+  snippet: string
+}
+
+export interface QAResponse {
+  answer: string
+  citations: QACitation[]
+  confidence: 'high' | 'medium' | 'low'
+  unknowns: string[]
+  suggested_files: string[]
+  retrieval_debug: Record<string, unknown> | null
+}
+
 export interface ValidateFolderResponse {
   path: string
   name: string
@@ -588,6 +604,16 @@ declare global {
         cancel: (id: string) => Promise<Job>
         listForRepo: (repoId: string) => Promise<Job[]>
         listRecent: () => Promise<Job[]>
+      }
+      qa: {
+        ask: (body: {
+          snapshot_id: string
+          question: string
+          provider_id: string
+          model_id: string
+          report_id?: string
+          include_debug?: boolean
+        }) => Promise<QAResponse>
       }
       app: {
         getVersion: () => Promise<string>

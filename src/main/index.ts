@@ -11,6 +11,7 @@ import { registerConsentHandlers } from './api/consent.api'
 import { registerFolderHandlers } from './api/folder.api'
 import { registerJobHandlers } from './api/job.api'
 import { registerAppHandlers } from './api/app.api'
+import { registerQAHandlers } from './api/qa.api'
 import { logger } from './shared/logger'
 
 app.whenReady().then(async () => {
@@ -30,6 +31,7 @@ app.whenReady().then(async () => {
     registerConsentHandlers(client)
     registerFolderHandlers(client)
     registerJobHandlers(client)
+    registerQAHandlers(client)
 
     createMainWindow()
     logger.info('Startup complete')

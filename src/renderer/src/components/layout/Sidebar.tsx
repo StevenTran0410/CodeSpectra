@@ -7,6 +7,7 @@ import {
   FolderOpen,
   FlaskConical,
   FileText,
+  MessageSquare,
   Settings,
   ChevronDown,
   ChevronLeft,
@@ -26,7 +27,8 @@ const NAV_ITEMS = [
   { path: '/code-hosts', label: 'Code Hosts', icon: GitBranch },
   { path: '/repositories', label: 'Repositories', icon: FolderOpen },
   { path: '/analysis', label: 'Analysis', icon: FlaskConical },
-  { path: '/reports', label: 'Reports', icon: FileText }
+  { path: '/reports', label: 'Reports', icon: FileText },
+  { path: '/ask', label: 'Ask', icon: MessageSquare }
 ]
 
 export function Sidebar(): React.ReactElement {
