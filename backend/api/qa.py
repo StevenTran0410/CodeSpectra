@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException
 from domain.model_connector.service import ProviderConfigService
 from domain.qa.service import QAService
 from domain.qa.types import QARequest, QAResponse
+from domain.qa.deep_research import DeepResearchRequest, DeepResearchResult
 from domain.retrieval.service import RetrievalService
 
 router = APIRouter(tags=["qa"])
@@ -17,5 +18,13 @@ _service = QAService(ProviderConfigService(), RetrievalService())
 async def qa_ask(body: QARequest) -> QAResponse:
     try:
         return await _service.ask(body)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/deep-research", response_model=DeepResearchResult, status_code=200)
+async def qa_deep_research(body: DeepResearchRequest) -> DeepResearchResult:
+    try:
+        return await _service.deep_research(body)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

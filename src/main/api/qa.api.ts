@@ -13,4 +13,17 @@ export function registerQAHandlers(client: BackendClient): void {
       include_debug?: boolean
     }) => client.post('/api/qa/ask', body)
   )
+
+  ipcMain.handle(
+    'qa:deepResearch',
+    (_event, body: {
+      snapshot_id: string
+      question: string
+      provider_id: string
+      model_id: string
+      report_id?: string
+      max_hops?: number
+      include_debug?: boolean
+    }) => client.post('/api/qa/deep-research', body)
+  )
 }

@@ -1,11 +1,12 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import type { QAResponse } from '../types/electron'
+import type { QAResponse, DeepResearchResponse } from '../types/electron'
 
 export interface QAChatMessage {
   role: 'user' | 'assistant'
   content: string
   response?: QAResponse
+  deepResearchResponse?: DeepResearchResponse
   error?: string
 }
 

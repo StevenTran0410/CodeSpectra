@@ -372,6 +372,24 @@ export interface QAResponse {
   retrieval_debug: Record<string, unknown> | null
 }
 
+export interface ResearchStepResult {
+  step_number: number
+  description: string
+  files_involved: string[]
+  finding: string
+  graph_path: string[] | null
+}
+
+export interface DeepResearchResponse {
+  summary: string
+  reasoning_chain: ResearchStepResult[]
+  files_explored: string[]
+  confidence: 'high' | 'medium' | 'low'
+  unknowns: string[]
+  elapsed_ms: number
+  research_debug: Record<string, unknown> | null
+}
+
 export interface ValidateFolderResponse {
   path: string
   name: string
@@ -614,6 +632,15 @@ declare global {
           report_id?: string
           include_debug?: boolean
         }) => Promise<QAResponse>
+        deepResearch: (body: {
+          snapshot_id: string
+          question: string
+          provider_id: string
+          model_id: string
+          report_id?: string
+          max_hops?: number
+          include_debug?: boolean
+        }) => Promise<DeepResearchResponse>
       }
       app: {
         getVersion: () => Promise<string>

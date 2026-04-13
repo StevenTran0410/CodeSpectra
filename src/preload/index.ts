@@ -199,6 +199,15 @@ const api = {
       report_id?: string
       include_debug?: boolean
     }) => ipcRenderer.invoke('qa:ask', body),
+    deepResearch: (body: {
+      snapshot_id: string
+      question: string
+      provider_id: string
+      model_id: string
+      report_id?: string
+      max_hops?: number
+      include_debug?: boolean
+    }) => ipcRenderer.invoke('qa:deepResearch', body),
   },
   app: {
     getVersion: (): Promise<string> => ipcRenderer.invoke('app:get-version'),

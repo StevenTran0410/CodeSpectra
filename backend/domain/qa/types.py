@@ -28,3 +28,14 @@ class QAResponse(BaseModel):
     unknowns: list[str]
     suggested_files: list[str]
     retrieval_debug: dict | None = None
+
+
+class QASectionCache(BaseModel):
+    id: str
+    snapshot_id: str
+    report_id: str
+    section_id: str          # "A" .. "L"
+    topic_summary: str
+    answerable_questions: list[str]  # 3-5 example questions
+    key_terms: list[str]             # 5-15 extracted terms
+    generated_at: str
