@@ -387,6 +387,12 @@ export function registerFolderHandlers(client: BackendClient): void {
       client.get(`/api/analysis/reports/${reportId}/sections/${sectionId}/sources`)
   )
 
+  ipcMain.handle(
+    'analysis:getStaleness',
+    (_event, reportId: string) =>
+      client.get(`/api/analysis/staleness?report_id=${encodeURIComponent(reportId)}`)
+  )
+
   // backward-compat typo alias used by some renderer builds
   ipcMain.handle(
     'analysis:deleteRepot',

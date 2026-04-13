@@ -55,9 +55,11 @@ from .types import (
     ReportDiffResponse,
     RerunSectionResponse,
     ScanMode,
+    StalenessResult,
     StartAnalysisRequest,
     StartAnalysisResponse,
 )
+from .staleness import check_staleness
 
 _bg_tasks: set[asyncio.Task] = set()
 
@@ -621,6 +623,11 @@ class AnalysisService:
             key=lambda s: order.get(s.chunk_id, 999),
         )
         return SectionSourcesResponse(report_id=report_id, section_id=section_id, sources=sources)
+
+    async def check_staleness(self, report_id: str) -> StalenessResult:
+        """Check if an analysis report is stale based on git history."""
+        db = get_db()
+        return await check_staleness(report_id, db)
 
     async def _fetch_manifest_paths(self, snapshot_id: str) -> list[str]:
         """Return all rel_path values from manifest_files for a snapshot."""
