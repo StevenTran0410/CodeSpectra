@@ -31,6 +31,7 @@ from .c4_parser import parse_three_sections
 from .diagram_builder import (
     build_architecture_diagram,
     build_feature_diagram,
+    build_feature_sequence_diagrams,
     build_structure_diagram,
 )
 from .diff import compare_reports as diff_compare_payloads
@@ -753,8 +754,19 @@ RULES:
         parts.append(f"Output ONLY the requested section(s) with their === SECTION X === markers.")
         user_prompt = "\n\n".join(parts)
 
-        # Scale token budget: ~1000 per section
-        max_tokens = len(sections) * 1000 + 500
+        # Scale token budget based on actual data complexity, not just section count.
+        # Each PlantUML node line ~80 tokens, each Rel ~40 tokens, overhead ~300.
+        _tok = 300
+        if "B" in sections:
+            _n = len(b_data.get("main_layers") or []) + len(b_data.get("external_integrations") or [])
+            _tok += max(_n * 130, 900)
+        if "C" in sections:
+            _n = len(c_data.get("folders") or [])
+            _tok += max(_n * 110, 800)
+        if "F" in sections:
+            _n = len(f_data.get("features") or [])
+            _tok += max(_n * 110, 700)
+        max_tokens = min(_tok, 4000)  # hard cap — avoid runaway costs
 
         try:
             resp = await self._provider.chat(
@@ -1013,6 +1025,17 @@ RULES:
                 # Also inject into the returned `out` so the frontend sees it immediately
                 if diag:
                     out = {**out, "mermaid_diagram": diag}
+
+                # Attach per-feature sequence diagrams when Section F reruns
+                if letter == "F":
+                    seq_diagrams = build_feature_sequence_diagrams(out)
+                    enriched: list[dict] = []
+                    for feat, seq in zip(out.get("features") or [], seq_diagrams):
+                        enriched.append({**feat, "sequence_diagram": seq} if seq else feat)
+                    if enriched:
+                        out = {**out, "features": enriched}
+                        if "F" in sec_blob and isinstance(sec_blob["F"], dict):
+                            sec_blob["F"]["features"] = enriched
             except Exception:
                 pass  # diagrams are non-fatal
 
@@ -1253,6 +1276,16 @@ RULES:
                                 _c["mermaid_diagram"] = _c_diag
                             if _f_diag:
                                 _f["mermaid_diagram"] = _f_diag
+                        # Attach per-feature sequence diagrams (pure Python, always runs)
+                        _seq = build_feature_sequence_diagrams(_f)
+                        _f_feats = _f.get("features") or []
+                        _enriched = [
+                            {**ft, "sequence_diagram": sq} if sq else ft
+                            for ft, sq in zip(_f_feats, _seq)
+                        ]
+                        if _enriched:
+                            _f["features"] = _enriched
+                        if any(d is not None for d in (_b_diag, _c_diag, _f_diag)) or _enriched:
                             await self._persist_report_json(_report_id, report)
                             logger.info(
                                 "[analysis:%s] mermaid diagrams generated (B=%s C=%s F=%s)",

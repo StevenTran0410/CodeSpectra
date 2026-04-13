@@ -581,3 +581,52 @@ def build_feature_diagram(section_f: dict[str, Any], valid_paths: frozenset[str]
     )
 
     return "\n".join(lines)
+
+
+# ── Section F → per-feature sequence diagrams ────────────────────────────────
+
+def build_feature_sequence_diagrams(section_f: dict[str, Any]) -> list[dict[str, Any] | None]:
+    """Build a React Flow + ELK sequence diagram for each feature in Section F.
+
+    Uses ``reading_order`` as the ordered steps. Skips features with fewer
+    than 2 steps. Returns a list (one entry per feature) of ``{nodes, edges}``
+    dicts in C4DiagramData format, or ``None`` for features without enough data.
+    """
+    features: list[dict[str, Any]] = section_f.get("features") or []
+    result: list[dict[str, Any] | None] = []
+
+    for feat in features:
+        if not isinstance(feat, dict):
+            result.append(None)
+            continue
+
+        steps: list[str] = [str(s).strip() for s in (feat.get("reading_order") or []) if s]
+        entrypoint = str(feat.get("entrypoint") or "").strip()
+
+        if len(steps) < 2:
+            result.append(None)
+            continue
+
+        nodes: list[dict[str, Any]] = []
+        edges: list[dict[str, Any]] = []
+
+        for i, path in enumerate(steps[:8]):  # cap at 8 for readability
+            filename = path.split("/")[-1] or path
+            node: dict[str, Any] = {
+                "id":    f"s{i}",
+                "type":  "step",
+                "label": filename[:26],
+            }
+            if path == entrypoint or i == 0:
+                node["description"] = "entrypoint"
+            tech = _file_tech(filename)
+            if tech != "File":
+                node["technology"] = tech
+            nodes.append(node)
+
+            if i > 0:
+                edges.append({"id": f"e{i}", "source": f"s{i - 1}", "target": f"s{i}"})
+
+        result.append({"nodes": nodes, "edges": edges} if len(nodes) >= 2 else None)
+
+    return result
