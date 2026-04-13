@@ -252,7 +252,14 @@ export default function ReportViewerScreen(): React.ReactElement {
         const out = await window.api.analysis.getReport(targetId)
         setReport(out)
       } catch (err) {
-        setError(toErrorMessage(err))
+        const msg = toErrorMessage(err)
+        // Report was deleted externally — silently refresh the list instead of showing an error
+        if (msg.toLowerCase().includes('not found')) {
+          navigate('/reports')
+          await refreshList()
+        } else {
+          setError(msg)
+        }
       }
     }
     run()

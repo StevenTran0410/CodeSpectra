@@ -13,6 +13,7 @@ from domain.job.types import CreateJobRequest, StepName
 from domain.manifest.service import ManifestService
 from domain.manifest.types import BuildManifestRequest
 from domain.model_connector.service import ProviderConfigService
+from domain.model_connector.types import ChatMessage, ChatRequest
 from domain.repo_map.service import RepoMapService
 from domain.repo_map.types import BuildRepoMapRequest
 from domain.retrieval.service import RetrievalService
@@ -26,6 +27,12 @@ from shared.utils import new_id, utc_now_iso
 
 from .agent_pipeline import REPORT_VERSION as _REPORT_V2
 from .agent_pipeline import AnalysisAgentPipeline
+from .c4_parser import parse_three_sections
+from .diagram_builder import (
+    build_architecture_diagram,
+    build_feature_diagram,
+    build_structure_diagram,
+)
 from .diff import compare_reports as diff_compare_payloads
 from .diff import compute_section_hash
 from .model_guard import check_model_capability
@@ -333,13 +340,21 @@ def _render_report_markdown(report: AnalysisReport) -> str:
                 lines.append(f"## {letter} — (section)")
                 lines.append("")
                 for k, v in sec.items():
-                    if k in ("confidence", "evidence_files", "blind_spots"):
+                    if k in ("confidence", "evidence_files", "blind_spots", "mermaid_diagram"):
                         continue
                     if isinstance(v, list):
                         lines.append(f"**{k}:** " + ", ".join(str(i) for i in v[:20]))
                     else:
                         lines.append(f"**{k}:** {v}")
                 _section_footer(sec, lines)
+                # Append mermaid diagram block for sections B, C, F when present
+                if letter in ("B", "C", "F"):
+                    diagram = sec.get("mermaid_diagram")
+                    if diagram and isinstance(diagram, str):
+                        lines.append("")
+                        lines.append("```mermaid")
+                        lines.append(diagram)
+                        lines.append("```")
                 lines.append("")
     else:
         lines.append("_No analysis section data found. Re-run analysis to generate sections._")
@@ -606,6 +621,199 @@ class AnalysisService:
         )
         return SectionSourcesResponse(report_id=report_id, section_id=section_id, sources=sources)
 
+    async def _fetch_manifest_paths(self, snapshot_id: str) -> list[str]:
+        """Return all rel_path values from manifest_files for a snapshot."""
+        db = get_db()
+        try:
+            async with db.execute(
+                "SELECT rel_path FROM manifest_files WHERE snapshot_id=?",
+                (snapshot_id,),
+            ) as cur:
+                rows = await cur.fetchall()
+            return [row["rel_path"] for row in rows]
+        except Exception:
+            return []
+
+    async def _generate_diagrams_llm(
+        self,
+        provider_id: str,
+        model_id: str,
+        b_data: dict[str, Any],
+        c_data: dict[str, Any],
+        f_data: dict[str, Any],
+        sections: frozenset[str] | None = None,
+    ) -> tuple[dict | None, dict | None, dict | None]:
+        """Generate C4 diagrams via LLM using PlantUML C4 syntax, parsed into
+        {nodes, edges} JSON for the React Flow + ELK renderer.
+
+        ``sections`` controls which sections to regenerate (default: all three).
+        Pass ``frozenset({"B"})`` to regenerate only section B, etc.
+
+        LLM outputs standard PlantUML C4 macros (Person, Container, Rel, …).
+        We parse the text — no fragile JSON schema for the LLM to follow.
+        Falls back to Python builders silently on any failure.
+        """
+        if sections is None:
+            sections = frozenset({"B", "C", "F"})
+
+        # ── Section templates (only include requested sections) ────────────────
+        _tmpl_b = """\
+=== SECTION B ===
+@startuml
+!include C4_Container.puml
+' C4 Container diagram (C2 level) — runtime processes and data stores
+Person(alias, "Label", "Description")
+Container(alias, "Label", "Technology", "Description")
+ContainerDb(alias, "Label", "Technology", "Description")
+System_Ext(alias, "Label", "Description")
+Rel(from, to, "label")
+BiRel(from, to, "label")
+@enduml"""
+
+        _tmpl_c = """\
+=== SECTION C ===
+@startuml
+!include C4_Component.puml
+' C4 Component diagram (C3 level) — top-level repo folders
+Component(alias, "Label", "Technology", "Description")
+Rel(from, to, "label")
+@enduml"""
+
+        _tmpl_f = """\
+=== SECTION F ===
+@startuml
+!include C4_Component.puml
+' C4 Component diagram (C3 level) — features / capabilities
+Component(alias, "Label", "Technology", "Description")
+Rel(from, to, "label")
+@enduml"""
+
+        templates = "\n\n".join(
+            t for key, t in (("B", _tmpl_b), ("C", _tmpl_c), ("F", _tmpl_f))
+            if key in sections
+        )
+        sec_list = " and ".join(sorted(sections))
+
+        system_prompt = f"""You are an expert software architect. Generate PlantUML C4 diagrams.
+
+Output exactly {len(sections)} section(s) separated by markers. Use ONLY standard PlantUML C4 macros.
+
+{templates}
+
+RULES:
+- Aliases: snake_case, unique across all sections
+- Labels: max 24 chars, ASCII only
+- Descriptions: max 40 chars, ASCII only
+- SECTION B: 1 Person + max 7 Container/ContainerDb + max 3 System_Ext + edges showing data flow
+- SECTION B: System_Ext ONLY for real external cloud services (LLM APIs, git hosts) — not for IPC
+- SECTION C: max 10 Component nodes (one per top-level folder) + 3–6 Rel edges showing how components call/use each other
+- SECTION F: max 6 Component nodes (one per feature) + 2–5 Rel edges showing how features depend on or trigger each other
+- CRITICAL: Every node MUST appear in at least one Rel() call. Never create a node with no edges.
+- Output ONLY the requested section(s) ({sec_list}) with their === SECTION X === markers."""
+
+        # ── Input summaries (only build what's needed) ────────────────────────
+        parts: list[str] = [f"Generate PlantUML C4 diagram(s) for section(s): {sec_list}.\n"]
+
+        if "B" in sections:
+            b_summary = {
+                "main_layers":            b_data.get("main_layers", [])[:7],
+                "frameworks":             b_data.get("frameworks", [])[:6],
+                "external_integrations":  b_data.get("external_integrations", [])[:4],
+                "database_hints":         b_data.get("database_hints", [])[:2],
+                "main_services": [
+                    {"name": s.get("name", ""), "path": s.get("path", ""),
+                     "role": (s.get("role") or "")[:60]}
+                    for s in (b_data.get("main_services") or [])[:6]
+                ],
+            }
+            parts.append(f"SECTION B (Architecture):\n{json.dumps(b_summary, indent=2)}")
+
+        if "C" in sections:
+            c_summary = {
+                "summary": (c_data.get("summary") or "")[:200],
+                "folders": [
+                    {"path": f.get("path", ""), "role": f.get("role", ""),
+                     "description": (f.get("description") or "")[:60]}
+                    for f in (c_data.get("folders") or [])[:14]
+                ],
+            }
+            parts.append(f"SECTION C (Repo Structure):\n{json.dumps(c_summary, indent=2)}")
+
+        if "F" in sections:
+            f_summary = {
+                "features": [
+                    {"name": feat.get("name", ""),
+                     "description": (feat.get("description") or "")[:60],
+                     "entrypoint": feat.get("entrypoint", "")}
+                    for feat in (f_data.get("features") or [])[:6]
+                ],
+            }
+            parts.append(f"SECTION F (Features):\n{json.dumps(f_summary, indent=2)}")
+
+        parts.append(f"Output ONLY the requested section(s) with their === SECTION X === markers.")
+        user_prompt = "\n\n".join(parts)
+
+        # Scale token budget: ~1000 per section
+        max_tokens = len(sections) * 1000 + 500
+
+        try:
+            resp = await self._provider.chat(
+                ChatRequest(
+                    provider_id=provider_id,
+                    model_id=model_id,
+                    messages=[
+                        ChatMessage(role="system", content=system_prompt),
+                        ChatMessage(role="user",   content=user_prompt),
+                    ],
+                    max_completion_tokens=max_tokens,
+                    temperature=0.2,
+                    json_mode=False,
+                    stream=False,
+                )
+            )
+            raw = (resp.content or "").strip()
+
+            parsed = parse_three_sections(raw)
+            b_diag = parsed.get("B") if "B" in sections else None
+            c_diag = parsed.get("C") if "C" in sections else None
+            f_diag = parsed.get("F") if "F" in sections else None
+
+            logger.info(
+                "[DiagramGeneratorLLM] sections=%s parse done (B=%s C=%s F=%s)",
+                sec_list,
+                f"{len(b_diag['nodes'])}n" if b_diag else "skip",
+                f"{len(c_diag['nodes'])}n" if c_diag else "skip",
+                f"{len(f_diag['nodes'])}n" if f_diag else "skip",
+            )
+            return b_diag, c_diag, f_diag
+
+        except Exception as exc:
+            logger.warning(
+                "[DiagramGeneratorLLM] failed, falling back to Python builders: %s", exc
+            )
+            b_fb = build_architecture_diagram(b_data, frozenset()) if "B" in sections else None
+            c_fb = build_structure_diagram(c_data, frozenset()) if "C" in sections else None
+            f_fb = build_feature_diagram(f_data, frozenset()) if "F" in sections else None
+            return b_fb or None, c_fb or None, f_fb or None
+
+    async def _generate_diagrams(
+        self,
+        snapshot_id: str,
+        b_data: dict[str, Any],
+        c_data: dict[str, Any],
+        f_data: dict[str, Any],
+    ) -> tuple[str | None, str | None, str | None]:
+        """Generate Mermaid diagrams for sections B, C, F in parallel.
+
+        One manifest read is shared across all three builders to avoid redundant DB round-trips.
+        Returns (b_diagram, c_diagram, f_diagram) — None on any individual build error.
+        """
+        valid_paths = frozenset(await self._fetch_manifest_paths(snapshot_id))
+        b_diag = build_architecture_diagram(b_data, valid_paths)
+        c_diag = build_structure_diagram(c_data, valid_paths)
+        f_diag = build_feature_diagram(f_data, valid_paths)
+        return b_diag or None, c_diag or None, f_diag or None
+
     async def _persist_report_json(self, report_id: str, payload: dict[str, Any]) -> None:
         db = get_db()
         await db.execute(
@@ -779,6 +987,35 @@ class AnalysisService:
         sh = raw.setdefault("section_hashes", {})
         if isinstance(sh, dict):
             sh[letter] = compute_section_hash(out)
+
+        # Regenerate Mermaid diagram for sections that have one (B, C, F).
+        # We need current data for all three builders even when only one was rerun.
+        if letter in ("B", "C", "F"):
+            try:
+                b_data = _dsec(sections, "B") or {}
+                c_data = _dsec(sections, "C") or {}
+                f_data = _dsec(sections, "F") or {}
+                # Use freshly rerun output for the section that just ran
+                if letter == "B":
+                    b_data = out
+                elif letter == "C":
+                    c_data = out
+                elif letter == "F":
+                    f_data = out
+                b_diag, c_diag, f_diag = await self._generate_diagrams_llm(
+                    provider_id, model_id, b_data, c_data, f_data,
+                    sections=frozenset({letter}),
+                )
+                # Only update the section that was rerun — don't touch B/C/F diagrams
+                diag = b_diag if letter == "B" else c_diag if letter == "C" else f_diag
+                if diag and letter in sec_blob and isinstance(sec_blob[letter], dict):
+                    sec_blob[letter]["mermaid_diagram"] = diag
+                # Also inject into the returned `out` so the frontend sees it immediately
+                if diag:
+                    out = {**out, "mermaid_diagram": diag}
+            except Exception:
+                pass  # diagrams are non-fatal
+
         await self._persist_report_json(report_id, raw)
         duration_ms = int((time.monotonic() - t0) * 1000)
         return RerunSectionResponse(section=letter, data=out, duration_ms=duration_ms)
@@ -990,6 +1227,43 @@ class AnalysisService:
                 ),
             )
             await get_db().commit()
+
+            # Generate Mermaid diagrams and patch them into the persisted report
+            try:
+                _sections = report.get("sections") or {}
+                _b = _sections.get("B") if isinstance(_sections, dict) else None
+                _c = _sections.get("C") if isinstance(_sections, dict) else None
+                _f = _sections.get("F") if isinstance(_sections, dict) else None
+                if isinstance(_b, dict) and isinstance(_c, dict) and isinstance(_f, dict):
+                    # Find the report_id just inserted so we can patch it
+                    async with get_db().execute(
+                        "SELECT id FROM analysis_reports WHERE job_id=? ORDER BY created_at DESC LIMIT 1",
+                        (job_id,),
+                    ) as _cur:
+                        _row = await _cur.fetchone()
+                    if _row:
+                        _report_id = _row["id"]
+                        _b_diag, _c_diag, _f_diag = await self._generate_diagrams_llm(
+                            req.provider_id, req.model_id, _b, _c, _f
+                        )
+                        if any(d is not None for d in (_b_diag, _c_diag, _f_diag)):
+                            if _b_diag:
+                                _b["mermaid_diagram"] = _b_diag
+                            if _c_diag:
+                                _c["mermaid_diagram"] = _c_diag
+                            if _f_diag:
+                                _f["mermaid_diagram"] = _f_diag
+                            await self._persist_report_json(_report_id, report)
+                            logger.info(
+                                "[analysis:%s] mermaid diagrams generated (B=%s C=%s F=%s)",
+                                job_id,
+                                "ok" if _b_diag else "skip",
+                                "ok" if _c_diag else "skip",
+                                "ok" if _f_diag else "skip",
+                            )
+            except Exception as _diag_err:
+                logger.warning("[analysis:%s] diagram generation failed (non-fatal): %s", job_id, _diag_err)
+
             await asyncio.sleep(0.08)
             await self._jobs.update_step(job_id, StepName.EXPORT.value, 100, "Report assembled")
 

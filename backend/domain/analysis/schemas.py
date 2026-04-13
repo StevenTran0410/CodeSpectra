@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, TypedDict
+import typing
+from typing import Any, NotRequired, TypedDict, get_type_hints
 
 
 class FileRef(TypedDict):
@@ -100,6 +101,7 @@ class SectionB(TypedDict):
     confidence: str
     evidence_files: list[str]
     blind_spots: list[str]
+    mermaid_diagram: NotRequired[str | None]  # None for analyses run before CS-218
 
 
 class SectionC(TypedDict):
@@ -108,6 +110,7 @@ class SectionC(TypedDict):
     confidence: str
     evidence_files: list[str]
     blind_spots: list[str]
+    mermaid_diagram: NotRequired[str | None]  # None for analyses run before CS-218
 
 
 class SectionD(TypedDict):
@@ -136,6 +139,7 @@ class SectionF(TypedDict):
     confidence: str
     evidence_files: list[str]
     blind_spots: list[str]
+    mermaid_diagram: NotRequired[str | None]  # None for analyses run before CS-218
 
 
 class SectionG(TypedDict):
@@ -208,13 +212,25 @@ _SECTION_TYPES: dict[str, type] = {
     "L": SectionL,
 }
 
+# Precompute required key sets once at module load — get_type_hints is expensive
+# and validate_section is called once per section per analysis run.
+_REQUIRED_KEYS: dict[str, frozenset[str]] = {
+    sid: frozenset(
+        k for k, v in get_type_hints(t, include_extras=True).items()
+        if typing.get_origin(v) is not NotRequired
+    )
+    for sid, t in _SECTION_TYPES.items()
+}
+
 
 def validate_section(section_id: str, data: dict[str, Any]) -> None:
-    """Raises ValueError with field name if required keys are missing."""
-    t = _SECTION_TYPES.get(section_id)
-    if t is None:
+    """Raises ValueError with field name if required keys are missing.
+
+    NotRequired fields (e.g. mermaid_diagram) are excluded from the required set.
+    """
+    required = _REQUIRED_KEYS.get(section_id)
+    if required is None:
         raise ValueError(f"Unknown section_id: {section_id!r}")
-    required = set(getattr(t, "__annotations__", {}))
     missing = required - set(data.keys())
     if missing:
         raise ValueError(f"Section {section_id} missing fields: {sorted(missing)}")

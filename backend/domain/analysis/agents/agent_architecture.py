@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any
 
@@ -16,7 +17,14 @@ from ..profiles import NORMAL_PROFILE, AnalysisProfile
 from ..prompts import AGENT_B_SCHEMA_STR, AGENT_B_SYSTEM, render_bundle
 from ..schemas import validate_section
 from ._context_builders import extract_a_identity_context
+from ._graph_plan import merge_bundles
 from .base import BaseTypedAgent
+
+# Three parallel retrieval queries cover backend internals, IPC/frontend wiring,
+# and provider/context injection — each domain the single original query missed.
+_QUERY_BACKEND = "framework entrypoint bootstrap layer service router handler middleware"
+_QUERY_FRONTEND_IPC = "ipc channel preload contextBridge renderer window screen component"
+_QUERY_PROVIDERS = "provider context store state management configuration injection"
 
 
 class ArchitectureAgent(BaseTypedAgent):
@@ -51,6 +59,7 @@ class ArchitectureAgent(BaseTypedAgent):
         arch_bundle: RetrievalBundle | None = None,
         identity_output: dict | None = None,
         profile: AnalysisProfile | None = None,
+        folder_tree: str = "",
     ) -> dict[str, Any]:
         t0 = time.monotonic()
         n_chunks = 0
@@ -64,30 +73,96 @@ class ArchitectureAgent(BaseTypedAgent):
                     lines.append(f"  {n.rel_path} (score={n.score}, indegree={n.indegree})")
                 graph_block = "\n".join(lines)
             if arch_bundle is not None:
-                bundle = arch_bundle
+                # mem_ctx already ran retrieval — run parallel sub-queries to augment coverage
                 logger.info(
-                    "[ArchitectureAgent] using arch_bundle from mem_ctx: %d chunks",
+                    "[ArchitectureAgent] using arch_bundle from mem_ctx: %d chunks; "
+                    "adding parallel sub-queries for frontend/IPC/providers",
                     len(arch_bundle.evidences),
                 )
-            else:
-                logger.info("[ArchitectureAgent] arch_bundle not in mem_ctx, using own retrieval")
-                bundle = await self._retrieval.retrieve(
-                    RetrieveRequest(
-                        snapshot_id=snapshot_id,
-                        query=(
-                            "framework entrypoint bootstrap layer service router handler middleware"
-                        ),
-                        section=RetrievalSection.ARCHITECTURE,
-                        mode=RetrievalMode.HYBRID,
-                        max_results=_profile.retrieval_max_results,
-                    )
+                max_results_each = max(8, _profile.retrieval_max_results // 3)
+                results = await asyncio.gather(
+                    self._retrieval.retrieve(
+                        RetrieveRequest(
+                            snapshot_id=snapshot_id,
+                            query=_QUERY_BACKEND,
+                            section=RetrievalSection.ARCHITECTURE,
+                            mode=RetrievalMode.HYBRID,
+                            max_results=max_results_each,
+                        )
+                    ),
+                    self._retrieval.retrieve(
+                        RetrieveRequest(
+                            snapshot_id=snapshot_id,
+                            query=_QUERY_FRONTEND_IPC,
+                            section=RetrievalSection.ARCHITECTURE,
+                            mode=RetrievalMode.HYBRID,
+                            max_results=max_results_each,
+                        )
+                    ),
+                    self._retrieval.retrieve(
+                        RetrieveRequest(
+                            snapshot_id=snapshot_id,
+                            query=_QUERY_PROVIDERS,
+                            section=RetrievalSection.ARCHITECTURE,
+                            mode=RetrievalMode.HYBRID,
+                            max_results=max_results_each,
+                        )
+                    ),
+                    return_exceptions=True,
                 )
+                sub_bundles = [r for r in results if isinstance(r, RetrievalBundle)]
+                if sub_bundles:
+                    bundle = merge_bundles([arch_bundle] + sub_bundles, section=RetrievalSection.ARCHITECTURE)
+                else:
+                    bundle = arch_bundle
+            else:
+                logger.info(
+                    "[ArchitectureAgent] arch_bundle not in mem_ctx, running 3 parallel queries"
+                )
+                max_results_each = max(8, _profile.retrieval_max_results // 3)
+                results = await asyncio.gather(
+                    self._retrieval.retrieve(
+                        RetrieveRequest(
+                            snapshot_id=snapshot_id,
+                            query=_QUERY_BACKEND,
+                            section=RetrievalSection.ARCHITECTURE,
+                            mode=RetrievalMode.HYBRID,
+                            max_results=max_results_each,
+                        )
+                    ),
+                    self._retrieval.retrieve(
+                        RetrieveRequest(
+                            snapshot_id=snapshot_id,
+                            query=_QUERY_FRONTEND_IPC,
+                            section=RetrievalSection.ARCHITECTURE,
+                            mode=RetrievalMode.HYBRID,
+                            max_results=max_results_each,
+                        )
+                    ),
+                    self._retrieval.retrieve(
+                        RetrieveRequest(
+                            snapshot_id=snapshot_id,
+                            query=_QUERY_PROVIDERS,
+                            section=RetrievalSection.ARCHITECTURE,
+                            mode=RetrievalMode.HYBRID,
+                            max_results=max_results_each,
+                        )
+                    ),
+                    return_exceptions=True,
+                )
+                sub_bundles = [r for r in results if isinstance(r, RetrievalBundle)]
+                if not sub_bundles:
+                    # All queries failed — return fallback rather than crash
+                    return self._fallback("all retrieval queries failed")
+                bundle = merge_bundles(sub_bundles, section=RetrievalSection.ARCHITECTURE)
             self._record_bundle(bundle)
             n_chunks = len(bundle.evidences)
             identity_block = extract_a_identity_context(identity_output)
             prefix_parts = []
             if identity_block:
                 prefix_parts.append(identity_block)
+            if folder_tree:
+                prefix_parts.append(f"Repository structure:\n{folder_tree}")
             if graph_block:
                 prefix_parts.append(graph_block)
             prefix = "\n\n".join(prefix_parts) + ("\n\n" if prefix_parts else "")

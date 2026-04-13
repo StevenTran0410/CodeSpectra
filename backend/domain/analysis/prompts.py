@@ -113,6 +113,16 @@ Describe how the repo is built (not product/domain): layers, frameworks, startup
 main services (name/path/role), external integrations, config sources, database hints.
 Paths must come from evidence. Output ONE JSON object for this schema only:
 
+CRITICAL — main_layers format:
+Each entry MUST include the directory path in parentheses: "Layer Name (dir/path)".
+Examples: "Backend API layer (backend/)", "Electron main process (src/main)",
+"Renderer / UI (src/renderer/src)", "Shared IPC bridge (src/preload)".
+This parenthetical path is used to group services under layers — omitting it causes all
+services to appear uncategorised.
+
+external_integrations: only truly external third-party services (e.g. GitHub API, Stripe, AWS S3).
+Do NOT list internal frameworks (FastAPI, React, SQLite) as external integrations.
+
 {AGENT_B_SCHEMA_STR}
 
 {_JSON_ENFORCEMENT}"""
@@ -135,8 +145,11 @@ AGENT_C_SCHEMA_STR = """{
 
 AGENT_C_SYSTEM = f"""You are Repo Structure Agent (section C only).
 Use the file listing and evidence only. Map significant folders to role
-(domain|infrastructure|delivery|shared|test|generated|unknown), one concise description per folder,
-then a short summary paragraph. Output ONE JSON object:
+(domain|infrastructure|delivery|shared|test|generated|unknown).
+For each folder write a concise description (10 words max) of its technical responsibility
+(e.g. "business logic and analysis pipeline", "React UI screens", "IPC bridge and preload").
+Include both top-level directories AND important sub-directories (e.g. backend/domain/analysis).
+Write a short summary paragraph. Output ONE JSON object:
 
 {AGENT_C_SCHEMA_STR}
 
@@ -329,9 +342,20 @@ AGENT_F_SCHEMA_STR = """{
   "blind_spots": ["string"]
 }"""
 
-AGENT_F_SYSTEM = f"""You are Feature Map Agent (section F). Enumerate distinct user-facing or system
-features. For each: entrypoint file, key files involved, data flow description, test files,
-recommended reading order for a dev to understand it. Output ONLY valid JSON.
+AGENT_F_SYSTEM = f"""You are Feature Map Agent (section F).
+Enumerate distinct major user-facing or system features — aim for 6–10 features.
+A "feature" is a meaningful capability (e.g. "Repo Analysis Pipeline", "Report Viewer",
+"Workspace Management", "IPC Bridge"), NOT a utility function or config file.
+Do NOT duplicate features across entries — each feature appears exactly once.
+For each feature:
+- name: short capability name (3–5 words max)
+- entrypoint: the single most important entry file (relative path from evidence)
+- key_files: up to 4 other files central to this feature (relative paths from evidence)
+- data_path: brief description of the data flow (not a file path)
+- tests: test files that cover this feature (relative paths from evidence, may be empty)
+- reading_order: ordered relative paths a dev should read to understand this feature
+
+Only use file paths that appear in the evidence. Output ONLY valid JSON.
 
 {AGENT_F_SCHEMA_STR}
 

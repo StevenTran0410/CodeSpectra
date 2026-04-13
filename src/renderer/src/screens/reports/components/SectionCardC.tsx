@@ -1,6 +1,9 @@
-import React from 'react'
+import React, { useState } from 'react'
+import { Maximize2 } from 'lucide-react'
 import type { FolderRole, SectionC } from '../../../types/analysis'
 import { normConf } from '../../../lib/reportUtils'
+import C4DiagramView from '../../../components/C4DiagramView'
+import DiagramModal from '../../../components/DiagramModal'
 import SectionCard, { type SectionCardRerunProps } from './SectionCard'
 
 const ROLE_BADGE: Record<string, string> = {
@@ -24,6 +27,9 @@ export default function SectionCardC({
   rerunBusy,
 }: { data: SectionC } & SectionCardRerunProps): React.ReactElement {
   const conf = normConf(data.confidence)
+  const hasDiagram = !!data.mermaid_diagram
+  const [activeTab, setActiveTab] = useState<'details' | 'diagram'>('details')
+  const [diagramOpen, setDiagramOpen] = useState(false)
   return (
     <SectionCard
       sectionId="C"
@@ -33,6 +39,43 @@ export default function SectionCardC({
       onRerun={onRerun}
       rerunBusy={rerunBusy}
     >
+      {hasDiagram && (
+        <div className="flex items-center gap-2 mb-3 border-b border-zinc-800 pb-2">
+          {(['details', 'diagram'] as const).map((tab) => (
+            <button
+              key={tab}
+              onClick={() => setActiveTab(tab)}
+              className={`text-[10px] uppercase tracking-wide px-2 py-0.5 rounded ${
+                activeTab === tab
+                  ? 'bg-zinc-700 text-zinc-100'
+                  : 'text-zinc-500 hover:text-zinc-300'
+              }`}
+            >
+              {tab}
+            </button>
+          ))}
+          {activeTab === 'diagram' && (
+            <button
+              onClick={() => setDiagramOpen(true)}
+              className="ml-auto flex items-center gap-1 text-[10px] text-zinc-500 hover:text-zinc-300 transition-colors"
+              title="Open fullscreen"
+            >
+              <Maximize2 size={12} />
+            </button>
+          )}
+        </div>
+      )}
+      {hasDiagram && data.mermaid_diagram && (
+        <DiagramModal
+          open={diagramOpen}
+          onClose={() => setDiagramOpen(false)}
+          diagramData={data.mermaid_diagram}
+          title="Repo Structure"
+        />
+      )}
+      {activeTab === 'diagram' && data.mermaid_diagram ? (
+        <C4DiagramView data={data.mermaid_diagram} />
+      ) : (
       <div className="space-y-3">
         {data.summary ? (
           <p className="text-sm text-zinc-300 leading-relaxed">{data.summary}</p>
@@ -75,6 +118,7 @@ export default function SectionCardC({
           </div>
         )}
       </div>
+      )}
     </SectionCard>
   )
 }

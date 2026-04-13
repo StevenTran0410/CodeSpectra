@@ -20,7 +20,7 @@ from ._context_builders import (
     _MANIFEST_PATTERNS,
     _fetch_docs_with_fallback,
     _fetch_files_by_pattern,
-    fetch_folder_tree,
+    build_folder_summary,
 )
 from .base import BaseTypedAgent
 
@@ -44,7 +44,7 @@ async def _gather_context(
     manifest_task = _fetch_files_by_pattern(
         snapshot_id, _MANIFEST_PATTERNS, char_limit=profile.retrieval_manifest_char_limit
     )
-    tree_task = fetch_folder_tree(snapshot_id)
+    tree_task = build_folder_summary(snapshot_id)
     return await asyncio.gather(bundle_task, doc_task, manifest_task, tree_task)
 
 
