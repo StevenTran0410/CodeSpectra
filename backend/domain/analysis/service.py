@@ -421,7 +421,8 @@ class AnalysisService:
                     ar.id, ar.job_id, ar.repo_id, ar.snapshot_id, ar.provider_id, ar.model_id,
                     ar.scan_mode, ar.privacy_mode, ar.created_at,
                     COALESCE(lr.name, ar.repo_id) as repo_name,
-                    COALESCE(rs.branch, lr.selected_branch, lr.git_branch, 'unknown') as branch
+                    COALESCE(rs.branch, lr.selected_branch, lr.git_branch, 'unknown') as branch,
+                    rs.commit_hash
                 FROM analysis_reports ar
                 LEFT JOIN local_repos lr ON lr.id = ar.repo_id
                 LEFT JOIN repo_snapshots rs ON rs.id = ar.snapshot_id
@@ -439,7 +440,8 @@ class AnalysisService:
                     ar.id, ar.job_id, ar.repo_id, ar.snapshot_id, ar.provider_id, ar.model_id,
                     ar.scan_mode, ar.privacy_mode, ar.created_at,
                     COALESCE(lr.name, ar.repo_id) as repo_name,
-                    COALESCE(rs.branch, lr.selected_branch, lr.git_branch, 'unknown') as branch
+                    COALESCE(rs.branch, lr.selected_branch, lr.git_branch, 'unknown') as branch,
+                    rs.commit_hash
                 FROM analysis_reports ar
                 LEFT JOIN local_repos lr ON lr.id = ar.repo_id
                 LEFT JOIN repo_snapshots rs ON rs.id = ar.snapshot_id
@@ -457,6 +459,7 @@ class AnalysisService:
                 repo_name=r["repo_name"],
                 snapshot_id=r["snapshot_id"],
                 branch=r["branch"],
+                commit_hash=r["commit_hash"],
                 provider_id=r["provider_id"],
                 model_id=r["model_id"],
                 scan_mode=ScanMode(r["scan_mode"]),
@@ -473,7 +476,8 @@ class AnalysisService:
                 ar.id, ar.job_id, ar.repo_id, ar.snapshot_id, ar.provider_id, ar.model_id,
                 ar.scan_mode, ar.privacy_mode, ar.report_json, ar.created_at,
                 COALESCE(lr.name, ar.repo_id) as repo_name,
-                COALESCE(rs.branch, lr.selected_branch, lr.git_branch, 'unknown') as branch
+                COALESCE(rs.branch, lr.selected_branch, lr.git_branch, 'unknown') as branch,
+                rs.commit_hash
             FROM analysis_reports ar
             LEFT JOIN local_repos lr ON lr.id = ar.repo_id
             LEFT JOIN repo_snapshots rs ON rs.id = ar.snapshot_id
@@ -492,6 +496,7 @@ class AnalysisService:
                 repo_name=row["repo_name"],
                 snapshot_id=row["snapshot_id"],
                 branch=row["branch"],
+                commit_hash=row["commit_hash"],
                 provider_id=row["provider_id"],
                 model_id=row["model_id"],
                 scan_mode=ScanMode(row["scan_mode"]),

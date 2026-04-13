@@ -100,6 +100,7 @@ export interface AnalysisReportSummary {
   repo_name: string | null
   snapshot_id: string
   branch: string | null
+  commit_hash: string | null
   provider_id: string
   model_id: string
   scan_mode: 'quick' | 'full'
@@ -570,6 +571,7 @@ declare global {
           report_id_b: string
         }) => Promise<ReportDiffResult>
         getSectionSources: (reportId: string, sectionId: string) => Promise<unknown>
+        pollEvents: (jobId: string, fromIdx?: number) => Promise<{ events: SectionDoneEvent[]; job_done: boolean }>
         getStaleness: (reportId: string) => Promise<StalenessResult>
         onSectionDone: (cb: (event: unknown, data: SectionDoneEvent) => void) => void
         offSectionDone: (cb: (event: unknown, data: SectionDoneEvent) => void) => void

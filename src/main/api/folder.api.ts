@@ -388,6 +388,12 @@ export function registerFolderHandlers(client: BackendClient): void {
   )
 
   ipcMain.handle(
+    'analysis:pollEvents',
+    (_event, jobId: string, fromIdx = 0) =>
+      client.get(`/api/analysis/events/${jobId}?from_idx=${fromIdx}`)
+  )
+
+  ipcMain.handle(
     'analysis:getStaleness',
     (_event, reportId: string) =>
       client.get(`/api/analysis/staleness?report_id=${encodeURIComponent(reportId)}`)

@@ -10,6 +10,7 @@ from pathlib import Path
 import aiosqlite
 
 from shared.git_utils import run_git_sync
+from shared.logger import logger
 
 
 @dataclass
@@ -107,21 +108,16 @@ def _parse_git_diff_stat(output: str | None) -> tuple[int, int, int]:
 
     for line in lines:
         line = line.strip()
-        if not line:
-            continue
-
-        if line.endswith("changed"):
-            match = re.search(r"(\d+)\s+files? changed", line)
-            if match:
-                file_count = int(match.group(1))
-
-            match = re.search(r"(\d+)\s+insertions?\(\+\)", line)
-            if match:
-                insertions = int(match.group(1))
-
-            match = re.search(r"(\d+)\s+deletions?\(-\)", line)
-            if match:
-                deletions = int(match.group(1))
+        if "files changed" in line or "file changed" in line:
+            m = re.search(r"(\d+)\s+files? changed", line)
+            if m:
+                file_count = int(m.group(1))
+            m = re.search(r"(\d+)\s+insertions?\(\+\)", line)
+            if m:
+                insertions = int(m.group(1))
+            m = re.search(r"(\d+)\s+deletions?\(-\)", line)
+            if m:
+                deletions = int(m.group(1))
             break
 
     return file_count, insertions, deletions
@@ -145,8 +141,10 @@ async def check_staleness(report_id: str, db: aiosqlite.Connection) -> Staleness
 
         async with db.execute(
             """
-            SELECT rs.local_repo_id, rs.commit_hash, rs.local_path
+            SELECT rs.commit_hash, rs.branch,
+                   lr.path, lr.source_type, lr.selected_branch, lr.git_branch
             FROM repo_snapshots rs
+            JOIN local_repos lr ON lr.id = rs.local_repo_id
             WHERE rs.id = ?
             """,
             (snapshot_id,),
@@ -154,37 +152,67 @@ async def check_staleness(report_id: str, db: aiosqlite.Connection) -> Staleness
             row = await cursor.fetchone()
             if not row:
                 return StalenessResult(stale=False)
-            local_repo_id, old_commit_hash, local_path = row
+            old_commit_hash, snap_branch, repo_path, source_type, selected_branch, git_branch = row
 
-        if not old_commit_hash or not local_path:
+        if not old_commit_hash or not repo_path:
             return StalenessResult(stale=False)
 
-        if not Path(local_path).exists():
+        if not Path(repo_path).exists():
             return StalenessResult(stale=False, old_commit=old_commit_hash)
 
-        current_commit = run_git_sync(local_path, ["rev-parse", "HEAD"])
+        # Check if repo has a remote origin
+        has_remote = run_git_sync(repo_path, ["remote", "get-url", "origin"]) is not None
+
+        logger.info(
+            "[staleness] report=%s source=%s path=%s old=%s has_remote=%s branch=%s",
+            report_id[:8], source_type, repo_path, old_commit_hash[:8] if old_commit_hash else "?",
+            has_remote, snap_branch or selected_branch or git_branch,
+        )
+
+        # Fetch latest from remote if available
+        if has_remote:
+            fetch_result = run_git_sync(repo_path, ["fetch", "origin", "--quiet"])
+            if fetch_result is None:
+                logger.warning("[staleness] git fetch failed for %s", repo_path)
+
+        if has_remote:
+            # Compare against remote tracking branch
+            branch = snap_branch or selected_branch or git_branch or "main"
+            current_commit = run_git_sync(repo_path, ["rev-parse", f"origin/{branch}"])
+        else:
+            # No remote — compare local HEAD
+            current_commit = run_git_sync(repo_path, ["rev-parse", "HEAD"])
         if not current_commit:
+            logger.warning("[staleness] rev-parse returned None for %s", repo_path)
             return StalenessResult(stale=False, old_commit=old_commit_hash)
 
         current_commit = current_commit.strip()
+        logger.info("[staleness] old=%s current=%s match=%s", old_commit_hash[:8], current_commit[:8], old_commit_hash == current_commit)
 
         if current_commit == old_commit_hash:
             return StalenessResult(stale=False, old_commit=old_commit_hash, current_commit=current_commit)
 
-        diff_stat = run_git_sync(local_path, ["diff", "--stat", f"{old_commit_hash}...{current_commit}"])
+        diff_stat = run_git_sync(repo_path, ["diff", "--stat", f"{old_commit_hash}..{current_commit}"])
+        logger.info("[staleness] diff_stat raw: %s", repr(diff_stat[:200]) if diff_stat else "None")
         changed_files_count, insertions, deletions = _parse_git_diff_stat(diff_stat)
+        logger.info("[staleness] files=%d ins=%d del=%d", changed_files_count, insertions, deletions)
+
+        if changed_files_count == 0 and not diff_stat:
+            # diff command itself failed (None) — commits might not exist in this clone
+            return StalenessResult(stale=True, old_commit=old_commit_hash, current_commit=current_commit,
+                                   recommend_new_snapshot=True)
 
         if changed_files_count == 0:
             return StalenessResult(stale=False, old_commit=old_commit_hash, current_commit=current_commit)
 
         # Count commits between old and current
         rev_list = run_git_sync(
-            local_path, ["rev-list", "--count", f"{old_commit_hash}..{current_commit}"]
+            repo_path, ["rev-list", "--count", f"{old_commit_hash}..{current_commit}"]
         )
         commit_count = int(rev_list.strip()) if rev_list and rev_list.strip().isdigit() else 0
 
         is_ancestor = run_git_sync(
-            local_path, ["merge-base", "--is-ancestor", old_commit_hash, current_commit]
+            repo_path, ["merge-base", "--is-ancestor", old_commit_hash, current_commit]
         )
         non_linear = is_ancestor is None
 
