@@ -6,7 +6,7 @@ from domain.model_connector.service import ProviderConfigService
 from domain.retrieval.service import RetrievalService
 
 from .agent import QAAgent
-from .types import QARequest, QAResponse
+from .types import QARequest, QAResponse, ClassifyIntentRequest, ClassifyIntentResponse
 from .deep_research import DeepResearchAgent, DeepResearchRequest, DeepResearchResult
 
 
@@ -30,6 +30,10 @@ class QAService:
             include_debug=req.include_debug,
         )
         return QAResponse.model_validate(raw)
+
+    def classify_intent(self, req: ClassifyIntentRequest) -> ClassifyIntentResponse:
+        deep_research = self._agent.classify_intent(question=req.question)
+        return ClassifyIntentResponse(deep_research=deep_research)
 
     async def deep_research(self, req: DeepResearchRequest) -> DeepResearchResult:
         raw = await self._deep_research_agent.research(

@@ -27,7 +27,16 @@ class QAResponse(BaseModel):
     confidence: str  # high | medium | low
     unknowns: list[str]
     suggested_files: list[str]
+    deep_research_recommended: bool = False
     retrieval_debug: dict | None = None
+
+
+class ClassifyIntentRequest(BaseModel):
+    question: str
+
+
+class ClassifyIntentResponse(BaseModel):
+    deep_research: bool
 
 
 class QASectionCache(BaseModel):

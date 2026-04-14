@@ -45,13 +45,22 @@ _PROVIDER_ERROR_STATUS: dict[ProviderErrorCode, int] = {
 # ──────────────────────────────────────────────────────────────────────────────
 # Application factory
 # ──────────────────────────────────────────────────────────────────────────────
+import asyncio
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
+
+from domain.qa.classifier_service import ClassifierService as _ClassifierService
 
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     await init_db()
+    # Warm up the intent classifier in background — loads DB examples + trains sklearn model.
+    # Non-blocking: a slow startup does not delay BACKEND_READY.
+    asyncio.get_event_loop().create_task(
+        _ClassifierService().warm_up_with_db_examples(),
+        name="classifier-warmup",
+    )
     logger.info("Backend startup complete")
     yield
     await close_db()

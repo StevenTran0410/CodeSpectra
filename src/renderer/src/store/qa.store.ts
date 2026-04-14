@@ -22,13 +22,17 @@ export interface QAConversation {
 interface QAStore {
   conversations: QAConversation[]
   activeId: string | null
+  deepResearchDisabledIds: string[]
 
   createConversation: (snapshotId: string, repoId: string) => string
   deleteConversation: (id: string) => void
   renameConversation: (id: string, name: string) => void
   updateConversationSnapshot: (id: string, snapshotId: string, repoId: string) => void
   addMessage: (id: string, msg: QAChatMessage) => void
+  truncateMessages: (id: string, fromIndex: number) => void
   setActive: (id: string) => void
+  disableDeepResearch: (conversationId: string) => void
+  isDeepResearchDisabled: (conversationId: string) => boolean
 }
 
 const generateId = () => Math.random().toString(36).substring(2, 11)
@@ -38,6 +42,7 @@ export const useQAStore = create<QAStore>()(
     (set, get) => ({
       conversations: [],
       activeId: null,
+      deepResearchDisabledIds: [],
 
       createConversation: (snapshotId, repoId) => {
         const id = generateId()
@@ -106,7 +111,25 @@ export const useQAStore = create<QAStore>()(
         })
       },
 
+      truncateMessages: (id, fromIndex) => {
+        set((state) => ({
+          conversations: state.conversations.map((c) =>
+            c.id === id ? { ...c, messages: c.messages.slice(0, fromIndex) } : c
+          ),
+        }))
+      },
+
       setActive: (id) => set({ activeId: id }),
+
+      disableDeepResearch: (conversationId) =>
+        set((state) => ({
+          deepResearchDisabledIds: state.deepResearchDisabledIds.includes(conversationId)
+            ? state.deepResearchDisabledIds
+            : [...state.deepResearchDisabledIds, conversationId],
+        })),
+
+      isDeepResearchDisabled: (conversationId) =>
+        get().deepResearchDisabledIds.includes(conversationId),
     }),
     {
       name: 'codespectra.qa.v1',

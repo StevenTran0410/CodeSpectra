@@ -415,6 +415,18 @@ CREATE INDEX IF NOT EXISTS idx_qa_section_caches_snapshot
     ON qa_section_caches(snapshot_id);
 """,
     },
+    {
+        "version": 25,
+        "description": "Add qa_classifier_examples table for user-labelled training data",
+        "sql": """
+CREATE TABLE IF NOT EXISTS qa_classifier_examples (
+    id              TEXT PRIMARY KEY,
+    text            TEXT NOT NULL,
+    is_deep_research INTEGER NOT NULL,  -- 1 = deep research, 0 = quick ask
+    created_at      TEXT NOT NULL
+);
+""",
+    },
 ]
 
 TARGET_VERSION = len(_MIGRATIONS) - 1

@@ -199,6 +199,18 @@ const api = {
       report_id?: string
       include_debug?: boolean
     }) => ipcRenderer.invoke('qa:ask', body),
+    classifyIntent: (body: { question: string }) => ipcRenderer.invoke('qa:classifyIntent', body),
+    classifier: {
+      status: (): Promise<{ trained: boolean; backend: string; builtin_examples: number; user_examples: number }> =>
+        ipcRenderer.invoke('qa:classifier:status'),
+      examples: (): Promise<{ id: string; text: string; is_deep_research: boolean; created_at: string }[]> =>
+        ipcRenderer.invoke('qa:classifier:examples'),
+      addExample: (body: { text: string; is_deep_research: boolean }) =>
+        ipcRenderer.invoke('qa:classifier:addExample', body),
+      deleteExample: (id: string): Promise<void> => ipcRenderer.invoke('qa:classifier:deleteExample', id),
+      retrain: (): Promise<{ trained: boolean; backend: string; builtin_examples: number; user_examples: number }> =>
+        ipcRenderer.invoke('qa:classifier:retrain'),
+    },
     deepResearch: (body: {
       snapshot_id: string
       question: string

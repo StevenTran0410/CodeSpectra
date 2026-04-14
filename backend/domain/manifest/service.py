@@ -330,6 +330,12 @@ class ManifestService:
         if snap is None:
             raise NotFoundError("RepoSnapshot", snapshot_id)
 
+        # Normalize: strip graph-node symbol suffix ("path/file.ts::ClassName" → "path/file.ts")
+        if "::" in rel_path:
+            rel_path = rel_path.split("::")[0]
+        # Normalize separators and strip leading slashes
+        rel_path = rel_path.replace("\\", "/").lstrip("/")
+
         root = Path(snap["local_path"]).resolve()
         target = (root / rel_path).resolve()
         if root not in target.parents and target != root:

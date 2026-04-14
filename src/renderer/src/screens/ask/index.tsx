@@ -1,7 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
-import { Send, Loader2, X, Microscope, Zap } from 'lucide-react'
+import { Send, Loader2, X, Microscope, Pencil, Copy, Check } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { ErrorBanner } from '../../components/ui/ErrorBanner'
 import { toErrorMessage } from '../../lib/errors'
 import { useLocalRepoStore } from '../../store/local-repo.store'
@@ -10,46 +11,89 @@ import { useQAStore } from '../../store/qa.store'
 import type { RepoSnapshot, DeepResearchResponse } from '../../types/electron'
 import type { QAChatMessage } from '../../store/qa.store'
 
-// ── Auto research-mode detection ─────────────────────────────────────────────
-
-const DEEP_EXPLICIT = [
-  /\btrace\b/i, /\bflow(s| through)?\b/i, /\bcall[\s-]chain\b/i,
-  /\bwho calls?\b/i, /\bwhat calls?\b/i, /\bcallers?\b/i,
-  /\bblast[\s-]radius\b/i, /\bimpact of (changing|modifying)\b/i,
-  /\bdeep[\s-]research\b/i, /\bstep[\s-]by[\s-]step\b/i,
-  /\bfollow the\b/i, /\btracing\b/i, /\bdependenc(y|ies)\b/i,
-  // Vietnamese
-  /\bluồng\b/i, /\bai gọi\b/i, /\bgọi ai\b/i,
-  /\bảnh hưởng\b/i, /\bnghiên cứu sâu\b/i, /\btheo dõi\b/i,
-]
-
-const WANTS_MORE = [
-  /\bthiếu\b/i, /\bchưa đủ\b/i, /\bcần thêm\b/i, /\bchưa rõ\b/i,
-  /\bchưa hiểu\b/i, /\bkhông đủ\b/i, /\bsơ sài\b/i,
-  /\bnot enough\b/i, /\bmore (detail|info|depth)\b/i,
-  /\bdig deeper\b/i, /\bgo deeper\b/i, /\belaborate\b/i,
-  /\bexplain more\b/i, /\btell me more\b/i, /\bexpand\b/i,
-]
-
-function detectResearchMode(
-  input: string,
-  lastAssistantMsg: QAChatMessage | undefined
-): 'quick' | 'deep' {
-  // 1. Explicit deep research keywords in current input
-  if (DEEP_EXPLICIT.some((p) => p.test(input))) return 'deep'
-
-  // 2. Follow-up to an insufficient quick ask response
-  if (lastAssistantMsg?.response) {
-    const r = lastAssistantMsg.response
-    const wasInsufficient =
-      r.confidence === 'low' || (r.unknowns?.length ?? 0) >= 2
-    if (wasInsufficient && WANTS_MORE.some((p) => p.test(input))) return 'deep'
-  }
-
-  return 'quick'
+// Shared ReactMarkdown component map — used by both quick ask and deep research
+const MD_COMPONENTS: React.ComponentProps<typeof ReactMarkdown>['components'] = {
+  h1: ({ children }) => <h1 className="text-base font-bold text-gray-100 mt-3 mb-1">{children}</h1>,
+  h2: ({ children }) => <h2 className="text-sm font-bold text-gray-100 mt-3 mb-1">{children}</h2>,
+  h3: ({ children }) => <h3 className="text-sm font-semibold text-gray-200 mt-2 mb-1">{children}</h3>,
+  h4: ({ children }) => <h4 className="text-xs font-semibold text-gray-300 mt-2 mb-0.5">{children}</h4>,
+  p: ({ children }) => <p className="text-sm text-gray-200 mb-2 last:mb-0 leading-relaxed">{children}</p>,
+  ul: ({ children }) => <ul className="list-disc list-inside text-sm text-gray-200 mb-2 space-y-0.5 pl-1">{children}</ul>,
+  ol: ({ children }) => <ol className="list-decimal list-inside text-sm text-gray-200 mb-2 space-y-0.5 pl-1">{children}</ol>,
+  li: ({ children }) => <li className="text-sm text-gray-200">{children}</li>,
+  strong: ({ children }) => <strong className="font-semibold text-gray-100">{children}</strong>,
+  em: ({ children }) => <em className="italic text-gray-300">{children}</em>,
+  hr: () => <hr className="border-surface-border my-2" />,
+  code: ({ children, className }) => {
+    const isBlock = className?.includes('language-')
+    return isBlock ? (
+      <code className="block bg-zinc-900 border border-zinc-700 rounded px-3 py-2 text-xs font-mono text-green-300 overflow-x-auto whitespace-pre">{children}</code>
+    ) : (
+      <code className="bg-zinc-800 px-1 py-0.5 rounded text-xs font-mono text-green-300">{children}</code>
+    )
+  },
+  pre: ({ children }) => <pre className="mb-2">{children}</pre>,
+  blockquote: ({ children }) => <blockquote className="border-l-2 border-blue-500 pl-3 my-2 text-gray-400 italic text-sm">{children}</blockquote>,
+  // ── Tables (remark-gfm) ──────────────────────────────────────────────────
+  table: ({ children }) => (
+    <div className="overflow-x-auto mb-3">
+      <table className="w-full text-xs border-collapse">{children}</table>
+    </div>
+  ),
+  thead: ({ children }) => <thead className="bg-surface-raised">{children}</thead>,
+  tbody: ({ children }) => <tbody>{children}</tbody>,
+  tr: ({ children }) => <tr className="border-b border-surface-border">{children}</tr>,
+  th: ({ children }) => (
+    <th className="px-3 py-1.5 text-left font-semibold text-gray-300 border border-surface-border whitespace-nowrap">
+      {children}
+    </th>
+  ),
+  td: ({ children }) => (
+    <td className="px-3 py-1.5 text-gray-200 border border-surface-border">{children}</td>
+  ),
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+function DeepResearchConfirmCard({
+  onConfirm,
+  onSkip,
+  onDisableForChat,
+}: {
+  onConfirm: () => void
+  onSkip: () => void
+  onDisableForChat: () => void
+}): React.ReactElement {
+  return (
+    <div className="border border-purple-500/30 bg-purple-950/20 rounded-lg p-3 mt-2">
+      <div className="flex items-center gap-2 text-purple-300 text-sm font-medium">
+        <Microscope size={14} />
+        Deep Research available
+      </div>
+      <p className="text-xs text-zinc-400 mt-1">
+        This question may benefit from a deeper investigation across the codebase.
+      </p>
+      <div className="flex gap-2 mt-3">
+        <button
+          onClick={onConfirm}
+          className="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white text-xs rounded transition-colors"
+        >
+          Run Deep Research
+        </button>
+        <button
+          onClick={onSkip}
+          className="px-3 py-1.5 text-zinc-400 hover:text-zinc-200 text-xs rounded transition-colors"
+        >
+          Skip
+        </button>
+        <button
+          onClick={onDisableForChat}
+          className="px-3 py-1.5 text-zinc-500 hover:text-zinc-300 text-xs rounded transition-colors"
+        >
+          Don't ask again this chat
+        </button>
+      </div>
+    </div>
+  )
+}
 
 export default function AskScreen(): React.ReactElement {
   const navigate = useNavigate()
@@ -68,7 +112,10 @@ export default function AskScreen(): React.ReactElement {
     renameConversation,
     updateConversationSnapshot,
     addMessage,
+    truncateMessages,
     setActive,
+    disableDeepResearch,
+    isDeepResearchDisabled,
   } = useQAStore()
 
   const [selectedRepoId, setSelectedRepoId] = useState(urlRepoId)
@@ -85,8 +132,16 @@ export default function AskScreen(): React.ReactElement {
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  // tracks whether the currently-in-flight request is deep research (for spinner UI)
-  const [pendingIsDeep, setPendingIsDeep] = useState(false)
+  const [deepResearchPrompt, setDeepResearchPrompt] = useState<{
+    conversationId: string
+    snapshotId: string
+    question: string
+    messageIndex: number
+  } | null>(null)
+  const [forceDeepResearch, setForceDeepResearch] = useState(false)
+  const [liveMode, setLiveMode] = useState<'deep' | 'quick' | null>(null)
+  const [editingFromIdx, setEditingFromIdx] = useState<number | null>(null)
+  const [copiedIdx, setCopiedIdx] = useState<number | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
   // Load repos on mount
@@ -164,6 +219,11 @@ export default function AskScreen(): React.ReactElement {
     }
   }, [messages])
 
+  // Clear deepResearchPrompt on conversation change
+  useEffect(() => {
+    setDeepResearchPrompt(null)
+  }, [activeId])
+
   const handleConfirmChange = () => {
     if (!activeId || !selectedSnapshotId || !selectedRepoId) return
     updateConversationSnapshot(activeId, selectedSnapshotId, selectedRepoId)
@@ -183,14 +243,16 @@ export default function AskScreen(): React.ReactElement {
     const q = input.trim()
     if (!q || loading || !activeId || !activeConvo) return
 
-    // Auto-detect mode based on question content + conversation context
-    const lastAssistantMsg = [...(activeConvo.messages ?? [])]
-      .reverse()
-      .find((m) => m.role === 'assistant')
-    const isDeep = detectResearchMode(q, lastAssistantMsg) === 'deep'
-
     setInput('')
-    setPendingIsDeep(isDeep)
+    setDeepResearchPrompt(null)
+
+    // When editing an existing message, truncate history from that index
+    const baseMessageIndex = editingFromIdx ?? (activeConvo.messages?.length ?? 0)
+    if (editingFromIdx !== null) {
+      truncateMessages(activeId, editingFromIdx)
+      setEditingFromIdx(null)
+    }
+
     addMessage(activeId, { role: 'user', content: q })
     setLoading(true)
     setError(null)
@@ -200,35 +262,129 @@ export default function AskScreen(): React.ReactElement {
         throw new Error('No provider/model configured. Please set up a provider in the Providers screen.')
       }
 
-      if (isDeep) {
-        const res = await window.api.qa.deepResearch({
-          snapshot_id: activeConvo.snapshotId,
-          question: q,
-          provider_id: providerId,
-          model_id: modelId,
-        })
-        addMessage(activeId, {
-          role: 'assistant',
-          content: res.summary,
-          deepResearchResponse: res,
-        })
-      } else {
-        const res = await window.api.qa.ask({
-          snapshot_id: activeConvo.snapshotId,
-          question: q,
-          provider_id: providerId,
-          model_id: modelId,
-        })
-        addMessage(activeId, { role: 'assistant', content: res.answer, response: res })
+      // 1. Determine mode — manual override takes priority, then local classifier
+      let isDeep = forceDeepResearch
+      if (!isDeep && !isDeepResearchDisabled(activeId)) {
+        try {
+          const classification = await window.api.qa.classifyIntent({ question: q })
+          isDeep = classification.deep_research
+        } catch {
+          // classify failed — fall through to quick ask
+        }
       }
+
+      if (isDeep) {
+        // Stop here — show confirm card unless manual toggle (then skip confirm)
+        setLoading(false)
+        if (forceDeepResearch) {
+          // Manual toggle: skip confirm card, run deep research directly
+          setForceDeepResearch(false)
+          setLoading(true)
+          try {
+            const res = await window.api.qa.deepResearch({
+              snapshot_id: activeConvo.snapshotId,
+              question: q,
+              provider_id: providerId,
+              model_id: modelId,
+            })
+            addMessage(activeId, {
+              role: 'assistant',
+              content: res.summary,
+              deepResearchResponse: res,
+            })
+          } catch (err) {
+            const msg = toErrorMessage(err)
+            addMessage(activeId, { role: 'assistant', content: '', error: msg })
+            setError(msg)
+          } finally {
+            setLoading(false)
+          }
+          return
+        }
+        // Auto-detected: show confirm card
+        setDeepResearchPrompt({
+          conversationId: activeId,
+          snapshotId: activeConvo.snapshotId,
+          question: q,
+          messageIndex: baseMessageIndex,
+        })
+        return
+      }
+
+      // 2. Not deep research — run quick ask
+      const res = await window.api.qa.ask({
+        snapshot_id: activeConvo.snapshotId,
+        question: q,
+        provider_id: providerId,
+        model_id: modelId,
+      })
+
+      addMessage(activeId, { role: 'assistant', content: res.answer, response: res })
     } catch (err) {
       const msg = toErrorMessage(err)
       addMessage(activeId, { role: 'assistant', content: '', error: msg })
       setError(msg)
     } finally {
       setLoading(false)
-      setPendingIsDeep(false)
     }
+  }
+
+  const handleDeepResearchConfirm = async () => {
+    if (!deepResearchPrompt) return
+    const { conversationId, snapshotId, question } = deepResearchPrompt
+    setDeepResearchPrompt(null)
+    setLoading(true)
+    setError(null)
+    try {
+      const res = await window.api.qa.deepResearch({
+        snapshot_id: snapshotId,
+        question,
+        provider_id: providerId,
+        model_id: modelId,
+      })
+      addMessage(conversationId, {
+        role: 'assistant',
+        content: res.summary,
+        deepResearchResponse: res,
+      })
+    } catch (err) {
+      const msg = toErrorMessage(err)
+      addMessage(conversationId, { role: 'assistant', content: '', error: msg })
+      setError(msg)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleDeepResearchSkip = async () => {
+    if (!deepResearchPrompt) return
+    const { conversationId, snapshotId, question } = deepResearchPrompt
+    setDeepResearchPrompt(null)
+    setLoading(true)
+    setError(null)
+    try {
+      const res = await window.api.qa.ask({
+        snapshot_id: snapshotId,
+        question,
+        provider_id: providerId,
+        model_id: modelId,
+      })
+      addMessage(conversationId, { role: 'assistant', content: res.answer, response: res })
+    } catch (err) {
+      const msg = toErrorMessage(err)
+      addMessage(conversationId, { role: 'assistant', content: '', error: msg })
+      setError(msg)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleDisableForChat = async () => {
+    if (!deepResearchPrompt) return
+    const { conversationId } = deepResearchPrompt
+    disableDeepResearch(conversationId)
+    // Also run quick ask since user is dismissing deep research permanently for this chat
+    await handleDeepResearchSkip()
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -267,7 +423,7 @@ export default function AskScreen(): React.ReactElement {
   }
 
   return (
-    <div className="flex-1 flex flex-col bg-app-bg">
+    <div className="h-full flex flex-col bg-app-bg overflow-hidden">
       {/* Tab bar */}
       {conversations.length > 0 && (
         <div className="px-6 py-3 border-b border-surface-border bg-surface-overlay flex items-center gap-2 overflow-x-auto scrollbar-thin">
@@ -443,7 +599,7 @@ export default function AskScreen(): React.ReactElement {
       {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
 
       {/* Messages area */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+      <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-4 space-y-6">
         {conversations.length === 0 ? (
           <div className="flex items-center justify-center h-full">
             <div className="text-center text-gray-400">
@@ -461,44 +617,48 @@ export default function AskScreen(): React.ReactElement {
           </div>
         ) : (
           messages.map((msg, idx) => (
-            <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-              <div
-                className={`max-w-2xl rounded-lg px-4 py-3 ${
-                  msg.role === 'user'
-                    ? 'bg-blue-700 text-gray-100'
-                    : 'bg-surface-overlay text-gray-200'
-                }`}
-              >
+            <React.Fragment key={idx}>
+              <div className={`flex group ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                <div className="relative max-w-2xl">
+                  {/* Action buttons — hover reveal */}
+                  <div className={`absolute -top-6 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity ${msg.role === 'user' ? 'right-0' : 'left-0'}`}>
+                    {msg.role === 'user' && (
+                      <button
+                        onClick={() => {
+                          setInput(msg.content)
+                          setEditingFromIdx(idx)
+                        }}
+                        title="Edit and resend"
+                        className="p-1 rounded text-gray-500 hover:text-gray-200 hover:bg-surface-overlay transition-colors"
+                      >
+                        <Pencil size={12} />
+                      </button>
+                    )}
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText(msg.content)
+                        setCopiedIdx(idx)
+                        setTimeout(() => setCopiedIdx((v) => (v === idx ? null : v)), 1500)
+                      }}
+                      title="Copy text"
+                      className="p-1 rounded text-gray-500 hover:text-gray-200 hover:bg-surface-overlay transition-colors"
+                    >
+                      {copiedIdx === idx ? <Check size={12} className="text-green-400" /> : <Copy size={12} />}
+                    </button>
+                  </div>
+                <div
+                  className={`rounded-lg px-4 py-3 ${
+                    msg.role === 'user'
+                      ? 'bg-blue-700 text-gray-100'
+                      : 'bg-surface-overlay text-gray-200'
+                  } ${editingFromIdx === idx ? 'ring-2 ring-yellow-400/60' : ''}`}
+                >
                 {msg.error ? (
-                  <p className="text-red-400">{msg.error}</p>
+                  <p className="text-red-400 select-text">{msg.error}</p>
                 ) : (
                   <>
-                    <div className="prose-qa">
-                      <ReactMarkdown
-                        components={{
-                          h1: ({ children }) => <h1 className="text-base font-bold text-gray-100 mt-3 mb-1">{children}</h1>,
-                          h2: ({ children }) => <h2 className="text-sm font-bold text-gray-100 mt-3 mb-1">{children}</h2>,
-                          h3: ({ children }) => <h3 className="text-sm font-semibold text-gray-200 mt-2 mb-1">{children}</h3>,
-                          h4: ({ children }) => <h4 className="text-xs font-semibold text-gray-300 mt-2 mb-0.5">{children}</h4>,
-                          p: ({ children }) => <p className="text-sm text-gray-200 mb-2 last:mb-0 leading-relaxed">{children}</p>,
-                          ul: ({ children }) => <ul className="list-disc list-inside text-sm text-gray-200 mb-2 space-y-0.5 pl-1">{children}</ul>,
-                          ol: ({ children }) => <ol className="list-decimal list-inside text-sm text-gray-200 mb-2 space-y-0.5 pl-1">{children}</ol>,
-                          li: ({ children }) => <li className="text-sm text-gray-200">{children}</li>,
-                          strong: ({ children }) => <strong className="font-semibold text-gray-100">{children}</strong>,
-                          em: ({ children }) => <em className="italic text-gray-300">{children}</em>,
-                          hr: () => <hr className="border-surface-border my-2" />,
-                          code: ({ children, className }) => {
-                            const isBlock = className?.includes('language-')
-                            return isBlock ? (
-                              <code className="block bg-zinc-900 border border-zinc-700 rounded px-3 py-2 text-xs font-mono text-green-300 overflow-x-auto whitespace-pre">{children}</code>
-                            ) : (
-                              <code className="bg-zinc-800 px-1 py-0.5 rounded text-xs font-mono text-green-300">{children}</code>
-                            )
-                          },
-                          pre: ({ children }) => <pre className="mb-2">{children}</pre>,
-                          blockquote: ({ children }) => <blockquote className="border-l-2 border-blue-500 pl-3 my-2 text-gray-400 italic text-sm">{children}</blockquote>,
-                        }}
-                      >
+                    <div className="prose-qa select-text">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>
                         {msg.content}
                       </ReactMarkdown>
                     </div>
@@ -579,23 +739,31 @@ export default function AskScreen(): React.ReactElement {
                   </>
                 )}
               </div>
+                </div>
             </div>
+            {deepResearchPrompt &&
+              deepResearchPrompt.conversationId === activeId &&
+              deepResearchPrompt.messageIndex === idx && (
+                <div className="flex justify-start">
+                  <div className="max-w-2xl w-full">
+                    <DeepResearchConfirmCard
+                      onConfirm={handleDeepResearchConfirm}
+                      onSkip={handleDeepResearchSkip}
+                      onDisableForChat={handleDisableForChat}
+                    />
+                  </div>
+                </div>
+              )}
+            </React.Fragment>
           ))
         )}
 
         {/* Loading state */}
         {loading && (
           <div className="flex justify-start">
-            <div className={`flex items-center gap-2 px-4 py-3 rounded-lg border ${
-              pendingIsDeep
-                ? 'bg-purple-950/40 border-purple-800/50'
-                : 'bg-surface-overlay border-transparent'
-            }`}>
-              <Loader2 className={`w-4 h-4 animate-spin ${pendingIsDeep ? 'text-purple-400' : 'text-blue-400'}`} />
-              {pendingIsDeep && <Microscope className="w-3.5 h-3.5 text-purple-400" />}
-              <span className="text-sm text-gray-300">
-                {pendingIsDeep ? 'Deep Research — tracing through codebase...' : 'Thinking...'}
-              </span>
+            <div className="flex items-center gap-2 px-4 py-3 rounded-lg bg-surface-overlay">
+              <Loader2 className="w-4 h-4 animate-spin text-blue-400" />
+              <span className="text-sm text-gray-300">Thinking...</span>
             </div>
           </div>
         )}
@@ -604,25 +772,34 @@ export default function AskScreen(): React.ReactElement {
       {/* Input area */}
       {activeConvo && (
         <div className="px-6 py-4 border-t border-surface-border bg-surface space-y-2">
-          {/* Auto-detected mode preview (only shown when input non-empty) */}
-          {input.trim() && (() => {
-            const lastAssistantMsg = [...(activeConvo.messages ?? [])]
-              .reverse()
-              .find((m) => m.role === 'assistant')
-            const willBeDeep = detectResearchMode(input, lastAssistantMsg) === 'deep'
-            return willBeDeep ? (
-              <div className="flex items-center gap-1.5 text-xs text-purple-400">
-                <Microscope className="w-3 h-3" />
-                <span>Deep Research will be used for this question</span>
-              </div>
-            ) : (
-              <div className="flex items-center gap-1.5 text-xs text-gray-600">
-                <Zap className="w-3 h-3" />
-                <span>Quick Ask</span>
-              </div>
-            )
-          })()}
-
+          {/* Editing indicator */}
+          {editingFromIdx !== null && (
+            <div className="flex items-center gap-2 text-xs text-yellow-400">
+              <Pencil size={11} />
+              Editing message — resend to replace from this point
+              <button
+                onClick={() => { setEditingFromIdx(null); setInput('') }}
+                className="ml-auto text-gray-500 hover:text-gray-300 transition-colors"
+              >
+                <X size={12} />
+              </button>
+            </div>
+          )}
+          {/* Toolbar */}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setForceDeepResearch((v) => !v)}
+              title={forceDeepResearch ? 'Deep Research ON — click to disable' : 'Enable Deep Research for next message'}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium transition-colors ${
+                forceDeepResearch
+                  ? 'bg-purple-600 text-white hover:bg-purple-500'
+                  : 'text-zinc-500 hover:text-zinc-300 hover:bg-surface-overlay'
+              }`}
+            >
+              <Microscope size={12} />
+              Deep Research
+            </button>
+          </div>
           {/* Input field */}
           <div className="flex gap-2">
             <input
@@ -630,17 +807,21 @@ export default function AskScreen(): React.ReactElement {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="Ask a question about the codebase..."
+              placeholder={forceDeepResearch ? 'Deep Research mode — ask anything...' : 'Ask a question about the codebase...'}
               disabled={loading}
-              className="flex-1 px-4 py-2 bg-surface-overlay border border-surface-border rounded-lg text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500 disabled:opacity-50"
+              className={`flex-1 px-4 py-2 bg-surface-overlay border rounded-lg text-gray-100 placeholder-gray-500 focus:outline-none disabled:opacity-50 transition-colors ${
+                forceDeepResearch ? 'border-purple-500/60 focus:border-purple-400' : 'border-surface-border focus:border-blue-500'
+              }`}
             />
             <button
               onClick={handleAsk}
               disabled={loading || !input.trim()}
-              className="px-4 py-2 bg-blue-700 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
+              className={`px-4 py-2 text-white rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-2 ${
+                forceDeepResearch ? 'bg-purple-700 hover:bg-purple-600' : 'bg-blue-700 hover:bg-blue-600'
+              }`}
             >
-              {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-              Ask
+              {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : (forceDeepResearch ? <Microscope className="w-4 h-4" /> : <Send className="w-4 h-4" />)}
+              {loading ? 'Thinking…' : forceDeepResearch ? 'Research' : editingFromIdx !== null ? 'Resend' : 'Ask'}
             </button>
           </div>
         </div>
@@ -701,7 +882,9 @@ function DeepResearchResultView({
               </button>
               {expandedSteps.has(step.step_number) && (
                 <div className="space-y-1">
-                  <p className="text-xs text-gray-300">{step.finding}</p>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>
+                    {step.finding}
+                  </ReactMarkdown>
                   {step.graph_path && step.graph_path.length > 1 && (
                     <p className="text-xs text-purple-300 font-mono">{step.graph_path.join(' → ')}</p>
                   )}

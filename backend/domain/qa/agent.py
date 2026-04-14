@@ -20,6 +20,7 @@ from domain.analysis.prompts import render_bundle
 
 from .types import Citation, QAResponse, QASectionCache
 from .section_cache_service import QASectionCacheService
+from .intent_classifier import classify_intent as _local_classify_intent
 
 
 _QA_SYSTEM_PROMPT = """\
@@ -39,6 +40,17 @@ Rules:
 - If you cannot determine something from either source, list it under "unknowns".
 - Suggest 2-3 files the user should read next to deepen understanding.
 
+DEEP RESEARCH RECOMMENDATION:
+- Set "deep_research_recommended": true if the question involves:
+  * Tracing call chains, data flow, or execution paths through multiple files
+  * Understanding blast radius / transitive impact of a change
+  * Mapping who calls what across the codebase
+  * Questions that inherently require following cross-file references beyond what evidence shows
+  * Any question phrased as "search carefully/thoroughly", "trace", "map the full flow", etc.
+    in any language (English, Vietnamese, or mixed) — e.g. "tìm hiểu kĩ", "trace luồng", "search kĩ thật kĩ"
+- Set false for: simple "what does X do?", "what tech stack?", "where is Y defined?" questions
+- This is a RECOMMENDATION only — the user decides whether to act on it.
+
 ANSWER FORMATTING — MANDATORY:
 - Write the "answer" field in rich Markdown so it renders beautifully in a chat UI.
 - Use ### headings to organize sections.
@@ -49,7 +61,7 @@ ANSWER FORMATTING — MANDATORY:
 - Use --- horizontal rules to separate major sections.
 - Do NOT write a flat wall of text — structure every answer.
 
-Output JSON: {"answer": "...", "citations": [...], "confidence": "high|medium|low", "unknowns": [...], "suggested_files": [...]}
+Output JSON: {"answer": "...", "citations": [...], "confidence": "high|medium|low", "unknowns": [...], "suggested_files": [...], "deep_research_recommended": true|false}
 
 RESPONSE FORMAT — MANDATORY:
 - Your ENTIRE response must be ONE valid JSON object.
@@ -62,7 +74,7 @@ RESPONSE FORMAT — MANDATORY:
 _QA_SCHEMA_STR = (
     '{"answer": "string", "citations": [{"file": "string", "line_start": 0, '
     '"line_end": 0, "snippet": "string"}], "confidence": "high|medium|low", '
-    '"unknowns": ["string"], "suggested_files": ["string"]}'
+    '"unknowns": ["string"], "suggested_files": ["string"], "deep_research_recommended": false}'
 )
 
 _QA_RETRIEVAL_BUDGET = 10_000        # reduced from 12K to make room for analysis sections
@@ -196,6 +208,7 @@ class QAAgent(BaseTypedAgent):
             result["confidence"] = "medium"
         result["unknowns"] = result.get("unknowns") or []
         result["suggested_files"] = result.get("suggested_files") or []
+        result["deep_research_recommended"] = bool(result.get("deep_research_recommended", False))
 
         if include_debug:
             result["retrieval_debug"] = {
@@ -666,6 +679,17 @@ class QAAgent(BaseTypedAgent):
     # ------------------------------------------------------------------
     # Citation normalization
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def classify_intent(question: str) -> bool:
+        """Return True if the question warrants deep research.
+
+        Uses a local character n-gram Naive Bayes classifier trained at startup.
+        Zero API calls, <1 ms per prediction, works in 30+ languages.
+        """
+        is_deep, score = _local_classify_intent(question)
+        logger.debug("[QAAgent] classify_intent score=%.3f deep=%s", score, is_deep)
+        return is_deep
 
     @staticmethod
     def _normalize_citation(c: Any) -> dict:

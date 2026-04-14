@@ -369,6 +369,7 @@ export interface QAResponse {
   confidence: 'high' | 'medium' | 'low'
   unknowns: string[]
   suggested_files: string[]
+  deep_research_recommended: boolean
   retrieval_debug: Record<string, unknown> | null
 }
 
@@ -632,6 +633,14 @@ declare global {
           report_id?: string
           include_debug?: boolean
         }) => Promise<QAResponse>
+        classifyIntent: (body: { question: string }) => Promise<{ deep_research: boolean }>
+        classifier: {
+          status: () => Promise<{ trained: boolean; backend: string; builtin_examples: number; user_examples: number }>
+          examples: () => Promise<{ id: string; text: string; is_deep_research: boolean; created_at: string }[]>
+          addExample: (body: { text: string; is_deep_research: boolean }) => Promise<{ id: string; text: string; is_deep_research: boolean; created_at: string }>
+          deleteExample: (id: string) => Promise<void>
+          retrain: () => Promise<{ trained: boolean; backend: string; builtin_examples: number; user_examples: number }>
+        }
         deepResearch: (body: {
           snapshot_id: string
           question: string
