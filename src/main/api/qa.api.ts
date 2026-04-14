@@ -14,6 +14,49 @@ export function registerQAHandlers(client: BackendClient): void {
     }) => client.post('/api/qa/ask', body)
   )
 
+  // Streaming versions — use ipcMain.on (fire-and-forget from renderer) so that
+  // event.sender.send() push events are never racing an invoke reply.
+  ipcMain.on(
+    'qa:ask:stream',
+    async (event, body: {
+      snapshot_id: string
+      question: string
+      provider_id: string
+      model_id: string
+      report_id?: string
+      include_debug?: boolean
+    }) => {
+      try {
+        await client.postStream('/api/qa/ask/stream', body, (streamEvent) => {
+          event.sender.send('qa:stream-event', streamEvent)
+        })
+      } catch (err) {
+        event.sender.send('qa:stream-event', { type: 'error', message: String(err) })
+      }
+    }
+  )
+
+  ipcMain.on(
+    'qa:deepResearch:stream',
+    async (event, body: {
+      snapshot_id: string
+      question: string
+      provider_id: string
+      model_id: string
+      report_id?: string
+      max_hops?: number
+      include_debug?: boolean
+    }) => {
+      try {
+        await client.postStream('/api/qa/deep-research/stream', body, (streamEvent) => {
+          event.sender.send('qa:stream-event', streamEvent)
+        })
+      } catch (err) {
+        event.sender.send('qa:stream-event', { type: 'error', message: String(err) })
+      }
+    }
+  )
+
   ipcMain.handle(
     'qa:classifyIntent',
     (_event, body: { question: string }) => client.post('/api/qa/classify-intent', body)

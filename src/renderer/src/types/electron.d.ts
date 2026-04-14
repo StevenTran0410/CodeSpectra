@@ -633,6 +633,14 @@ declare global {
           report_id?: string
           include_debug?: boolean
         }) => Promise<QAResponse>
+        askStream: (body: {
+          snapshot_id: string
+          question: string
+          provider_id: string
+          model_id: string
+          report_id?: string
+          include_debug?: boolean
+        }) => void
         classifyIntent: (body: { question: string }) => Promise<{ deep_research: boolean }>
         classifier: {
           status: () => Promise<{ trained: boolean; backend: string; builtin_examples: number; user_examples: number }>
@@ -650,6 +658,17 @@ declare global {
           max_hops?: number
           include_debug?: boolean
         }) => Promise<DeepResearchResponse>
+        deepResearchStream: (body: {
+          snapshot_id: string
+          question: string
+          provider_id: string
+          model_id: string
+          report_id?: string
+          max_hops?: number
+          include_debug?: boolean
+        }) => void
+        onStreamEvent: (cb: (event: unknown, data: unknown) => void) => void
+        offStreamEvent: (cb: (event: unknown, data: unknown) => void) => void
       }
       app: {
         getVersion: () => Promise<string>

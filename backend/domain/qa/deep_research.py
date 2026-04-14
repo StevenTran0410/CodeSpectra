@@ -4,13 +4,18 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from typing import Any
+
+_ProgressCb = Callable[[dict], Awaitable[None]]
 
 from infrastructure.db.database import get_db
 from domain.model_connector.service import ProviderConfigService
 from domain.retrieval.service import RetrievalService
 from domain.retrieval.types import RetrievalEvidence, RetrievalMode, RetrievalSection, RetrieveRequest
 from domain.analysis.agents.base import BaseTypedAgent
+from domain.analysis.agents._graph_plan import plan_queries, retrieve_multi
 from shared.logger import logger
 from pydantic import BaseModel
 
@@ -22,6 +27,86 @@ from .graph_queries import (
     trace_call_chain,
     get_impact_cone,
 )
+
+
+@dataclass
+class _GraphCtx:
+    """Preloaded graph metadata for a research session (centrality + community)."""
+
+    centrality: dict[str, int] = field(default_factory=dict)  # rel_path → score
+    top_central: list[str] = field(default_factory=list)       # top-N files by score
+    community_of: dict[str, int] = field(default_factory=dict) # rel_path → community_id
+    community_hubs: dict[int, list[str]] = field(default_factory=dict)  # cid → hub files
+
+
+async def _load_graph_ctx(snapshot_id: str) -> _GraphCtx:
+    """Load centrality + community data once at research start. Silently returns
+    empty context if data is not yet built for this snapshot."""
+    ctx = _GraphCtx()
+    db = get_db()
+    try:
+        async with db.execute(
+            "SELECT top_central_files FROM structural_graph_summaries WHERE snapshot_id=?",
+            (snapshot_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        if row:
+            for f in json.loads(row["top_central_files"] or "[]"):
+                ctx.centrality[f["rel_path"]] = int(f.get("score", 0))
+            ctx.top_central = sorted(ctx.centrality, key=lambda p: -ctx.centrality[p])[:20]
+    except Exception as exc:
+        logger.debug("[DeepResearch._load_graph_ctx] centrality unavailable: %s", exc)
+
+    try:
+        async with db.execute(
+            "SELECT node_path, community_id FROM graph_community_members WHERE snapshot_id=?",
+            (snapshot_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+        ctx.community_of = {r["node_path"]: r["community_id"] for r in rows}
+
+        async with db.execute(
+            "SELECT community_id, hub_paths FROM graph_community_summaries WHERE snapshot_id=?",
+            (snapshot_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+        ctx.community_hubs = {
+            r["community_id"]: json.loads(r["hub_paths"] or "[]") for r in rows
+        }
+    except Exception as exc:
+        logger.debug("[DeepResearch._load_graph_ctx] community unavailable: %s", exc)
+
+    return ctx
+
+
+def _symbol_graph_path(trace: list[TraceStep], limit: int = 6) -> list[str]:
+    """Build a symbol-level graph path string from a trace.
+    Prefers 'file::symbol' format when symbols are available."""
+    path: list[str] = []
+    for step in trace[:limit]:
+        if step.symbols_involved:
+            # Use the most specific symbol (strip file prefix for display)
+            sym = step.symbols_involved[0]
+            path.append(sym)
+        else:
+            path.append(step.file)
+    return path
+
+
+def _community_context_block(files: list[str], ctx: _GraphCtx) -> str:
+    """Produce a compact module-context note for a list of files."""
+    if not ctx.community_of:
+        return ""
+    seen_cids: set[int] = set()
+    lines: list[str] = []
+    for f in files:
+        cid = ctx.community_of.get(f)
+        if cid is not None and cid not in seen_cids:
+            seen_cids.add(cid)
+            hubs = ctx.community_hubs.get(cid, [])[:3]
+            if hubs:
+                lines.append(f"  Module {cid} key files: {', '.join(hubs)}")
+    return ("MODULE CONTEXT:\n" + "\n".join(lines) + "\n\n") if lines else ""
 
 
 class ResearchCitation(BaseModel):
@@ -105,24 +190,45 @@ Output JSON: {
 Output ONLY the JSON object.
 """
 
-_SYNTHESIZE_SYSTEM = """\
+# Step 1 of synthesis: stream a rich markdown answer
+_SYNTHESIZE_ANSWER_SYSTEM = """\
 You are synthesizing a codebase investigation into a final answer.
-You receive the original question and all step findings.
-Produce a comprehensive answer with a reasoning chain.
+You receive the original question, all step findings, AND the actual code evidence
+collected across every investigation step.
+
+Use the code evidence to produce a precise, code-grounded answer — cite specific
+functions, file paths, line numbers, and actual logic from the evidence.
+Do NOT invent details that are not in the evidence; state them as unknowns.
 
 FORMATTING — MANDATORY:
-- Write "summary" in rich Markdown (use ### headings, **bold**, bullet lists, code blocks).
-- Keep "reasoning_chain" concise — each step gets 1-2 sentences.
-- List all actual unknowns — do not fabricate certainty.
+- Write in rich Markdown (use ### headings, **bold**, bullet lists, ```code blocks```).
+- Include actual code snippets where relevant.
+- Use --- horizontal rules to separate major sections.
+- Do NOT write a flat wall of text.
 
-Output JSON: {
-  "summary": "rich markdown answer",
-  "reasoning_chain": [{"step_number": 1, "description": "...", "files_involved": [...], "finding": "...", "graph_path": [...]}],
-  "confidence": "high|medium|low",
-  "unknowns": ["list of what could not be determined"]
-}
-Output ONLY the JSON object.
+Respond with ONLY the markdown answer. No JSON, no preamble.
 """
+
+# Step 2 of synthesis: compact metadata JSON
+_SYNTHESIZE_META_SYSTEM = """\
+You are extracting structured metadata from a completed codebase investigation.
+Given the question, step findings, and the synthesized answer, output ONLY a JSON object:
+{
+  "reasoning_chain": [
+    {"step_number": 1, "description": "string", "files_involved": ["string"],
+     "finding": "string", "graph_path": ["string"]}
+  ],
+  "confidence": "high|medium|low",
+  "unknowns": ["string"]
+}
+Output ONLY the JSON object. No markdown, no prose.
+"""
+
+_SYNTHESIZE_META_SCHEMA = (
+    '{"reasoning_chain": [{"step_number": 1, "description": "string", '
+    '"files_involved": ["string"], "finding": "string", "graph_path": ["string"]}], '
+    '"confidence": "high|medium|low", "unknowns": ["string"]}'
+)
 
 _RESEARCH_RETRIEVAL_BUDGET = 8_000
 
@@ -146,61 +252,140 @@ class DeepResearchAgent(BaseTypedAgent):
         model_id: str,
         max_hops: int = 5,
         include_debug: bool = False,
+        progress_cb: _ProgressCb | None = None,
     ) -> dict[str, Any]:
         """Execute a deep research investigation."""
         t0 = time.monotonic()
         debug: dict[str, Any] = {} if include_debug else {}
 
-        # Step 1: Plan the investigation
-        plan = await self._plan(question, provider_id, model_id)
+        async def _emit(phase: str, detail: str = "", step: int | None = None) -> None:
+            if progress_cb:
+                ev: dict = {"type": "status", "phase": phase, "detail": detail}
+                if step is not None:
+                    ev["step"] = step
+                await progress_cb(ev)
+
+        # ── Enhancement: load centrality + community context upfront ──────────
+        gctx = await _load_graph_ctx(snapshot_id)
+        logger.debug(
+            "[DeepResearch] graph ctx: %d central files, %d community nodes",
+            len(gctx.top_central), len(gctx.community_of),
+        )
+
+        # Step 1: Plan the investigation (hint planner with top central files)
+        await _emit("planning", "Planning investigation...")
+        plan = await self._plan(question, provider_id, model_id, gctx)
         if include_debug:
             debug["plan"] = plan
 
         # Step 2: Execute each plan step
         step_findings: list[dict[str, Any]] = []
         visited_files: set[str] = set()
-        all_evidence_blocks: list[str] = []
+        all_evidences: list[RetrievalEvidence] = []
+        accumulated_chunk_ids: set[str] = set()
 
         for plan_step in plan:
             step_type = plan_step.get("type", "retrieve")
             target = plan_step.get("target", question)
             description = plan_step.get("description", "")
 
-            # Graph operations
+            # ── Graph operations ───────────────────────────────────────────────
             new_files: list[str] = []
             graph_path: list[str] | None = None
 
-            if step_type == "trace_forward":
-                trace = await trace_call_chain(snapshot_id, target, "forward", max_hops=min(max_hops, 4))
+            if step_type in ("trace_forward", "trace_backward"):
+                direction = "forward" if step_type == "trace_forward" else "backward"
+                trace = await trace_call_chain(
+                    snapshot_id, target, direction,
+                    max_hops=min(max_hops, 4), high_confidence_only=True,
+                )
                 new_files = [s.file for s in trace if s.file not in visited_files]
-                if len(trace) > 1:
-                    graph_path = [s.file for s in trace[:6]]
 
-            elif step_type == "trace_backward":
-                trace = await trace_call_chain(snapshot_id, target, "backward", max_hops=min(max_hops, 4))
-                new_files = [s.file for s in trace if s.file not in visited_files]
+                # Enhancement 5: confidence fallback — if trace found very few files,
+                # retry with low-confidence edges and mark them tentative
+                if len(new_files) < 2:
+                    trace_low = await trace_call_chain(
+                        snapshot_id, target, direction,
+                        max_hops=min(max_hops, 4), high_confidence_only=False,
+                    )
+                    high_conf_files = {s.file for s in trace}
+                    extra = [
+                        s.file for s in trace_low
+                        if s.file not in visited_files and s.file not in high_conf_files
+                    ]
+                    if extra:
+                        logger.debug("[DeepResearch] confidence fallback added %d files", len(extra))
+                        new_files.extend(extra[:5])
+                    trace = trace_low  # use richer trace for symbol path
+
+                # Enhancement 3: symbol-level graph path
                 if len(trace) > 1:
-                    graph_path = [s.file for s in trace[:6]]
+                    graph_path = _symbol_graph_path(trace, limit=6)
 
             elif step_type == "impact":
                 impact = await get_impact_cone(snapshot_id, target, hops=3)
                 new_files = [f for f in impact.impacted_files if f not in visited_files]
 
             else:  # "retrieve"
-                new_files = []  # retrieval handles its own file discovery
+                new_files = []
 
-            # Retrieve evidence for discovered files + the query itself
-            evidence = await self._retrieve_evidence(
-                snapshot_id,
-                target if step_type == "retrieve" else (question + " " + " ".join(new_files[:3])),
-                forced_files=new_files[:8],
-            )
+            # Enhancement 2: centrality-biased injection — sort forced_files by score
+            if gctx.centrality and new_files:
+                new_files = sorted(new_files, key=lambda f: -gctx.centrality.get(f, 0))
+
+            # ── Retrieve evidence ──────────────────────────────────────────────
+            step_num = len(step_findings) + 1
+            await _emit("retrieving", description or f"Step {step_num}: {step_type}", step=step_num)
+            if step_type == "retrieve":
+                # Enhancement 1: multi-query decomposition for retrieve steps
+                sub_queries = await plan_queries(
+                    goal=description or target,
+                    provider_service=self._providers,
+                    provider_id=provider_id,
+                    model_id=model_id,
+                    fallback=[target],
+                )
+                bundle = await retrieve_multi(
+                    self._retrieval,
+                    snapshot_id,
+                    sub_queries,
+                    RetrievalSection.QA,
+                    RetrievalMode.HYBRID,
+                    max_results_each=10,
+                )
+                evidence = bundle.evidences
+            else:
+                retrieval_query = description or question
+                evidence = await self._retrieve_evidence(
+                    snapshot_id,
+                    retrieval_query,
+                    forced_files=new_files[:8],
+                )
+
             visited_files.update(ev.rel_path for ev in evidence)
 
-            evidence_block = render_bundle_subset(evidence, limit=12, excerpt_chars=1200)
-            all_evidence_blocks.append(evidence_block)
+            # Accumulate evidence across steps (deduplicated by chunk_id)
+            for ev in evidence:
+                if ev.chunk_id not in accumulated_chunk_ids:
+                    all_evidences.append(ev)
+                    accumulated_chunk_ids.add(ev.chunk_id)
 
-            # LLM analyzes this step
+            # Current step evidence block (full detail)
+            current_evidence_block = render_bundle_subset(evidence, limit=12, excerpt_chars=1200)
+
+            # Prior accumulated evidence (condensed — gives each step LLM running context)
+            prior_evidences = [ev for ev in all_evidences if ev.chunk_id not in {e.chunk_id for e in evidence}]
+            prior_evidence_block = (
+                render_bundle_subset(prior_evidences, limit=8, excerpt_chars=500)
+                if prior_evidences else ""
+            )
+
+            # Enhancement 4: community context block
+            all_step_files = list({ev.rel_path for ev in evidence} | set(new_files))
+            community_block = _community_context_block(all_step_files, gctx)
+
+            # ── LLM analyzes this step ─────────────────────────────────────────
+            await _emit("thinking", f"Analyzing step {step_num}...", step=step_num)
             prior_context = "\n".join(f"Step {i+1}: {f['finding']}" for i, f in enumerate(step_findings))
             user_prompt = (
                 f"ORIGINAL QUESTION: {question}\n\n"
@@ -209,9 +394,13 @@ class DeepResearchAgent(BaseTypedAgent):
             )
             if prior_context:
                 user_prompt += f"PRIOR FINDINGS:\n{prior_context}\n\n"
+            if community_block:
+                user_prompt += community_block
+            if prior_evidence_block:
+                user_prompt += f"PREVIOUSLY SEEN CODE (condensed):\n{prior_evidence_block}\n\n"
             if graph_path:
-                user_prompt += f"GRAPH PATH DISCOVERED: {' → '.join(graph_path)}\n\n"
-            user_prompt += f"CODE EVIDENCE:\n{evidence_block}"
+                user_prompt += f"CALL GRAPH PATH (symbol-level): {' → '.join(graph_path)}\n\n"
+            user_prompt += f"CURRENT STEP CODE EVIDENCE:\n{current_evidence_block}"
 
             step_schema = '{"finding": "string", "key_files": ["string"], "graph_path": ["string"], "sufficient": true}'
             step_result = await self._chat_json_typed(
@@ -236,37 +425,59 @@ class DeepResearchAgent(BaseTypedAgent):
             if step_result.get("sufficient"):
                 break
 
-        # Step 3: Synthesize
-        synthesis_user = (
+        # Step 3: Synthesize — two-step: stream markdown first, then get metadata
+        await _emit("synthesizing", "Synthesizing all findings...")
+        accumulated_evidence_block = render_bundle_subset(all_evidences, limit=25, excerpt_chars=700)
+
+        findings_text = "\n".join(
+            f"Step {f['step_number']}: {f['description']}\n"
+            f"  Finding: {f['finding']}\n"
+            f"  Files: {', '.join(f['files_involved'][:3])}"
+            for f in step_findings
+        )
+        synthesis_base = (
             f"QUESTION: {question}\n\n"
-            f"STEP FINDINGS:\n"
-            + "\n".join(
-                f"Step {f['step_number']}: {f['description']}\n  Finding: {f['finding']}\n  Files: {', '.join(f['files_involved'][:3])}"
-                for f in step_findings
-            )
+            f"STEP FINDINGS:\n{findings_text}"
+            f"\n\nACCUMULATED CODE EVIDENCE (all investigation steps):\n{accumulated_evidence_block}"
         )
-        synth_schema = (
-            '{"summary": "string", "reasoning_chain": [{"step_number": 0, "description": "string", '
-            '"files_involved": ["string"], "finding": "string", "graph_path": ["string"]}], '
-            '"confidence": "high|medium|low", "unknowns": ["string"]}'
-        )
-        synthesis = await self._chat_json_typed(
+
+        # 3a. Stream the markdown answer
+        async def _on_token(tok: str) -> None:
+            if progress_cb:
+                await progress_cb({"type": "token", "text": tok})
+
+        summary_text = await self._call_stream(
             provider_id,
             model_id,
-            _SYNTHESIZE_SYSTEM,
-            synthesis_user,
-            synth_schema,
-            max_completion_tokens=2000,
+            _SYNTHESIZE_ANSWER_SYSTEM,
+            synthesis_base,
+            max_completion_tokens=3000,
+            on_token=_on_token,
+        )
+
+        # 3b. Fast metadata call
+        meta_user = (
+            f"QUESTION: {question}\n\n"
+            f"STEP FINDINGS:\n{findings_text}\n\n"
+            f"SYNTHESIZED ANSWER (abbreviated):\n{summary_text[:2000]}"
+        )
+        synthesis_meta = await self._chat_json_typed(
+            provider_id,
+            model_id,
+            _SYNTHESIZE_META_SYSTEM,
+            meta_user,
+            _SYNTHESIZE_META_SCHEMA,
+            max_completion_tokens=800,
         )
 
         elapsed_ms = int((time.monotonic() - t0) * 1000)
 
         result: dict[str, Any] = {
-            "summary": str(synthesis.get("summary") or ""),
-            "reasoning_chain": synthesis.get("reasoning_chain") or [],
+            "summary": summary_text,
+            "reasoning_chain": synthesis_meta.get("reasoning_chain") or [],
             "files_explored": sorted(visited_files),
-            "confidence": str(synthesis.get("confidence") or "medium").lower(),
-            "unknowns": synthesis.get("unknowns") or [],
+            "confidence": str(synthesis_meta.get("confidence") or "medium").lower(),
+            "unknowns": synthesis_meta.get("unknowns") or [],
             "elapsed_ms": elapsed_ms,
             "research_debug": debug if include_debug else None,
         }
@@ -282,15 +493,28 @@ class DeepResearchAgent(BaseTypedAgent):
         )
         return result
 
-    async def _plan(self, question: str, provider_id: str, model_id: str) -> list[dict]:
+    async def _plan(
+        self,
+        question: str,
+        provider_id: str,
+        model_id: str,
+        gctx: _GraphCtx | None = None,
+    ) -> list[dict]:
         """Ask LLM to produce an investigation plan. Falls back to single retrieve step."""
         plan_schema = '{"steps": [{"type": "retrieve|trace_forward|trace_backward|impact", "target": "string", "description": "string"}]}'
+        plan_user = f"Question: {question}"
+        # Hint planner with top architectural files so it can suggest better trace targets
+        if gctx and gctx.top_central:
+            plan_user += (
+                f"\n\nTop architectural files in this codebase (high centrality): "
+                f"{', '.join(gctx.top_central[:12])}"
+            )
         try:
             result = await self._chat_json_typed(
                 provider_id,
                 model_id,
                 _PLAN_SYSTEM,
-                f"Question: {question}",
+                plan_user,
                 plan_schema,
                 max_completion_tokens=500,
             )

@@ -1,4 +1,9 @@
 """OpenAI provider adapter."""
+from __future__ import annotations
+
+import json as _json
+from collections.abc import AsyncGenerator
+
 import httpx
 
 from domain.model_connector._cloud_base import CloudAdapterBase
@@ -87,6 +92,40 @@ class OpenAIAdapter(CloudAdapterBase):
                 prompt_tokens=usage.get("prompt_tokens"),
                 completion_tokens=usage.get("completion_tokens"),
             )
+        except httpx.ConnectError as e:
+            raise self._map_connect_error(e) from e
+        except httpx.TimeoutException as e:
+            raise self._map_timeout(e) from e
+        except httpx.HTTPStatusError as e:
+            raise self._map_http_error(e) from e
+        except Exception as e:
+            raise ProviderError(self._code_unknown(), str(e), provider_id=self.config.id) from e
+
+    async def chat_stream(self, request: ChatRequest) -> AsyncGenerator[str, None]:
+        """Stream chat completions token-by-token via OpenAI's SSE API."""
+        payload = self._build_payload(request)
+        payload["stream"] = True
+        # json_mode is incompatible with streaming
+        payload.pop("response_format", None)
+        try:
+            async with self._client.stream(
+                "POST", "/v1/chat/completions",
+                json=payload, headers=self._auth(),
+            ) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    data = line[6:].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        chunk = _json.loads(data)
+                        delta = (chunk.get("choices") or [{}])[0].get("delta", {}).get("content") or ""
+                        if delta:
+                            yield delta
+                    except (KeyError, IndexError, ValueError):
+                        continue
         except httpx.ConnectError as e:
             raise self._map_connect_error(e) from e
         except httpx.TimeoutException as e:

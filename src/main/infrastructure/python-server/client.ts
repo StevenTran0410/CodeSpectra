@@ -54,6 +54,43 @@ export class BackendClient {
     if (!res.ok) throw new Error(await this._errorMessage(res))
   }
 
+  /** Consume a Server-Sent Events stream. Calls `onEvent` for every parsed data frame.
+   *  Resolves when the stream ends or an error/done event is received. */
+  async postStream(
+    path: string,
+    body: unknown,
+    onEvent: (event: Record<string, unknown>) => void
+  ): Promise<void> {
+    const res = await fetch(`${this.base}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    if (!res.ok) throw new Error(await this._errorMessage(res))
+
+    const reader = res.body!.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() ?? ''
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
+        try {
+          const data = JSON.parse(line.slice(6)) as Record<string, unknown>
+          onEvent(data)
+        } catch {
+          // ignore malformed frames
+        }
+      }
+    }
+  }
+
   async healthCheck(): Promise<boolean> {
     try {
       const res = await fetch(`${this.base}/api/app/health`, { signal: AbortSignal.timeout(2000) })

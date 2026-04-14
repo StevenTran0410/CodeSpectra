@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
+
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from domain.model_connector.service import ProviderConfigService
@@ -27,6 +31,40 @@ async def qa_ask(body: QARequest) -> QAResponse:
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@router.post("/ask/stream")
+async def qa_ask_stream(body: QARequest) -> StreamingResponse:
+    """SSE endpoint: emits status events then a final 'done' event with the full result."""
+    async def generate():
+        queue: asyncio.Queue[dict] = asyncio.Queue()
+
+        async def on_progress(event: dict) -> None:
+            await queue.put(event)
+
+        async def run_and_signal() -> None:
+            try:
+                result = await _service.ask(body, progress_cb=on_progress)
+                await queue.put({"type": "done", "result": result.model_dump()})
+            except Exception as exc:
+                await queue.put({"type": "error", "message": str(exc)})
+
+        task = asyncio.create_task(run_and_signal())
+        try:
+            while True:
+                event = await queue.get()
+                yield f"data: {json.dumps(event)}\n\n"
+                if event["type"] in ("done", "error"):
+                    break
+        finally:
+            if not task.done():
+                task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
 @router.post("/classify-intent", response_model=ClassifyIntentResponse, status_code=200)
 def qa_classify_intent(body: ClassifyIntentRequest) -> ClassifyIntentResponse:
     try:
@@ -41,6 +79,40 @@ async def qa_deep_research(body: DeepResearchRequest) -> DeepResearchResult:
         return await _service.deep_research(body)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/deep-research/stream")
+async def qa_deep_research_stream(body: DeepResearchRequest) -> StreamingResponse:
+    """SSE endpoint: emits granular status events then a final 'done' event."""
+    async def generate():
+        queue: asyncio.Queue[dict] = asyncio.Queue()
+
+        async def on_progress(event: dict) -> None:
+            await queue.put(event)
+
+        async def run_and_signal() -> None:
+            try:
+                result = await _service.deep_research(body, progress_cb=on_progress)
+                await queue.put({"type": "done", "result": result.model_dump()})
+            except Exception as exc:
+                await queue.put({"type": "error", "message": str(exc)})
+
+        task = asyncio.create_task(run_and_signal())
+        try:
+            while True:
+                event = await queue.get()
+                yield f"data: {json.dumps(event)}\n\n"
+                if event["type"] in ("done", "error"):
+                    break
+        finally:
+            if not task.done():
+                task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
 
 
 # ── Classifier management ─────────────────────────────────────────────────────

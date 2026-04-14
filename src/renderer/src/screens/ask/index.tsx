@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react'
+import React, { useState, useRef, useEffect, useCallback } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import { Send, Loader2, X, Microscope, Pencil, Copy, Check } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
@@ -8,7 +8,7 @@ import { toErrorMessage } from '../../lib/errors'
 import { useLocalRepoStore } from '../../store/local-repo.store'
 import { useWorkspaceStore } from '../../store/workspace.store'
 import { useQAStore } from '../../store/qa.store'
-import type { RepoSnapshot, DeepResearchResponse } from '../../types/electron'
+import type { RepoSnapshot, QAResponse, DeepResearchResponse } from '../../types/electron'
 import type { QAChatMessage } from '../../store/qa.store'
 
 // Shared ReactMarkdown component map — used by both quick ask and deep research
@@ -25,14 +25,16 @@ const MD_COMPONENTS: React.ComponentProps<typeof ReactMarkdown>['components'] = 
   em: ({ children }) => <em className="italic text-gray-300">{children}</em>,
   hr: () => <hr className="border-surface-border my-2" />,
   code: ({ children, className }) => {
-    const isBlock = className?.includes('language-')
+    const content = String(children ?? '')
+    // Block: has a language class OR is multiline (fenced block without explicit language)
+    const isBlock = !!className || content.includes('\n')
     return isBlock ? (
       <code className="block bg-zinc-900 border border-zinc-700 rounded px-3 py-2 text-xs font-mono text-green-300 overflow-x-auto whitespace-pre">{children}</code>
     ) : (
       <code className="bg-zinc-800 px-1 py-0.5 rounded text-xs font-mono text-green-300">{children}</code>
     )
   },
-  pre: ({ children }) => <pre className="mb-2">{children}</pre>,
+  pre: ({ children }) => <pre className="mb-2 overflow-x-auto">{children}</pre>,
   blockquote: ({ children }) => <blockquote className="border-l-2 border-blue-500 pl-3 my-2 text-gray-400 italic text-sm">{children}</blockquote>,
   // ── Tables (remark-gfm) ──────────────────────────────────────────────────
   table: ({ children }) => (
@@ -139,9 +141,16 @@ export default function AskScreen(): React.ReactElement {
     messageIndex: number
   } | null>(null)
   const [forceDeepResearch, setForceDeepResearch] = useState(false)
-  const [liveMode, setLiveMode] = useState<'deep' | 'quick' | null>(null)
   const [editingFromIdx, setEditingFromIdx] = useState<number | null>(null)
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null)
+  // Streaming state
+  const [streamPhase, setStreamPhase] = useState<string | null>(null)
+  const [liveContent, setLiveContent] = useState<string>('')
+  // Token buffer for rAF flush — accumulates tokens without triggering re-renders per token
+  const tokenBufferRef = useRef<string[]>([])
+  const rafIdRef = useRef<number>(0)
+  // Increments on each new stream; stale rAF loops check against this to self-terminate
+  const streamTagRef = useRef<number>(0)
   const scrollRef = useRef<HTMLDivElement>(null)
 
   // Load repos on mount
@@ -212,12 +221,163 @@ export default function AskScreen(): React.ReactElement {
 
   const { providerId, modelId } = getConfig()
 
-  // Auto-scroll to bottom on new messages
+  // Cancel rAF loop on unmount
+  useEffect(() => () => {
+    cancelAnimationFrame(rafIdRef.current)
+  }, [])
+
+  /**
+   * Run quick ask via SSE stream. Tokens arrive via 'token' events and are flushed
+   * into the live bubble once per requestAnimationFrame (zero re-renders per token).
+   */
+  const runAskStream = useCallback(async (convoId: string, snapshotId: string, question: string) => {
+    const cfg = getConfig()
+    // Tag this stream so stale rAF loops from cancelled streams self-terminate
+    streamTagRef.current++
+    const myTag = streamTagRef.current
+    tokenBufferRef.current = []
+    setLiveContent('')
+
+    return new Promise<void>((resolve) => {
+      // rAF flush loop: drain tokenBufferRef into liveContent once per animation frame
+      const flushLoop = () => {
+        if (streamTagRef.current !== myTag) return
+        const buf = tokenBufferRef.current.splice(0)
+        if (buf.length > 0) {
+          setLiveContent((prev) => prev + buf.join(''))
+        }
+        rafIdRef.current = requestAnimationFrame(flushLoop)
+      }
+      rafIdRef.current = requestAnimationFrame(flushLoop)
+
+      const streamHandler = (_ev: unknown, raw: unknown) => {
+        const ev = raw as { type: string; phase?: string; text?: string; result?: QAResponse; message?: string }
+        if (ev.type === 'status') {
+          setStreamPhase(ev.phase ?? null)
+        } else if (ev.type === 'token') {
+          if (streamTagRef.current !== myTag) return
+          // Switch to streaming phase — hides the spinner widget but keeps loading=true
+          // so the send button stays disabled and prevents double-submission.
+          setStreamPhase('streaming')
+          tokenBufferRef.current.push(ev.text ?? '')
+        } else if (ev.type === 'done' && ev.result) {
+          window.api.qa.offStreamEvent(streamHandler)
+          cancelAnimationFrame(rafIdRef.current)
+          // Flush any tokens that arrived after the last rAF tick
+          const remaining = tokenBufferRef.current.splice(0)
+          if (remaining.length > 0) {
+            setLiveContent((prev) => prev + remaining.join(''))
+          }
+          setLoading(false)
+          setStreamPhase(null)
+          const result = ev.result
+          // Give one frame for final content to paint, then commit to message history
+          requestAnimationFrame(() => {
+            addMessage(convoId, { role: 'assistant', content: result.answer, response: result })
+            setLiveContent('')
+            resolve()
+          })
+        } else if (ev.type === 'error') {
+          window.api.qa.offStreamEvent(streamHandler)
+          cancelAnimationFrame(rafIdRef.current)
+          tokenBufferRef.current = []
+          setLoading(false)
+          setStreamPhase(null)
+          const msg = (ev.message as string) || 'Unknown error'
+          addMessage(convoId, { role: 'assistant', content: '', error: msg })
+          setError(msg)
+          setLiveContent('')
+          resolve()
+        }
+      }
+      window.api.qa.onStreamEvent(streamHandler)
+      window.api.qa.askStream({
+        snapshot_id: snapshotId,
+        question,
+        provider_id: cfg.providerId,
+        model_id: cfg.modelId,
+      })
+    })
+  }, [addMessage])
+
+  /**
+   * Run deep research via SSE stream. Emits planning/retrieving/thinking/synthesizing status
+   * events, then streams the synthesis markdown token by token into the live bubble.
+   */
+  const runDeepResearchStream = useCallback(async (convoId: string, snapshotId: string, question: string) => {
+    const cfg = getConfig()
+    streamTagRef.current++
+    const myTag = streamTagRef.current
+    tokenBufferRef.current = []
+    setLiveContent('')
+
+    return new Promise<void>((resolve) => {
+      const flushLoop = () => {
+        if (streamTagRef.current !== myTag) return
+        const buf = tokenBufferRef.current.splice(0)
+        if (buf.length > 0) {
+          setLiveContent((prev) => prev + buf.join(''))
+        }
+        rafIdRef.current = requestAnimationFrame(flushLoop)
+      }
+      rafIdRef.current = requestAnimationFrame(flushLoop)
+
+      const streamHandler = (_ev: unknown, raw: unknown) => {
+        const ev = raw as { type: string; phase?: string; text?: string; result?: DeepResearchResponse; message?: string }
+        if (ev.type === 'status') {
+          setStreamPhase(ev.phase ?? null)
+        } else if (ev.type === 'token') {
+          if (streamTagRef.current !== myTag) return
+          setStreamPhase('streaming')
+          tokenBufferRef.current.push(ev.text ?? '')
+        } else if (ev.type === 'done' && ev.result) {
+          window.api.qa.offStreamEvent(streamHandler)
+          cancelAnimationFrame(rafIdRef.current)
+          const remaining = tokenBufferRef.current.splice(0)
+          if (remaining.length > 0) {
+            setLiveContent((prev) => prev + remaining.join(''))
+          }
+          setLoading(false)
+          setStreamPhase(null)
+          const result = ev.result
+          requestAnimationFrame(() => {
+            addMessage(convoId, {
+              role: 'assistant',
+              content: result.summary,
+              deepResearchResponse: result,
+            })
+            setLiveContent('')
+            resolve()
+          })
+        } else if (ev.type === 'error') {
+          window.api.qa.offStreamEvent(streamHandler)
+          cancelAnimationFrame(rafIdRef.current)
+          tokenBufferRef.current = []
+          setLoading(false)
+          setStreamPhase(null)
+          const msg = (ev.message as string) || 'Unknown error'
+          addMessage(convoId, { role: 'assistant', content: '', error: msg })
+          setError(msg)
+          setLiveContent('')
+          resolve()
+        }
+      }
+      window.api.qa.onStreamEvent(streamHandler)
+      window.api.qa.deepResearchStream({
+        snapshot_id: snapshotId,
+        question,
+        provider_id: cfg.providerId,
+        model_id: cfg.modelId,
+      })
+    })
+  }, [addMessage])
+
+  // Auto-scroll to bottom on new messages or live content changes
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
     }
-  }, [messages])
+  }, [messages, liveContent])
 
   // Clear deepResearchPrompt on conversation change
   useEffect(() => {
@@ -280,25 +440,7 @@ export default function AskScreen(): React.ReactElement {
           // Manual toggle: skip confirm card, run deep research directly
           setForceDeepResearch(false)
           setLoading(true)
-          try {
-            const res = await window.api.qa.deepResearch({
-              snapshot_id: activeConvo.snapshotId,
-              question: q,
-              provider_id: providerId,
-              model_id: modelId,
-            })
-            addMessage(activeId, {
-              role: 'assistant',
-              content: res.summary,
-              deepResearchResponse: res,
-            })
-          } catch (err) {
-            const msg = toErrorMessage(err)
-            addMessage(activeId, { role: 'assistant', content: '', error: msg })
-            setError(msg)
-          } finally {
-            setLoading(false)
-          }
+          await runDeepResearchStream(activeId, activeConvo.snapshotId, q)
           return
         }
         // Auto-detected: show confirm card
@@ -311,20 +453,12 @@ export default function AskScreen(): React.ReactElement {
         return
       }
 
-      // 2. Not deep research — run quick ask
-      const res = await window.api.qa.ask({
-        snapshot_id: activeConvo.snapshotId,
-        question: q,
-        provider_id: providerId,
-        model_id: modelId,
-      })
-
-      addMessage(activeId, { role: 'assistant', content: res.answer, response: res })
+      // 2. Not deep research — run quick ask via stream
+      await runAskStream(activeId, activeConvo.snapshotId, q)
     } catch (err) {
       const msg = toErrorMessage(err)
       addMessage(activeId, { role: 'assistant', content: '', error: msg })
       setError(msg)
-    } finally {
       setLoading(false)
     }
   }
@@ -335,25 +469,7 @@ export default function AskScreen(): React.ReactElement {
     setDeepResearchPrompt(null)
     setLoading(true)
     setError(null)
-    try {
-      const res = await window.api.qa.deepResearch({
-        snapshot_id: snapshotId,
-        question,
-        provider_id: providerId,
-        model_id: modelId,
-      })
-      addMessage(conversationId, {
-        role: 'assistant',
-        content: res.summary,
-        deepResearchResponse: res,
-      })
-    } catch (err) {
-      const msg = toErrorMessage(err)
-      addMessage(conversationId, { role: 'assistant', content: '', error: msg })
-      setError(msg)
-    } finally {
-      setLoading(false)
-    }
+    await runDeepResearchStream(conversationId, snapshotId, question)
   }
 
   const handleDeepResearchSkip = async () => {
@@ -362,21 +478,7 @@ export default function AskScreen(): React.ReactElement {
     setDeepResearchPrompt(null)
     setLoading(true)
     setError(null)
-    try {
-      const res = await window.api.qa.ask({
-        snapshot_id: snapshotId,
-        question,
-        provider_id: providerId,
-        model_id: modelId,
-      })
-      addMessage(conversationId, { role: 'assistant', content: res.answer, response: res })
-    } catch (err) {
-      const msg = toErrorMessage(err)
-      addMessage(conversationId, { role: 'assistant', content: '', error: msg })
-      setError(msg)
-    } finally {
-      setLoading(false)
-    }
+    await runAskStream(conversationId, snapshotId, question)
   }
 
   const handleDisableForChat = async () => {
@@ -758,12 +860,36 @@ export default function AskScreen(): React.ReactElement {
           ))
         )}
 
-        {/* Loading state */}
-        {loading && (
+        {/* Loading state — granular phase label */}
+        {loading && streamPhase !== 'streaming' && (
           <div className="flex justify-start">
             <div className="flex items-center gap-2 px-4 py-3 rounded-lg bg-surface-overlay">
               <Loader2 className="w-4 h-4 animate-spin text-blue-400" />
-              <span className="text-sm text-gray-300">Thinking...</span>
+              <span className="text-sm text-gray-300">
+                {streamPhase === 'retrieving'
+                  ? 'Retrieving...'
+                  : streamPhase === 'planning'
+                  ? 'Planning...'
+                  : streamPhase === 'synthesizing'
+                  ? 'Synthesizing...'
+                  : 'Thinking...'}
+              </span>
+            </div>
+          </div>
+        )}
+
+        {/* Live streaming bubble — tokens flush in via rAF */}
+        {liveContent.length > 0 && (
+          <div className="flex justify-start">
+            <div className="relative max-w-2xl">
+              <div className="rounded-lg px-4 py-3 bg-surface-overlay text-gray-200">
+                <div className="prose-qa select-text">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>
+                    {liveContent}
+                  </ReactMarkdown>
+                </div>
+                <span className="inline-block w-1.5 h-4 bg-blue-400 animate-pulse ml-0.5 align-text-bottom rounded-sm" />
+              </div>
             </div>
           </div>
         )}
@@ -821,7 +947,15 @@ export default function AskScreen(): React.ReactElement {
               }`}
             >
               {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : (forceDeepResearch ? <Microscope className="w-4 h-4" /> : <Send className="w-4 h-4" />)}
-              {loading ? 'Thinking…' : forceDeepResearch ? 'Research' : editingFromIdx !== null ? 'Resend' : 'Ask'}
+              {loading
+                ? streamPhase === 'retrieving' ? 'Retrieving…'
+                  : streamPhase === 'planning' ? 'Planning…'
+                  : streamPhase === 'synthesizing' ? 'Synthesizing…'
+                  : streamPhase === 'streaming' ? 'Streaming…'
+                  : 'Thinking…'
+                : forceDeepResearch ? 'Research'
+                : editingFromIdx !== null ? 'Resend'
+                : 'Ask'}
             </button>
           </div>
         </div>

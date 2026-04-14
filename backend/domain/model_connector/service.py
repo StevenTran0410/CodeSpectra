@@ -1,5 +1,8 @@
 """ProviderConfigService — persistence + live adapter routing for LLM providers."""
+from __future__ import annotations
+
 import json
+from collections.abc import AsyncGenerator
 
 from infrastructure.db.database import get_db
 from shared.errors import ConflictError, NotFoundError
@@ -213,6 +216,22 @@ class ProviderConfigService:
                     )
                     return await adapter.chat(request.model_copy(update={"temperature": None}))
                 raise
+        finally:
+            await adapter.aclose()
+
+    async def chat_stream(self, request: ChatRequest) -> AsyncGenerator[str, None]:
+        """Stream tokens from the correct provider adapter.
+
+        Yields delta text strings. Falls back to yielding the full response as
+        a single chunk for adapters that don't support native streaming.
+        """
+        config = await self._get_by_id_full(request.provider_id)
+        if request.model_id:
+            config = config.model_copy(update={"model_id": request.model_id})
+        adapter = _get_adapter(config)
+        try:
+            async for token in adapter.chat_stream(request):
+                yield token
         finally:
             await adapter.aclose()
 

@@ -95,6 +95,27 @@ class BaseTypedAgent(BaseLLMAgent):
             json_mode,
         )
 
+    async def _call_stream(
+        self,
+        provider_id,
+        model_id,
+        system_prompt,
+        user_prompt,
+        max_completion_tokens,
+        on_token=None,
+        temperature=0.2,
+    ):
+        """Override to sanitize prompts before streaming."""
+        return await super()._call_stream(
+            provider_id,
+            model_id,
+            _sanitize(system_prompt),
+            _sanitize(user_prompt),
+            max_completion_tokens,
+            on_token=on_token,
+            temperature=temperature,
+        )
+
     async def _chat_json_typed(
         self,
         provider_id: str,

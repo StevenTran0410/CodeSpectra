@@ -3,10 +3,14 @@
 Both adapters talk to a server running on the user's machine over HTTP.
 They share identical httpx client setup and identical list_models error mapping.
 """
+from __future__ import annotations
+
+from collections.abc import AsyncGenerator
+
 import httpx
 
 from .errors import ProviderError, ProviderErrorCode
-from .types import ProviderConfig
+from .types import ChatRequest, ProviderConfig
 
 
 class LocalAdapterBase:
@@ -51,6 +55,14 @@ class LocalAdapterBase:
             str(e),
             provider_id=self.config.id,
         )
+
+    async def chat_stream(self, request: ChatRequest) -> AsyncGenerator[str, None]:
+        """Default fallback: call chat() and yield the full response as a single chunk."""
+        from .types import ChatResponse  # avoid circular at module level
+        response: ChatResponse = await self.chat(request)  # type: ignore[attr-defined]
+        content = response.content or ""
+        if content:
+            yield content
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
