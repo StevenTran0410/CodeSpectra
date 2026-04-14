@@ -73,6 +73,59 @@ For a deep dive into the underlying algorithms, the structural graph analysis lo
 
 ---
 
+## MCP Server — Claude Code Integration
+
+CodeSpectra can run as an **MCP (Model Context Protocol) server**, allowing Claude Code to directly query your indexed codebase — without leaving the terminal.
+
+### Quick start
+
+```bash
+# Windows — double-click or run:
+start-mcp.bat
+
+# macOS / Linux:
+./start-mcp.sh
+```
+
+The server starts at `http://127.0.0.1:8787/mcp`. Connect Claude Code:
+
+```bash
+claude mcp add --transport http codespectra http://127.0.0.1:8787/mcp
+```
+
+Or add manually to `.mcp.json` (project root or `~/.claude/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "codespectra": {
+      "url": "http://127.0.0.1:8787/mcp"
+    }
+  }
+}
+```
+
+### Available tools
+
+| Tool | Description |
+|---|---|
+| `setup_project` | Index a local project (scans files, extracts symbols, builds dependency graph, creates search index). Run this first. |
+| `retrieve_context` | Hybrid semantic + BM25 code search — returns relevant code chunks with scores. |
+| `ask_codebase` | Answer a question using multi-round retrieval + MCP Sampling. Claude reasons over retrieved context — no separate API key needed. |
+| `deep_research` | Multi-hop iterative research with graph traversal. Higher quality than `ask_codebase` for complex architectural questions. |
+
+### How it works
+
+1. **`setup_project("/path/to/your/project")`** — indexes the codebase (files, symbols, graph, search index). Creates a `.codespectra/` marker in the project root. Runs once; subsequent calls detect existing index.
+2. **`retrieve_context` / `ask_codebase` / `deep_research`** — query the indexed codebase. `ask_codebase` and `deep_research` use **MCP Sampling** to send prompts back to Claude for reasoning — so Claude itself acts as the model. No extra API key or provider configuration required.
+
+### Requirements
+
+- Python 3.11+ with backend dependencies installed (`uv pip install -e ".[dev]"`)
+- No native C++ module required — all pipeline steps have Python fallbacks
+
+---
+
 ## Privacy modes
 
 | Mode | What leaves the device |
@@ -195,6 +248,8 @@ Managed cloned repositories are stored under `%USERPROFILE%\CodeSpectra\repos`.
 │       ├── store/            Zustand state stores
 │       └── components/       Shared UI components
 ├── repo_atlas_plan/          Project planning (tickets, design docs, report samples)
+├── start-mcp.bat             MCP server launcher (Windows)
+├── start-mcp.sh              MCP server launcher (macOS/Linux)
 └── COMMANDS.md               Start, build, troubleshoot
 ```
 

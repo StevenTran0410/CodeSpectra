@@ -98,6 +98,11 @@ def create_app() -> FastAPI:
     app.include_router(qa_router, prefix="/api/qa")
     app.include_router(job_router, prefix="/api/job")
 
+    # Mount MCP server for Claude Code integration
+    from mcpserver.mcp_server import create_mcp_server
+    mcp_server = create_mcp_server()
+    app.mount("/mcp", mcp_server.streamable_http_app())
+
     @app.exception_handler(ProviderError)
     async def provider_error_handler(_req: Request, exc: ProviderError) -> JSONResponse:
         status = _PROVIDER_ERROR_STATUS.get(exc.code, 502)
