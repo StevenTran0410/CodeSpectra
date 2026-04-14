@@ -227,49 +227,63 @@ export default function AskScreen(): React.ReactElement {
   }, [])
 
   /**
+   * Start the rAF token flush loop for a specific stream tag.
+   * Drains tokenBufferRef into liveContent once per animation frame.
+   * Self-terminates when the tag no longer matches (stream was superseded).
+   */
+  const startFlushLoop = useCallback((myTag: number) => {
+    const flushLoop = () => {
+      if (streamTagRef.current !== myTag) return
+      const buf = tokenBufferRef.current.splice(0)
+      if (buf.length > 0) {
+        setLiveContent((prev) => prev + buf.join(''))
+      }
+      rafIdRef.current = requestAnimationFrame(flushLoop)
+    }
+    rafIdRef.current = requestAnimationFrame(flushLoop)
+  }, [])
+
+  /** Shared teardown for a stream that ended (done or error). Flushes remaining tokens. */
+  const stopStream = useCallback((handler: Parameters<typeof window.api.qa.offStreamEvent>[0]) => {
+    window.api.qa.offStreamEvent(handler)
+    cancelAnimationFrame(rafIdRef.current)
+    const remaining = tokenBufferRef.current.splice(0)
+    if (remaining.length > 0) {
+      setLiveContent((prev) => prev + remaining.join(''))
+    }
+    setLoading(false)
+    setStreamPhase(null)
+  }, [])
+
+  /** Shared stream setup: increments the tag, clears buffers, starts the flush loop. */
+  const beginStream = useCallback(() => {
+    streamTagRef.current++
+    tokenBufferRef.current = []
+    setLiveContent('')
+    startFlushLoop(streamTagRef.current)
+    return streamTagRef.current
+  }, [startFlushLoop])
+
+  /**
    * Run quick ask via SSE stream. Tokens arrive via 'token' events and are flushed
    * into the live bubble once per requestAnimationFrame (zero re-renders per token).
    */
   const runAskStream = useCallback(async (convoId: string, snapshotId: string, question: string) => {
     const cfg = getConfig()
-    // Tag this stream so stale rAF loops from cancelled streams self-terminate
-    streamTagRef.current++
-    const myTag = streamTagRef.current
-    tokenBufferRef.current = []
-    setLiveContent('')
+    const myTag = beginStream()
 
     return new Promise<void>((resolve) => {
-      // rAF flush loop: drain tokenBufferRef into liveContent once per animation frame
-      const flushLoop = () => {
-        if (streamTagRef.current !== myTag) return
-        const buf = tokenBufferRef.current.splice(0)
-        if (buf.length > 0) {
-          setLiveContent((prev) => prev + buf.join(''))
-        }
-        rafIdRef.current = requestAnimationFrame(flushLoop)
-      }
-      rafIdRef.current = requestAnimationFrame(flushLoop)
-
       const streamHandler = (_ev: unknown, raw: unknown) => {
         const ev = raw as { type: string; phase?: string; text?: string; result?: QAResponse; message?: string }
         if (ev.type === 'status') {
           setStreamPhase(ev.phase ?? null)
         } else if (ev.type === 'token') {
           if (streamTagRef.current !== myTag) return
-          // Switch to streaming phase — hides the spinner widget but keeps loading=true
-          // so the send button stays disabled and prevents double-submission.
+          // Switch to streaming phase — keeps loading=true to block double-submission
           setStreamPhase('streaming')
           tokenBufferRef.current.push(ev.text ?? '')
         } else if (ev.type === 'done' && ev.result) {
-          window.api.qa.offStreamEvent(streamHandler)
-          cancelAnimationFrame(rafIdRef.current)
-          // Flush any tokens that arrived after the last rAF tick
-          const remaining = tokenBufferRef.current.splice(0)
-          if (remaining.length > 0) {
-            setLiveContent((prev) => prev + remaining.join(''))
-          }
-          setLoading(false)
-          setStreamPhase(null)
+          stopStream(streamHandler)
           const result = ev.result
           // Give one frame for final content to paint, then commit to message history
           requestAnimationFrame(() => {
@@ -278,11 +292,7 @@ export default function AskScreen(): React.ReactElement {
             resolve()
           })
         } else if (ev.type === 'error') {
-          window.api.qa.offStreamEvent(streamHandler)
-          cancelAnimationFrame(rafIdRef.current)
-          tokenBufferRef.current = []
-          setLoading(false)
-          setStreamPhase(null)
+          stopStream(streamHandler)
           const msg = (ev.message as string) || 'Unknown error'
           addMessage(convoId, { role: 'assistant', content: '', error: msg })
           setError(msg)
@@ -298,7 +308,7 @@ export default function AskScreen(): React.ReactElement {
         model_id: cfg.modelId,
       })
     })
-  }, [addMessage])
+  }, [addMessage, beginStream, stopStream])
 
   /**
    * Run deep research via SSE stream. Emits planning/retrieving/thinking/synthesizing status
@@ -306,22 +316,9 @@ export default function AskScreen(): React.ReactElement {
    */
   const runDeepResearchStream = useCallback(async (convoId: string, snapshotId: string, question: string) => {
     const cfg = getConfig()
-    streamTagRef.current++
-    const myTag = streamTagRef.current
-    tokenBufferRef.current = []
-    setLiveContent('')
+    const myTag = beginStream()
 
     return new Promise<void>((resolve) => {
-      const flushLoop = () => {
-        if (streamTagRef.current !== myTag) return
-        const buf = tokenBufferRef.current.splice(0)
-        if (buf.length > 0) {
-          setLiveContent((prev) => prev + buf.join(''))
-        }
-        rafIdRef.current = requestAnimationFrame(flushLoop)
-      }
-      rafIdRef.current = requestAnimationFrame(flushLoop)
-
       const streamHandler = (_ev: unknown, raw: unknown) => {
         const ev = raw as { type: string; phase?: string; text?: string; result?: DeepResearchResponse; message?: string }
         if (ev.type === 'status') {
@@ -331,14 +328,7 @@ export default function AskScreen(): React.ReactElement {
           setStreamPhase('streaming')
           tokenBufferRef.current.push(ev.text ?? '')
         } else if (ev.type === 'done' && ev.result) {
-          window.api.qa.offStreamEvent(streamHandler)
-          cancelAnimationFrame(rafIdRef.current)
-          const remaining = tokenBufferRef.current.splice(0)
-          if (remaining.length > 0) {
-            setLiveContent((prev) => prev + remaining.join(''))
-          }
-          setLoading(false)
-          setStreamPhase(null)
+          stopStream(streamHandler)
           const result = ev.result
           requestAnimationFrame(() => {
             addMessage(convoId, {
@@ -350,11 +340,7 @@ export default function AskScreen(): React.ReactElement {
             resolve()
           })
         } else if (ev.type === 'error') {
-          window.api.qa.offStreamEvent(streamHandler)
-          cancelAnimationFrame(rafIdRef.current)
-          tokenBufferRef.current = []
-          setLoading(false)
-          setStreamPhase(null)
+          stopStream(streamHandler)
           const msg = (ev.message as string) || 'Unknown error'
           addMessage(convoId, { role: 'assistant', content: '', error: msg })
           setError(msg)
@@ -370,7 +356,7 @@ export default function AskScreen(): React.ReactElement {
         model_id: cfg.modelId,
       })
     })
-  }, [addMessage])
+  }, [addMessage, beginStream, stopStream])
 
   // Auto-scroll to bottom on new messages or live content changes
   useEffect(() => {

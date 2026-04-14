@@ -5,15 +5,14 @@ They share identical httpx client setup and identical list_models error mapping.
 """
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
-
 import httpx
 
+from ._adapter_mixin import StreamFallbackMixin
 from .errors import ProviderError, ProviderErrorCode
-from .types import ChatRequest, ProviderConfig
+from .types import ProviderConfig
 
 
-class LocalAdapterBase:
+class LocalAdapterBase(StreamFallbackMixin):
     """Base class for local (on-device) LLM provider adapters."""
 
     def __init__(self, config: ProviderConfig) -> None:
@@ -55,14 +54,6 @@ class LocalAdapterBase:
             str(e),
             provider_id=self.config.id,
         )
-
-    async def chat_stream(self, request: ChatRequest) -> AsyncGenerator[str, None]:
-        """Default fallback: call chat() and yield the full response as a single chunk."""
-        from .types import ChatResponse  # avoid circular at module level
-        response: ChatResponse = await self.chat(request)  # type: ignore[attr-defined]
-        content = response.content or ""
-        if content:
-            yield content
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
 

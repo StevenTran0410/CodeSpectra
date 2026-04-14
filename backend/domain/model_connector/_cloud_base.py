@@ -1,17 +1,16 @@
 """Shared base for all cloud provider adapters."""
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
-
 import httpx
 
 from shared.logger import logger
 
+from ._adapter_mixin import StreamFallbackMixin
 from .errors import ProviderError, ProviderErrorCode
-from .types import ChatRequest, ProviderConfig
+from .types import ProviderConfig
 
 
-class CloudAdapterBase:
+class CloudAdapterBase(StreamFallbackMixin):
     def __init__(self, config: ProviderConfig, base_url: str | None = None) -> None:
         self.config = config
         self._client = httpx.AsyncClient(
@@ -78,17 +77,6 @@ class CloudAdapterBase:
             provider_id=self.config.id,
             retryable=True,
         )
-
-    async def chat_stream(self, request: ChatRequest) -> AsyncGenerator[str, None]:
-        """Default fallback: call chat() and yield the full response as a single chunk.
-
-        Subclasses that support native token streaming should override this.
-        """
-        from .types import ChatResponse  # avoid circular at module level
-        response: ChatResponse = await self.chat(request)  # type: ignore[attr-defined]
-        content = response.content or ""
-        if content:
-            yield content
 
     async def aclose(self) -> None:
         await self._client.aclose()
