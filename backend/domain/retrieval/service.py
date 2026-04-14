@@ -51,6 +51,7 @@ _SECTION_BUDGETS: dict[RetrievalSection, int] = {
     RetrievalSection.FEATURE_MAP: 14_000,
     RetrievalSection.IMPORTANT_FILES: 12_000,
     RetrievalSection.GLOSSARY: 7_000,
+    RetrievalSection.QA: 12_000,
 }
 
 _SECTION_CATEGORY_HINTS: dict[RetrievalSection, set[str]] = {
@@ -59,6 +60,7 @@ _SECTION_CATEGORY_HINTS: dict[RetrievalSection, set[str]] = {
     RetrievalSection.FEATURE_MAP: {"source", "docs"},
     RetrievalSection.IMPORTANT_FILES: {"source", "config", "infra"},
     RetrievalSection.GLOSSARY: {"source", "docs"},
+    RetrievalSection.QA: {"source", "config", "docs"},
 }
 
 

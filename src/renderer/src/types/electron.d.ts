@@ -356,6 +356,41 @@ export interface StalenessResult {
   recommend_new_snapshot?: boolean
 }
 
+export interface QACitation {
+  file: string
+  line_start: number | null
+  line_end: number | null
+  snippet: string
+}
+
+export interface QAResponse {
+  answer: string
+  citations: QACitation[]
+  confidence: 'high' | 'medium' | 'low'
+  unknowns: string[]
+  suggested_files: string[]
+  deep_research_recommended: boolean
+  retrieval_debug: Record<string, unknown> | null
+}
+
+export interface ResearchStepResult {
+  step_number: number
+  description: string
+  files_involved: string[]
+  finding: string
+  graph_path: string[] | null
+}
+
+export interface DeepResearchResponse {
+  summary: string
+  reasoning_chain: ResearchStepResult[]
+  files_explored: string[]
+  confidence: 'high' | 'medium' | 'low'
+  unknowns: string[]
+  elapsed_ms: number
+  research_debug: Record<string, unknown> | null
+}
+
 export interface ValidateFolderResponse {
   path: string
   name: string
@@ -588,6 +623,52 @@ declare global {
         cancel: (id: string) => Promise<Job>
         listForRepo: (repoId: string) => Promise<Job[]>
         listRecent: () => Promise<Job[]>
+      }
+      qa: {
+        ask: (body: {
+          snapshot_id: string
+          question: string
+          provider_id: string
+          model_id: string
+          report_id?: string
+          include_debug?: boolean
+        }) => Promise<QAResponse>
+        askStream: (body: {
+          snapshot_id: string
+          question: string
+          provider_id: string
+          model_id: string
+          report_id?: string
+          include_debug?: boolean
+        }) => void
+        classifyIntent: (body: { question: string }) => Promise<{ deep_research: boolean }>
+        classifier: {
+          status: () => Promise<{ trained: boolean; backend: string; builtin_examples: number; user_examples: number }>
+          examples: () => Promise<{ id: string; text: string; is_deep_research: boolean; created_at: string }[]>
+          addExample: (body: { text: string; is_deep_research: boolean }) => Promise<{ id: string; text: string; is_deep_research: boolean; created_at: string }>
+          deleteExample: (id: string) => Promise<void>
+          retrain: () => Promise<{ trained: boolean; backend: string; builtin_examples: number; user_examples: number }>
+        }
+        deepResearch: (body: {
+          snapshot_id: string
+          question: string
+          provider_id: string
+          model_id: string
+          report_id?: string
+          max_hops?: number
+          include_debug?: boolean
+        }) => Promise<DeepResearchResponse>
+        deepResearchStream: (body: {
+          snapshot_id: string
+          question: string
+          provider_id: string
+          model_id: string
+          report_id?: string
+          max_hops?: number
+          include_debug?: boolean
+        }) => void
+        onStreamEvent: (cb: (event: unknown, data: unknown) => void) => void
+        offStreamEvent: (cb: (event: unknown, data: unknown) => void) => void
       }
       app: {
         getVersion: () => Promise<string>

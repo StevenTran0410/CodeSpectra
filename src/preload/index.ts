@@ -190,6 +190,60 @@ const api = {
     listForRepo: (repoId: string) => ipcRenderer.invoke('job:listForRepo', repoId),
     listRecent: () => ipcRenderer.invoke('job:listRecent'),
   },
+  qa: {
+    ask: (body: {
+      snapshot_id: string
+      question: string
+      provider_id: string
+      model_id: string
+      report_id?: string
+      include_debug?: boolean
+    }) => ipcRenderer.invoke('qa:ask', body),
+    askStream: (body: {
+      snapshot_id: string
+      question: string
+      provider_id: string
+      model_id: string
+      report_id?: string
+      include_debug?: boolean
+    }) => ipcRenderer.send('qa:ask:stream', body),
+    classifyIntent: (body: { question: string }) => ipcRenderer.invoke('qa:classifyIntent', body),
+    classifier: {
+      status: (): Promise<{ trained: boolean; backend: string; builtin_examples: number; user_examples: number }> =>
+        ipcRenderer.invoke('qa:classifier:status'),
+      examples: (): Promise<{ id: string; text: string; is_deep_research: boolean; created_at: string }[]> =>
+        ipcRenderer.invoke('qa:classifier:examples'),
+      addExample: (body: { text: string; is_deep_research: boolean }) =>
+        ipcRenderer.invoke('qa:classifier:addExample', body),
+      deleteExample: (id: string): Promise<void> => ipcRenderer.invoke('qa:classifier:deleteExample', id),
+      retrain: (): Promise<{ trained: boolean; backend: string; builtin_examples: number; user_examples: number }> =>
+        ipcRenderer.invoke('qa:classifier:retrain'),
+    },
+    deepResearch: (body: {
+      snapshot_id: string
+      question: string
+      provider_id: string
+      model_id: string
+      report_id?: string
+      max_hops?: number
+      include_debug?: boolean
+    }) => ipcRenderer.invoke('qa:deepResearch', body),
+    deepResearchStream: (body: {
+      snapshot_id: string
+      question: string
+      provider_id: string
+      model_id: string
+      report_id?: string
+      max_hops?: number
+      include_debug?: boolean
+    }) => ipcRenderer.send('qa:deepResearch:stream', body),
+    onStreamEvent: (cb: (event: unknown, data: unknown) => void) => {
+      ipcRenderer.on('qa:stream-event', cb)
+    },
+    offStreamEvent: (cb: (event: unknown, data: unknown) => void) => {
+      ipcRenderer.removeListener('qa:stream-event', cb)
+    },
+  },
   app: {
     getVersion: (): Promise<string> => ipcRenderer.invoke('app:get-version'),
     getUserDataPath: (): Promise<string> => ipcRenderer.invoke('app:get-user-data-path'),

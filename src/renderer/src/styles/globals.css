@@ -219,6 +219,19 @@
   .no-drag {
     -webkit-app-region: no-drag;
   }
+
+  /* Allow text selection in chat messages */
+  .select-text,
+  .select-text * {
+    user-select: text;
+    -webkit-user-select: text;
+    cursor: text;
+  }
+  /* But keep buttons/links inside selectable areas as pointers */
+  .select-text a,
+  .select-text button {
+    cursor: pointer;
+  }
 }
 
 @layer components {

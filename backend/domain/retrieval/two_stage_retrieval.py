@@ -36,6 +36,7 @@ _SECTION_CATEGORY_HINTS: dict[RetrievalSection, set[str]] = {
     RetrievalSection.FEATURE_MAP:     {"source", "docs"},
     RetrievalSection.IMPORTANT_FILES: {"source", "config", "infra"},
     RetrievalSection.GLOSSARY:        {"source", "docs"},
+    RetrievalSection.QA:              {"source", "config", "docs"},
 }
 _CATEGORY_HINT_BONUS: float = 1.4
 

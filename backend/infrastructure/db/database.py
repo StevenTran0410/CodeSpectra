@@ -396,6 +396,37 @@ CREATE INDEX IF NOT EXISTS idx_sym_edges_snapshot ON symbol_graph_edges(snapshot
 CREATE INDEX IF NOT EXISTS idx_sym_edges_src ON symbol_graph_edges(snapshot_id, src_symbol);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sym_edges_unique ON symbol_graph_edges(snapshot_id, src_symbol, dst_symbol);""",
     },
+    {
+        "version": 24,
+        "description": "Add qa_section_caches table for CS-225 smart context selection",
+        "sql": """
+CREATE TABLE IF NOT EXISTS qa_section_caches (
+    id                   TEXT PRIMARY KEY,
+    snapshot_id          TEXT NOT NULL,
+    report_id            TEXT NOT NULL,
+    section_id           TEXT NOT NULL,
+    topic_summary        TEXT NOT NULL,
+    answerable_questions TEXT NOT NULL,
+    key_terms            TEXT NOT NULL,
+    generated_at         TEXT NOT NULL,
+    UNIQUE(report_id, section_id)
+);
+CREATE INDEX IF NOT EXISTS idx_qa_section_caches_snapshot
+    ON qa_section_caches(snapshot_id);
+""",
+    },
+    {
+        "version": 25,
+        "description": "Add qa_classifier_examples table for user-labelled training data",
+        "sql": """
+CREATE TABLE IF NOT EXISTS qa_classifier_examples (
+    id              TEXT PRIMARY KEY,
+    text            TEXT NOT NULL,
+    is_deep_research INTEGER NOT NULL,  -- 1 = deep research, 0 = quick ask
+    created_at      TEXT NOT NULL
+);
+""",
+    },
 ]
 
 TARGET_VERSION = len(_MIGRATIONS) - 1

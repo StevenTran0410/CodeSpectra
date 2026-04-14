@@ -3,13 +3,16 @@
 Both adapters talk to a server running on the user's machine over HTTP.
 They share identical httpx client setup and identical list_models error mapping.
 """
+from __future__ import annotations
+
 import httpx
 
+from ._adapter_mixin import StreamFallbackMixin
 from .errors import ProviderError, ProviderErrorCode
 from .types import ProviderConfig
 
 
-class LocalAdapterBase:
+class LocalAdapterBase(StreamFallbackMixin):
     """Base class for local (on-device) LLM provider adapters."""
 
     def __init__(self, config: ProviderConfig) -> None:

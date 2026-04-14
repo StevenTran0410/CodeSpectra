@@ -60,6 +60,7 @@ from .types import (
     StartAnalysisResponse,
 )
 from .staleness import check_staleness
+from domain.qa.section_cache_service import QASectionCacheService
 
 _bg_tasks: set[asyncio.Task] = set()
 
@@ -378,6 +379,7 @@ class AnalysisService:
         self._director = RunDirectorAgent(
             self._provider, self._retrieval, self._agents, self._graph
         )
+        self._qa_cache_svc = QASectionCacheService(self._provider)
         self._section_events: dict[str, list[dict[str, Any]]] = {}
         self._job_final_status: dict[str, str] = {}
 
@@ -1263,6 +1265,36 @@ RULES:
             )
             await get_db().commit()
 
+            # Fetch the report_id just inserted (used by both cache build and diagram patching)
+            async with get_db().execute(
+                "SELECT id FROM analysis_reports WHERE job_id=? ORDER BY created_at DESC LIMIT 1",
+                (job_id,),
+            ) as _cur:
+                _inserted_row = await _cur.fetchone()
+            _report_id = str(_inserted_row["id"]) if _inserted_row else None
+
+            # Fire-and-forget: build QA section caches asynchronously
+            if _report_id:
+                async def _build_caches_safe(
+                    _svc=self._qa_cache_svc,
+                    _sid=req.snapshot_id,
+                    _rid=_report_id,
+                    _rjson=report,
+                    _pid=req.provider_id,
+                    _mid=req.model_id,
+                ) -> None:
+                    try:
+                        await _svc.build_caches(_sid, _rid, _rjson, _pid, _mid)
+                    except Exception as _cache_err:
+                        logger.warning(
+                            "[analysis:%s] QA section cache build failed (non-fatal): %s",
+                            job_id, _cache_err,
+                        )
+
+                _cache_task = asyncio.create_task(_build_caches_safe())
+                _bg_tasks.add(_cache_task)
+                _cache_task.add_done_callback(_bg_tasks.discard)
+
             # Generate Mermaid diagrams and patch them into the persisted report
             try:
                 _sections = report.get("sections") or {}
@@ -1270,14 +1302,7 @@ RULES:
                 _c = _sections.get("C") if isinstance(_sections, dict) else None
                 _f = _sections.get("F") if isinstance(_sections, dict) else None
                 if isinstance(_b, dict) and isinstance(_c, dict) and isinstance(_f, dict):
-                    # Find the report_id just inserted so we can patch it
-                    async with get_db().execute(
-                        "SELECT id FROM analysis_reports WHERE job_id=? ORDER BY created_at DESC LIMIT 1",
-                        (job_id,),
-                    ) as _cur:
-                        _row = await _cur.fetchone()
-                    if _row:
-                        _report_id = _row["id"]
+                    if _report_id:
                         _b_diag, _c_diag, _f_diag = await self._generate_diagrams_llm(
                             req.provider_id, req.model_id, _b, _c, _f
                         )

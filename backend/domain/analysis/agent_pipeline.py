@@ -161,6 +161,40 @@ class BaseLLMAgent:
         )
         return (res.content or "").strip()
 
+    async def _call_stream(
+        self,
+        provider_id: str,
+        model_id: str,
+        system_prompt: str,
+        user_prompt: str,
+        max_completion_tokens: int,
+        on_token: Callable[[str], Awaitable[None]] | None = None,
+        temperature: float | None = 0.2,
+    ) -> str:
+        """Stream tokens from the LLM, calling on_token for each delta.
+
+        Returns the full concatenated text when done.
+        """
+        full_text: list[str] = []
+        async for token in self._providers.chat_stream(
+            ChatRequest(
+                provider_id=provider_id,
+                model_id=model_id,
+                messages=[
+                    ChatMessage(role="system", content=system_prompt),
+                    ChatMessage(role="user", content=user_prompt),
+                ],
+                max_completion_tokens=max_completion_tokens,
+                temperature=temperature,
+                json_mode=False,
+                stream=True,
+            )
+        ):
+            full_text.append(token)
+            if on_token:
+                await on_token(token)
+        return "".join(full_text).strip()
+
     def _output_ok(self, obj: dict[str, Any], schema_hint: str) -> bool:
         if schema_hint:
             return isinstance(obj, dict) and bool(obj)

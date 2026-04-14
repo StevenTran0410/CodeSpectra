@@ -1,13 +1,16 @@
 """Shared base for all cloud provider adapters."""
+from __future__ import annotations
+
 import httpx
 
 from shared.logger import logger
 
+from ._adapter_mixin import StreamFallbackMixin
 from .errors import ProviderError, ProviderErrorCode
 from .types import ProviderConfig
 
 
-class CloudAdapterBase:
+class CloudAdapterBase(StreamFallbackMixin):
     def __init__(self, config: ProviderConfig, base_url: str | None = None) -> None:
         self.config = config
         self._client = httpx.AsyncClient(
