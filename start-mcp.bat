@@ -5,6 +5,11 @@ set "PORT=8787"
 set "HOST=127.0.0.1"
 set "PYTHON=%~dp0backend\.venv\Scripts\python.exe"
 
+:: Use same data dir as Electron app so DB, classifier, logs are shared
+if not defined CODESPECTRA_DATA_DIR (
+    set "CODESPECTRA_DATA_DIR=%APPDATA%\CodeSpectra"
+)
+
 :: ─────────────────────────────────────────────────────────────────────────────
 ::  CodeSpectra MCP Server - Windows launcher
 :: ─────────────────────────────────────────────────────────────────────────────
