@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import ast
+import concurrent.futures
 import importlib
 import json
 import os
@@ -214,6 +215,9 @@ def _extract_ts_js_imports(content: str) -> list[str]:
 
 
 class StructuralGraphService:
+    def __init__(self):
+        self._data_dir = os.getenv("CODESPECTRA_DATA_DIR", ".")
+
     async def build(self, req: BuildGraphRequest) -> BuildGraphResponse:
         db = get_db()
         async with db.execute("SELECT * FROM repo_snapshots WHERE id=?", (req.snapshot_id,)) as cur:
@@ -248,6 +252,41 @@ class StructuralGraphService:
 
         py_suffix_index = _build_py_suffix_index(file_set)
 
+        # ──── Part A: Extraction Cache ────────────────────────────────────────
+        from .extraction_cache import (
+            load_previous_cache,
+            classify_files,
+            copy_unchanged_edges,
+            write_cache as write_cache_db,
+            _get_previous_snapshot_id,
+        )
+
+        prev_cache = await load_previous_cache(db, snap["local_repo_id"], req.snapshot_id)
+        prev_snapshot_id = await _get_previous_snapshot_id(db, snap["local_repo_id"], req.snapshot_id)
+
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            cache_result = await classify_files(files, prev_cache, prev_snapshot_id, executor)
+
+        logger.info(
+            "[structural_graph] cache: %d unchanged, %d changed (snapshot %s)",
+            len(cache_result.unchanged_paths),
+            len(cache_result.changed_files),
+            req.snapshot_id,
+        )
+
+        # Copy edges for unchanged files from previous snapshot
+        if cache_result.previous_snapshot_id and cache_result.unchanged_paths:
+            copied = await copy_unchanged_edges(
+                db,
+                cache_result.previous_snapshot_id,
+                req.snapshot_id,
+                cache_result.unchanged_paths,
+            )
+            logger.info("[structural_graph] copied %d edges from cache for unchanged files", copied)
+
+        # Extract imports ONLY from changed files
+        files_to_process = cache_result.changed_files
+
         native_graph = _load_native_graph()
         entrypoints: list[str] = []
         total_edges = 0
@@ -256,7 +295,7 @@ class StructuralGraphService:
         _edge_rows: list[tuple] = []
         now = utc_now_iso()
 
-        for r in files:
+        for r in files_to_process:
             rel_path = r["rel_path"]
             language = r["language"]
             category = r["category"]
@@ -363,12 +402,34 @@ class StructuralGraphService:
         )
         await db.commit()
 
+        # Write cache entries for this snapshot
+        await write_cache_db(db, req.snapshot_id, cache_result.sha256_map)
+
+        # ──── Part B: Persistent graph.json ──────────────────────────────────
+        try:
+            from .graph_json import build_graph_json_payload, write_graph_json
+
+            graph_data = await self.export_graph_json(req.snapshot_id)
+            payload = build_graph_json_payload(
+                graph_data["nodes"], graph_data["edges"], graph_data.get("communities", [])
+            )
+            await write_graph_json(req.snapshot_id, self._data_dir, payload)
+            logger.info("[structural_graph] graph.json written for snapshot %s", req.snapshot_id)
+        except Exception as e:
+            logger.warning(
+                "[structural_graph] failed to write graph.json for snapshot %s: %s",
+                req.snapshot_id,
+                e,
+            )
+
         # Fire community detection in the background — does not block build response.
         # WAL mode allows concurrent writes; failure is logged but non-fatal.
         async def _background_communities() -> None:
             try:
                 await self.detect_communities(req.snapshot_id)
                 logger.info("[structural_graph] community detection done for %s", req.snapshot_id)
+                # Regenerate graph.json with community IDs after detection completes
+                await self._on_community_detection_complete(req.snapshot_id)
             except Exception as exc:
                 logger.warning("[structural_graph] community detection failed: %s", exc)
 
@@ -926,3 +987,28 @@ class StructuralGraphService:
             # but are NOT part of the structural graph — they distort community detection.
             "test_files": test_files,
         }
+
+    async def _on_community_detection_complete(self, snapshot_id: str) -> None:
+        """Regenerate graph.json with community IDs after detection finishes."""
+        try:
+            from .graph_json import build_graph_json_payload, write_graph_json
+
+            graph_data = await self.export_graph_json(snapshot_id)
+            payload = build_graph_json_payload(
+                graph_data["nodes"], graph_data["edges"], graph_data.get("communities", [])
+            )
+            await write_graph_json(snapshot_id, self._data_dir, payload)
+            logger.info("[structural_graph] graph.json updated with community IDs for snapshot %s", snapshot_id)
+        except Exception as e:
+            logger.warning(
+                "[structural_graph] failed to update graph.json after community detection for snapshot %s: %s",
+                snapshot_id,
+                e,
+            )
+
+    async def get_graph_json_path(self, snapshot_id: str) -> Path | None:
+        """Return path to graph.json if it exists, else None."""
+        from .graph_json import graph_json_path
+
+        p = graph_json_path(snapshot_id, self._data_dir)
+        return p if p.exists() else None

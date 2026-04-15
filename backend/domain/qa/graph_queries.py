@@ -206,20 +206,61 @@ async def trace_call_chain(
     return steps
 
 
+def _get_impact_cone_from_graph(seed_path: str, graph_data: dict, max_hops: int) -> ImpactResult:
+    """BFS using pre-built reverse adjacency dict from graph_data edges."""
+    # Build reverse adjacency: tgt -> [src] (who imports me)
+    rev_adj: dict[str, list[str]] = {}
+    for edge in graph_data.get("edges", []):
+        if edge.get("external"):
+            continue
+        tgt = edge.get("dst") or edge.get("tgt")
+        src = edge.get("src")
+        if src and tgt:
+            rev_adj.setdefault(tgt, []).append(src)
+
+    visited: set[str] = set()
+    queue: list[str] = [seed_path]
+    hop_map: dict[str, int] = {}
+
+    for hop_num in range(1, max_hops + 1):
+        if not queue:
+            break
+        next_queue: list[str] = []
+        for node in queue:
+            for caller in rev_adj.get(node, []):
+                if caller not in visited:
+                    visited.add(caller)
+                    hop_map[caller] = hop_num
+                    next_queue.append(caller)
+        queue = next_queue
+
+    return ImpactResult(seed_file=seed_path, impacted_files=list(visited), hop_map=hop_map)
+
+
 async def get_impact_cone(
     snapshot_id: str,
     file_path: str,
     hops: int = 3,
+    graph_data: dict | None = None,
 ) -> ImpactResult:
     """File-level reverse transitive closure: all files that depend on file_path.
 
     Uses structural_graph_edges (file-level import graph). A→B means A imports B.
     We want all A that directly or transitively import file_path (reverse direction).
 
+    Args:
+        graph_data: Optional pre-loaded graph.json dict. If provided, uses in-memory
+                    adjacency lookup instead of DB queries (faster for repeated calls).
+                    Build from graph_json.read_graph_json(snapshot_id, data_dir).
+                    Falls back to DB queries if None or if graph_data lacks edge data.
+
     Implementation: load all internal edges, swap src↔dst to build a reversed edge
     set, then delegate BFS to expand_neighbors (C++ native if available, Python
     fallback otherwise). This is the same engine used by two-stage retrieval.
     """
+    if graph_data and graph_data.get("edges"):
+        return _get_impact_cone_from_graph(file_path, graph_data, hops)
+
     db = get_db()
     async with db.execute(
         """SELECT src_path, dst_path, edge_type, is_external

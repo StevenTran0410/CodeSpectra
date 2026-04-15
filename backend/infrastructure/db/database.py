@@ -427,6 +427,21 @@ CREATE TABLE IF NOT EXISTS qa_classifier_examples (
 );
 """,
     },
+    {
+        "version": 26,
+        "description": "Add file_extraction_cache for SHA256-based incremental import extraction skip (RPA-058 Part A)",
+        "sql": """
+        CREATE TABLE IF NOT EXISTS file_extraction_cache (
+            snapshot_id  TEXT NOT NULL,
+            file_path    TEXT NOT NULL,
+            sha256       TEXT NOT NULL,
+            extracted_at TEXT NOT NULL,
+            PRIMARY KEY (snapshot_id, file_path)
+        );
+        CREATE INDEX IF NOT EXISTS idx_extraction_cache_snapshot
+            ON file_extraction_cache(snapshot_id);
+        """,
+    },
 ]
 
 TARGET_VERSION = len(_MIGRATIONS) - 1
