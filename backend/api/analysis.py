@@ -1,7 +1,8 @@
 """Analysis run endpoints (RPA-035)."""
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Query
 
 from domain.analysis.service import AnalysisService
+from shared.http_utils import handle_value_error
 from domain.analysis.types import (
     AnalysisEstimateResponse,
     AnalysisReport,
@@ -28,11 +29,9 @@ async def estimate_scope(repo_id: str, snapshot_id: str) -> AnalysisEstimateResp
 
 
 @router.post("/start", response_model=StartAnalysisResponse, status_code=201)
+@handle_value_error
 async def start_analysis(body: StartAnalysisRequest) -> StartAnalysisResponse:
-    try:
-        return await _service.start(body)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    return await _service.start(body)
 
 
 @router.get("/events/{job_id}")
@@ -70,32 +69,26 @@ async def export_report_markdown(report_id: str) -> AnalysisReportMarkdownRespon
 
 
 @router.get("/reports/{report_id}/export/audit", response_model=AuditExportResponse)
+@handle_value_error
 async def export_audit_section(report_id: str) -> AuditExportResponse:
-    try:
-        return await _service.export_audit_section(report_id)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+    return await _service.export_audit_section(report_id)
 
 
 @router.post("/rerun_section", response_model=RerunSectionResponse)
+@handle_value_error
 async def rerun_section(body: RerunSectionRequest) -> RerunSectionResponse:
-    try:
-        return await _service.rerun_section(
-            body.report_id,
-            body.section,
-            body.provider_id,
-            body.model_id,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+    return await _service.rerun_section(
+        body.report_id,
+        body.section,
+        body.provider_id,
+        body.model_id,
+    )
 
 
 @router.post("/compare", response_model=ReportDiffResponse)
+@handle_value_error
 async def compare_reports_endpoint(body: CompareRequest) -> ReportDiffResponse:
-    try:
-        return await _service.compare_reports(body.report_id_a, body.report_id_b)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+    return await _service.compare_reports(body.report_id_a, body.report_id_b)
 
 
 @router.get("/reports/{report_id}/sections/{section_id}/sources", response_model=SectionSourcesResponse)

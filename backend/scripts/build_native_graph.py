@@ -1,4 +1,9 @@
-"""Build native graph extension in-place (pybind11)."""
+"""Build native extensions in-place (pybind11).
+
+Builds:
+  - domain.structural_graph._native_graph  (graph_native.cpp)
+  - domain.retrieval._native_bm25          (bm25_native.cpp)
+"""
 from __future__ import annotations
 
 import platform
@@ -19,26 +24,40 @@ except ModuleNotFoundError as exc:  # pragma: no cover - environment dependent
 
 def main() -> None:
     root = Path(__file__).resolve().parents[1]
-    src = root / "native" / "graph_native.cpp"
-    if not src.exists():
-        raise FileNotFoundError(f"Missing native source: {src}")
+    native_dir = root / "native"
+
+    graph_src = native_dir / "graph_native.cpp"
+    bm25_src = native_dir / "bm25_native.cpp"
+
+    if not graph_src.exists():
+        raise FileNotFoundError(f"Missing native source: {graph_src}")
+    if not bm25_src.exists():
+        raise FileNotFoundError(f"Missing native source: {bm25_src}")
 
     is_windows = platform.system().lower().startswith("win")
     compile_args = ["/O2", "/std:c++17"] if is_windows else ["-O3", "-std=c++17"]
+    pybind_include = get_include()
 
     ext_modules = [
         Extension(
             "domain.structural_graph._native_graph",
-            [str(src)],
-            include_dirs=[get_include()],
+            [str(graph_src)],
+            include_dirs=[pybind_include],
             language="c++",
             extra_compile_args=compile_args,
-        )
+        ),
+        Extension(
+            "domain.retrieval._native_bm25",
+            [str(bm25_src)],
+            include_dirs=[pybind_include],
+            language="c++",
+            extra_compile_args=compile_args,
+        ),
     ]
 
-    # Build extension directly into package dir so runtime can import it.
+    # Build extensions directly into package dirs so runtime can import them.
     setup(
-        name="codespectra-native-graph",
+        name="codespectra-native",
         version="0.0.0",
         ext_modules=ext_modules,
         packages=[],

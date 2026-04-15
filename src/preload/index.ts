@@ -169,12 +169,6 @@ const api = {
     offSectionDone: (cb: (event: unknown, data: unknown) => void) => {
       ipcRenderer.removeListener('analysis:section_done', cb)
     },
-    // backward-compat typo alias
-    deleteRepot: (reportId: string) =>
-      ipcRenderer.invoke('analysis:deleteRepot', reportId),
-    // lowercase alias for ad-hoc console calls
-    deleterepot: (reportId: string) =>
-      ipcRenderer.invoke('analysis:deleteRepot', reportId),
   },
   git: {
     getConfig: (): Promise<{ ssh_key_path: string | null }> =>
@@ -243,6 +237,22 @@ const api = {
     offStreamEvent: (cb: (event: unknown, data: unknown) => void) => {
       ipcRenderer.removeListener('qa:stream-event', cb)
     },
+  },
+  impact: {
+    blastRadius: (body: {
+      snapshot_id: string
+      changed_files: string[]
+      report_id?: string | null
+      max_hops?: number
+      include_call_chains?: boolean
+    }) => ipcRenderer.invoke('impact:blastRadius', body),
+    plan: (body: {
+      snapshot_id: string
+      task_description: string
+      report_id: string
+      provider_id?: string | null
+      model_id?: string | null
+    }) => ipcRenderer.invoke('impact:plan', body),
   },
   app: {
     getVersion: (): Promise<string> => ipcRenderer.invoke('app:get-version'),

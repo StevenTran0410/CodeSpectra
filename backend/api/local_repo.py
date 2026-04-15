@@ -1,7 +1,8 @@
 """Local folder repository endpoints."""
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Query
 
 from domain.local_repo.service import LocalRepoService
+from shared.http_utils import handle_value_error
 from domain.local_repo.types import (
     AddLocalRepoRequest,
     CloneFromUrlRequest,
@@ -34,19 +35,15 @@ async def add_repo(body: AddLocalRepoRequest) -> LocalRepo:
 
 
 @router.post("/clone", response_model=LocalRepo, status_code=201)
+@handle_value_error
 async def clone_repo(body: CloneFromUrlRequest) -> LocalRepo:
-    try:
-        return await _service.clone_from_url(body)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    return await _service.clone_from_url(body)
 
 
 @router.delete("/{repo_id}", status_code=204)
+@handle_value_error
 async def remove_repo(repo_id: str) -> None:
-    try:
-        await _service.remove(repo_id)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    await _service.remove(repo_id)
 
 
 @router.post("/{repo_id}/revalidate", response_model=LocalRepo)

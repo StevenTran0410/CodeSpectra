@@ -1,7 +1,8 @@
 """Manifest endpoints."""
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 
 from domain.manifest.service import ManifestService
+from shared.http_utils import handle_value_error
 from domain.manifest.types import (
     BuildManifestRequest,
     BuildManifestResponse,
@@ -15,11 +16,9 @@ _service = ManifestService()
 
 
 @router.post("/build", response_model=BuildManifestResponse)
+@handle_value_error
 async def build_manifest(body: BuildManifestRequest) -> BuildManifestResponse:
-    try:
-        return await _service.build(body)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    return await _service.build(body)
 
 
 @router.get("/preview/{snapshot_id}", response_model=ManifestPreviewResponse)
@@ -33,8 +32,6 @@ async def tree_manifest(snapshot_id: str, limit: int = 5000) -> ManifestTreeResp
 
 
 @router.get("/file/{snapshot_id}", response_model=ManifestFileContentResponse)
+@handle_value_error
 async def read_manifest_file(snapshot_id: str, path: str, max_bytes: int = 200000) -> ManifestFileContentResponse:
-    try:
-        return await _service.read_file(snapshot_id, path, max_bytes=max_bytes)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    return await _service.read_file(snapshot_id, path, max_bytes=max_bytes)
