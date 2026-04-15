@@ -2,18 +2,21 @@
 
 ## Prerequisites
 
-| Tool | Version | Install |
-|------|---------|---------|
-| Node.js | ≥ 20 | https://nodejs.org |
-| Python | ≥ 3.11 | https://python.org |
-| uv | latest | `pip install uv` |
+| Tool | Version | Install (Windows) | Install (Mac) |
+|------|---------|-------------------|---------------|
+| Node.js | ≥ 20 | https://nodejs.org | https://nodejs.org |
+| Python | ≥ 3.11 | https://python.org | https://python.org |
+| uv | latest | `pip install uv` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
+| Git | any | https://git-scm.com | pre-installed or `xcode-select --install` |
 
 ---
 
-## Native C/C++ toolchain (Windows, for native hotspot build)
+## Native C/C++ toolchain (for native hotspot build)
 
 Only required when building native Python extension modules (C/C++).
-Not required for basic app run.
+Not required for basic app run — all graph features fall back to pure-Python automatically.
+
+### Windows only
 
 Install **Visual Studio Build Tools** from:
 
@@ -52,15 +55,35 @@ which g++
 
 For this project, prefer **MSVC** on Windows to avoid Python ABI/linking mismatch issues.
 
+### Mac only
+
+Install **Xcode Command Line Tools** (includes `clang++`, supports C++17):
+
+```bash
+xcode-select --install
+```
+
+Verify:
+
+```bash
+clang++ --version
+```
+
+Expected: `Apple clang version 16.x.x ...`
+
+No additional setup required — `clang++` is fully compatible with this project's native build.
+
 ---
 
 ## Full Native Build Flow (copy/paste)
+
+### Windows only
 
 Starting point:
 
 `PS D:\Program Files\Python\CodeSpectra>`
 
-### 1) Open x64 VS toolchain shell from current PowerShell
+#### 1) Open x64 VS toolchain shell from current PowerShell
 
 ```powershell
 cmd.exe /k "`"C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\Common7\Tools\VsDevCmd.bat`" -arch=amd64 -host_arch=amd64"
@@ -68,7 +91,7 @@ cmd.exe /k "`"C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\Commo
 
 You are now in a new `cmd` window with VS env loaded.
 
-### 2) Verify x64 compiler in that cmd window
+#### 2) Verify x64 compiler in that cmd window
 
 ```cmd
 cl
@@ -79,7 +102,7 @@ Expected:
 - `Microsoft (R) C/C++ Optimizing Compiler ... for x64`
 - `...Hostx64\x64\cl.exe`
 
-### 3) Build backend native graph module
+#### 3) Build backend native graph module
 
 ```cmd
 cd /d "D:\Program Files\Python\CodeSpectra\backend"
@@ -97,22 +120,46 @@ If you accidentally run `pip install setuptools` and it says global path
 like `C:\Users\...\Python311\...`, you installed to the wrong interpreter.
 Use the exact commands above with `.venv\Scripts\python.exe`.
 
-### 4) Verify native artifact exists
+#### 4) Verify native artifact exists
 
 ```cmd
 dir "D:\Program Files\Python\CodeSpectra\backend\domain\structural_graph\_native_graph*.pyd"
 ```
 
-### 5) Run app
+#### 5) Run app
 
 ```cmd
 cd /d "D:\Program Files\Python\CodeSpectra"
 npm run dev
 ```
 
+### Mac only
+
+```bash
+cd backend
+source .venv/bin/activate
+uv pip install setuptools pybind11
+python3 scripts/build_native_graph.py
+```
+
+Verify native artifact exists:
+
+```bash
+ls domain/structural_graph/_native_graph*.so
+```
+
+Run app:
+
+```bash
+cd ..
+npm run dev
+```
+
 ---
 
 ## Rebuild Native Module (clean + build)
+
+### Windows only
 
 Run in x64 VS cmd:
 
@@ -125,9 +172,21 @@ uv pip install --python ".venv\Scripts\python.exe" setuptools
 ".venv\Scripts\python.exe" scripts\build_native_graph.py
 ```
 
+### Mac only
+
+```bash
+cd backend
+source .venv/bin/activate
+rm -f domain/structural_graph/_native_graph*.so
+rm -rf build
+python3 scripts/build_native_graph.py
+```
+
 ---
 
 ## Quick Failure Checks
+
+### Windows only
 
 In x64 VS cmd:
 
@@ -138,19 +197,40 @@ where.exe cl
 ".venv\Scripts\python.exe" -c "import domain.structural_graph._native_graph as m; print('native ok')"
 ```
 
+### Mac only
+
+```bash
+cd backend
+source .venv/bin/activate
+python3 -c "import platform,struct; print(platform.machine(), struct.calcsize('P')*8)"
+python3 -c "import domain.structural_graph._native_graph as m; print('native ok')"
+```
+
 If last import fails, native build is not complete.
 
 ---
 
 ## First-time setup
 
+### Windows
+
 ```bash
-# 1. Install Node.js dependencies
 npm install
 
-# 2. Create Python virtual environment and install backend dependencies
 cd backend
 uv venv --python 3.11
+uv pip install -e ".[dev]"
+cd ..
+```
+
+### Mac
+
+```bash
+npm install
+
+cd backend
+uv venv --python 3.11
+source .venv/bin/activate
 uv pip install -e ".[dev]"
 cd ..
 ```
@@ -200,17 +280,28 @@ For packaged builds (EXE), these dependencies are bundled with the backend envir
 
 ### Native graph module build (optional, for performance)
 
-Run this in x64 Developer PowerShell/Command Prompt:
+**Windows** — run in x64 Developer PowerShell/Command Prompt:
 
-```bash
+```cmd
 cd backend
 uv pip install -e ".[dev]"
 python scripts/build_native_graph.py
 cd ..
 ```
 
-Expected artifact (Windows):
-`backend/domain/structural_graph/_native_graph*.pyd`
+Expected artifact: `backend/domain/structural_graph/_native_graph*.pyd`
+
+**Mac** — run in any terminal:
+
+```bash
+cd backend
+source .venv/bin/activate
+uv pip install setuptools pybind11
+python3 scripts/build_native_graph.py
+cd ..
+```
+
+Expected artifact: `backend/domain/structural_graph/_native_graph*.so`
 
 If this module is missing, all graph features (scoring, neighbor expansion, Louvain clustering, cycle detection) fall back to pure-Python automatically. The native module provides a performance boost for large repositories.
 
@@ -233,18 +324,16 @@ npm run preview
 
 ## Data Location + Fresh Reset
 
-CodeSpectra stores local app data in Electron `userData`:
+### Windows
 
-- Windows (default): `%APPDATA%\CodeSpectra\`
-- DB file: `%APPDATA%\CodeSpectra\codespectra.db`
+| Data | Path |
+|------|------|
+| App data | `%APPDATA%\CodeSpectra\` |
+| Database | `%APPDATA%\CodeSpectra\codespectra.db` |
+| Logs | `%APPDATA%\CodeSpectra\logs\` |
+| Cloned repos | `%USERPROFILE%\CodeSpectra\repos\` |
 
-Managed cloned repositories are stored at:
-
-- `%USERPROFILE%\CodeSpectra\repos\`
-
-### Fresh reset (Windows PowerShell)
-
-Close the app first, then run:
+Fresh reset — close the app first, then run in PowerShell:
 
 ```powershell
 Remove-Item "$env:APPDATA\CodeSpectra\codespectra.db" -Force -ErrorAction SilentlyContinue
@@ -252,8 +341,24 @@ Remove-Item "$env:APPDATA\CodeSpectra\logs" -Recurse -Force -ErrorAction Silentl
 Remove-Item "$env:USERPROFILE\CodeSpectra\repos" -Recurse -Force -ErrorAction SilentlyContinue
 ```
 
-This resets local DB state and removes managed clone copies.
-It does not delete repositories you imported directly from arbitrary folders.
+### Mac
+
+| Data | Path |
+|------|------|
+| App data | `~/Library/Application Support/CodeSpectra/` |
+| Database | `~/Library/Application Support/CodeSpectra/codespectra.db` |
+| Logs | `~/Library/Application Support/CodeSpectra/logs/` |
+| Cloned repos | `~/CodeSpectra/repos/` |
+
+Fresh reset — close the app first, then run in Terminal:
+
+```bash
+rm -f ~/Library/Application\ Support/CodeSpectra/codespectra.db
+rm -rf ~/Library/Application\ Support/CodeSpectra/logs
+rm -rf ~/CodeSpectra/repos
+```
+
+Both: resets local DB state and removes managed clone copies. Does not delete repositories imported from arbitrary local folders.
 
 ---
 
