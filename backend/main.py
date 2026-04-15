@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 from api.app import router as app_router
 from api.analysis import router as analysis_router
 from api.consent import router as consent_router
+from api.impact import router as impact_router
 from api.job import router as job_router
 from api.local_repo import router as local_repo_router
 from api.manifest import router as manifest_router
@@ -85,6 +86,7 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(app_router, prefix="/api/app")
+    app.include_router(impact_router, prefix="/api/impact")
     app.include_router(workspace_router, prefix="/api/workspace")
     app.include_router(provider_router, prefix="/api/provider")
     app.include_router(consent_router, prefix="/api/consent")

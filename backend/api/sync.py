@@ -1,19 +1,18 @@
 """Sync engine endpoints."""
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 
 from domain.sync_engine.service import SyncEngineService
 from domain.sync_engine.types import PrepareSnapshotRequest, RepoSnapshot
+from shared.http_utils import handle_value_error
 
 router = APIRouter(tags=["sync"])
 _service = SyncEngineService()
 
 
 @router.post("/prepare", response_model=RepoSnapshot, status_code=201)
+@handle_value_error
 async def prepare_snapshot(body: PrepareSnapshotRequest) -> RepoSnapshot:
-    try:
-        return await _service.prepare_snapshot(body)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    return await _service.prepare_snapshot(body)
 
 
 @router.get("/snapshot/{snapshot_id}", response_model=RepoSnapshot)

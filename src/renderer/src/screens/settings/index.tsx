@@ -5,12 +5,101 @@ interface NativeFunction {
   name: string
   available: boolean
   description: string
+  module: string
 }
 
 interface Diagnostics {
   python_version: string
   native_module_loaded: boolean
   native_functions: NativeFunction[]
+}
+
+function NativeModulePopup({
+  functions,
+  onClose,
+}: {
+  functions: NativeFunction[]
+  onClose: () => void
+}): React.ReactElement {
+  const available = functions.filter((f) => f.available).length
+  const total = functions.length
+
+  // Group by module
+  const byModule: Record<string, NativeFunction[]> = {}
+  for (const fn of functions) {
+    const mod = fn.module || 'unknown'
+    if (!byModule[mod]) byModule[mod] = []
+    byModule[mod].push(fn)
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={onClose}>
+      <div
+        className="bg-surface-overlay border border-surface-border rounded-xl shadow-2xl w-[480px] max-h-[70vh] flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="px-5 py-4 border-b border-surface-border flex items-center justify-between shrink-0">
+          <div>
+            <h3 className="text-sm font-semibold text-gray-100">Native C++ Modules</h3>
+            <p className="text-xs text-gray-500 mt-0.5">
+              {available}/{total} functions accelerated
+            </p>
+          </div>
+          <button onClick={onClose} className="text-gray-500 hover:text-gray-300 transition-colors text-lg leading-none">&times;</button>
+        </div>
+
+        {/* Scrollable body */}
+        <div className="overflow-y-auto px-5 py-3 space-y-4">
+          {Object.entries(byModule).map(([mod, fns]) => {
+            const modAvail = fns.filter((f) => f.available).length
+            return (
+              <div key={mod}>
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-xs font-mono text-gray-400">{mod}</span>
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded-full border ${
+                    modAvail === fns.length
+                      ? 'text-green-400 bg-green-950 border-green-800'
+                      : modAvail > 0
+                      ? 'text-yellow-400 bg-yellow-950 border-yellow-800'
+                      : 'text-red-400 bg-red-950 border-red-800'
+                  }`}>
+                    {modAvail}/{fns.length}
+                  </span>
+                </div>
+                <div className="space-y-1">
+                  {fns.map((fn) => (
+                    <div key={fn.name} className="flex items-start gap-2 py-1.5 border-b border-surface-border/50 last:border-0">
+                      <span className={`mt-0.5 shrink-0 text-[10px] font-mono px-1.5 py-0.5 rounded border ${
+                        fn.available
+                          ? 'text-green-400 bg-green-950 border-green-800'
+                          : 'text-yellow-400 bg-yellow-950 border-yellow-800'
+                      }`}>
+                        {fn.available ? 'C++' : 'PY'}
+                      </span>
+                      <div className="min-w-0">
+                        <div className="text-xs font-mono text-gray-200">{fn.name}</div>
+                        <div className="text-[11px] text-gray-500 leading-4">{fn.description}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+
+        {/* Footer hint */}
+        {functions.some((f) => !f.available) && (
+          <div className="px-5 py-3 border-t border-surface-border shrink-0">
+            <p className="text-[11px] text-yellow-500">
+              Run <span className="font-mono bg-zinc-800 px-1 rounded">python scripts/build_native_graph.py</span> inside <span className="font-mono">backend/</span> to enable C++ acceleration.
+            </p>
+          </div>
+        )}
+      </div>
+    </div>
+  )
 }
 
 interface ClassifierStatus {
@@ -32,6 +121,7 @@ export default function SettingsScreen(): React.ReactElement {
   const [userDataPath, setUserDataPath] = useState('')
   const [diagnostics, setDiagnostics] = useState<Diagnostics | null>(null)
   const [diagError, setDiagError] = useState<string | null>(null)
+  const [showNativePopup, setShowNativePopup] = useState(false)
 
   // Classifier state
   const [classifierStatus, setClassifierStatus] = useState<ClassifierStatus | null>(null)
@@ -325,49 +415,40 @@ export default function SettingsScreen(): React.ReactElement {
             <p className="text-xs text-gray-500 animate-pulse">Loading…</p>
           )}
 
-          {diagnostics && (
-            <div className="space-y-2 text-sm">
-              <div className="flex justify-between items-center py-1.5 border-b border-surface-border">
-                <span className="text-gray-400">Module status</span>
-                {diagnostics.native_module_loaded ? (
-                  <span className="text-xs text-green-400 bg-green-950 border border-green-800 px-2 py-0.5 rounded-full">
-                    ✓ Loaded
-                  </span>
-                ) : (
-                  <span className="text-xs text-red-400 bg-red-950 border border-red-800 px-2 py-0.5 rounded-full">
-                    ✗ Not built — using Python fallback
-                  </span>
-                )}
-              </div>
-              <div className="flex justify-between py-1.5 border-b border-surface-border">
-                <span className="text-gray-400">Python version</span>
-                <span className="text-gray-200 font-mono text-xs">{diagnostics.python_version}</span>
-              </div>
-
-              <div className="pt-1 space-y-1">
-                {diagnostics.native_functions.map((fn) => (
-                  <div key={fn.name} className="flex items-start gap-2 py-1 border-b border-surface-border last:border-0">
-                    <span className={`mt-0.5 shrink-0 text-[11px] font-mono px-1.5 py-0.5 rounded border ${
-                      fn.available
+          {diagnostics && (() => {
+            const avail = diagnostics.native_functions.filter((f) => f.available).length
+            const total = diagnostics.native_functions.length
+            const allLoaded = avail === total
+            return (
+              <div className="space-y-2 text-sm">
+                <div className="flex justify-between py-1.5 border-b border-surface-border">
+                  <span className="text-gray-400">Python version</span>
+                  <span className="text-gray-200 font-mono text-xs">{diagnostics.python_version}</span>
+                </div>
+                <div className="flex justify-between items-center py-1.5">
+                  <span className="text-gray-400">C++ acceleration</span>
+                  <button
+                    onClick={() => setShowNativePopup(true)}
+                    className={`text-xs px-2.5 py-1 rounded-full border cursor-pointer hover:brightness-125 transition-all ${
+                      allLoaded
                         ? 'text-green-400 bg-green-950 border-green-800'
-                        : 'text-yellow-400 bg-yellow-950 border-yellow-800'
-                    }`}>
-                      {fn.available ? 'C++' : 'PY'}
-                    </span>
-                    <div className="min-w-0">
-                      <div className="text-xs font-mono text-gray-200">{fn.name}</div>
-                      <div className="text-[11px] text-gray-500 leading-4">{fn.description}</div>
-                    </div>
-                  </div>
-                ))}
+                        : avail > 0
+                        ? 'text-yellow-400 bg-yellow-950 border-yellow-800'
+                        : 'text-red-400 bg-red-950 border-red-800'
+                    }`}
+                  >
+                    {avail}/{total} modules
+                  </button>
+                </div>
               </div>
+            )
+          })()}
 
-              {!diagnostics.native_module_loaded && (
-                <p className="text-[11px] text-yellow-500 pt-1">
-                  Run <span className="font-mono bg-zinc-800 px-1 rounded">python scripts/build_native_graph.py</span> inside <span className="font-mono">backend/</span> with the x64 VS Developer Command Prompt to enable C++ acceleration.
-                </p>
-              )}
-            </div>
+          {showNativePopup && diagnostics && (
+            <NativeModulePopup
+              functions={diagnostics.native_functions}
+              onClose={() => setShowNativePopup(false)}
+            />
           )}
         </section>
       </div>

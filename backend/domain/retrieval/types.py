@@ -120,3 +120,45 @@ class TwoStageBundle(BaseModel):
     stage1: dict  # {"candidates": list[StageCandidate]}
     stage2: dict  # {"expansions": list[StageExpansion]}
     stage3: TwoStageStage3Result
+
+
+# ── Impact retrieval types (RPA-060) ─────────────────────────────────────────
+
+
+class ImpactRankedChunk(BaseModel):
+    chunk_id: str
+    rel_path: str
+    chunk_index: int
+    hop_distance: int | None  # 0=seed, 1-4=cone, None=bm25-only
+    score: float
+    hop_weight: float
+    centrality_bonus: float
+    community_bonus: float
+    symbol_bonus: float
+    bm25_boost: float
+    token_estimate: int
+    excerpt: str
+
+
+class ImpactRetrievalRequest(BaseModel):
+    snapshot_id: str
+    seed_files: list[str]
+    query: str | None = None
+    max_hops: int = 3
+    budget: int = 8000
+
+
+class CommunityImpact(BaseModel):
+    community_id: int
+    member_count: int
+    hub_paths: list[str]
+
+
+class ImpactRetrievalBundle(BaseModel):
+    seed_files: list[str]
+    query: str | None
+    impact_cone: dict[str, int]              # file -> hop_distance
+    affected_communities: list[CommunityImpact]
+    call_chains: list[dict]                  # TraceStep serialized
+    ranked_chunks: list[ImpactRankedChunk]
+    risk_summary: dict                       # high_risk_files, total_affected, affected_community_count

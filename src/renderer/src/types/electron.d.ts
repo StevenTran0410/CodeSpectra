@@ -239,6 +239,8 @@ export interface CommunityInfo {
   member_count: number
   hub_paths: string[]
   modularity_contribution: number
+  neighbor_community_ids: number[]
+  is_singleton: boolean
   llm_summary: string | null
   generated_at: string
 }
@@ -541,6 +543,15 @@ declare global {
         communities: (snapshotId: string) => Promise<GraphCommunitiesResponse>
         communityForNode: (snapshotId: string, path: string) => Promise<NodeCommunityResponse>
         cycles: (snapshotId: string) => Promise<CyclesResponse>
+        exportData: (snapshotId: string) => Promise<{
+          nodes: string[]
+          edges: Array<{ src: string; dst: string; external: boolean }>
+          communities: Record<string, number>
+          community_groups: Record<string, string[]>
+          cycles: string[][]
+          test_files: string[]
+          generated_at: string
+        }>
         exportJson: (snapshotId: string) => Promise<{ saved: boolean; file_path: string | null }>
       }
       retrieval: {
@@ -610,8 +621,7 @@ declare global {
         getStaleness: (reportId: string) => Promise<StalenessResult>
         onSectionDone: (cb: (event: unknown, data: SectionDoneEvent) => void) => void
         offSectionDone: (cb: (event: unknown, data: SectionDoneEvent) => void) => void
-        deleteRepot: (reportId: string) => Promise<void>
-        deleterepot: (reportId: string) => Promise<void>
+
       }
       git: {
         getConfig: () => Promise<{ ssh_key_path: string | null }>
@@ -670,6 +680,22 @@ declare global {
         onStreamEvent: (cb: (event: unknown, data: unknown) => void) => void
         offStreamEvent: (cb: (event: unknown, data: unknown) => void) => void
       }
+      impact: {
+        blastRadius: (body: {
+          snapshot_id: string
+          changed_files: string[]
+          report_id?: string | null
+          max_hops?: number
+          include_call_chains?: boolean
+        }) => Promise<unknown>
+        plan: (body: {
+          snapshot_id: string
+          task_description: string
+          report_id: string
+          provider_id?: string | null
+          model_id?: string | null
+        }) => Promise<unknown>
+      }
       app: {
         getVersion: () => Promise<string>
         getUserDataPath: () => Promise<string>
@@ -681,6 +707,7 @@ declare global {
             name: string
             available: boolean
             description: string
+            module: string
           }>
         }>
       }

@@ -6,12 +6,29 @@ to guarantee token-set alignment between build time and query time.
 """
 from __future__ import annotations
 
+import importlib
 import json
 import math
 import re
 from typing import Any
 
 _WORD = re.compile(r"[A-Za-z0-9_]+")
+
+_NATIVE_BM25 = None
+_NATIVE_BM25_LOADED = False
+
+
+def _load_native_bm25():
+    """Lazy loader for the native BM25 extension. Returns module or None."""
+    global _NATIVE_BM25, _NATIVE_BM25_LOADED
+    if _NATIVE_BM25_LOADED:
+        return _NATIVE_BM25
+    _NATIVE_BM25_LOADED = True
+    try:
+        _NATIVE_BM25 = importlib.import_module("domain.retrieval._native_bm25")
+    except Exception:
+        _NATIVE_BM25 = None
+    return _NATIVE_BM25
 
 
 class BM25Scorer:
@@ -71,6 +88,31 @@ class BM25Scorer:
             total += content_contrib + path_contrib
 
         return total
+
+    def score_batch(
+        self,
+        chunks: list[tuple[str, str, str]],
+        terms: list[str],
+    ) -> list[tuple[str, float]]:
+        """Score multiple chunks in one call using native extension if available.
+
+        chunks: list of (chunk_id, content, path) — content and path are raw (not lowercased).
+        terms:  pre-lowercased query terms (same as score() input).
+        Returns: list of (chunk_id, score) in input order.
+        """
+        native = _load_native_bm25()
+        if native is not None:
+            try:
+                # native.batch_score expects lowercased content/path; content is lowercased inside C++
+                return list(native.batch_score(chunks, terms, self._idf, self._avgdl, self._k1, self._b))
+            except Exception:
+                pass
+        # Python fallback
+        results: list[tuple[str, float]] = []
+        for chunk_id, content, path in chunks:
+            s = self.score(terms, content.lower(), path.lower())
+            results.append((chunk_id, s))
+        return results
 
     @staticmethod
     def build_idf(tokenized_corpus: list[list[str]], n_docs: int) -> dict[str, float]:

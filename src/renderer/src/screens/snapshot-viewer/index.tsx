@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { ArrowLeft, ChevronDown, ChevronRight, FileText, Folder, Loader2 } from 'lucide-react'
 import type { ManifestTreeNode } from '../../types/electron'
 import { ErrorBanner } from '../../components/ui/ErrorBanner'
-import { Button, ConfirmDialog, PageLoading } from '../../components/ui'
+import { ConfirmDialog, PageLoading } from '../../components/ui'
 import { toErrorMessage } from '../../lib/errors'
 
 type TreeNode = {
@@ -398,7 +398,7 @@ export default function SnapshotViewerScreen(): React.ReactElement {
                   }, 250)
                   try {
                     await window.api.folder.setActiveSnapshot(repoId, snapshotId)
-                    await window.api.repomap.build(snapshotId, true)
+                    await window.api.repomap.build(snapshotId, false)
                     setBuildProgress(100)
                     navigate(`/index-overview?repoId=${encodeURIComponent(repoId)}&snapshotId=${encodeURIComponent(snapshotId)}`)
                   } catch (err) {

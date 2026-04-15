@@ -2,6 +2,7 @@
 from fastapi import APIRouter, HTTPException, Query
 
 from domain.structural_graph.service import StructuralGraphService
+from shared.http_utils import handle_value_error
 from domain.structural_graph.types import (
     BuildGraphRequest,
     BuildGraphResponse,
@@ -18,13 +19,9 @@ _service = StructuralGraphService()
 
 
 @router.post("/build", response_model=BuildGraphResponse)
+@handle_value_error
 async def build_graph(body: BuildGraphRequest) -> BuildGraphResponse:
-    try:
-        return await _service.build(body)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except RuntimeError as e:
-        raise HTTPException(status_code=503, detail=str(e))
+    return await _service.build(body)
 
 
 @router.get("/summary/{snapshot_id}", response_model=StructuralGraphSummary)
@@ -40,18 +37,14 @@ async def list_graph_edges(
 
 
 @router.get("/neighbors/{snapshot_id}", response_model=GraphNeighborsResponse)
+@handle_value_error
 async def graph_neighbors(
     snapshot_id: str,
     path: str = Query(..., description="Seed file path"),
     hops: int = Query(1, ge=1, le=4),
     limit: int = Query(300, ge=10, le=2000),
 ) -> GraphNeighborsResponse:
-    try:
-        return await _service.neighbors(snapshot_id, seed_path=path, hops=hops, limit=limit)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except RuntimeError as e:
-        raise HTTPException(status_code=503, detail=str(e))
+    return await _service.neighbors(snapshot_id, seed_path=path, hops=hops, limit=limit)
 
 
 # ── CS-102: community detection endpoints ─────────────────────────────────────
