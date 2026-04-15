@@ -96,17 +96,24 @@ async def classify_files(
     previous_cache: dict[str, str],
     previous_snapshot_id: str | None,
     executor,
+    root_path: str,
 ) -> ExtractionCacheResult:
     """Classify files as changed/unchanged by comparing SHA256 against previous cache.
 
     Computes SHA256 for all files in parallel via executor, then compares against
     previous_cache to identify unchanged files.
+
+    ``files`` are ``sqlite3.Row`` objects with at least a ``rel_path`` key.
+    ``root_path`` is the absolute project root used to build full file paths.
     """
+    import os
+
     loop = asyncio.get_event_loop()
 
     # Compute SHA256 for all files in parallel
     sha256_tasks = [
-        loop.run_in_executor(executor, compute_sha256, f.abs_path) for f in files
+        loop.run_in_executor(executor, compute_sha256, os.path.join(root_path, f["rel_path"]))
+        for f in files
     ]
     sha256_list = await asyncio.gather(*sha256_tasks)
 
@@ -115,16 +122,17 @@ async def classify_files(
     changed_files: list = []
 
     for f, sha256 in zip(files, sha256_list):
+        rel = f["rel_path"]
         if not sha256:
             # Compute failed — treat as changed
             changed_files.append(f)
             continue
 
-        sha256_map[f.rel_path] = sha256
+        sha256_map[rel] = sha256
 
         # Check if unchanged
-        if f.rel_path in previous_cache and previous_cache[f.rel_path] == sha256:
-            unchanged_paths.append(f.rel_path)
+        if rel in previous_cache and previous_cache[rel] == sha256:
+            unchanged_paths.append(rel)
         else:
             changed_files.append(f)
 

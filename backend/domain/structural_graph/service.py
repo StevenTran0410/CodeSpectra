@@ -265,7 +265,7 @@ class StructuralGraphService:
         prev_snapshot_id = await _get_previous_snapshot_id(db, snap["local_repo_id"], req.snapshot_id)
 
         with concurrent.futures.ThreadPoolExecutor() as executor:
-            cache_result = await classify_files(files, prev_cache, prev_snapshot_id, executor)
+            cache_result = await classify_files(files, prev_cache, prev_snapshot_id, executor, str(root))
 
         logger.info(
             "[structural_graph] cache: %d unchanged, %d changed (snapshot %s)",
