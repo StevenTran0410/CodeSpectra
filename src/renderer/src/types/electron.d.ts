@@ -61,6 +61,7 @@ export interface LocalRepo {
   pinned_ref: string | null
   ignore_overrides: string[]
   detect_submodules: boolean
+  include_tests: boolean
   added_at: string
   last_validated_at: string
 }
@@ -483,6 +484,7 @@ declare global {
             pinned_ref: string | null
             ignore_overrides: string[]
             detect_submodules: boolean
+            include_tests: boolean
           }
         ) => Promise<LocalRepo>
         estimateFileCount: (id: string) => Promise<EstimateFileCountResponse>

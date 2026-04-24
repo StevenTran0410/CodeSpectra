@@ -19,7 +19,7 @@ export default function EvidencePanel({
   onClose: () => void
 }): React.ReactElement {
   return (
-    <div role="region" aria-label="Evidence sources" className="fixed inset-y-0 right-0 w-96 bg-zinc-950 border-l border-zinc-800 flex flex-col z-50 shadow-2xl animate-slide-in-right">
+    <div role="region" aria-label="Evidence sources" className="fixed inset-y-0 right-0 w-[min(384px,calc(100vw-200px))] bg-zinc-950 border-l border-zinc-800 flex flex-col z-50 shadow-2xl animate-slide-in-right">
       <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-800">
         <span className="text-sm font-semibold text-zinc-200">
           Sources — Section {sectionId}
@@ -46,7 +46,7 @@ export default function EvidencePanel({
                 {s.rel_path}
                 <span className="ml-2 text-zinc-500">chunk #{s.chunk_index}</span>
               </div>
-              <pre className="text-[10px] text-zinc-400 whitespace-pre-wrap break-all leading-relaxed line-clamp-6">
+              <pre className="text-[10px] text-zinc-400 whitespace-pre-wrap break-words leading-relaxed line-clamp-6">
                 {s.snippet}
               </pre>
             </div>

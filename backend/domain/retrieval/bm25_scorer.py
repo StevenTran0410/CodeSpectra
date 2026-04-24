@@ -1,7 +1,7 @@
-"""BM25 scorer for retrieval (CS-201).
+"""BM25 scorer for retrieval (CS-201, CS-227).
 
 Pre-computed IDF is loaded from retrieval_bm25_stats at query time.
-Corpus tokenization uses the same _WORD regex as _query_terms() in service.py
+Corpus tokenization uses the same _WORD regex and identifier splitting
 to guarantee token-set alignment between build time and query time.
 """
 from __future__ import annotations
@@ -17,6 +17,16 @@ _WORD = re.compile(r"[A-Za-z0-9_]+")
 _NATIVE_BM25 = None
 _NATIVE_BM25_LOADED = False
 
+# Chunk type weights for code-aware retrieval (CS-227, CS-229)
+CHUNK_TYPE_WEIGHT: dict[str, float] = {
+    "function":     1.5,
+    "class":        1.5,
+    "block":        1.0,
+    "file":         1.0,
+    "import_group": 0.2,
+    "barrel":       0.3,
+}
+
 
 def _load_native_bm25():
     """Lazy loader for the native BM25 extension. Returns module or None."""
@@ -29,6 +39,74 @@ def _load_native_bm25():
     except Exception:
         _NATIVE_BM25 = None
     return _NATIVE_BM25
+
+
+def split_identifier(token: str) -> list[str]:
+    """Split camelCase and snake_case identifiers into sub-tokens.
+
+    Examples:
+      'getUserById' → ['getuserbyid', 'get', 'user', 'by', 'id']
+      'get_user_by_id' → ['get_user_by_id', 'get', 'user', 'by', 'id']
+      'HTTPServer' → ['httpserver', 'http', 'server']
+
+    Single-char tokens are dropped.
+    """
+    if not token or len(token) <= 1:
+        return [token] if token else []
+
+    # Original token (lowercased)
+    lower = token.lower()
+    result = [lower]
+
+    # Snake_case split
+    if "_" in token:
+        parts = token.lower().split("_")
+        for p in parts:
+            if len(p) > 1:
+                result.append(p)
+        return result
+
+    # camelCase / PascalCase split: insert markers before uppercase letters
+    # Then split on markers
+    marked = ""
+    for i, ch in enumerate(token):
+        if ch.isupper() and i > 0:
+            marked += "|" + ch
+        else:
+            marked += ch
+
+    sub_tokens = []
+    for part in marked.split("|"):
+        sub = part.lower()
+        if len(sub) > 1:
+            sub_tokens.append(sub)
+
+    # Add unique sub-tokens
+    for st in sub_tokens:
+        if st not in result:
+            result.append(st)
+
+    return result
+
+
+def _query_terms(q: str) -> list[str]:
+    """Extract and deduplicate query terms with identifier splitting (CS-227).
+
+    Returns lowercased terms in order, with sub-tokens from split_identifier().
+    """
+    # Extract raw tokens
+    raw_tokens = [w.lower() for w in _WORD.findall(q) if len(w) > 1]
+
+    # Expand with split_identifier
+    expanded: list[str] = []
+    seen: set[str] = set()
+    for token in raw_tokens:
+        for sub in split_identifier(token):
+            if sub and sub not in seen:
+                expanded.append(sub)
+                seen.add(sub)
+
+    return expanded
 
 
 class BM25Scorer:
@@ -49,12 +127,19 @@ class BM25Scorer:
             b=float(row["b"]),
         )
 
-    def score(self, terms: list[str], content_low: str, path_low: str) -> float:
-        """BM25 score for a chunk against query terms.
+    def score(
+        self,
+        terms: list[str],
+        content_low: str,
+        path_low: str,
+        chunk_type: str = "block",
+    ) -> float:
+        """BM25 score for a chunk against query terms, with type weighting (CS-227).
 
         Terms must already be lowercased (same as _query_terms() output).
         content_low and path_low must be lowercased.
         Path hits are treated as a synthetic document of length avgdl with TF=1.
+        chunk_type: used to apply CHUNK_TYPE_WEIGHT multiplier.
         """
         if not terms:
             return 0.0
@@ -87,31 +172,76 @@ class BM25Scorer:
             path_contrib = idf * 1.0 if term in path_low else 0.0
             total += content_contrib + path_contrib
 
-        return total
+        # Apply chunk type weight multiplier (CS-227)
+        weight = CHUNK_TYPE_WEIGHT.get(chunk_type, 1.0)
+        return total * weight
 
     def score_batch(
         self,
-        chunks: list[tuple[str, str, str]],
+        chunks: list[tuple[str, str, str] | tuple[str, str, str, str]],
         terms: list[str],
+        min_score_abs: float = 0.0,
+        min_score_relative: float = 0.0,
     ) -> list[tuple[str, float]]:
-        """Score multiple chunks in one call using native extension if available.
+        """Score multiple chunks with type weighting and cutoff (CS-227).
 
-        chunks: list of (chunk_id, content, path) — content and path are raw (not lowercased).
+        chunks: list of (chunk_id, content, path) or (chunk_id, content, path, chunk_type).
+                If 3-tuple, chunk_type defaults to "block".
         terms:  pre-lowercased query terms (same as score() input).
-        Returns: list of (chunk_id, score) in input order.
+        min_score_abs: absolute floor (e.g. 0.5).
+        min_score_relative: relative fraction of top score (e.g. 0.25).
+
+        Returns: list of (chunk_id, score) — only survivors (score >= cutoff).
         """
         native = _load_native_bm25()
         if native is not None:
             try:
-                # native.batch_score expects lowercased content/path; content is lowercased inside C++
-                return list(native.batch_score(chunks, terms, self._idf, self._avgdl, self._k1, self._b))
+                # Convert 3-tuples to 4-tuples for native call
+                chunks_4tuple = []
+                for chunk in chunks:
+                    if len(chunk) == 3:
+                        chunk_id, content, path = chunk
+                        chunks_4tuple.append((chunk_id, content, path, "block"))
+                    else:
+                        chunks_4tuple.append(chunk)
+                return list(
+                    native.batch_score(
+                        chunks_4tuple,
+                        terms,
+                        self._idf,
+                        self._avgdl,
+                        self._k1,
+                        self._b,
+                        CHUNK_TYPE_WEIGHT,
+                        min_score_abs,
+                        min_score_relative,
+                    )
+                )
             except Exception:
                 pass
-        # Python fallback
+
+        # Python fallback: compute all scores, apply cutoff
+        scored: list[tuple[str, str, str, str, float]] = []
+        for chunk in chunks:
+            if len(chunk) == 3:
+                chunk_id, content, path = chunk
+                chunk_type = "block"
+            else:
+                chunk_id, content, path, chunk_type = chunk
+            s = self.score(terms, content.lower(), path.lower(), chunk_type)
+            scored.append((chunk_id, content, path, chunk_type, s))
+
+        # Find top score and compute cutoff
+        if not scored:
+            return []
+        top_score = max(s[4] for s in scored)
+        cutoff = max(min_score_abs, min_score_relative * top_score) if top_score > 0 else min_score_abs
+
+        # Return only survivors
         results: list[tuple[str, float]] = []
-        for chunk_id, content, path in chunks:
-            s = self.score(terms, content.lower(), path.lower())
-            results.append((chunk_id, s))
+        for chunk_id, _, _, _, score in scored:
+            if score >= cutoff:
+                results.append((chunk_id, score))
         return results
 
     @staticmethod

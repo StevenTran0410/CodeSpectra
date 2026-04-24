@@ -13,7 +13,7 @@ import pytest
 from domain.structural_graph._louvain_fallback import compute_louvain_python
 from domain.structural_graph._scc_fallback import compute_scc_python
 from domain.structural_graph.service import _compute_scores_python, _expand_neighbors_python
-from domain.retrieval.bm25_scorer import BM25Scorer, _WORD
+from domain.retrieval.bm25_scorer import BM25Scorer, _WORD, CHUNK_TYPE_WEIGHT
 
 # Try to load native modules — skip all tests if not built
 try:
@@ -721,6 +721,69 @@ class TestBatchScoreParity:
         assert cpp["c2"] == 0.0
         assert py["c1"] == 0.0
         assert py["c2"] == 0.0
+
+    def test_chunk_type_weighting(self):
+        """chunk_type_weights should multiply scores (CS-227)."""
+        corpus = [["foo"], ["foo"]]
+        idf = BM25Scorer.build_idf(corpus, 2)
+
+        chunks = [
+            ("c1", "foo content", "file.py", "import_group"),
+            ("c2", "foo content", "file.py", "function"),
+        ]
+        terms = ["foo"]
+        weights = {"import_group": 0.2, "function": 1.5}
+
+        cpp = dict(batch_score(chunks, terms, idf, 2.0, 2.0, 0.75, weights))
+        py_scorer = BM25Scorer(idf, 2.0, 2.0, 0.75)
+        py = dict(py_scorer.score_batch(chunks, terms))
+
+        # c2 (function, weight 1.5) should score higher than c1 (import_group, weight 0.2)
+        assert cpp["c2"] > cpp["c1"], f"Function {cpp['c2']} should > import_group {cpp['c1']}"
+
+        # Scores should match Python fallback
+        assert abs(cpp["c1"] - py["c1"]) < 1e-4
+        assert abs(cpp["c2"] - py["c2"]) < 1e-4
+
+    def test_min_score_absolute_cutoff(self):
+        """Chunks below min_score_abs should be filtered (CS-227)."""
+        corpus = [["foo"], ["bar"]]
+        idf = BM25Scorer.build_idf(corpus, 2)
+
+        chunks = [
+            ("c1", "foo content", "file.py", "block"),
+            ("c2", "bar content", "file.py", "block"),
+        ]
+        terms = ["foo"]
+
+        # With min_score_abs=10, very high threshold
+        cpp = dict(batch_score(chunks, terms, idf, 2.0, 2.0, 0.75, {}, min_score_abs=10.0))
+        py_scorer = BM25Scorer(idf, 2.0, 2.0, 0.75)
+        py = dict(py_scorer.score_batch(chunks, terms, min_score_abs=10.0))
+
+        # Both should be filtered (or very few results)
+        assert cpp == py, "Cutoff filtering should match"
+
+    def test_min_score_relative_cutoff(self):
+        """Chunks below relative fraction of top score should be filtered (CS-227)."""
+        corpus = [["foo"], ["foo"]]
+        idf = BM25Scorer.build_idf(corpus, 2)
+
+        chunks = [
+            ("high", "foo foo foo foo", "file.py", "block"),
+            ("low", "foo", "file.py", "block"),
+        ]
+        terms = ["foo"]
+
+        # Relative cutoff 0.5: only chunks with score >= 0.5 * max
+        cpp_dict = dict(batch_score(chunks, terms, idf, 3.0, 2.0, 0.75, {}, min_score_relative=0.5))
+        py_scorer = BM25Scorer(idf, 3.0, 2.0, 0.75)
+        py_dict = dict(py_scorer.score_batch(chunks, terms, min_score_relative=0.5))
+
+        # Both should filter the same way
+        assert set(cpp_dict.keys()) == set(py_dict.keys()), "Same chunks should survive"
+        for cid in cpp_dict:
+            assert abs(cpp_dict[cid] - py_dict[cid]) < 1e-4
 
 
 @pytest.mark.skipif(not HAS_NATIVE_BM25, reason="native BM25 module not built")

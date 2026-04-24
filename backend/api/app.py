@@ -62,8 +62,10 @@ _NATIVE_REGISTRY: list[tuple[str, str, str]] = [
     ("rank_and_budget",    "domain.structural_graph._native_graph", "Sort + token-budget truncation for retrieval re-ranking"),
     # _native_bm25 module
     ("tokenize",           "domain.retrieval._native_bm25", "BM25 text tokenizer ([A-Za-z0-9_]+ regex)"),
-    ("batch_score",        "domain.retrieval._native_bm25", "Batch BM25 scoring for retrieval chunks"),
+    ("batch_score",        "domain.retrieval._native_bm25", "Batch BM25 scoring with type weighting and score cutoff (CS-227)"),
     ("batch_impact_score", "domain.retrieval._native_bm25", "Batch impact scoring (hop + centrality + community + symbol)"),
+    # _native_chunker module
+    ("merge_spans",        "domain.retrieval._native_chunker", "AST chunk span merging for semantic chunking"),
 ]
 
 

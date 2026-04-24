@@ -3,7 +3,9 @@ import fnmatch
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
+from typing import NamedTuple
 
 from infrastructure.db.database import get_db
 from shared.errors import NotFoundError
@@ -106,6 +108,19 @@ def _language(path: Path) -> str | None:
     return None
 
 
+def _is_test_path(low: str) -> bool:
+    """True if any path segment contains the word 'test' (broad match per user spec).
+
+    Catches: test/, tests/, __tests__/, test_utils/, foo_test.py, foo.test.ts,
+    .spec., mock_test.go. False-positive 'latest' is accepted — user asked for
+    literal 'anything with test letters'.
+    """
+    for seg in low.split("/"):
+        if "test" in seg:
+            return True
+    return False
+
+
 def _category(rel: str, path: Path) -> FileCategory:
     low = rel.lower()
     name = path.name.lower()
@@ -119,7 +134,7 @@ def _category(rel: str, path: Path) -> FileCategory:
         return FileCategory.GENERATED
     if "migration" in low or low.startswith("migrations/"):
         return FileCategory.MIGRATION
-    if low.startswith("test/") or low.startswith("tests/") or "_test." in low or ".spec." in low:
+    if _is_test_path(low):
         return FileCategory.TEST
     if low.startswith("docs/") or ext in {".md", ".rst"}:
         return FileCategory.DOCS
@@ -132,16 +147,34 @@ def _category(rel: str, path: Path) -> FileCategory:
     return FileCategory.OTHER
 
 
-def _compile_ignores(repo_ignores: list[str], manual_ignores: list[str] | None = None) -> tuple[list[str], list[str]]:
+class IgnoreSpec(NamedTuple):
+    """Compiled ignore specification returned by _compile_ignores.
+
+    patterns:     raw glob patterns (effective list, used for file matching)
+    dir_prefixes: directory path prefixes stripped from /** patterns
+    compiled:     pre-compiled regex patterns for each glob (same order as patterns)
+    """
+    patterns: list[str]
+    dir_prefixes: list[str]
+    compiled: list[re.Pattern]
+
+
+def _compile_ignores(repo_ignores: list[str], manual_ignores: list[str] | None = None) -> IgnoreSpec:
+    """Build an IgnoreSpec from repo + manual ignore lists.
+
+    Pre-compiles each glob into a regex so that repeated calls to _ignored()
+    do not re-compile the same patterns on every file visit.
+    """
     effective = [*_DEFAULT_IGNORES, *repo_ignores, *(manual_ignores or [])]
     dir_prefixes = [p[:-3] for p in effective if p.endswith("/**")]
-    return effective, dir_prefixes
+    compiled = [re.compile(fnmatch.translate(p)) for p in effective]
+    return IgnoreSpec(patterns=effective, dir_prefixes=dir_prefixes, compiled=compiled)
 
 
-def _ignored(rel: str, pats: list[str], dir_prefixes: list[str], is_dir: bool) -> bool:
+def _ignored(rel: str, spec: IgnoreSpec, is_dir: bool) -> bool:
     if is_dir:
-        return any(rel == prefix or rel.startswith(f"{prefix}/") for prefix in dir_prefixes)
-    return any(fnmatch.fnmatch(rel, p) for p in pats)
+        return any(rel == prefix or rel.startswith(f"{prefix}/") for prefix in spec.dir_prefixes)
+    return any(rx.match(rel) for rx in spec.compiled)
 
 
 class ManifestService:
@@ -157,15 +190,21 @@ class ManifestService:
         if not root.exists() or not root.is_dir():
             raise ValueError("Snapshot path does not exist")
 
-        async with db.execute("SELECT ignore_overrides FROM local_repos WHERE id=?", (repo_id,)) as cur:
+        async with db.execute(
+            "SELECT ignore_overrides, include_tests FROM local_repos WHERE id=?",
+            (repo_id,),
+        ) as cur:
             repo_row = await cur.fetchone()
         repo_ignores = []
-        if repo_row and repo_row["ignore_overrides"]:
-            import json
-            try:
-                repo_ignores = json.loads(repo_row["ignore_overrides"])
-            except Exception:
-                repo_ignores = []
+        include_tests = False
+        if repo_row:
+            if repo_row["ignore_overrides"]:
+                import json
+                try:
+                    repo_ignores = json.loads(repo_row["ignore_overrides"])
+                except Exception:
+                    repo_ignores = []
+            include_tests = bool(repo_row["include_tests"]) if "include_tests" in repo_row.keys() else False
 
         if req.manual_ignores is None:
             try:
@@ -187,7 +226,7 @@ class ManifestService:
             (json.dumps(manual_ignores), req.snapshot_id),
         )
 
-        pats, dir_prefixes = _compile_ignores(repo_ignores, manual_ignores)
+        ignore_spec = _compile_ignores(repo_ignores, manual_ignores)
 
         previous: dict[str, tuple[str, int, int]] = {}
         async with db.execute(
@@ -217,7 +256,10 @@ class ManifestService:
             keep_dirs: list[str] = []
             for d in dirnames:
                 rel = f"{rel_dir}/{d}" if rel_dir else d
-                if _ignored(rel, pats, dir_prefixes, True):
+                if _ignored(rel, ignore_spec, True):
+                    ignored += 1
+                    continue
+                if not include_tests and "test" in d.lower():
                     ignored += 1
                     continue
                 keep_dirs.append(d)
@@ -225,7 +267,10 @@ class ManifestService:
 
             for name in filenames:
                 rel = f"{rel_dir}/{name}" if rel_dir else name
-                if _ignored(rel, pats, dir_prefixes, False):
+                if _ignored(rel, ignore_spec, False):
+                    ignored += 1
+                    continue
+                if not include_tests and _is_test_path(rel.lower()):
                     ignored += 1
                     continue
 

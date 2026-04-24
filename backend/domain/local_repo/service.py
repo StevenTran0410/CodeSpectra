@@ -107,7 +107,11 @@ async def _check_size_warning(path: str) -> tuple[bool, str | None]:
     return await asyncio.to_thread(_check_size_warning_sync, path)
 
 
-def _count_files_with_ignores_sync(root: Path, ignore_patterns: list[str]) -> int:
+def _count_files_with_ignores_sync(
+    root: Path,
+    ignore_patterns: list[str],
+    include_tests: bool = True,
+) -> int:
     dir_prefixes = [p[:-3] for p in ignore_patterns if p.endswith("/**")]
     count = 0
     for dirpath, dirnames, filenames in os.walk(root):
@@ -121,12 +125,16 @@ def _count_files_with_ignores_sync(root: Path, ignore_patterns: list[str]) -> in
             rel = f"{rel_dir}/{d}" if rel_dir else d
             if any(rel == prefix or rel.startswith(f"{prefix}/") for prefix in dir_prefixes):
                 continue
+            if not include_tests and "test" in d.lower():
+                continue
             kept_dirs.append(d)
         dirnames[:] = kept_dirs
 
         for name in filenames:
             rel = f"{rel_dir}/{name}" if rel_dir else name
             if any(fnmatch.fnmatch(rel, p) for p in ignore_patterns):
+                continue
+            if not include_tests and any("test" in seg for seg in rel.lower().split("/")):
                 continue
             count += 1
     return count
@@ -154,6 +162,7 @@ def _row_to_model(row) -> LocalRepo:
         pinned_ref=row["pinned_ref"],
         ignore_overrides=ignore_overrides,
         detect_submodules=bool(row["detect_submodules"]),
+        include_tests=bool(row["include_tests"]) if "include_tests" in row.keys() else False,
         added_at=row["added_at"],
         last_validated_at=row["last_validated_at"],
     )
@@ -366,13 +375,14 @@ class LocalRepoService:
         db = get_db()
         await db.execute(
             """UPDATE local_repos
-               SET sync_mode=?, pinned_ref=?, ignore_overrides=?, detect_submodules=?
+               SET sync_mode=?, pinned_ref=?, ignore_overrides=?, detect_submodules=?, include_tests=?
                WHERE id=?""",
             (
                 req.sync_mode.value,
                 req.pinned_ref,
                 json.dumps(req.ignore_overrides),
                 int(req.detect_submodules),
+                int(req.include_tests),
                 repo_id,
             ),
         )
@@ -387,7 +397,9 @@ class LocalRepoService:
             raise ValueError("Repository path does not exist")
 
         effective = [*_WORKSPACE_DEFAULT_IGNORES, *repo.ignore_overrides]
-        count = await asyncio.to_thread(_count_files_with_ignores_sync, root, effective)
+        count = await asyncio.to_thread(
+            _count_files_with_ignores_sync, root, effective, repo.include_tests
+        )
         return EstimateFileCountResponse(
             estimated_file_count=count,
             workspace_default_ignores=_WORKSPACE_DEFAULT_IGNORES,

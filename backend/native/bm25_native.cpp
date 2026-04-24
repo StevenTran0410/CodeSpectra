@@ -64,20 +64,27 @@ py::list tokenize(const std::string& text) {
 }
 
 // ── Public: batch_score ────────────────────────────────────────────────────────
-// chunks: list of (chunk_id: str, content: str, path: str)
+// chunks: list of (chunk_id: str, content: str, path: str, chunk_type: str)  ← 4-tuple now
 // terms:  list[str]  (pre-lowercased query terms)
 // idf:    dict[str, float]
 // avgdl:  float
 // k1:     float
 // b:      float
-// Returns: list of (chunk_id: str, score: float)  — all chunks, score may be 0.
+// chunk_type_weights: dict[str, float]  (e.g. {"function": 1.5, ...})
+// min_score_abs: float  (absolute floor, e.g. 0.5)
+// min_score_relative: float  (relative fraction of top score, e.g. 0.25)
+//
+// Returns: list of (chunk_id: str, score: float)  — only survivors (score >= cutoff).
 py::list batch_score(
     const py::list& chunks,
     const py::list& terms_list,
     const py::dict& idf_dict,
     double avgdl,
     double k1,
-    double b
+    double b,
+    const py::dict& chunk_type_weights_dict = py::dict(),
+    double min_score_abs = 0.0,
+    double min_score_relative = 0.0
 ) {
     if (avgdl <= 0.0) avgdl = 1.0;
 
@@ -88,6 +95,13 @@ py::list batch_score(
         idf[py::cast<std::string>(kv.first)] = py::cast<double>(kv.second);
     }
 
+    // Build chunk_type -> weight map
+    std::unordered_map<std::string, double> chunk_type_weights;
+    chunk_type_weights.reserve(static_cast<std::size_t>(chunk_type_weights_dict.size()) + 4);
+    for (const auto& kv : chunk_type_weights_dict) {
+        chunk_type_weights[py::cast<std::string>(kv.first)] = py::cast<double>(kv.second);
+    }
+
     // Collect terms
     std::vector<std::string> terms;
     terms.reserve(static_cast<std::size_t>(terms_list.size()));
@@ -95,7 +109,9 @@ py::list batch_score(
         terms.push_back(py::cast<std::string>(t));
     }
 
-    py::list out;
+    // First pass: compute raw BM25 and weighted scores
+    std::vector<std::pair<std::string, double>> scores_list;  // (chunk_id, weighted_score)
+    double top_score = 0.0;
 
     for (const auto& item : chunks) {
         auto tup = py::cast<py::tuple>(item);
@@ -104,6 +120,7 @@ py::list batch_score(
         std::string chunk_id = py::cast<std::string>(tup[0]);
         std::string content  = py::cast<std::string>(tup[1]);
         std::string path     = py::cast<std::string>(tup[2]);
+        std::string chunk_type = (tup.size() >= 4) ? py::cast<std::string>(tup[3]) : "block";
 
         // Lowercase content and path
         std::string content_low = content;
@@ -115,7 +132,7 @@ py::list batch_score(
         auto tokens = tokenize_str(content_low);
         const double dl = static_cast<double>(tokens.size());
         if (dl == 0.0) {
-            out.append(py::make_tuple(chunk_id, 0.0));
+            scores_list.emplace_back(chunk_id, 0.0);
             continue;
         }
 
@@ -127,7 +144,7 @@ py::list batch_score(
         }
 
         const double length_norm = 1.0 - b + b * dl / avgdl;
-        double total = 0.0;
+        double raw_score = 0.0;
 
         for (const auto& term : terms) {
             const auto idf_it = idf.find(term);
@@ -142,10 +159,34 @@ py::list batch_score(
             // Path contribution: term present in path -> treat as synthetic doc TF=1
             const double path_contrib = (path_low.find(term) != std::string::npos) ? idf_val : 0.0;
 
-            total += content_contrib + path_contrib;
+            raw_score += content_contrib + path_contrib;
         }
 
-        out.append(py::make_tuple(chunk_id, total));
+        // Apply chunk_type weight multiplier
+        double weight = 1.0;
+        {
+            const auto wit = chunk_type_weights.find(chunk_type);
+            if (wit != chunk_type_weights.end()) {
+                weight = wit->second;
+            }
+        }
+        const double weighted_score = raw_score * weight;
+        scores_list.emplace_back(chunk_id, weighted_score);
+
+        // Track top score for relative cutoff
+        if (weighted_score > top_score) {
+            top_score = weighted_score;
+        }
+    }
+
+    // Second pass: compute cutoff and filter survivors
+    const double cutoff = (top_score > 0.0) ? std::max(min_score_abs, min_score_relative * top_score) : min_score_abs;
+
+    py::list out;
+    for (const auto& item : scores_list) {
+        if (item.second >= cutoff) {
+            out.append(py::make_tuple(item.first, item.second));
+        }
     }
 
     return out;
@@ -309,9 +350,14 @@ PYBIND11_MODULE(_native_bm25, m) {
         py::arg("avgdl"),
         py::arg("k1"),
         py::arg("b"),
-        "Score multiple chunks in one native call. "
-        "chunks: list[(chunk_id, content, path)]. "
-        "Returns list[(chunk_id, score)]."
+        py::arg("chunk_type_weights") = py::dict(),
+        py::arg("min_score_abs") = 0.0,
+        py::arg("min_score_relative") = 0.0,
+        "Score multiple chunks with type weighting and cutoff. "
+        "chunks: list[(chunk_id, content, path, chunk_type)]. "
+        "chunk_type_weights: dict[str, float] for type multipliers. "
+        "min_score_abs/relative: cutoff thresholds. "
+        "Returns list[(chunk_id, weighted_score)] — survivors only."
     );
     m.def(
         "batch_impact_score",

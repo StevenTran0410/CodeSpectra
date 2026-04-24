@@ -93,7 +93,7 @@ function NativeModulePopup({
         {functions.some((f) => !f.available) && (
           <div className="px-5 py-3 border-t border-surface-border shrink-0">
             <p className="text-[11px] text-yellow-500">
-              Run <span className="font-mono bg-zinc-800 px-1 rounded">python scripts/build_native_graph.py</span> inside <span className="font-mono">backend/</span> to enable C++ acceleration.
+              Run <span className="font-mono bg-zinc-800 px-1 rounded">python scripts/build_native_graph.py</span> (builds graph + BM25) and <span className="font-mono bg-zinc-800 px-1 rounded">python scripts/build_native_chunker.py</span> inside <span className="font-mono">backend/</span> to enable C++ acceleration.
             </p>
           </div>
         )}

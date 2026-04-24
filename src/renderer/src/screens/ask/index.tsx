@@ -7,7 +7,7 @@ import { ErrorBanner } from '../../components/ui/ErrorBanner'
 import { toErrorMessage } from '../../lib/errors'
 import { useLocalRepoStore } from '../../store/local-repo.store'
 import { useWorkspaceStore } from '../../store/workspace.store'
-import { useQAStore } from '../../store/qa.store'
+import { useAskScreen } from '../../hooks/useAskScreen'
 import type { RepoSnapshot, QAResponse, DeepResearchResponse } from '../../types/electron'
 import type { QAChatMessage } from '../../store/qa.store'
 
@@ -65,7 +65,7 @@ function DeepResearchConfirmCard({
   onDisableForChat: () => void
 }): React.ReactElement {
   return (
-    <div className="border border-purple-500/30 bg-purple-950/20 rounded-lg p-3 mt-2">
+    <div className="animate-in fade-in slide-in-from-bottom-2 duration-300 border border-purple-500/30 bg-purple-950/20 rounded-lg p-3 mt-2">
       <div className="flex items-center gap-2 text-purple-300 text-sm font-medium">
         <Microscope size={14} />
         Deep Research available
@@ -118,7 +118,7 @@ export default function AskScreen(): React.ReactElement {
     setActive,
     disableDeepResearch,
     isDeepResearchDisabled,
-  } = useQAStore()
+  } = useAskScreen()
 
   const [selectedRepoId, setSelectedRepoId] = useState(urlRepoId)
   const [selectedSnapshotId, setSelectedSnapshotId] = useState(urlSnapshotId)
@@ -146,11 +146,16 @@ export default function AskScreen(): React.ReactElement {
   // Streaming state
   const [streamPhase, setStreamPhase] = useState<string | null>(null)
   const [liveContent, setLiveContent] = useState<string>('')
+  const [isStalled, setIsStalled] = useState(false)
   // Token buffer for rAF flush — accumulates tokens without triggering re-renders per token
   const tokenBufferRef = useRef<string[]>([])
   const rafIdRef = useRef<number>(0)
   // Increments on each new stream; stale rAF loops check against this to self-terminate
   const streamTagRef = useRef<number>(0)
+  // Tracks last token timestamp to detect stalls (3s+ no tokens)
+  const lastTokenAtRef = useRef<number>(0)
+  // Guards stall state transitions to prevent re-render loops
+  const prevIsStalledRef = useRef(false)
   const scrollRef = useRef<HTMLDivElement>(null)
 
   // Load repos on mount
@@ -229,6 +234,7 @@ export default function AskScreen(): React.ReactElement {
   /**
    * Start the rAF token flush loop for a specific stream tag.
    * Drains tokenBufferRef into liveContent once per animation frame.
+   * Checks for token stalls (3s+ with no tokens) and guards state updates.
    * Self-terminates when the tag no longer matches (stream was superseded).
    */
   const startFlushLoop = useCallback((myTag: number) => {
@@ -238,6 +244,21 @@ export default function AskScreen(): React.ReactElement {
       if (buf.length > 0) {
         setLiveContent((prev) => prev + buf.join(''))
       }
+
+      // Check for stall: 3 seconds since last token
+      const now = Date.now()
+      const timeSinceLastToken = now - lastTokenAtRef.current
+      const shouldBeStalled = timeSinceLastToken > 3000
+
+      // Only update state if stall status changed, avoiding re-render loop
+      if (shouldBeStalled && !prevIsStalledRef.current) {
+        prevIsStalledRef.current = true
+        setIsStalled(true)
+      } else if (!shouldBeStalled && prevIsStalledRef.current) {
+        prevIsStalledRef.current = false
+        setIsStalled(false)
+      }
+
       rafIdRef.current = requestAnimationFrame(flushLoop)
     }
     rafIdRef.current = requestAnimationFrame(flushLoop)
@@ -253,13 +274,18 @@ export default function AskScreen(): React.ReactElement {
     }
     setLoading(false)
     setStreamPhase(null)
+    setIsStalled(false)
+    prevIsStalledRef.current = false
   }, [])
 
   /** Shared stream setup: increments the tag, clears buffers, starts the flush loop. */
   const beginStream = useCallback(() => {
     streamTagRef.current++
     tokenBufferRef.current = []
+    lastTokenAtRef.current = Date.now()
     setLiveContent('')
+    setIsStalled(false)
+    prevIsStalledRef.current = false
     startFlushLoop(streamTagRef.current)
     return streamTagRef.current
   }, [startFlushLoop])
@@ -282,6 +308,8 @@ export default function AskScreen(): React.ReactElement {
           // Switch to streaming phase — keeps loading=true to block double-submission
           setStreamPhase('streaming')
           tokenBufferRef.current.push(ev.text ?? '')
+          // Update last token timestamp to track stalls
+          lastTokenAtRef.current = Date.now()
         } else if (ev.type === 'done' && ev.result) {
           stopStream(streamHandler)
           const result = ev.result
@@ -327,6 +355,8 @@ export default function AskScreen(): React.ReactElement {
           if (streamTagRef.current !== myTag) return
           setStreamPhase('streaming')
           tokenBufferRef.current.push(ev.text ?? '')
+          // Update last token timestamp to track stalls
+          lastTokenAtRef.current = Date.now()
         } else if (ev.type === 'done' && ev.result) {
           stopStream(streamHandler)
           const result = ev.result
@@ -550,6 +580,7 @@ export default function AskScreen(): React.ReactElement {
                   deleteConversation(convo.id)
                 }}
                 className="ml-1 p-0.5 hover:bg-surface-raised rounded transition-colors text-gray-500 hover:text-red-400"
+                aria-label="Delete conversation"
               >
                 <X className="w-3 h-3" />
               </button>
@@ -783,8 +814,8 @@ export default function AskScreen(): React.ReactElement {
                                 <button
                                   key={i}
                                   onClick={() => handleCitationClick(cit.file, cit.line_start)}
-                                  className="text-xs bg-surface-raised px-2 py-1 rounded cursor-pointer hover:bg-blue-900 transition-colors text-left"
-                                  title={cit.snippet || 'Open in Snapshot Viewer'}
+                                  className="text-xs bg-surface-raised px-2 py-1 rounded cursor-pointer hover:bg-blue-900 transition-colors text-left truncate max-w-[200px]"
+                                  title={cit.file}
                                 >
                                   📎 {cit.file}
                                   {cit.line_start ? `:${cit.line_start}` : ''}
@@ -875,6 +906,9 @@ export default function AskScreen(): React.ReactElement {
                   </ReactMarkdown>
                 </div>
                 <span className="inline-block w-1.5 h-4 bg-blue-400 animate-pulse ml-0.5 align-text-bottom rounded-sm" />
+                {isStalled && (
+                  <span className="text-xs text-yellow-300 block mt-1">(waiting for response…)</span>
+                )}
               </div>
             </div>
           </div>
