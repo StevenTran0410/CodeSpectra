@@ -54,6 +54,7 @@
   html:not(.dark) body { color: #111827; }
 
   /* gray-* text — dark-first design uses gray-100 as primary, gray-400 as muted */
+  /* Verified CS-230: contrast ratio ≥7:1 */
   html:not(.dark) .text-gray-100 { color: #111827; }
   html:not(.dark) .text-gray-200 { color: #1f2937; }
   html:not(.dark) .text-gray-300 { color: #374151; }
@@ -236,15 +237,14 @@
 
 @layer components {
   .btn-primary {
-    @apply inline-flex items-center gap-2 px-4 py-2 rounded-md bg-blue-600 text-white text-sm font-medium
-      hover:bg-blue-500 active:bg-blue-700 transition-colors focus-visible:outline
+    @apply inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium
+      hover:bg-blue-500 active:bg-blue-700 active:scale-95 transition-colors duration-75 motion-reduce:transform-none focus-visible:outline
       focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-50 disabled:cursor-not-allowed;
   }
 
   .btn-secondary {
-    @apply inline-flex items-center gap-2 px-4 py-2 rounded-md bg-surface-overlay text-gray-300 text-sm font-medium
-      border border-surface-border hover:bg-surface-raised hover:text-gray-100 active:bg-surface-border
-      transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-gray-500
+    @apply inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-surface-overlay text-gray-300 text-sm font-medium
+      border border-surface-border hover:bg-surface-raised hover:text-gray-100 active:bg-surface-border active:scale-95 transition-colors duration-75 motion-reduce:transform-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-gray-500
       disabled:opacity-50 disabled:cursor-not-allowed;
   }
 
@@ -254,13 +254,13 @@
   }
 
   .btn-danger {
-    @apply inline-flex items-center gap-2 px-4 py-2 rounded-md bg-red-900 text-red-300 text-sm font-medium
-      border border-red-800 hover:bg-red-800 hover:text-red-100 transition-colors;
+    @apply inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-red-900 text-red-300 text-sm font-medium
+      border border-red-800 hover:bg-red-800 hover:text-red-100 active:scale-95 transition-colors duration-75 motion-reduce:transform-none;
   }
 
   .input {
     @apply w-full px-3 py-2 rounded-md bg-surface-overlay border border-surface-border text-gray-100 text-sm
-      placeholder:text-gray-500 focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500
+      placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-surface focus:border-blue-500
       transition-colors;
   }
 

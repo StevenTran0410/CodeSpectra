@@ -14,21 +14,23 @@ const STEP_LABELS: Record<string, string> = {
 }
 
 function StepIcon({ status }: { status: StepStatus }) {
-  if (status === 'done')    return <CheckCircle2 size={14} className="text-emerald-400 shrink-0" />
-  if (status === 'failed')  return <XCircle size={14} className="text-red-400 shrink-0" />
-  if (status === 'running') return <Loader2 size={14} className="animate-spin text-blue-400 shrink-0" />
-  if (status === 'skipped') return <ChevronRight size={14} className="text-zinc-600 shrink-0" />
-  return <Clock size={14} className="text-zinc-600 shrink-0" />
+  if (status === 'done')    return <CheckCircle2 size={14} className="text-emerald-400 shrink-0" aria-hidden="true" />
+  if (status === 'failed')  return <XCircle size={14} className="text-red-400 shrink-0" aria-hidden="true" />
+  if (status === 'running') return <Loader2 size={14} className="animate-spin text-blue-400 shrink-0" aria-hidden="true" />
+  if (status === 'skipped') return <ChevronRight size={14} className="text-zinc-600 shrink-0" aria-hidden="true" />
+  return <Clock size={14} className="text-zinc-600 shrink-0" aria-hidden="true" />
 }
 
 function StepRow({ name, state }: { name: string; state: StepState }) {
   const label = STEP_LABELS[name] ?? name
   const isActive = state.status === 'running'
+  const statusText = state.status === 'done' ? 'done' : state.status === 'failed' ? 'failed' : state.status === 'running' ? 'running' : state.status === 'skipped' ? 'skipped' : 'pending'
 
   return (
     <div className={`flex items-center gap-2.5 py-1.5 ${isActive ? '' : 'opacity-60'}`}>
       <StepIcon status={state.status} />
       <span className="text-xs text-zinc-300 w-28 shrink-0">{label}</span>
+      <span className="sr-only">{statusText}</span>
       <div className="flex-1 h-1.5 bg-zinc-700 rounded-full overflow-hidden">
         <div
           className={`h-full rounded-full transition-all duration-300 ${
@@ -66,13 +68,14 @@ export function JobProgressPanel({
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          {isActive && <Loader2 size={13} className="animate-spin text-blue-400" />}
-          {job.status === 'done' && <CheckCircle2 size={13} className="text-emerald-400" />}
-          {job.status === 'failed' && <XCircle size={13} className="text-red-400" />}
-          {job.status === 'cancelled' && <Ban size={13} className="text-zinc-500" />}
+          {isActive && <Loader2 size={13} className="animate-spin text-blue-400" aria-hidden="true" />}
+          {job.status === 'done' && <CheckCircle2 size={13} className="text-emerald-400" aria-hidden="true" />}
+          {job.status === 'failed' && <XCircle size={13} className="text-red-400" aria-hidden="true" />}
+          {job.status === 'cancelled' && <Ban size={13} className="text-zinc-500" aria-hidden="true" />}
           <span className={`text-xs font-semibold capitalize ${statusColor}`}>
             {job.status}
           </span>
+          <span className="sr-only">{job.status}</span>
           {job.current_step && isActive && (
             <span className="text-xs text-zinc-500">· {STEP_LABELS[job.current_step] ?? job.current_step}</span>
           )}

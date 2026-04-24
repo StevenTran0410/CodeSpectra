@@ -106,6 +106,9 @@ const Modal: React.FC<ModalProps> & {
       if (e.key !== 'Tab') return
 
       const focusableList = Array.from(focusableElements) as HTMLElement[]
+      // Guard for empty-children edge case: no focusable elements in modal
+      if (focusableList.length === 0) return
+
       const currentIndex = focusableList.indexOf(document.activeElement as HTMLElement)
       let nextIndex = currentIndex + 1
 

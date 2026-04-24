@@ -514,8 +514,12 @@ const [starting, setStarting] = useState(false)
                       </span>
                     </div>
                     {st === 'pending' && (
-                      <div className="mt-2 h-14 animate-pulse rounded bg-zinc-800/60" />
+                      <div className="mt-2 space-y-2">
+                        <div className="h-2 animate-pulse rounded bg-zinc-800/60" />
+                        <div className="h-2 animate-pulse rounded bg-zinc-800/60 w-4/5" />
+                      </div>
                     )}
+                    {/* TODO(CS-231+): real per-section progress requires backend IPC emitting numeric progress */}
                     {st === 'error' && (
                       <div className="mt-2 text-[11px] text-rose-300/90">Section agent failed.</div>
                     )}
