@@ -54,9 +54,35 @@ def render_bundle(bundle: RetrievalBundle, limit: int = 40, excerpt_chars: int =
 
     limit: max evidence items to include (default 40).
     excerpt_chars: max chars per chunk. boundary-expanded chunks get 2× room.
+
+    Within-bundle dedup (CS-229, relaxed 2026-04-24): only consolidate when
+    the SAME chunk appears twice in one bundle's evidence list (e.g. via
+    multi-query retrieval returning overlapping hits). Same file at different
+    chunk positions is kept — different chunks usually represent different
+    functions/classes carrying distinct info the section may need.
     """
+    seen: dict[str, RetrievalEvidence] = {}
+    deduped_evidences: list[RetrievalEvidence] = []
+
+    for ev in bundle.evidences:
+        if ev.chunk_id in seen:
+            # Exact-duplicate chunk — merge reason_codes, keep higher-score version.
+            existing = seen[ev.chunk_id]
+            merged_codes = list(set(existing.reason_codes + ev.reason_codes))
+            if ev.score > existing.score:
+                ev.reason_codes = merged_codes
+                seen[ev.chunk_id] = ev
+                # Replace in list
+                idx = deduped_evidences.index(existing)
+                deduped_evidences[idx] = ev
+            else:
+                existing.reason_codes = merged_codes
+        else:
+            seen[ev.chunk_id] = ev
+            deduped_evidences.append(ev)
+
     parts: list[str] = []
-    for i, ev in enumerate(bundle.evidences[:limit], start=1):
+    for i, ev in enumerate(deduped_evidences[:limit], start=1):
         excerpt = sanitize_chunk_text((ev.excerpt or "").strip())
         cap = excerpt_chars * 2 if "boundary-expanded" in ev.reason_codes else excerpt_chars
         if len(excerpt) > cap:

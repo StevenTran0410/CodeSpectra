@@ -471,6 +471,29 @@ CREATE INDEX IF NOT EXISTS idx_analysis_reports_repo_created
 ALTER TABLE local_repos ADD COLUMN include_tests INTEGER NOT NULL DEFAULT 0;
 """,
     },
+    {
+        "version": 29,
+        "description": "Add incremental IDF support for CS-229: index_version tracking + token frequency side table",
+        "sql": """
+ALTER TABLE retrieval_bm25_stats ADD COLUMN index_version INTEGER NOT NULL DEFAULT 0;
+
+CREATE TABLE IF NOT EXISTS retrieval_chunk_tokens (
+    chunk_id TEXT NOT NULL,
+    term TEXT NOT NULL,
+    tf INTEGER NOT NULL,
+    PRIMARY KEY (chunk_id, term)
+);
+
+CREATE INDEX IF NOT EXISTS idx_rct_chunk ON retrieval_chunk_tokens(chunk_id);
+""",
+    },
+    {
+        "version": 30,
+        "description": "Add content_hash column to retrieval_chunks for incremental IDF change detection (CS-229)",
+        "sql": """
+ALTER TABLE retrieval_chunks ADD COLUMN content_hash TEXT;
+""",
+    },
 ]
 
 TARGET_VERSION = len(_MIGRATIONS) - 1

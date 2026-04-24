@@ -17,13 +17,14 @@ _WORD = re.compile(r"[A-Za-z0-9_]+")
 _NATIVE_BM25 = None
 _NATIVE_BM25_LOADED = False
 
-# Chunk type weights for code-aware retrieval (CS-227)
+# Chunk type weights for code-aware retrieval (CS-227, CS-229)
 CHUNK_TYPE_WEIGHT: dict[str, float] = {
     "function":     1.5,
     "class":        1.5,
     "block":        1.0,
     "file":         1.0,
     "import_group": 0.2,
+    "barrel":       0.3,
 }
 
 

@@ -51,6 +51,7 @@ const api = {
         pinned_ref: string | null
         ignore_overrides: string[]
         detect_submodules: boolean
+        include_tests: boolean
       }
     ) => ipcRenderer.invoke('folder:updateSettings', id, settings),
     estimateFileCount: (id: string) => ipcRenderer.invoke('folder:estimateFileCount', id),
@@ -122,8 +123,6 @@ const api = {
     }) => ipcRenderer.invoke('retrieval:retrieveTwoStage', body),
   },
   analysis: {
-    estimate: (repoId: string, snapshotId: string) =>
-      ipcRenderer.invoke('analysis:estimate', repoId, snapshotId),
     start: (body: {
       repo_id: string
       snapshot_id: string
@@ -258,10 +257,16 @@ const api = {
     getVersion: (): Promise<string> => ipcRenderer.invoke('app:get-version'),
     getUserDataPath: (): Promise<string> => ipcRenderer.invoke('app:get-user-data-path'),
     getLogsPath: (): Promise<string> => ipcRenderer.invoke('app:get-logs-path'),
-    getDiagnostics: () => ipcRenderer.invoke('app:get-diagnostics')
+    getDiagnostics: () => ipcRenderer.invoke('app:get-diagnostics'),
+    retryBackend: (): Promise<void> => ipcRenderer.invoke('app:retry-backend'),
   }
 }
 
+// Note: contextBridge.exposeInMainWorld does NOT support Proxy objects —
+// Proxies are stripped/cloned across the context isolation boundary, causing
+// window.api.* access to return undefined in the renderer. TypeScript types
+// already enforce channel declarations at compile time; runtime assertion
+// would need a different mechanism (e.g. wrap each leaf function individually).
 if (process.contextIsolated) {
   contextBridge.exposeInMainWorld('electron', electronAPI)
   contextBridge.exposeInMainWorld('api', api)
