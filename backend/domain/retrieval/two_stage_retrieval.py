@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from infrastructure.db.database import get_db
 from shared.logger import logger
 
-from .bm25_scorer import BM25Scorer
+from .bm25_scorer import BM25Scorer, _query_terms
 from .types import (
     RankedChunk,
     RetrievalBundle,
@@ -39,6 +39,19 @@ _SECTION_CATEGORY_HINTS: dict[RetrievalSection, set[str]] = {
     RetrievalSection.QA:              {"source", "config", "docs"},
 }
 _CATEGORY_HINT_BONUS: float = 1.4
+
+# Section-specific score cutoffs (absolute, relative) — CS-227
+_SECTION_SCORE_FLOOR: dict[RetrievalSection, tuple[float, float]] = {
+    RetrievalSection.QA:              (0.5, 0.35),
+    RetrievalSection.ARCHITECTURE:    (0.3, 0.15),
+    RetrievalSection.CONVENTIONS:     (0.5, 0.25),
+    RetrievalSection.FEATURE_MAP:     (0.5, 0.25),
+    RetrievalSection.IMPORTANT_FILES: (0.5, 0.25),
+    RetrievalSection.GLOSSARY:        (0.4, 0.20),
+}
+
+# Symbol cache: snapshot_id -> dict[term_lower, list[(rel_path, start_line, end_line)]]
+_symbol_cache: dict[str, dict[str, list[tuple[str, int, int]]]] = {}
 
 _NATIVE = None
 
@@ -113,16 +126,39 @@ async def _load_graph_context(snapshot_id: str) -> _GraphContext:
     return ctx
 
 
-def _query_terms(q: str) -> list[str]:
-    terms = [w.lower() for w in _WORD.findall(q) if len(w) > 1]
-    seen: set[str] = set()
-    out: list[str] = []
-    for t in terms:
-        if t in seen:
-            continue
-        seen.add(t)
-        out.append(t)
-    return out
+async def clear_symbol_cache(snapshot_id: str) -> None:
+    """Clear symbol index cache for a snapshot (called on force-rebuild)."""
+    _symbol_cache.pop(snapshot_id, None)
+
+
+async def load_symbol_index(
+    snapshot_id: str,
+) -> dict[str, list[tuple[str, int, int]]]:
+    """Load symbol index for a snapshot, cached in-memory.
+
+    Returns: dict[term_lower, list[(rel_path, start_line, end_line)]]
+    """
+    if snapshot_id in _symbol_cache:
+        return _symbol_cache[snapshot_id]
+
+    db = get_db()
+    index: dict[str, list[tuple[str, int, int]]] = {}
+
+    async with db.execute(
+        "SELECT name, rel_path, line_start, line_end FROM code_symbols WHERE snapshot_id=?",
+        (snapshot_id,),
+    ) as cur:
+        rows = await cur.fetchall()
+
+    for row in rows:
+        name_lower = (row["name"] or "").lower()
+        if name_lower:
+            index.setdefault(name_lower, []).append(
+                (row["rel_path"], int(row["line_start"]), int(row["line_end"]))
+            )
+
+    _symbol_cache[snapshot_id] = index
+    return index
 
 
 def _stage1_score_rows(rows: list, scorer: BM25Scorer | None, terms: list[str], top_k: int = 100) -> list[StageCandidate]:
@@ -130,8 +166,9 @@ def _stage1_score_rows(rows: list, scorer: BM25Scorer | None, terms: list[str], 
     for r in rows:
         content = r["content"] or ""
         path_low = r["rel_path"].lower()
+        chunk_type = r.get("chunk_type", "block")
         if scorer is not None:
-            score = scorer.score(terms, content.lower(), path_low)
+            score = scorer.score(terms, content.lower(), path_low, chunk_type)
             if score <= 0.0:
                 continue
         else:
@@ -204,14 +241,37 @@ def _compute_chunk_score(
     ctx: _GraphContext,
     seed_community_ids: set[int],
     category_hints: set[str],
+    symbol_index: dict[str, list[tuple[str, int, int]]] | None = None,
 ) -> tuple[float, float, float, float, float]:
     content = r["content"] or ""
     path_low = r["rel_path"].lower()
+    chunk_type = r.get("chunk_type", "block")
     if scorer is not None:
-        bm25 = scorer.score(terms, content.lower(), path_low)
+        bm25 = scorer.score(terms, content.lower(), path_low, chunk_type)
     else:
         low = content.lower()
         bm25 = float(sum(low.count(t) for t in terms) + sum(2 for t in terms if t in path_low))
+
+    # Definition bonus: if term matches symbol in this chunk's line range
+    definition_bonus = 0.0
+    if symbol_index:
+        chunk_start = r.get("start_line", 0)
+        chunk_end = r.get("end_line", 0)
+        chunk_rel_path = r["rel_path"]
+        for term in terms:
+            matching_symbols = symbol_index.get(term, [])
+            for sym_path, sym_start, sym_end in matching_symbols:
+                if (
+                    sym_path == chunk_rel_path
+                    and chunk_start > 0
+                    and sym_start >= chunk_start
+                    and sym_end <= chunk_end
+                ):
+                    definition_bonus = 3.0
+                    break
+            if definition_bonus > 0:
+                break
+    bm25 += definition_bonus
 
     if r["category"] in category_hints:
         bm25 += _CATEGORY_HINT_BONUS
@@ -299,7 +359,7 @@ async def retrieve_two_stage(
     db = get_db()
 
     async with db.execute(
-        "SELECT id, rel_path, chunk_index, language, category, content, token_estimate FROM retrieval_chunks WHERE snapshot_id=?",
+        "SELECT id, rel_path, chunk_index, language, category, content, token_estimate, chunk_type, start_line, end_line FROM retrieval_chunks WHERE snapshot_id=?",
         (snapshot_id,),
     ) as cur:
         all_rows = await cur.fetchall()
@@ -317,6 +377,7 @@ async def retrieve_two_stage(
         logger.debug("[two_stage] BM25 stats not found for %s — using lexical fallback", snapshot_id)
 
     ctx = await _load_graph_context(snapshot_id)
+    symbol_index = await load_symbol_index(snapshot_id)
 
     stage1 = _stage1_score_rows(all_rows, scorer, terms, top_k=100)
 
@@ -352,7 +413,7 @@ async def retrieve_two_stage(
     all_scored: list[tuple[float, float, float, float, float, dict]] = []
     for r in all_candidate_rows:
         total, bm25, sym, mod, cent = _compute_chunk_score(
-            r, terms, scorer, stage1_files, ctx, seed_community_ids, category_hints
+            r, terms, scorer, stage1_files, ctx, seed_community_ids, category_hints, symbol_index
         )
         if total > 0:
             all_scored.append((total, bm25, sym, mod, cent, r))

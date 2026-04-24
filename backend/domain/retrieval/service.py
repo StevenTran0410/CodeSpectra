@@ -12,7 +12,7 @@ from shared.logger import logger
 from shared.sql_queries import SQL_SELECT_MANIFEST_FILES_BY_SNAPSHOT
 from shared.utils import new_id, read_utf8_lenient, utc_now_iso
 
-from .bm25_scorer import BM25Scorer
+from .bm25_scorer import BM25Scorer, _query_terms
 from .chunker_ast import ASTChunker
 from .types import (
     BuildRetrievalIndexRequest,
@@ -137,17 +137,6 @@ def _split_chunks(text: str, target_size: int) -> list[str]:
     return out
 
 
-def _query_terms(q: str) -> list[str]:
-    terms = [w.lower() for w in _WORD.findall(q) if len(w) > 1]
-    # Keep distinct while preserving order.
-    seen: set[str] = set()
-    out: list[str] = []
-    for t in terms:
-        if t in seen:
-            continue
-        seen.add(t)
-        out.append(t)
-    return out
 
 
 def _maybe_expand_to_boundary(
@@ -279,21 +268,25 @@ class RetrievalService:
             if lang_key in _AST_LANGS and category not in {"docs", "config"}:
                 # AST chunking: operate on raw source — normalization after.
                 ast_chunks = _ast_chunker.chunk(text, lang_key, target_size)
-                pieces = [_normalize_text(c.text) for c in ast_chunks]
+                ast_pieces = [(c, _normalize_text(c.text)) for c in ast_chunks]
             else:
-                pieces = _split_chunks(_normalize_text(text), target_size)
+                ast_pieces = [(None, piece) for piece in _split_chunks(_normalize_text(text), target_size)]
             files_indexed += 1
-            for i, piece in enumerate(pieces):
+            for i, (ast_chunk, piece) in enumerate(ast_pieces):
                 token_est = _token_estimate(piece)
                 preview = piece[:500]
+                # Extract chunk_type and line range from AST chunk if available
+                chunk_type = ast_chunk.chunk_type if ast_chunk else "block"
+                start_line = ast_chunk.start_line if ast_chunk else 0
+                end_line = ast_chunk.end_line if ast_chunk else 0
                 # Collect tokenized document for BM25 IDF computation
                 tokens = _WORD.findall(piece.lower())
                 tokenized_corpus.append(tokens)
                 await db.execute(
                     """
                     INSERT INTO retrieval_chunks
-                    (id, snapshot_id, rel_path, language, category, chunk_index, content, token_estimate, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (id, snapshot_id, rel_path, language, category, chunk_index, content, token_estimate, chunk_type, start_line, end_line, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         new_id(),
@@ -304,6 +297,9 @@ class RetrievalService:
                         i,
                         piece,
                         token_est,
+                        chunk_type,
+                        start_line,
+                        end_line,
                         now,
                     ),
                 )

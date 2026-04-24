@@ -427,6 +427,15 @@ CREATE TABLE IF NOT EXISTS qa_classifier_examples (
 );
 """,
     },
+    {
+        "version": 26,
+        "description": "Add chunk_type, start_line, end_line to retrieval_chunks for code-aware retrieval (CS-227)",
+        "sql": """
+ALTER TABLE retrieval_chunks ADD COLUMN chunk_type  TEXT    NOT NULL DEFAULT 'block';
+ALTER TABLE retrieval_chunks ADD COLUMN start_line  INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE retrieval_chunks ADD COLUMN end_line    INTEGER NOT NULL DEFAULT 0;
+""",
+    },
 ]
 
 TARGET_VERSION = len(_MIGRATIONS) - 1
