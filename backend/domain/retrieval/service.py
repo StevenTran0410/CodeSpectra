@@ -64,6 +64,49 @@ _SECTION_CATEGORY_HINTS: dict[RetrievalSection, set[str]] = {
 }
 
 
+# Column lists for retrieval_chunks SELECT queries — avoids loading `content`
+# when only metadata is needed (metadata-only queries save 50-250 MB bandwidth
+# on large codebases since content can be many KB per row).
+_CHUNK_FULL_COLS = "id, snapshot_id, rel_path, language, category, chunk_index, content, token_estimate, chunk_type, start_line, end_line"
+
+
+async def _batch_insert_chunks(
+    db,
+    chunk_rows: list[tuple],
+    index_rows: list[tuple],
+) -> None:
+    """Flush accumulated chunk and index rows in a single transaction.
+
+    chunk_rows columns: (id, snapshot_id, rel_path, language, category,
+                         chunk_index, content, token_estimate, chunk_type,
+                         start_line, end_line, created_at)
+    index_rows columns: (id, snapshot_id, rel_path, chunk_index,
+                         lexical_preview, created_at)
+    """
+    if not chunk_rows and not index_rows:
+        return
+    if chunk_rows:
+        await db.executemany(
+            """
+            INSERT INTO retrieval_chunks
+            (id, snapshot_id, rel_path, language, category, chunk_index, content,
+             token_estimate, chunk_type, start_line, end_line, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            chunk_rows,
+        )
+    if index_rows:
+        await db.executemany(
+            """
+            INSERT INTO retrieval_indexes
+            (id, snapshot_id, rel_path, chunk_index, lexical_preview, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            index_rows,
+        )
+    await db.commit()
+
+
 def _normalize_text(s: str) -> str:
     return _WS.sub(" ", s).strip()
 
@@ -251,6 +294,10 @@ class RetrievalService:
         files_indexed = 0
         chunk_count = 0
         tokenized_corpus: list[list[str]] = []
+
+        # Accumulate rows per file; flush together after each file's chunks are ready.
+        # Using the file loop as the natural batch boundary: rows per file are bounded
+        # and flushing per-file avoids holding a very large in-memory list.
         for f in files:
             rel_path = f["rel_path"]
             language = f["language"]
@@ -272,6 +319,9 @@ class RetrievalService:
             else:
                 ast_pieces = [(None, piece) for piece in _split_chunks(_normalize_text(text), target_size)]
             files_indexed += 1
+
+            file_chunk_rows: list[tuple] = []
+            file_index_rows: list[tuple] = []
             for i, (ast_chunk, piece) in enumerate(ast_pieces):
                 token_est = _token_estimate(piece)
                 preview = piece[:500]
@@ -282,38 +332,27 @@ class RetrievalService:
                 # Collect tokenized document for BM25 IDF computation
                 tokens = _WORD.findall(piece.lower())
                 tokenized_corpus.append(tokens)
-                await db.execute(
-                    """
-                    INSERT INTO retrieval_chunks
-                    (id, snapshot_id, rel_path, language, category, chunk_index, content, token_estimate, chunk_type, start_line, end_line, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        new_id(),
-                        req.snapshot_id,
-                        rel_path,
-                        language,
-                        category,
-                        i,
-                        piece,
-                        token_est,
-                        chunk_type,
-                        start_line,
-                        end_line,
-                        now,
-                    ),
-                )
+                file_chunk_rows.append((
+                    new_id(),
+                    req.snapshot_id,
+                    rel_path,
+                    language,
+                    category,
+                    i,
+                    piece,
+                    token_est,
+                    chunk_type,
+                    start_line,
+                    end_line,
+                    now,
+                ))
+                # Minimal lexical index row (prefix preview for quick debug/search metadata).
+                file_index_rows.append((
+                    new_id(), req.snapshot_id, rel_path, i, preview, now,
+                ))
                 chunk_count += 1
 
-                # Minimal lexical index row (prefix preview for quick debug/search metadata).
-                await db.execute(
-                    """
-                    INSERT INTO retrieval_indexes
-                    (id, snapshot_id, rel_path, chunk_index, lexical_preview, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                    (new_id(), req.snapshot_id, rel_path, i, preview, now),
-                )
+            await _batch_insert_chunks(db, file_chunk_rows, file_index_rows)
 
         # Compute and store BM25 IDF stats
         if tokenized_corpus:
@@ -365,8 +404,8 @@ class RetrievalService:
         category_hints = _SECTION_CATEGORY_HINTS[req.section]
 
         async with get_db().execute(
-            """
-            SELECT id, rel_path, chunk_index, language, category, content, token_estimate
+            f"""
+            SELECT {_CHUNK_FULL_COLS}
             FROM retrieval_chunks
             WHERE snapshot_id=?
             """,

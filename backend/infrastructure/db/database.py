@@ -436,6 +436,41 @@ ALTER TABLE retrieval_chunks ADD COLUMN start_line  INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE retrieval_chunks ADD COLUMN end_line    INTEGER NOT NULL DEFAULT 0;
 """,
     },
+    {
+        "version": 27,
+        "description": "Add composite indexes for hot query paths (CS-228 perf quick wins)",
+        "sql": """
+-- Covers WHERE snapshot_id=? ORDER BY rel_path, line_start — the primary symbols query shape.
+CREATE INDEX IF NOT EXISTS idx_symbols_snapshot_path_line
+    ON code_symbols(snapshot_id, rel_path, line_start);
+
+-- Covers the name search query (WHERE snapshot_id=? AND name LIKE ?).
+CREATE INDEX IF NOT EXISTS idx_symbols_snapshot_name
+    ON code_symbols(snapshot_id, name);
+
+-- Covers manifest file walk queries (WHERE snapshot_id=? ORDER BY rel_path).
+CREATE INDEX IF NOT EXISTS idx_manifest_snapshot_path
+    ON manifest_files(snapshot_id, rel_path);
+
+-- Covers retrieval chunk fetch by snapshot and path (the hot retrieval query).
+CREATE INDEX IF NOT EXISTS idx_retrieval_chunks_snapshot_path
+    ON retrieval_chunks(snapshot_id, rel_path);
+
+-- Covers report history queries ordered by creation time.
+-- NOTE: DESC on the second column requires SQLite 3.37+; this project targets
+-- Python 3.11+ which bundles SQLite 3.39+, so DESC is safe here.
+-- TODO(CS-229): extend this index if a soft-delete column is added to analysis_reports.
+CREATE INDEX IF NOT EXISTS idx_analysis_reports_repo_created
+    ON analysis_reports(repo_id, created_at DESC);
+""",
+    },
+    {
+        "version": 28,
+        "description": "Add include_tests toggle to local_repos (default off — test files excluded)",
+        "sql": """
+ALTER TABLE local_repos ADD COLUMN include_tests INTEGER NOT NULL DEFAULT 0;
+""",
+    },
 ]
 
 TARGET_VERSION = len(_MIGRATIONS) - 1

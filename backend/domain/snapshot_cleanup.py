@@ -4,7 +4,12 @@ from infrastructure.db.database import get_db
 
 
 async def delete_snapshot_artifacts(snapshot_id: str) -> None:
-    """Delete all DB artifacts tied to one snapshot."""
+    """Delete all DB artifacts tied to one snapshot.
+
+    aiosqlite auto-begins an implicit transaction on the first DML statement,
+    so we don't issue BEGIN. A single db.commit() at the end batches all 9
+    DELETEs into one WAL flush instead of committing after each one.
+    """
     db = get_db()
     await db.execute("DELETE FROM manifest_files WHERE snapshot_id=?", (snapshot_id,))
     await db.execute("DELETE FROM code_symbols WHERE snapshot_id=?", (snapshot_id,))
@@ -15,6 +20,7 @@ async def delete_snapshot_artifacts(snapshot_id: str) -> None:
     await db.execute("DELETE FROM retrieval_indexes WHERE snapshot_id=?", (snapshot_id,))
     await db.execute("DELETE FROM retrieval_bm25_stats WHERE snapshot_id=?", (snapshot_id,))
     await db.execute("DELETE FROM analysis_reports WHERE snapshot_id=?", (snapshot_id,))
+    await db.commit()
 
 
 async def delete_repo_artifacts(repo_id: str) -> None:
