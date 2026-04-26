@@ -132,12 +132,16 @@ export interface C4DiagramNode {
   children?: C4DiagramNode[]
 }
 
+export type ProvenanceType = 'EXTRACTED' | 'INFERRED' | 'AMBIGUOUS'
+
 export interface C4DiagramEdge {
   id: string
   source: string
   target: string
   label?: string
   bidirectional?: boolean
+  provenance?: ProvenanceType
+  confidence?: number | null
 }
 
 export interface C4DiagramData {

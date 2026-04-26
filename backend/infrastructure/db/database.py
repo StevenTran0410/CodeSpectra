@@ -494,6 +494,21 @@ CREATE INDEX IF NOT EXISTS idx_rct_chunk ON retrieval_chunk_tokens(chunk_id);
 ALTER TABLE retrieval_chunks ADD COLUMN content_hash TEXT;
 """,
     },
+    {
+        "version": 31,
+        "description": "Add file_extraction_cache for SHA256-based incremental import extraction skip (CS-021)",
+        "sql": """
+CREATE TABLE IF NOT EXISTS file_extraction_cache (
+    snapshot_id  TEXT NOT NULL,
+    file_path    TEXT NOT NULL,
+    sha256       TEXT NOT NULL,
+    extracted_at TEXT NOT NULL,
+    PRIMARY KEY (snapshot_id, file_path)
+);
+CREATE INDEX IF NOT EXISTS idx_extraction_cache_snapshot
+    ON file_extraction_cache(snapshot_id);
+""",
+    },
 ]
 
 TARGET_VERSION = len(_MIGRATIONS) - 1

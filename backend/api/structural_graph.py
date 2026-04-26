@@ -1,5 +1,6 @@
 """Structural graph endpoints (RPA-033, CS-102)."""
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import FileResponse
 
 from domain.structural_graph.service import StructuralGraphService
 from shared.http_utils import handle_value_error
@@ -90,3 +91,24 @@ async def export_graph_json(snapshot_id: str) -> dict:
         return await _service.export_graph_json(snapshot_id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{snapshot_id}/graph.json")
+async def download_graph_json(snapshot_id: str):
+    """Download the serialized structural graph as graph.json.
+
+    Returns 404 if graph has not been built or predates RPA-058.
+    Note: community_id fields may be null if community detection has not yet completed.
+    """
+    path = await _service.get_graph_json_path(snapshot_id)
+    if not path:
+        raise HTTPException(
+            status_code=404,
+            detail=f"graph.json not found for snapshot {snapshot_id}. "
+            "Rebuild the graph or wait for the build to complete.",
+        )
+    return FileResponse(
+        path=str(path),
+        media_type="application/json",
+        headers={"Content-Disposition": "attachment; filename=graph.json"},
+    )
