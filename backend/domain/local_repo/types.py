@@ -34,6 +34,7 @@ class LocalRepo(BaseModel):
     pinned_ref: str | None
     ignore_overrides: list[str] = Field(default_factory=list)
     detect_submodules: bool = True
+    include_tests: bool = False
     added_at: str
     last_validated_at: str
 
@@ -59,6 +60,7 @@ class UpdateRepoSettingsRequest(BaseModel):
     pinned_ref: str | None = None
     ignore_overrides: list[str] = Field(default_factory=list)
     detect_submodules: bool = True
+    include_tests: bool = False
 
     @field_validator("pinned_ref")
     @classmethod

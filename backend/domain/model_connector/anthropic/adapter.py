@@ -31,6 +31,22 @@ class AnthropicAdapter(CloudAdapterBase):
             "content-type": "application/json",
         }
 
+    @staticmethod
+    def _build_system_blocks(system_parts: list[str]) -> list[dict]:
+        """Build the system content array with prompt-caching markers.
+
+        All system parts are treated as the stable cached prefix — dynamic
+        per-request content (the user question) lives in `messages`, not here.
+
+        cache_control requires no beta header as of anthropic-version 2023-06-01 + GA caching.
+        The minimum cacheable prefix is ~1024 tokens; the API silently skips
+        caching for shorter prefixes, so no runtime length check is needed here.
+        """
+        if not system_parts:
+            return []
+        combined = "\n\n".join(system_parts)
+        return [{"type": "text", "text": combined, "cache_control": {"type": "ephemeral"}}]
+
     async def list_models(self) -> list[str]:
         """Anthropic has no public list-models endpoint — return known presets."""
         return MODEL_PRESETS
@@ -52,8 +68,9 @@ class AnthropicAdapter(CloudAdapterBase):
             "max_tokens": request.max_completion_tokens,
             "messages": user_messages,
         }
-        if system_parts:
-            payload["system"] = "\n\n".join(system_parts)
+        system_blocks = self._build_system_blocks(system_parts)
+        if system_blocks:
+            payload["system"] = system_blocks
         # Anthropic supports temperature 0.0–1.0; omit when None to use model default.
         if request.temperature is not None:
             payload["temperature"] = min(max(request.temperature, 0.0), 1.0)

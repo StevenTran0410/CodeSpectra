@@ -7,7 +7,7 @@ import json
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -17,6 +17,7 @@ from domain.qa.classifier_service import ClassifierService
 from domain.qa.types import QARequest, QAResponse, ClassifyIntentRequest, ClassifyIntentResponse
 from domain.qa.deep_research import DeepResearchRequest, DeepResearchResult
 from domain.retrieval.service import RetrievalService
+from shared.http_utils import handle_value_error
 
 router = APIRouter(tags=["qa"])
 _service = QAService(ProviderConfigService(), RetrievalService())
@@ -65,11 +66,9 @@ async def _sse_generate(
 # ── Core QA ──────────────────────────────────────────────────────────────────
 
 @router.post("/ask", response_model=QAResponse, status_code=200)
+@handle_value_error
 async def qa_ask(body: QARequest) -> QAResponse:
-    try:
-        return await _service.ask(body)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    return await _service.ask(body)
 
 
 @router.post("/ask/stream")
@@ -81,19 +80,15 @@ async def qa_ask_stream(body: QARequest) -> StreamingResponse:
 
 
 @router.post("/classify-intent", response_model=ClassifyIntentResponse, status_code=200)
+@handle_value_error
 def qa_classify_intent(body: ClassifyIntentRequest) -> ClassifyIntentResponse:
-    try:
-        return _service.classify_intent(body)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    return _service.classify_intent(body)
 
 
 @router.post("/deep-research", response_model=DeepResearchResult, status_code=200)
+@handle_value_error
 async def qa_deep_research(body: DeepResearchRequest) -> DeepResearchResult:
-    try:
-        return await _service.deep_research(body)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    return await _service.deep_research(body)
 
 
 @router.post("/deep-research/stream")
@@ -130,11 +125,9 @@ async def classifier_list_examples() -> list[dict]:
 
 
 @router.post("/classifier/examples", status_code=201)
+@handle_value_error
 async def classifier_add_example(body: AddExampleRequest) -> dict:
-    try:
-        return await _classifier_svc.add_example(body.text, body.is_deep_research)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    return await _classifier_svc.add_example(body.text, body.is_deep_research)
 
 
 @router.delete("/classifier/examples/{example_id}", status_code=204)

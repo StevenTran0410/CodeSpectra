@@ -11,7 +11,7 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import dagre from '@dagrejs/dagre'
-import { Loader2, AlertCircle, Save } from 'lucide-react'
+import { Loader2, AlertCircle, Save, Zap, X } from 'lucide-react'
 import { Button, PageLoading, useToastStore } from '../../components/ui'
 
 type ExportJson = {
@@ -53,6 +53,34 @@ type NeighborResult = {
   }>
 }
 
+type BlastRadiusResponse = {
+  changed_files: string[]
+  blast_radius: {
+    total_affected: number
+    by_hop: Record<number, number>
+    high_risk_files: string[]
+    affected_communities: Array<{
+      community_id: number
+      member_count: number
+      hub_paths: string[]
+    }>
+    call_chains: unknown[]
+  }
+  subgraph: {
+    nodes: string[]
+    edges: unknown[]
+    seed_files: string[]
+    hop_colors: Record<string, string>
+  }
+  context_chunks: unknown[]
+}
+
+type ImpactState = {
+  active: boolean
+  seedFiles: string[]
+  result: BlastRadiusResponse | null
+}
+
 const COMMUNITY_COLORS = [
   '#6366f1', '#0ea5e9', '#10b981', '#f59e0b',
   '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6',
@@ -61,18 +89,58 @@ const COMMUNITY_COLORS = [
 
 const MAX_NODES_DISPLAY = 500
 
+function getNodeStyle(
+  path: string,
+  communityId: number,
+  isSelected: boolean,
+  isNeighbor: boolean,
+  isCycle: boolean,
+  selectedNode: string | null,
+  impactData?: BlastRadiusResponse | null,
+): React.CSSProperties {
+  let background: string
+  if (isSelected) {
+    background = '#fbbf24'
+  } else if (impactData) {
+    // Impact mode: color by hop distance
+    const hopColor = impactData.subgraph.hop_colors[path]
+    background = hopColor ?? '#52525b'
+  } else if (isCycle) {
+    background = '#ef4444'
+  } else {
+    background = communityId >= 0
+      ? COMMUNITY_COLORS[communityId % COMMUNITY_COLORS.length]
+      : '#52525b'
+  }
+
+  const dimmed = selectedNode && !isSelected && !isNeighbor && !impactData
+
+  return {
+    background,
+    color: '#fff',
+    fontSize: 10,
+    padding: '4px 8px',
+    borderRadius: 6,
+    border: isNeighbor ? '2px solid #fbbf24' : '1px solid rgba(255,255,255,0.2)',
+    opacity: dimmed ? 0.35 : 1,
+    maxWidth: 160,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    cursor: 'pointer',
+  }
+}
+
 function buildFlowGraph(
   data: ExportJson,
   nodeIndex: Record<string, number>,
   selectedNode: string | null,
   neighborNodes: Set<string>,
   cycleNodes: Set<string>,
+  impactData?: BlastRadiusResponse | null,
 ): { nodes: Node[]; edges: Edge[] } {
   const nodes: Node[] = data.nodes.map((path) => {
     const communityId = nodeIndex[path] ?? -1
-    const color = communityId >= 0
-      ? COMMUNITY_COLORS[communityId % COMMUNITY_COLORS.length]
-      : '#52525b'
     const isCycle = cycleNodes.has(path)
     const isSelected = path === selectedNode
     const isNeighbor = neighborNodes.has(path)
@@ -82,20 +150,7 @@ function buildFlowGraph(
       id: path,
       data: { label: filename, fullPath: path, communityId },
       position: { x: 0, y: 0 },
-      style: {
-        background: isSelected ? '#fbbf24' : isCycle ? '#ef4444' : color,
-        color: '#fff',
-        fontSize: 10,
-        padding: '4px 8px',
-        borderRadius: 6,
-        border: isNeighbor ? '2px solid #fbbf24' : '1px solid rgba(255,255,255,0.2)',
-        opacity: selectedNode && !isSelected && !isNeighbor ? 0.35 : 1,
-        maxWidth: 160,
-        overflow: 'hidden',
-        textOverflow: 'ellipsis',
-        whiteSpace: 'nowrap',
-        cursor: 'pointer',
-      },
+      style: getNodeStyle(path, communityId, isSelected, isNeighbor, isCycle, selectedNode, impactData),
     } as Node
   })
 
@@ -134,6 +189,8 @@ interface LeftPanelProps {
   communityData: CommunitiesResponse | null
   neighborData: NeighborResult | null
   neighborLoading: boolean
+  impactState: ImpactState
+  impactLoading: boolean
 }
 
 function LeftPanel({
@@ -142,8 +199,17 @@ function LeftPanel({
   communityData,
   neighborData,
   neighborLoading,
+  impactState,
+  impactLoading,
 }: LeftPanelProps) {
+  const showImpactPanel = impactState.active && (impactState.result !== null || impactState.seedFiles.length > 0 || impactLoading)
+
   if (!selectedNode || !graphData || !communityData) {
+    if (showImpactPanel) {
+      return (
+        <ImpactPanel impactState={impactState} impactLoading={impactLoading} />
+      )
+    }
     return (
       <div className="w-80 border-r border-zinc-700 bg-zinc-900 p-4 text-zinc-400 text-sm flex items-center justify-center">
         Click a node to see details
@@ -261,46 +327,170 @@ function LeftPanel({
           <span>Loading neighbors...</span>
         </div>
       )}
+
+      {/* Impact analysis results (shown when impact mode is active) */}
+      {showImpactPanel && (
+        <ImpactPanel impactState={impactState} impactLoading={impactLoading} inline />
+      )}
+    </div>
+  )
+}
+
+interface ImpactPanelProps {
+  impactState: ImpactState
+  impactLoading: boolean
+  inline?: boolean
+}
+
+function ImpactPanel({ impactState, impactLoading, inline = false }: ImpactPanelProps) {
+  const { result, seedFiles } = impactState
+
+  const wrapper = inline
+    ? 'border-t border-zinc-700 pt-3 space-y-3'
+    : 'w-80 border-r border-zinc-700 bg-zinc-900 p-4 overflow-y-auto text-xs space-y-4'
+
+  return (
+    <div className={wrapper}>
+      {!inline && <div className="text-zinc-400 font-semibold">Impact Analysis</div>}
+
+      {seedFiles.length > 0 && (
+        <div>
+          <div className="text-zinc-400 font-semibold mb-1">Seed files</div>
+          <div className="space-y-1">
+            {seedFiles.map((f) => (
+              <div key={f} className="flex items-center gap-1">
+                <div className="w-2 h-2 rounded-full bg-red-500 shrink-0" />
+                <div className="text-[10px] text-zinc-300 truncate">{f.split('/').pop()}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {impactLoading && (
+        <div className="flex items-center gap-2 text-zinc-500">
+          <Loader2 size={12} className="animate-spin" />
+          <span>Analyzing impact...</span>
+        </div>
+      )}
+
+      {result && !impactLoading && (
+        <>
+          <div>
+            <div className="text-zinc-400 font-semibold mb-1">Blast radius</div>
+            <div className="text-zinc-300">
+              <span className="font-mono">{result.blast_radius.total_affected}</span> files affected
+            </div>
+            {Object.entries(result.blast_radius.by_hop).sort(([a], [b]) => Number(a) - Number(b)).map(([hop, count]) => (
+              <div key={hop} className="flex items-center gap-2 mt-1">
+                <div
+                  className="w-2 h-2 rounded-full shrink-0"
+                  style={{ backgroundColor: result.subgraph.hop_colors[`__hop_${hop}`] ?? '#6b7280' }}
+                />
+                <span className="text-[10px] text-zinc-400">Hop {hop}: {count as number} files</span>
+              </div>
+            ))}
+          </div>
+
+          {result.blast_radius.high_risk_files.length > 0 && (
+            <div>
+              <div className="text-zinc-400 font-semibold mb-1">High-risk files</div>
+              <div className="space-y-1">
+                {result.blast_radius.high_risk_files.slice(0, 8).map((f) => (
+                  <div key={f} className="text-[10px] text-red-400 truncate">{f.split('/').pop()}</div>
+                ))}
+                {result.blast_radius.high_risk_files.length > 8 && (
+                  <div className="text-[10px] text-zinc-500 italic">
+                    and {result.blast_radius.high_risk_files.length - 8} more...
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {result.blast_radius.affected_communities.length > 0 && (
+            <div>
+              <div className="text-zinc-400 font-semibold mb-1">Affected communities</div>
+              <div className="space-y-1">
+                {result.blast_radius.affected_communities.slice(0, 5).map((c) => (
+                  <div key={c.community_id} className="text-[10px] text-zinc-400">
+                    Community {c.community_id} ({c.member_count} members)
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
+      )}
     </div>
   )
 }
 
 interface LegendProps {
   communityCount: number
+  impactActive?: boolean
 }
 
-function Legend({ communityCount }: LegendProps) {
+function Legend({ communityCount, impactActive }: LegendProps) {
   const shown = Math.min(10, communityCount)
   const extra = communityCount - shown
   return (
     <Panel position="top-right">
     <div className="bg-zinc-800/90 border border-zinc-700 rounded p-3 text-xs space-y-1 pointer-events-none">
-      <div className="font-semibold text-zinc-300 mb-1.5">Legend</div>
-      {Array.from({ length: shown }).map((_, i) => (
-        <div key={i} className="flex items-center gap-2">
-          <div
-            className="w-2 h-2 rounded-full shrink-0"
-            style={{ backgroundColor: COMMUNITY_COLORS[i % COMMUNITY_COLORS.length] }}
-          />
-          <span className="text-zinc-400">Community {i}</span>
-        </div>
-      ))}
-      {extra > 0 && (
-        <div className="text-zinc-500 italic">+{extra} more</div>
+      {impactActive ? (
+        <>
+          <div className="font-semibold text-zinc-300 mb-1.5">Impact Mode</div>
+          <div className="flex items-center gap-2">
+            <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: '#ef4444' }} />
+            <span className="text-zinc-400">Seed (hop 0)</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: '#f97316' }} />
+            <span className="text-zinc-400">Hop 1</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: '#eab308' }} />
+            <span className="text-zinc-400">Hop 2</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: '#6b7280' }} />
+            <span className="text-zinc-400">Hop 3+</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: '#52525b' }} />
+            <span className="text-zinc-400">Not in cone</span>
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="font-semibold text-zinc-300 mb-1.5">Legend</div>
+          {Array.from({ length: shown }).map((_, i) => (
+            <div key={i} className="flex items-center gap-2">
+              <div
+                className="w-2 h-2 rounded-full shrink-0"
+                style={{ backgroundColor: COMMUNITY_COLORS[i % COMMUNITY_COLORS.length] }}
+              />
+              <span className="text-zinc-400">Community {i}</span>
+            </div>
+          ))}
+          {extra > 0 && (
+            <div className="text-zinc-500 italic">+{extra} more</div>
+          )}
+          <div className="border-t border-zinc-700 pt-1 mt-1" />
+          <div className="flex items-center gap-2">
+            <div className="w-2 h-2 rounded-full bg-red-500 shrink-0" />
+            <span className="text-zinc-400">Circular import</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-2 h-2 rounded-full bg-amber-400 shrink-0" />
+            <span className="text-zinc-400">Selected</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-2 h-2 rounded-full border border-amber-400 shrink-0" />
+            <span className="text-zinc-400">Neighbor</span>
+          </div>
+        </>
       )}
-      <div className="border-t border-zinc-700 pt-1 mt-1" />
-      <div className="flex items-center gap-2">
-        <div className="w-2 h-2 rounded-full bg-red-500 shrink-0" />
-        <span className="text-zinc-400">Circular import</span>
-      </div>
-      <div className="flex items-center gap-2">
-        <div className="w-2 h-2 rounded-full bg-amber-400 shrink-0" />
-        <span className="text-zinc-400">Selected</span>
-      </div>
-      <div className="flex items-center gap-2">
-        <div className="w-2 h-2 rounded-full border border-amber-400 shrink-0" />
-        <span className="text-zinc-400">Neighbor</span>
-      </div>
     </div>
     </Panel>
   )
@@ -320,6 +510,8 @@ export default function GraphScreen(): React.ReactElement {
   const [neighborData, setNeighborData] = useState<NeighborResult | null>(null)
   const [neighborLoading, setNeighborLoading] = useState(false)
   const [exporting, setExporting] = useState(false)
+  const [impactState, setImpactState] = useState<ImpactState>({ active: false, seedFiles: [], result: null })
+  const [impactLoading, setImpactLoading] = useState(false)
 
   const loadGraph = useCallback(async () => {
     if (!snapshotId) {
@@ -355,6 +547,28 @@ export default function GraphScreen(): React.ReactElement {
       setSelectedNode(path)
       if (!snapshotId) return
 
+      if (impactState.active) {
+        // Impact mode: add this node as a seed file and re-run blast radius
+        const newSeedFiles = impactState.seedFiles.includes(path)
+          ? impactState.seedFiles
+          : [...impactState.seedFiles, path]
+        setImpactState((prev) => ({ ...prev, seedFiles: newSeedFiles }))
+        setImpactLoading(true)
+        try {
+          const result = await window.api.impact.blastRadius({
+            snapshot_id: snapshotId,
+            changed_files: newSeedFiles,
+            max_hops: 3,
+          }) as BlastRadiusResponse
+          setImpactState((prev) => ({ ...prev, result }))
+        } catch {
+          toast.error('Impact analysis failed')
+        } finally {
+          setImpactLoading(false)
+        }
+        return
+      }
+
       setNeighborLoading(true)
       try {
         const res = await window.api.graph.neighbors(snapshotId, path, 2, 100)
@@ -365,7 +579,7 @@ export default function GraphScreen(): React.ReactElement {
         setNeighborLoading(false)
       }
     },
-    [snapshotId]
+    [snapshotId, impactState.active, impactState.seedFiles, toast]
   )
 
   const nodeIndex = graphData?.communities ?? {}
@@ -393,8 +607,8 @@ export default function GraphScreen(): React.ReactElement {
           }
         : graphData
 
-    return buildFlowGraph(cappedData, nodeIndex, selectedNode, neighborSet, cycleNodes)
-  }, [graphData, nodeIndex, selectedNode, neighborData])
+    return buildFlowGraph(cappedData, nodeIndex, selectedNode, neighborSet, cycleNodes, impactState.active ? impactState.result : null)
+  }, [graphData, nodeIndex, selectedNode, neighborData, impactState.active, impactState.result])
 
   const nodes = useMemo(() => {
     if (rawNodes.length === 0) return []
@@ -447,6 +661,8 @@ export default function GraphScreen(): React.ReactElement {
         communityData={communityData}
         neighborData={neighborData}
         neighborLoading={neighborLoading}
+        impactState={impactState}
+        impactLoading={impactLoading}
       />
 
       {/* Main canvas area */}
@@ -462,6 +678,20 @@ export default function GraphScreen(): React.ReactElement {
             )}
           </div>
           <div className="flex items-center gap-2">
+            <Button
+              variant={impactState.active ? 'primary' : 'secondary'}
+              size="sm"
+              onClick={() => {
+                if (impactState.active) {
+                  setImpactState({ active: false, seedFiles: [], result: null })
+                } else {
+                  setImpactState((prev) => ({ ...prev, active: true }))
+                }
+              }}
+            >
+              {impactState.active ? <X size={11} /> : <Zap size={11} />}
+              {impactState.active ? 'Exit Impact Mode' : 'Impact Mode'}
+            </Button>
             <Button
               variant="secondary"
               size="sm"
@@ -506,7 +736,7 @@ export default function GraphScreen(): React.ReactElement {
           >
             <Background />
             <Controls />
-            <Legend communityCount={communityCount} />
+            <Legend communityCount={communityCount} impactActive={impactState.active} />
           </ReactFlow>
         </div>
       </div>

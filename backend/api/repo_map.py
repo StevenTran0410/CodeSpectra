@@ -1,7 +1,8 @@
 """Repo map endpoints."""
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 
 from domain.repo_map.service import RepoMapService
+from shared.http_utils import handle_value_error
 from domain.repo_map.types import (
     BuildRepoMapRequest,
     BuildRepoMapResponse,
@@ -15,11 +16,9 @@ _service = RepoMapService()
 
 
 @router.post("/build", response_model=BuildRepoMapResponse)
+@handle_value_error
 async def build_repo_map(body: BuildRepoMapRequest) -> BuildRepoMapResponse:
-    try:
-        return await _service.build(body)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    return await _service.build(body)
 
 
 @router.get("/summary/{snapshot_id}", response_model=RepoMapSummary)

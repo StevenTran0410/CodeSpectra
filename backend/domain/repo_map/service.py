@@ -31,6 +31,16 @@ from .types import (
     SymbolsResponse,
 )
 
+# Column list for code_symbols SELECT queries — avoids pulling all columns when
+# only a subset is needed. Explicit columns are cheaper and document intent.
+_SYMBOL_COLS = (
+    "id, snapshot_id, rel_path, language, name, kind, "
+    "line_start, line_end, signature, parent_name, extract_source"
+)
+
+# Batch size for executemany inserts into code_symbols.
+_SYMBOL_BATCH_SIZE = 100
+
 _WALKERS: dict[str, object] = {
     # Core
     "python":     lambda root: _walk_python_ts(root),
@@ -71,6 +81,27 @@ _WALKERS: dict[str, object] = {
     "markdown": _walk_markdown,
     "svelte":   _walk_svelte,
 }
+
+
+async def _flush_symbol_batch(db, batch: list[tuple]) -> None:
+    """Insert a batch of symbol rows using executemany inside a single transaction.
+
+    Each tuple must match the INSERT column order:
+    (id, snapshot_id, rel_path, language, name, kind, line_start, line_end,
+     signature, parent_name, extract_source, created_at)
+    """
+    if not batch:
+        return
+    await db.executemany(
+        """
+        INSERT INTO code_symbols
+        (id, snapshot_id, rel_path, language, name, kind, line_start, line_end,
+         signature, parent_name, extract_source, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        batch,
+    )
+    await db.commit()
 
 
 def _extract_symbols_treesitter(content: str, language: str) -> list[_Symbol]:
@@ -144,6 +175,9 @@ class RepoMapService:
         used_structural = 0
         now = utc_now_iso()
 
+        # Accumulate rows for batch insert; flushed every _SYMBOL_BATCH_SIZE rows.
+        pending_batch: list[tuple] = []
+
         for row in files:
             rel_path = row["rel_path"]
             language = row["language"]
@@ -195,30 +229,30 @@ class RepoMapService:
                 if dedupe_key in inserted_keys:
                     continue
                 inserted_keys.add(dedupe_key)
-                await db.execute(
-                    """
-                    INSERT INTO code_symbols
-                    (id, snapshot_id, rel_path, language, name, kind, line_start, line_end,
-                     signature, parent_name, extract_source, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        new_id(),
-                        req.snapshot_id,
-                        rel_path,
-                        language,
-                        name,
-                        kind.value,
-                        line_start,
-                        line_end,
-                        signature,
-                        parent_name,
-                        extract_source.value,
-                        now,
-                    ),
-                )
+                pending_batch.append((
+                    new_id(),
+                    req.snapshot_id,
+                    rel_path,
+                    language,
+                    name,
+                    kind.value,
+                    line_start,
+                    line_end,
+                    signature,
+                    parent_name,
+                    extract_source.value,
+                    now,
+                ))
                 total_symbols += 1
                 kind_breakdown[kind.value] = kind_breakdown.get(kind.value, 0) + 1
+
+                if len(pending_batch) >= _SYMBOL_BATCH_SIZE:
+                    await _flush_symbol_batch(db, pending_batch)
+                    pending_batch = []
+
+        # Flush any remaining rows.
+        if pending_batch:
+            await _flush_symbol_batch(db, pending_batch)
 
         extract_mode = ExtractMode.HYBRID if used_structural > 0 else ExtractMode.LEXICAL
 
@@ -280,16 +314,16 @@ class RepoMapService:
         path_prefix: str | None = None,
     ) -> SymbolsResponse:
         if path_prefix:
-            query = """
-                SELECT * FROM code_symbols
+            query = f"""
+                SELECT {_SYMBOL_COLS} FROM code_symbols
                 WHERE snapshot_id=? AND rel_path LIKE ?
                 ORDER BY rel_path ASC, line_start ASC
                 LIMIT ?
             """
             params = (snapshot_id, f"{path_prefix}%", limit)
         else:
-            query = """
-                SELECT * FROM code_symbols
+            query = f"""
+                SELECT {_SYMBOL_COLS} FROM code_symbols
                 WHERE snapshot_id=?
                 ORDER BY rel_path ASC, line_start ASC
                 LIMIT ?
@@ -325,8 +359,8 @@ class RepoMapService:
             return SymbolsResponse(snapshot_id=snapshot_id, symbols=[])
         like = f"%{q}%"
         async with get_db().execute(
-            """
-            SELECT * FROM code_symbols
+            f"""
+            SELECT {_SYMBOL_COLS} FROM code_symbols
             WHERE snapshot_id=? AND (name LIKE ? OR rel_path LIKE ?)
             ORDER BY
               CASE WHEN name = ? THEN 0 WHEN name LIKE ? THEN 1 ELSE 2 END,

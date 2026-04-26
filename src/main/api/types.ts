@@ -9,7 +9,7 @@ export interface Workspace {
   settings: Record<string, unknown>
 }
 
-export type ProviderKind = 'ollama' | 'lmstudio'
+export type ProviderKind = 'ollama' | 'lmstudio' | 'openai' | 'anthropic' | 'gemini' | 'deepseek'
 
 export interface ProviderCapabilities {
   streaming: boolean

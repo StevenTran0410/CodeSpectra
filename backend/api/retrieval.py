@@ -1,7 +1,8 @@
 """Retrieval endpoints (RPA-034)."""
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 
 from domain.retrieval.service import RetrievalService
+from shared.http_utils import handle_value_error
 from domain.retrieval.types import (
     BuildRetrievalIndexRequest,
     BuildRetrievalIndexResponse,
@@ -17,32 +18,24 @@ _service = RetrievalService()
 
 
 @router.post("/build-index", response_model=BuildRetrievalIndexResponse)
+@handle_value_error
 async def build_retrieval_index(body: BuildRetrievalIndexRequest) -> BuildRetrievalIndexResponse:
-    try:
-        return await _service.build_index(body)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    return await _service.build_index(body)
 
 
 @router.post("/retrieve", response_model=RetrievalBundle)
+@handle_value_error
 async def retrieve_context(body: RetrieveRequest) -> RetrievalBundle:
-    try:
-        return await _service.retrieve(body)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    return await _service.retrieve(body)
 
 
 @router.post("/compare", response_model=RetrievalCompareResponse)
+@handle_value_error
 async def compare_retrieval_modes(body: RetrieveRequest) -> RetrievalCompareResponse:
-    try:
-        return await _service.compare(body)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    return await _service.compare(body)
 
 
 @router.post("/retrieve-two-stage", response_model=TwoStageBundle)
+@handle_value_error
 async def retrieve_two_stage(body: TwoStageRequest) -> TwoStageBundle:
-    try:
-        return await _service.retrieve_two_stage(body)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    return await _service.retrieve_two_stage(body)

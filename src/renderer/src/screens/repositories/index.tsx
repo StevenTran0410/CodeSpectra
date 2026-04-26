@@ -24,6 +24,7 @@ export default function RepositoriesScreen(): React.ReactElement {
   const [syncMode, setSyncMode] = useState<'latest' | 'pinned'>('latest')
   const [pinnedRef, setPinnedRef] = useState('')
   const [detectSubmodules, setDetectSubmodules] = useState(true)
+  const [includeTests, setIncludeTests] = useState(false)
   const [ignoreText, setIgnoreText] = useState('')
   const [clonePolicy, setClonePolicy] = useState<ClonePolicy>('full')
   const [saving, setSaving] = useState(false)
@@ -66,6 +67,7 @@ export default function RepositoriesScreen(): React.ReactElement {
     setSyncMode(selectedRepo.sync_mode)
     setPinnedRef(selectedRepo.pinned_ref ?? '')
     setDetectSubmodules(selectedRepo.detect_submodules)
+    setIncludeTests(selectedRepo.include_tests ?? false)
     setIgnoreText((selectedRepo.ignore_overrides ?? []).join('\n'))
     setEstimate(null)
   }, [selectedRepo])
@@ -238,6 +240,15 @@ export default function RepositoriesScreen(): React.ReactElement {
                       Detect and note submodules (no deep indexing in v1)
                     </label>
 
+                    <label className="inline-flex items-center gap-2 text-xs text-zinc-300">
+                      <input
+                        type="checkbox"
+                        checked={includeTests}
+                        onChange={(e) => setIncludeTests(e.target.checked)}
+                      />
+                      Include test files and folders (default: excluded — any path containing "test" is skipped)
+                    </label>
+
                     {hasSnapshot && branchChanged && (
                       <div className="flex items-start gap-2 text-xs text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded-md px-3 py-2">
                         <AlertTriangle size={13} className="shrink-0 mt-0.5" />
@@ -269,6 +280,7 @@ export default function RepositoriesScreen(): React.ReactElement {
                               pinned_ref: syncMode === 'pinned' ? (pinnedRef.trim() || null) : null,
                               ignore_overrides,
                               detect_submodules: detectSubmodules,
+                              include_tests: includeTests,
                             })
                             await load()
                           } catch (err) {

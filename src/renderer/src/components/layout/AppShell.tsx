@@ -2,6 +2,7 @@ import React, { useEffect, useState, type ReactNode } from 'react'
 import { Sidebar } from './Sidebar'
 import { StatusBar } from './StatusBar'
 import { ErrorBoundary } from '../ui/ErrorBoundary'
+import { BackendRestartBanner } from '../BackendRestartBanner'
 import { useWorkspaceStore } from '../../store/workspace.store'
 import { OnboardingWizard } from '../onboarding/OnboardingWizard'
 
@@ -34,6 +35,7 @@ export function AppShell({ children }: Props): React.ReactElement {
 
   return (
     <div className="flex h-screen overflow-hidden bg-surface text-gray-100">
+      <BackendRestartBanner />
       <Sidebar />
       <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
         <main className="flex-1 overflow-auto">

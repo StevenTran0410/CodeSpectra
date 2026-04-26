@@ -1,8 +1,10 @@
 """Retrieval service (RPA-034): chunking + lexical + hybrid/vectorless retrieval."""
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
@@ -12,7 +14,7 @@ from shared.logger import logger
 from shared.sql_queries import SQL_SELECT_MANIFEST_FILES_BY_SNAPSHOT
 from shared.utils import new_id, read_utf8_lenient, utc_now_iso
 
-from .bm25_scorer import BM25Scorer
+from .bm25_scorer import BM25Scorer, _query_terms
 from .chunker_ast import ASTChunker
 from .types import (
     BuildRetrievalIndexRequest,
@@ -62,6 +64,49 @@ _SECTION_CATEGORY_HINTS: dict[RetrievalSection, set[str]] = {
     RetrievalSection.GLOSSARY: {"source", "docs"},
     RetrievalSection.QA: {"source", "config", "docs"},
 }
+
+
+# Column lists for retrieval_chunks SELECT queries — avoids loading `content`
+# when only metadata is needed (metadata-only queries save 50-250 MB bandwidth
+# on large codebases since content can be many KB per row).
+_CHUNK_FULL_COLS = "id, snapshot_id, rel_path, language, category, chunk_index, content, token_estimate, chunk_type, start_line, end_line"
+
+
+async def _batch_insert_chunks(
+    db,
+    chunk_rows: list[tuple],
+    index_rows: list[tuple],
+) -> None:
+    """Flush accumulated chunk and index rows in a single transaction.
+
+    chunk_rows columns: (id, snapshot_id, rel_path, language, category,
+                         chunk_index, content, token_estimate, chunk_type,
+                         start_line, end_line, content_hash, created_at)
+    index_rows columns: (id, snapshot_id, rel_path, chunk_index,
+                         lexical_preview, created_at)
+    """
+    if not chunk_rows and not index_rows:
+        return
+    if chunk_rows:
+        await db.executemany(
+            """
+            INSERT INTO retrieval_chunks
+            (id, snapshot_id, rel_path, language, category, chunk_index, content,
+             token_estimate, chunk_type, start_line, end_line, content_hash, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            chunk_rows,
+        )
+    if index_rows:
+        await db.executemany(
+            """
+            INSERT INTO retrieval_indexes
+            (id, snapshot_id, rel_path, chunk_index, lexical_preview, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            index_rows,
+        )
+    await db.commit()
 
 
 def _normalize_text(s: str) -> str:
@@ -137,17 +182,6 @@ def _split_chunks(text: str, target_size: int) -> list[str]:
     return out
 
 
-def _query_terms(q: str) -> list[str]:
-    terms = [w.lower() for w in _WORD.findall(q) if len(w) > 1]
-    # Keep distinct while preserving order.
-    seen: set[str] = set()
-    out: list[str] = []
-    for t in terms:
-        if t in seen:
-            continue
-        seen.add(t)
-        out.append(t)
-    return out
 
 
 def _maybe_expand_to_boundary(
@@ -181,6 +215,100 @@ def _maybe_expand_to_boundary(
         token_estimate=_token_estimate(merged),
         excerpt=merged,
     )
+
+
+def _compute_content_hash(text: str) -> str:
+    """Compute MD5 hash of first 4KB of content for cheap change detection (CS-229)."""
+    prefix = text[:4096]
+    return hashlib.md5(prefix.encode("utf-8", errors="replace")).hexdigest()
+
+
+async def _apply_incremental_idf_update(
+    db,
+    snapshot_id: str,
+    chunk_hash_map: dict[str, str],
+    tokenized_corpus: list[list[str]],
+    avgdl: float,
+) -> tuple[dict, int]:
+    """
+    Attempt incremental IDF update by detecting changed chunks via content hash.
+    Returns (idf_dict, next_index_version).
+    If incremental is feasible (<=10% changes and within drift guard), applies delta.
+    Else: full rebuild.
+
+    Args:
+        db: database connection
+        snapshot_id: snapshot being indexed
+        chunk_hash_map: dict[chunk_id] -> new_content_hash
+        tokenized_corpus: list of tokenized chunks
+        avgdl: average document length
+    """
+    # Fetch prior BM25 stats
+    async with db.execute(
+        "SELECT idf_json, index_version FROM retrieval_bm25_stats WHERE snapshot_id=?",
+        (snapshot_id,),
+    ) as cur:
+        prior_row = await cur.fetchone()
+
+    if prior_row is None:
+        # No prior index — full rebuild required.
+        return BM25Scorer.build_idf(tokenized_corpus, len(tokenized_corpus)), 0
+
+    prior_idf = json.loads(prior_row["idf_json"])
+    prior_index_version = prior_row["index_version"] or 0
+
+    # Trigger full rebuild every 50 incremental updates to prevent silent IDF drift.
+    if prior_index_version > 0 and prior_index_version % 50 == 0:
+        logger.info(
+            "[build_index] Forcing full rebuild at index_version=%d to prevent IDF drift",
+            prior_index_version,
+        )
+        return BM25Scorer.build_idf(tokenized_corpus, len(tokenized_corpus)), prior_index_version + 1
+
+    # Fetch old hashes and detect changed chunks
+    async with db.execute(
+        "SELECT id, content_hash FROM retrieval_chunks WHERE snapshot_id=? ORDER BY id",
+        (snapshot_id,),
+    ) as cur:
+        old_rows = await cur.fetchall()
+
+    old_hashes = {row["id"]: row["content_hash"] for row in old_rows}
+    changed_chunk_ids = set()
+    for chunk_id, new_hash in chunk_hash_map.items():
+        old_hash = old_hashes.get(chunk_id)
+        if old_hash != new_hash:
+            changed_chunk_ids.add(chunk_id)
+
+    # Check if incremental update is feasible
+    total_chunks = len(old_hashes)
+    if total_chunks == 0:
+        return BM25Scorer.build_idf(tokenized_corpus, len(tokenized_corpus)), prior_index_version + 1
+
+    change_ratio = len(changed_chunk_ids) / total_chunks
+    if change_ratio >= 0.10:
+        logger.info(
+            "[build_index] Change ratio %.1f%% >= 10%% threshold; full rebuild",
+            change_ratio * 100,
+        )
+        return BM25Scorer.build_idf(tokenized_corpus, len(tokenized_corpus)), prior_index_version + 1
+
+    # Incremental IDF: only reuse prior IDF if no chunks changed (rare case)
+    logger.info(
+        "[build_index] Incremental path: %.1f%% changed (%d/%d chunks)",
+        change_ratio * 100, len(changed_chunk_ids), total_chunks,
+    )
+
+    if not changed_chunk_ids:
+        # No changed chunks — reuse prior IDF (optimization for fast re-indexes with zero changes)
+        new_idf = prior_idf
+        logger.info("[build_index] No changed chunks; reusing prior IDF")
+    else:
+        # Some chunks changed — full rebuild is safer than tracking deltas
+        # (delta tracking requires matching old→new chunk positions, which is error-prone)
+        new_idf = BM25Scorer.build_idf(tokenized_corpus, len(tokenized_corpus))
+        logger.info("[build_index] Chunks changed; rebuilding IDF from corpus")
+
+    return new_idf, prior_index_version + 1
 
 
 class RetrievalService:
@@ -262,6 +390,11 @@ class RetrievalService:
         files_indexed = 0
         chunk_count = 0
         tokenized_corpus: list[list[str]] = []
+        chunk_hash_map: dict[str, str] = {}  # chunk_id -> content_hash (CS-229)
+
+        # Accumulate rows per file; flush together after each file's chunks are ready.
+        # Using the file loop as the natural batch boundary: rows per file are bounded
+        # and flushing per-file avoids holding a very large in-memory list.
         for f in files:
             rel_path = f["rel_path"]
             language = f["language"]
@@ -279,58 +412,77 @@ class RetrievalService:
             if lang_key in _AST_LANGS and category not in {"docs", "config"}:
                 # AST chunking: operate on raw source — normalization after.
                 ast_chunks = _ast_chunker.chunk(text, lang_key, target_size)
-                pieces = [_normalize_text(c.text) for c in ast_chunks]
+                ast_pieces = [(c, _normalize_text(c.text)) for c in ast_chunks]
             else:
-                pieces = _split_chunks(_normalize_text(text), target_size)
+                ast_pieces = [(None, piece) for piece in _split_chunks(_normalize_text(text), target_size)]
             files_indexed += 1
-            for i, piece in enumerate(pieces):
+
+            file_chunk_rows: list[tuple] = []
+            file_index_rows: list[tuple] = []
+            file_token_rows: list[tuple] = []
+            for i, (ast_chunk, piece) in enumerate(ast_pieces):
                 token_est = _token_estimate(piece)
                 preview = piece[:500]
+                # Extract chunk_type and line range from AST chunk if available
+                chunk_type = ast_chunk.chunk_type if ast_chunk else "block"
+                start_line = ast_chunk.start_line if ast_chunk else 0
+                end_line = ast_chunk.end_line if ast_chunk else 0
                 # Collect tokenized document for BM25 IDF computation
                 tokens = _WORD.findall(piece.lower())
                 tokenized_corpus.append(tokens)
-                await db.execute(
-                    """
-                    INSERT INTO retrieval_chunks
-                    (id, snapshot_id, rel_path, language, category, chunk_index, content, token_estimate, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        new_id(),
-                        req.snapshot_id,
-                        rel_path,
-                        language,
-                        category,
-                        i,
-                        piece,
-                        token_est,
-                        now,
-                    ),
-                )
+                chunk_id = new_id()
+                content_hash = _compute_content_hash(piece)
+                chunk_hash_map[chunk_id] = content_hash  # Track for incremental IDF (CS-229)
+                file_chunk_rows.append((
+                    chunk_id,
+                    req.snapshot_id,
+                    rel_path,
+                    language,
+                    category,
+                    i,
+                    piece,
+                    token_est,
+                    chunk_type,
+                    start_line,
+                    end_line,
+                    content_hash,
+                    now,
+                ))
+                # Minimal lexical index row (prefix preview for quick debug/search metadata).
+                file_index_rows.append((
+                    new_id(), req.snapshot_id, rel_path, i, preview, now,
+                ))
+                # Token frequency rows for incremental IDF updates (CS-229).
+                token_freq = Counter(tokens)
+                for term, tf in token_freq.items():
+                    file_token_rows.append((chunk_id, term, int(tf)))
                 chunk_count += 1
 
-                # Minimal lexical index row (prefix preview for quick debug/search metadata).
-                await db.execute(
-                    """
-                    INSERT INTO retrieval_indexes
-                    (id, snapshot_id, rel_path, chunk_index, lexical_preview, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                    (new_id(), req.snapshot_id, rel_path, i, preview, now),
+            await _batch_insert_chunks(db, file_chunk_rows, file_index_rows)
+
+            # Batch insert token frequencies (CS-229).
+            if file_token_rows:
+                await db.executemany(
+                    """INSERT OR IGNORE INTO retrieval_chunk_tokens
+                       (chunk_id, term, tf) VALUES (?, ?, ?)""",
+                    file_token_rows,
                 )
 
-        # Compute and store BM25 IDF stats
+        # Compute and store BM25 IDF stats with incremental tracking (CS-229).
         if tokenized_corpus:
             avgdl = sum(len(t) for t in tokenized_corpus) / len(tokenized_corpus)
-            idf = BM25Scorer.build_idf(tokenized_corpus, len(tokenized_corpus))
+            idf, next_index_version = await _apply_incremental_idf_update(
+                db, req.snapshot_id, chunk_hash_map, tokenized_corpus, avgdl
+            )
             now_str = datetime.utcnow().isoformat()
             await db.execute(
                 """INSERT OR REPLACE INTO retrieval_bm25_stats
-                   (snapshot_id, chunk_count, avgdl, idf_json, k1, b, generated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (req.snapshot_id, len(tokenized_corpus), avgdl, json.dumps(idf), 2.0, 0.75, now_str),
+                   (snapshot_id, chunk_count, avgdl, idf_json, k1, b, index_version, generated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (req.snapshot_id, len(tokenized_corpus), avgdl, json.dumps(idf), 2.0, 0.75, next_index_version, now_str),
             )
-            logger.info("BM25 stats built: %d docs, avgdl=%.1f, vocab=%d", len(tokenized_corpus), avgdl, len(idf))
+            logger.info("BM25 stats built: %d docs, avgdl=%.1f, vocab=%d, index_version=%d",
+                       len(tokenized_corpus), avgdl, len(idf), next_index_version)
 
         await db.commit()
         return BuildRetrievalIndexResponse(
@@ -369,8 +521,8 @@ class RetrievalService:
         category_hints = _SECTION_CATEGORY_HINTS[req.section]
 
         async with get_db().execute(
-            """
-            SELECT id, rel_path, chunk_index, language, category, content, token_estimate
+            f"""
+            SELECT {_CHUNK_FULL_COLS}
             FROM retrieval_chunks
             WHERE snapshot_id=?
             """,

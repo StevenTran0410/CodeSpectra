@@ -12,6 +12,7 @@ import { registerFolderHandlers } from './api/folder.api'
 import { registerJobHandlers } from './api/job.api'
 import { registerAppHandlers } from './api/app.api'
 import { registerQAHandlers } from './api/qa.api'
+import { registerImpactHandlers } from './api/impact.api'
 import { logger } from './shared/logger'
 
 app.whenReady().then(async () => {
@@ -32,6 +33,7 @@ app.whenReady().then(async () => {
     registerFolderHandlers(client)
     registerJobHandlers(client)
     registerQAHandlers(client)
+    registerImpactHandlers(client)
 
     createMainWindow()
     logger.info('Startup complete')
