@@ -23,6 +23,7 @@ import {
 } from '../../types/analysis'
 import { ErrorBanner } from '../../components/ui/ErrorBanner'
 import { Button, ConfirmDialog, Modal, useToastStore, ErrorBoundary } from '../../components/ui'
+import { useWorkspaceStore } from '../../store/workspace.store'
 import { toErrorMessage } from '../../lib/errors'
 import EvidencePanel from '../../components/EvidencePanel'
 import SectionCardA from './components/SectionCardA'
@@ -77,6 +78,7 @@ export default function ReportViewerScreen(): React.ReactElement {
   const [params] = useSearchParams()
   const toast = useToastStore()
   const repoId = params.get('repoId') ?? undefined
+  const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId)
   const reportIdInUrl = params.get('reportId') ?? ''
   const isDetailMode = reportIdInUrl.trim().length > 0
 
@@ -121,7 +123,7 @@ export default function ReportViewerScreen(): React.ReactElement {
     setLoading(true)
     setError(null)
     try {
-      const list = await window.api.analysis.listReports(repoId, 50)
+      const list = await window.api.analysis.listReports(repoId, 50, activeWorkspaceId ?? undefined)
       setReports(list)
       if (list.length === 0) {
         setSelectedReportId('')

@@ -44,8 +44,12 @@ async def get_section_events(
 
 
 @router.get("/reports", response_model=list[AnalysisReportSummary])
-async def list_reports(repo_id: str | None = None, limit: int = 30) -> list[AnalysisReportSummary]:
-    return await _service.list_reports(repo_id=repo_id, limit=limit)
+async def list_reports(
+    repo_id: str | None = None,
+    workspace_id: str | None = None,
+    limit: int = 30,
+) -> list[AnalysisReportSummary]:
+    return await _service.list_reports(repo_id=repo_id, workspace_id=workspace_id, limit=limit)
 
 
 @router.get("/reports/{report_id}", response_model=AnalysisReport)

@@ -112,11 +112,15 @@ class ClassifierService:
         - If the file is absent → train from scratch using DB examples + built-in dataset.
         """
         try:
-            from . import intent_classifier as _m
-            if _m._model_path().exists():
-                # Model already persisted — just warm the singleton
-                _clf_module.warm_up()
-                logger.info("[ClassifierService] loaded persisted model from disk")
+            if _clf_module._model_path().exists():
+                # If metadata is missing/stale (backend="not_trained"), retrain so the
+                # metadata file is regenerated with the correct backend label.
+                if _clf_module.get_status().get("backend", "not_trained") == "not_trained":
+                    await self._retrain()
+                    logger.info("[ClassifierService] retrained to regenerate stale/missing metadata")
+                else:
+                    _clf_module.warm_up()
+                    logger.info("[ClassifierService] loaded persisted model from disk")
             else:
                 # No saved model — train fresh with DB examples, then save
                 await self._retrain()

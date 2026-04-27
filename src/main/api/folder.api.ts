@@ -311,8 +311,13 @@ export function registerFolderHandlers(client: BackendClient): void {
 
   ipcMain.handle(
     'analysis:listReports',
-    (_event, repoId?: string, limit = 30) =>
-      client.get(`/api/analysis/reports?${repoId ? `repo_id=${encodeURIComponent(repoId)}&` : ''}limit=${limit}`)
+    (_event, repoId?: string, limit = 30, workspaceId?: string) => {
+      const qs = new URLSearchParams()
+      if (repoId) qs.set('repo_id', repoId)
+      if (workspaceId) qs.set('workspace_id', workspaceId)
+      qs.set('limit', String(limit))
+      return client.get(`/api/analysis/reports?${qs.toString()}`)
+    }
   )
 
   ipcMain.handle(

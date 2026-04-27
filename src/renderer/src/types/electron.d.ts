@@ -596,7 +596,7 @@ declare global {
           large_codebase_mode?: boolean
           skip_synthesis?: boolean
         }) => Promise<Job>
-        listReports: (repoId?: string, limit?: number) => Promise<AnalysisReportSummary[]>
+        listReports: (repoId?: string, limit?: number, workspaceId?: string) => Promise<AnalysisReportSummary[]>
         getReport: (reportId: string) => Promise<AnalysisReport>
         getReportByJob: (jobId: string) => Promise<AnalysisReport>
         deleteReport: (reportId: string) => Promise<void>

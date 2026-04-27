@@ -20,6 +20,7 @@ import {
 } from '@xyflow/react'
 import ELK, { type ElkNode } from 'elkjs/lib/elk.bundled.js'
 import type { C4DiagramData, C4DiagramNode } from '../types/analysis'
+import { useTheme } from '../hooks/useTheme'
 
 // ─── Node dimensions ──────────────────────────────────────────────────────────
 
@@ -28,17 +29,28 @@ const STEP_H = 54
 
 // ─── Step node renderer ───────────────────────────────────────────────────────
 
-function StepBox({ data }: { data: C4DiagramNode }) {
+function StepBox({ data }: { data: C4DiagramNode & { isDark?: boolean } }) {
   const isEntry = data.description === 'entrypoint'
+  const isDark = data.isDark ?? false
   const hs: React.CSSProperties = { background: 'transparent', border: 'none' }
+
+  const bg = isDark
+    ? (isEntry ? '#1c3252' : '#27272a')
+    : (isEntry ? '#dbeafe' : '#f8fafc')
+  const border = isDark
+    ? (isEntry ? '#3b82f6' : '#3f3f46')
+    : (isEntry ? '#3b82f6' : '#cbd5e1')
+  const textColor = isDark ? '#f4f4f5' : '#111827'
+  const techColor = isDark ? '#71717a' : '#6b7280'
+  const entryColor = isDark ? '#60a5fa' : '#2563eb'
 
   return (
     <div
       style={{
         width: STEP_W,
         height: STEP_H,
-        background: isEntry ? '#1c3252' : '#27272a',
-        border: `1px solid ${isEntry ? '#3b82f6' : '#3f3f46'}`,
+        background: bg,
+        border: `1px solid ${border}`,
         borderRadius: 6,
         display: 'flex',
         flexDirection: 'column',
@@ -51,7 +63,7 @@ function StepBox({ data }: { data: C4DiagramNode }) {
     >
       <Handle type="target" position={Position.Top} style={hs} />
       {isEntry && (
-        <div style={{ fontSize: 8, color: '#60a5fa', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+        <div style={{ fontSize: 8, color: entryColor, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
           entrypoint
         </div>
       )}
@@ -59,7 +71,7 @@ function StepBox({ data }: { data: C4DiagramNode }) {
         style={{
           fontWeight: 600,
           fontSize: 11,
-          color: '#f4f4f5',
+          color: textColor,
           textAlign: 'center',
           lineHeight: 1.25,
           wordBreak: 'break-all',
@@ -68,7 +80,7 @@ function StepBox({ data }: { data: C4DiagramNode }) {
         {data.label}
       </div>
       {data.technology && (
-        <div style={{ fontSize: 8, color: '#71717a', fontStyle: 'italic' }}>
+        <div style={{ fontSize: 8, color: techColor, fontStyle: 'italic' }}>
           {data.technology}
         </div>
       )}
@@ -116,12 +128,13 @@ async function runLayout(nodes: Node[], edges: Edge[]): Promise<{ nodes: Node[];
 
 // ─── Data converter ───────────────────────────────────────────────────────────
 
-function buildElements(data: C4DiagramData): { nodes: Node[]; edges: Edge[] } {
+function buildElements(data: C4DiagramData, isDark: boolean): { nodes: Node[]; edges: Edge[] } {
+  const edgeColor = isDark ? '#52525b' : '#94a3b8'
   const nodes: Node[] = data.nodes.map((n) => ({
     id: n.id,
     type: 'step',
     position: { x: 0, y: 0 },
-    data: n as unknown as Record<string, unknown>,
+    data: { ...n, isDark } as unknown as Record<string, unknown>,
     style: { padding: 0, border: 'none', background: 'transparent' },
   }))
   const edges: Edge[] = data.edges.map((e) => ({
@@ -129,8 +142,8 @@ function buildElements(data: C4DiagramData): { nodes: Node[]; edges: Edge[] } {
     source: e.source,
     target: e.target,
     type: 'smoothstep',
-    markerEnd: { type: MarkerType.ArrowClosed, color: '#52525b' },
-    style: { stroke: '#52525b', strokeWidth: 1.5 },
+    markerEnd: { type: MarkerType.ArrowClosed, color: edgeColor },
+    style: { stroke: edgeColor, strokeWidth: 1.5 },
   }))
   return { nodes, edges }
 }
@@ -143,6 +156,7 @@ interface Props {
 
 export default function SequenceFlowView({ data }: Props): React.ReactElement | null {
   const containerRef = useRef<HTMLDivElement>(null)
+  const { isDark } = useTheme()
   const [visible, setVisible] = useState(false)
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([])
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([])
@@ -166,7 +180,7 @@ export default function SequenceFlowView({ data }: Props): React.ReactElement | 
     return () => obs.disconnect()
   }, [])
 
-  const { nodes: rawNodes, edges: rawEdges } = useMemo(() => buildElements(data), [data])
+  const { nodes: rawNodes, edges: rawEdges } = useMemo(() => buildElements(data, isDark), [data, isDark])
 
   useEffect(() => {
     if (!visible || rawNodes.length === 0) {
@@ -187,11 +201,15 @@ export default function SequenceFlowView({ data }: Props): React.ReactElement | 
   // Height scales with step count, capped at 420px
   const height = Math.min(80 + data.nodes.length * (STEP_H + 36) + 40, 420)
 
+  const canvasBg = isDark ? '#18181b' : '#f8fafc'
+  const canvasBorder = isDark ? '#27272a' : '#e2e8f0'
+  const gridColor = isDark ? '#2d2d2d' : '#d1d5db'
+
   return (
     <div ref={containerRef} style={{ minHeight: 40 }}>
     {!visible || loading ? (
       <div
-        style={{ height: Math.min(height, 120), background: '#18181b', borderRadius: 6, border: '1px solid #27272a' }}
+        style={{ height: Math.min(height, 120), background: canvasBg, borderRadius: 6, border: `1px solid ${canvasBorder}` }}
         className="flex items-center justify-center"
       >
         <span className="text-[10px] text-zinc-700">{visible ? 'Laying out…' : ''}</span>
@@ -200,9 +218,9 @@ export default function SequenceFlowView({ data }: Props): React.ReactElement | 
     <div
       style={{
         height,
-        background: '#18181b',
+        background: canvasBg,
         borderRadius: 6,
-        border: '1px solid #27272a',
+        border: `1px solid ${canvasBorder}`,
         overflow: 'hidden',
       }}
     >
@@ -223,7 +241,7 @@ export default function SequenceFlowView({ data }: Props): React.ReactElement | 
         panOnDrag
         zoomOnScroll
       >
-        <Background color="#2d2d2d" gap={20} />
+        <Background color={gridColor} gap={20} />
       </ReactFlow>
     </div>
     )}

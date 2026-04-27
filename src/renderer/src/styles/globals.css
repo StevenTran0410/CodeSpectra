@@ -79,8 +79,13 @@
   /* zinc-* backgrounds — opacity variants (Tailwind escapes the slash in class name) */
   html:not(.dark) .bg-zinc-950\/50  { background-color: rgba(248, 250, 252, 0.5);  }
   html:not(.dark) .bg-zinc-900\/60  { background-color: rgba(241, 245, 249, 0.6);  }
+  html:not(.dark) .bg-zinc-900\/50  { background-color: rgba(241, 245, 249, 0.5);  }
   html:not(.dark) .bg-zinc-900\/40  { background-color: rgba(241, 245, 249, 0.4);  }
+  html:not(.dark) .bg-zinc-900\/30  { background-color: rgba(241, 245, 249, 0.3);  }
+  html:not(.dark) .bg-zinc-900\/20  { background-color: rgba(241, 245, 249, 0.2);  }
+  html:not(.dark) .bg-zinc-800\/80  { background-color: rgba(226, 232, 240, 0.8);  }
   html:not(.dark) .bg-zinc-800\/60  { background-color: rgba(226, 232, 240, 0.6);  }
+  html:not(.dark) .bg-zinc-800\/50  { background-color: rgba(226, 232, 240, 0.5);  }
   html:not(.dark) .bg-zinc-800\/40  { background-color: rgba(226, 232, 240, 0.4);  }
 
   /* zinc-* borders */
@@ -190,6 +195,20 @@
   html:not(.dark) .border-rose-800   { border-color: #fecdd3; }
   html:not(.dark) .border-orange-800 { border-color: #fed7aa; }
   html:not(.dark) .border-lime-800   { border-color: #d9f99d; }
+  html:not(.dark) .border-yellow-800 { border-color: #fde68a; }
+  html:not(.dark) .border-blue-800   { border-color: #bfdbfe; }
+  html:not(.dark) .border-purple-800 { border-color: #e9d5ff; }
+
+  /* Solid badge chip backgrounds used in Settings (status/backend/native badges) */
+  html:not(.dark) .bg-green-950   { background-color: #f0fdf4; }
+  html:not(.dark) .bg-yellow-950  { background-color: #fefce8; }
+  html:not(.dark) .bg-red-950     { background-color: #fef2f2; }
+  html:not(.dark) .bg-blue-950    { background-color: #eff6ff; }
+  html:not(.dark) .bg-purple-950  { background-color: #faf5ff; }
+
+  /* Opacity variants used in Settings error banner and add-example form */
+  html:not(.dark) .bg-red-950\/30    { background-color: rgba(254, 242, 242, 0.85); }
+  html:not(.dark) .bg-purple-950\/10 { background-color: rgba(250, 245, 255, 0.5); }
 
   /* Scrollbars */
   ::-webkit-scrollbar {

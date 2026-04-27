@@ -157,6 +157,8 @@ export default function AskScreen(): React.ReactElement {
   // Guards stall state transitions to prevent re-render loops
   const prevIsStalledRef = useRef(false)
   const scrollRef = useRef<HTMLDivElement>(null)
+  // Tracks the currently-registered IPC stream listener so it can be removed on unmount
+  const activeStreamHandlerRef = useRef<((ev: unknown, raw: unknown) => void) | null>(null)
 
   // Load repos on mount
   useEffect(() => {
@@ -226,9 +228,13 @@ export default function AskScreen(): React.ReactElement {
 
   const { providerId, modelId } = getConfig()
 
-  // Cancel rAF loop on unmount
+  // Cancel rAF loop and remove any pending IPC stream listener on unmount
   useEffect(() => () => {
     cancelAnimationFrame(rafIdRef.current)
+    if (activeStreamHandlerRef.current) {
+      window.api.qa.offStreamEvent(activeStreamHandlerRef.current)
+      activeStreamHandlerRef.current = null
+    }
   }, [])
 
   /**
@@ -266,6 +272,7 @@ export default function AskScreen(): React.ReactElement {
 
   /** Shared teardown for a stream that ended (done or error). Flushes remaining tokens. */
   const stopStream = useCallback((handler: Parameters<typeof window.api.qa.offStreamEvent>[0]) => {
+    activeStreamHandlerRef.current = null
     window.api.qa.offStreamEvent(handler)
     cancelAnimationFrame(rafIdRef.current)
     const remaining = tokenBufferRef.current.splice(0)
@@ -328,6 +335,7 @@ export default function AskScreen(): React.ReactElement {
           resolve()
         }
       }
+      activeStreamHandlerRef.current = streamHandler
       window.api.qa.onStreamEvent(streamHandler)
       window.api.qa.askStream({
         snapshot_id: snapshotId,
@@ -378,6 +386,7 @@ export default function AskScreen(): React.ReactElement {
           resolve()
         }
       }
+      activeStreamHandlerRef.current = streamHandler
       window.api.qa.onStreamEvent(streamHandler)
       window.api.qa.deepResearchStream({
         snapshot_id: snapshotId,
@@ -1002,7 +1011,7 @@ function DeepResearchResultView({
           Deep Research
         </span>
         <span>{(result.elapsed_ms / 1000).toFixed(1)}s</span>
-        <span>{result.files_explored.length} files explored</span>
+        <span>{(result.files_explored ?? []).length} files explored</span>
         <span
           className={`px-2 py-0.5 rounded font-semibold ${
             result.confidence === 'high'
@@ -1017,10 +1026,10 @@ function DeepResearchResultView({
       </div>
 
       {/* Investigation chain */}
-      {result.reasoning_chain.length > 0 && (
+      {(result.reasoning_chain ?? []).length > 0 && (
         <div className="space-y-2">
           <p className="text-xs font-semibold text-gray-400">Investigation Chain</p>
-          {result.reasoning_chain.map((step) => (
+          {(result.reasoning_chain ?? []).map((step) => (
             <div key={step.step_number} className="border-l-2 border-purple-700 pl-3 space-y-1">
               <button
                 className="text-xs font-semibold text-gray-300 hover:text-gray-100 text-left"
@@ -1042,9 +1051,9 @@ function DeepResearchResultView({
                   {step.graph_path && step.graph_path.length > 1 && (
                     <p className="text-xs text-purple-300 font-mono">{step.graph_path.join(' → ')}</p>
                   )}
-                  {step.files_involved.length > 0 && (
+                  {(step.files_involved ?? []).length > 0 && (
                     <div className="flex flex-wrap gap-1">
-                      {step.files_involved.map((file, i) => (
+                      {(step.files_involved ?? []).map((file, i) => (
                         <button
                           key={i}
                           onClick={() => onCitationClick(file)}
@@ -1063,11 +1072,11 @@ function DeepResearchResultView({
       )}
 
       {/* Unknowns */}
-      {result.unknowns.length > 0 && (
+      {(result.unknowns ?? []).length > 0 && (
         <div>
           <p className="text-xs font-semibold text-gray-400 mb-1">Unknowns</p>
           <ul className="text-xs text-gray-400 list-disc list-inside space-y-0.5">
-            {result.unknowns.map((u, i) => (
+            {(result.unknowns ?? []).map((u, i) => (
               <li key={i}>{u}</li>
             ))}
           </ul>

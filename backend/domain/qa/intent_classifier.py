@@ -770,7 +770,13 @@ def retrain_with_examples(extra: list[tuple[str, bool]]) -> None:
 
 
 def get_status() -> dict:
-    """Return classifier status. Reads metadata file — does not load the full model."""
+    """Return classifier status, preferring in-memory state over disk for accuracy."""
+    if _classifier is not None:
+        return {
+            "trained": True,
+            "backend": _backend,
+            "builtin_examples": len(_DATASET),
+        }
     model_exists = _model_path().exists()
     meta: dict = {}
     if _meta_path().exists():

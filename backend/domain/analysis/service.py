@@ -412,13 +412,11 @@ class AnalysisService:
         )
 
     async def list_reports(
-        self, repo_id: str | None = None, limit: int = 30
+        self, repo_id: str | None = None, workspace_id: str | None = None, limit: int = 30
     ) -> list[AnalysisReportSummary]:
         db = get_db()
         safe_limit = max(1, min(limit, 200))
-        if repo_id:
-            async with db.execute(
-                """
+        base_select = """
                 SELECT
                     ar.id, ar.job_id, ar.repo_id, ar.snapshot_id, ar.provider_id, ar.model_id,
                     ar.scan_mode, ar.privacy_mode, ar.created_at,
@@ -428,28 +426,22 @@ class AnalysisService:
                 FROM analysis_reports ar
                 LEFT JOIN local_repos lr ON lr.id = ar.repo_id
                 LEFT JOIN repo_snapshots rs ON rs.id = ar.snapshot_id
-                WHERE ar.repo_id=?
-                ORDER BY ar.created_at DESC
-                LIMIT ?
-                """,
+                """
+        if repo_id:
+            async with db.execute(
+                base_select + "WHERE ar.repo_id=? ORDER BY ar.created_at DESC LIMIT ?",
                 (repo_id, safe_limit),
+            ) as cur:
+                rows = await cur.fetchall()
+        elif workspace_id:
+            async with db.execute(
+                base_select + "WHERE lr.workspace_id=? ORDER BY ar.created_at DESC LIMIT ?",
+                (workspace_id, safe_limit),
             ) as cur:
                 rows = await cur.fetchall()
         else:
             async with db.execute(
-                """
-                SELECT
-                    ar.id, ar.job_id, ar.repo_id, ar.snapshot_id, ar.provider_id, ar.model_id,
-                    ar.scan_mode, ar.privacy_mode, ar.created_at,
-                    COALESCE(lr.name, ar.repo_id) as repo_name,
-                    COALESCE(rs.branch, lr.selected_branch, lr.git_branch, 'unknown') as branch,
-                    rs.commit_hash
-                FROM analysis_reports ar
-                LEFT JOIN local_repos lr ON lr.id = ar.repo_id
-                LEFT JOIN repo_snapshots rs ON rs.id = ar.snapshot_id
-                ORDER BY ar.created_at DESC
-                LIMIT ?
-                """,
+                base_select + "ORDER BY ar.created_at DESC LIMIT ?",
                 (safe_limit,),
             ) as cur:
                 rows = await cur.fetchall()

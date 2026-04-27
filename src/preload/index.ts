@@ -136,8 +136,8 @@ const api = {
       id: string
       warning?: { code: string; message: string; severity: string } | null
     }> => ipcRenderer.invoke('analysis:start', body),
-    listReports: (repoId?: string, limit = 30) =>
-      ipcRenderer.invoke('analysis:listReports', repoId, limit),
+    listReports: (repoId?: string, limit = 30, workspaceId?: string) =>
+      ipcRenderer.invoke('analysis:listReports', repoId, limit, workspaceId),
     getReport: (reportId: string) =>
       ipcRenderer.invoke('analysis:getReport', reportId),
     getReportByJob: (jobId: string) =>
