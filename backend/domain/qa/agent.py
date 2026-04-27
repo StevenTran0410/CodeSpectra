@@ -43,6 +43,7 @@ Rules:
 - Prefer CODE EVIDENCE for specific implementation questions. Cite with [file:line].
 - Synthesize both sources when both are relevant.
 - If you cannot determine something from either source, state it clearly.
+- Set claim_polarity to 'negative' if your answer states a feature or behaviour does NOT exist or is NOT implemented.
 
 FORMATTING — MANDATORY:
 - Write in rich Markdown so it renders beautifully in a chat UI.
@@ -174,6 +175,13 @@ class QAAgent(BaseTypedAgent):
             20,
         )
 
+        # Log retrieval quality
+        if bundle.quality:
+            logger.info(
+                "[QAAgent] retrieval_quality flags=%s label=%s",
+                bundle.quality.flags, bundle.quality.quality_label
+            )
+
         # 5. Force-inject important files missed by retrieval
         if hint_files:
             existing_paths = {ev.rel_path for ev in bundle.evidences}
@@ -197,6 +205,11 @@ class QAAgent(BaseTypedAgent):
         if analysis_context:
             prompt_parts.append(f"CODEBASE ANALYSIS:\n{analysis_context}")
         prompt_parts.append(f"CODE EVIDENCE:\n{evidence_block}")
+
+        if bundle.quality and bundle.quality.quality_label == "weak":
+            flags_str = ", ".join(bundle.quality.flags)
+            prompt_parts.append(f"NOTE: Retrieval quality is weak ({flags_str}). If the evidence does not directly answer the question, say so rather than guessing.")
+
         user_prompt = "\n\n".join(prompt_parts)
 
         # 7a. Stream the answer as plain markdown (tokens → progress_cb)
@@ -245,6 +258,7 @@ class QAAgent(BaseTypedAgent):
         result["unknowns"] = meta.get("unknowns") or []
         result["suggested_files"] = meta.get("suggested_files") or []
         result["deep_research_recommended"] = bool(meta.get("deep_research_recommended", False))
+        result["retrieval_quality_label"] = bundle.quality.quality_label if bundle.quality else "strong"
 
         if include_debug:
             result["retrieval_debug"] = {

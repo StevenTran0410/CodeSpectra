@@ -1,4 +1,5 @@
 """Retrieval types (RPA-034)."""
+from dataclasses import dataclass
 from enum import Enum
 
 from pydantic import BaseModel
@@ -48,6 +49,7 @@ class RetrievalBundle(BaseModel):
     budget_tokens: int
     used_tokens: int
     evidences: list[RetrievalEvidence]
+    quality: RetrievalQuality | None = None
 
 
 class RetrieveRequest(BaseModel):
@@ -98,12 +100,23 @@ class RankedChunk(BaseModel):
     rel_path: str
     chunk_index: int
     score: float
+    chunk_type: str = 'block'
     bm25_component: float
     symbol_bonus: float
     module_bonus: float
     centrality_bonus: float
     token_estimate: int
     excerpt: str
+
+
+@dataclass(frozen=True)
+class RetrievalQuality:
+    score_gap_ok: bool
+    coverage: float
+    path_entropy: float
+    has_definition: bool
+    flags: list[str]
+    quality_label: str
 
 
 class TwoStageStage3Result(BaseModel):

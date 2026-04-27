@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel
 
 
@@ -10,6 +12,12 @@ class Citation(BaseModel):
     line_start: int | None = None
     line_end: int | None = None
     snippet: str
+
+
+class SupportingSpan(BaseModel):
+    path: str
+    line_range: tuple[int, int]
+    exact_quote: str
 
 
 class QARequest(BaseModel):
@@ -29,6 +37,10 @@ class QAResponse(BaseModel):
     suggested_files: list[str]
     deep_research_recommended: bool = False
     retrieval_debug: dict | None = None
+    claim_polarity: Literal['positive', 'negative', 'neutral'] = 'neutral'
+    is_supported_by_chunks: bool = True
+    needs_more_retrieval: bool = False
+    retrieval_quality_label: str = 'strong'
 
 
 class ClassifyIntentRequest(BaseModel):

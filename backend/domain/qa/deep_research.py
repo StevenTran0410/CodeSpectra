@@ -274,9 +274,14 @@ class DeepResearchAgent(BaseTypedAgent):
 
         # Step 1: Plan the investigation (hint planner with top central files)
         await _emit("planning", "Planning investigation...")
-        plan = await self._plan(question, provider_id, model_id, gctx)
+        plan = await self._plan(question, provider_id, model_id, gctx, snapshot_id)
         if include_debug:
             debug["plan"] = plan
+
+        hop_cap = max_hops
+        if len(plan) >= 4 and any(s.get("type") in ("trace_forward", "trace_backward") for s in plan):
+            hop_cap = min(3, max_hops)
+            logger.debug("[DeepResearch] plan has %d steps with trace ops; capping hops at %d", len(plan), hop_cap)
 
         # Step 2: Execute each plan step
         step_findings: list[dict[str, Any]] = []
@@ -297,7 +302,7 @@ class DeepResearchAgent(BaseTypedAgent):
                 direction = "forward" if step_type == "trace_forward" else "backward"
                 trace = await trace_call_chain(
                     snapshot_id, target, direction,
-                    max_hops=min(max_hops, 4), high_confidence_only=True,
+                    max_hops=min(hop_cap, 4), high_confidence_only=True,
                 )
                 new_files = [s.file for s in trace if s.file not in visited_files]
 
@@ -306,7 +311,7 @@ class DeepResearchAgent(BaseTypedAgent):
                 if len(new_files) < 2:
                     trace_low = await trace_call_chain(
                         snapshot_id, target, direction,
-                        max_hops=min(max_hops, 4), high_confidence_only=False,
+                        max_hops=min(hop_cap, 4), high_confidence_only=False,
                     )
                     high_conf_files = {s.file for s in trace}
                     extra = [
@@ -354,6 +359,11 @@ class DeepResearchAgent(BaseTypedAgent):
                     max_results_each=10,
                 )
                 evidence = bundle.evidences
+                if bundle.quality:
+                    logger.info(
+                        "[DeepResearch.step%d] retrieval_quality flags=%s label=%s",
+                        step_num, bundle.quality.flags, bundle.quality.quality_label
+                    )
             else:
                 retrieval_query = description or question
                 evidence = await self._retrieve_evidence(
@@ -361,6 +371,16 @@ class DeepResearchAgent(BaseTypedAgent):
                     retrieval_query,
                     forced_files=new_files[:8],
                 )
+                if not evidence and step_type in ("trace_forward", "trace_backward"):
+                    logger.warning(
+                        "[DeepResearch.step%d] trace returned 0 chunks; falling back to retrieve with target='%s'",
+                        step_num, target
+                    )
+                    evidence = await self._retrieve_evidence(
+                        snapshot_id,
+                        target,
+                        forced_files=[],
+                    )
 
             visited_files.update(ev.rel_path for ev in evidence)
 
@@ -493,12 +513,38 @@ class DeepResearchAgent(BaseTypedAgent):
         )
         return result
 
+    async def _validate_plan_step(
+        self,
+        step: dict,
+        snapshot_id: str,
+    ) -> dict:
+        """Validate that a plan step's target exists in snapshot. Adds warning if not found."""
+        target = step.get("target", "")
+        step_type = step.get("type", "retrieve")
+        if step_type in ("trace_forward", "trace_backward") and target:
+            db = get_db()
+            async with db.execute(
+                "SELECT 1 FROM manifest_files WHERE snapshot_id=? AND rel_path LIKE ? LIMIT 1",
+                (snapshot_id, f"%{target}%"),
+            ) as cur:
+                row = await cur.fetchone()
+            if not row:
+                async with db.execute(
+                    "SELECT 1 FROM code_symbols WHERE snapshot_id=? AND name LIKE ? LIMIT 1",
+                    (snapshot_id, f"%{target}%"),
+                ) as cur:
+                    row2 = await cur.fetchone()
+                if not row2:
+                    step["_warning"] = f"target '{target}' not found in snapshot — step may produce empty results"
+        return step
+
     async def _plan(
         self,
         question: str,
         provider_id: str,
         model_id: str,
         gctx: _GraphCtx | None = None,
+        snapshot_id: str | None = None,
     ) -> list[dict]:
         """Ask LLM to produce an investigation plan. Falls back to single retrieve step."""
         plan_schema = '{"steps": [{"type": "retrieve|trace_forward|trace_backward|impact", "target": "string", "description": "string"}]}'
@@ -520,7 +566,16 @@ class DeepResearchAgent(BaseTypedAgent):
             )
             steps = result.get("steps") or []
             if isinstance(steps, list) and steps:
-                return [s for s in steps if isinstance(s, dict) and s.get("type") and s.get("target")][:5]
+                parsed_steps = [s for s in steps if isinstance(s, dict) and s.get("type") and s.get("target")][:5]
+                if snapshot_id:
+                    validated_steps = []
+                    for step in parsed_steps:
+                        validated_step = await self._validate_plan_step(step, snapshot_id)
+                        if "_warning" in validated_step:
+                            logger.warning("[DeepResearchAgent._plan] %s", validated_step["_warning"])
+                        validated_steps.append(validated_step)
+                    return validated_steps
+                return parsed_steps
         except Exception as exc:
             logger.warning("[DeepResearchAgent._plan] failed: %s", exc)
         return [{"type": "retrieve", "target": question, "description": "Retrieve initial evidence"}]

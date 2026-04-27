@@ -22,6 +22,7 @@ from .types import (
     TwoStageBundle,
     TwoStageStage3Result,
 )
+from .quality import compute_retrieval_quality
 
 _WORD = re.compile(r"[A-Za-z0-9_]+")
 
@@ -476,7 +477,12 @@ def _compute_chunk_score(
     sym_bonus = _SYMBOL_OVERLAP_BONUS if r["rel_path"] in seed_files else 1.0
     cid = ctx.file_community.get(r["rel_path"])
     mod_bonus = _MODULE_PROXIMITY_BONUS if (cid is not None and cid in seed_community_ids) else 1.0
-    cent_bonus = _CENTRALITY_BONUS_MAX if r["rel_path"] in ctx.central_files else 0.0
+    _query_term_set = frozenset(t.lower() for t in terms)
+    _content_tokens = frozenset(_WORD.findall(content_low))
+    cent_bonus = _CENTRALITY_BONUS_MAX if (
+        r["rel_path"] in ctx.central_files
+        and bool(_query_term_set & _content_tokens)
+    ) else 0.0
     # Apply chunk_type weight to the FULL total (not just BM25) so graph bonuses
     # (symbol/module/centrality) are also suppressed for low-value chunk types
     # like import_group. Otherwise a central file's import-only chunk still ranks
@@ -509,11 +515,13 @@ def _rank_and_budget(
                 if cid not in chunk_map:
                     continue
                 total, bm25, sym, mod, cent, r = chunk_map[cid]
+                chunk_type = _row_get(r, "chunk_type", "block")
                 out.append(RankedChunk(
                     chunk_id=cid,
                     rel_path=r["rel_path"],
                     chunk_index=int(r["chunk_index"]),
                     score=total,
+                    chunk_type=chunk_type,
                     bm25_component=bm25,
                     symbol_bonus=sym,
                     module_bonus=mod,
@@ -539,11 +547,13 @@ def _rank_and_budget(
         tok = int(r["token_estimate"] or 1)
         if used + tok > budget:
             continue
+        chunk_type = _row_get(r, "chunk_type", "block")
         out.append(RankedChunk(
             chunk_id=r["id"],
             rel_path=r["rel_path"],
             chunk_index=int(r["chunk_index"]),
             score=total,
+            chunk_type=chunk_type,
             bm25_component=bm25,
             symbol_bonus=sym,
             module_bonus=mod,
@@ -704,6 +714,11 @@ async def retrieve_two_stage_as_bundle(
         )
         for c in bundle.stage3.ranked
     ]
+    quality = None
+    if bundle.stage3.ranked:
+        terms = _query_terms(query)
+        top_score = bundle.stage3.ranked[0].score if bundle.stage3.ranked else 0.0
+        quality = compute_retrieval_quality(terms, bundle.stage3.ranked, top_score)
     return RetrievalBundle(
         snapshot_id=snapshot_id,
         mode=mode,
@@ -712,4 +727,5 @@ async def retrieve_two_stage_as_bundle(
         budget_tokens=budget,
         used_tokens=bundle.stage3.used_tokens,
         evidences=evidences,
+        quality=quality,
     )
