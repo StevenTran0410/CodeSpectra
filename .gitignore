@@ -4,6 +4,7 @@ CodeSpectra_doc/
 
 # Claude agent configs — local only
 .claude/
+AGENTS.md
 
 # OS
 .DS_Store
