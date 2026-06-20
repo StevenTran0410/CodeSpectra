@@ -32,6 +32,13 @@ from .types import (
     StructuralGraphSummary,
 )
 
+# Kill switch for SymbolGraphBuilder wiring (CS-240)
+_SYMBOL_GRAPH_BUILDER_ENABLED = os.getenv("SYMBOL_GRAPH_BUILDER_ENABLED", "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+)
+
 _RE_TS_IMPORT = re.compile(
     r"""(?m)^\s*import\s+(?:[^'"]+?\s+from\s+)?['"]([^'"]+)['"]\s*;?"""
 )
@@ -355,18 +362,79 @@ class StructuralGraphService:
                 dst_store = dst_path if dst_path else imp
                 edge_inputs.append((rel_path, dst_store, "import", int(is_external)))
                 _edge_rows.append(
-                    (req.snapshot_id, rel_path, dst_store, "import", int(is_external), now)
+                    (req.snapshot_id, rel_path, dst_store, "import", int(is_external), now, 1.0, "import_statement")
                 )
 
         # Batch-insert all edges in one round-trip instead of one await per edge.
         await db.executemany(
             """
             INSERT INTO structural_graph_edges
-            (snapshot_id, src_path, dst_path, edge_type, is_external, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            (snapshot_id, src_path, dst_path, edge_type, is_external, created_at, confidence_score, resolution_method)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             _edge_rows,
         )
+
+        # Wire SymbolGraphBuilder into the pipeline (CS-240)
+        _symbol_edge_rows: list[tuple] = []
+        if _SYMBOL_GRAPH_BUILDER_ENABLED:
+            from .symbol_graph import SymbolGraphBuilder
+
+            # Build symbol edges from changed files only (reuse extraction cache)
+            symbol_sources: dict[str, str] = {}
+            for r in files_to_process:
+                rel_path = r["rel_path"]
+                category = r["category"]
+                # Only process Python/TypeScript source files (not tests)
+                if category not in {"source", "infra"}:
+                    continue
+                if _is_init_file(rel_path):
+                    continue
+                src = (root / rel_path).resolve()
+                if not src.exists() or not src.is_file():
+                    continue
+                # Only for Python and TypeScript (SymbolGraphBuilder supports these)
+                if r["language"] not in {"python", "typescript", "javascript"}:
+                    continue
+                content = read_utf8_lenient(src)
+                if content:
+                    symbol_sources[rel_path] = content
+
+            if symbol_sources:
+                try:
+                    builder = SymbolGraphBuilder()
+                    edges = builder.build(symbol_sources)
+                    for edge in edges:
+                        _symbol_edge_rows.append(
+                            (
+                                req.snapshot_id,
+                                edge.src_symbol,
+                                edge.dst_symbol,
+                                edge.edge_type,
+                                edge.confidence_score,
+                                edge.resolution_method,
+                                json.dumps(edge.evidence_lines),
+                            )
+                        )
+                except Exception:
+                    logger.exception("[structural_graph] SymbolGraphBuilder failed for snapshot %s", req.snapshot_id)
+
+            if _symbol_edge_rows:
+                await db.executemany(
+                    """
+                    INSERT INTO symbol_graph_edges
+                    (snapshot_id, src_symbol, dst_symbol, edge_type, confidence_score, resolution_method, evidence_lines)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    _symbol_edge_rows,
+                )
+                logger.info(
+                    "[structural_graph] symbol_graph_edges: inserted %d rows for snapshot %s",
+                    len(_symbol_edge_rows),
+                    req.snapshot_id,
+                )
+        else:
+            logger.info("[structural_graph] SymbolGraphBuilder wiring disabled via SYMBOL_GRAPH_BUILDER_ENABLED")
 
         all_nodes = {
             f for f in file_set

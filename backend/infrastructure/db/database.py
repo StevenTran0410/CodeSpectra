@@ -509,6 +509,16 @@ CREATE INDEX IF NOT EXISTS idx_extraction_cache_snapshot
     ON file_extraction_cache(snapshot_id);
 """,
     },
+    {
+        "version": 32,
+        "description": "Add confidence_score and resolution_method columns for CS-240 confidence-scored edges",
+        "sql": """
+ALTER TABLE symbol_graph_edges ADD COLUMN confidence_score REAL NOT NULL DEFAULT 0.7;
+ALTER TABLE symbol_graph_edges ADD COLUMN resolution_method TEXT NOT NULL DEFAULT 'unknown';
+ALTER TABLE structural_graph_edges ADD COLUMN confidence_score REAL NOT NULL DEFAULT 1.0;
+ALTER TABLE structural_graph_edges ADD COLUMN resolution_method TEXT NOT NULL DEFAULT 'import_statement';
+""",
+    },
 ]
 
 TARGET_VERSION = len(_MIGRATIONS) - 1

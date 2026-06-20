@@ -56,8 +56,18 @@ async def get_callees_of(
     file_path: str,
     symbol: str | None = None,
     high_confidence_only: bool = True,
+    min_confidence: float | None = None,
 ) -> list[SymbolHop]:
-    """Forward lookup: what symbols does this file (or symbol) call?"""
+    """Forward lookup: what symbols does this file (or symbol) call?
+
+    Args:
+        snapshot_id: The snapshot to query.
+        file_path: The file path to query.
+        symbol: Optional specific symbol; if None, returns all symbols in the file.
+        high_confidence_only: (Legacy) If True, filters to confidence='high' edges.
+        min_confidence: Optional numeric threshold (0.0-1.0); when set, filters to
+                        confidence_score >= min_confidence. Orthogonal to high_confidence_only.
+    """
     db = get_db()
 
     if symbol:
@@ -68,7 +78,7 @@ async def get_callees_of(
             FROM symbol_graph_edges
             WHERE snapshot_id=? AND src_symbol=?
         """
-        params: tuple = (snapshot_id, prefix)
+        params: list = [snapshot_id, prefix]
     else:
         # All symbols defined in this file (src_symbol starts with "file_path::")
         prefix = f"{file_path}::"
@@ -78,12 +88,16 @@ async def get_callees_of(
             WHERE snapshot_id=? AND (src_symbol LIKE ? ESCAPE '\\' OR src_symbol=?)
         """
         escaped = prefix.replace("%", "\\%").replace("_", "\\_") + "%"
-        params = (snapshot_id, escaped, prefix.rstrip("::"))
+        params = [snapshot_id, escaped, prefix.rstrip("::")]
 
     if high_confidence_only:
         query += " AND confidence='high'"
 
-    async with db.execute(query, params) as cur:
+    if min_confidence is not None:
+        query += " AND confidence_score >= ?"
+        params.append(min_confidence)
+
+    async with db.execute(query, tuple(params)) as cur:
         rows = await cur.fetchall()
 
     return [
@@ -103,8 +117,18 @@ async def get_callers_of(
     file_path: str,
     symbol: str | None = None,
     high_confidence_only: bool = True,
+    min_confidence: float | None = None,
 ) -> list[SymbolHop]:
-    """Reverse lookup: who calls symbols defined in this file?"""
+    """Reverse lookup: who calls symbols defined in this file?
+
+    Args:
+        snapshot_id: The snapshot to query.
+        file_path: The file path to query.
+        symbol: Optional specific symbol; if None, returns all callers to symbols in the file.
+        high_confidence_only: (Legacy) If True, filters to confidence='high' edges.
+        min_confidence: Optional numeric threshold (0.0-1.0); when set, filters to
+                        confidence_score >= min_confidence. Orthogonal to high_confidence_only.
+    """
     db = get_db()
 
     if symbol:
@@ -114,7 +138,7 @@ async def get_callers_of(
             FROM symbol_graph_edges
             WHERE snapshot_id=? AND dst_symbol=?
         """
-        params: tuple = (snapshot_id, prefix)
+        params: list = [snapshot_id, prefix]
     else:
         prefix = f"{file_path}::"
         query = """
@@ -123,12 +147,16 @@ async def get_callers_of(
             WHERE snapshot_id=? AND (dst_symbol LIKE ? ESCAPE '\\' OR dst_symbol=?)
         """
         escaped = prefix.replace("%", "\\%").replace("_", "\\_") + "%"
-        params = (snapshot_id, escaped, prefix.rstrip("::"))
+        params = [snapshot_id, escaped, prefix.rstrip("::")]
 
     if high_confidence_only:
         query += " AND confidence='high'"
 
-    async with db.execute(query, params) as cur:
+    if min_confidence is not None:
+        query += " AND confidence_score >= ?"
+        params.append(min_confidence)
+
+    async with db.execute(query, tuple(params)) as cur:
         rows = await cur.fetchall()
 
     return [

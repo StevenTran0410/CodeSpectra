@@ -259,14 +259,25 @@ class _GraphContext:
     central_files: set[str] = field(default_factory=set)
 
 
-async def _load_graph_context(snapshot_id: str) -> _GraphContext:
+async def _load_graph_context(snapshot_id: str, min_confidence: float | None = None) -> _GraphContext:
+    """Load graph context for symbol expansion.
+
+    Args:
+        snapshot_id: The snapshot to load.
+        min_confidence: Optional numeric confidence threshold (0.0-1.0); when set,
+                        filters symbol_graph_edges to confidence_score >= min_confidence.
+                        Default (None) is unfiltered, preserving current full-recall behavior.
+    """
     db = get_db()
     ctx = _GraphContext()
 
-    async with db.execute(
-        "SELECT DISTINCT src_symbol, dst_symbol FROM symbol_graph_edges WHERE snapshot_id=?",
-        (snapshot_id,),
-    ) as cur:
+    query = "SELECT DISTINCT src_symbol, dst_symbol, confidence_score FROM symbol_graph_edges WHERE snapshot_id=?"
+    params: list = [snapshot_id]
+    if min_confidence is not None:
+        query += " AND confidence_score >= ?"
+        params.append(min_confidence)
+
+    async with db.execute(query, tuple(params)) as cur:
         rows = await cur.fetchall()
     for row in rows:
         src_file = row["src_symbol"].split("::")[0] if "::" in (row["src_symbol"] or "") else row["src_symbol"]
