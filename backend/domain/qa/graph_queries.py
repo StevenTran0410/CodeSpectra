@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 
+from domain.structural_graph.service import _expand_neighbors_python, _load_native_graph
 from infrastructure.db.database import get_db
-from domain.structural_graph.service import _load_native_graph, _expand_neighbors_python
 from shared.logger import logger
 
 
@@ -74,7 +74,7 @@ async def get_callees_of(
         prefix = f"{file_path}::{symbol}"
         # exact match on src_symbol
         query = """
-            SELECT src_symbol, dst_symbol, edge_type, confidence, evidence_lines
+            SELECT src_symbol, dst_symbol, edge_type, confidence, confidence_score, evidence_lines
             FROM symbol_graph_edges
             WHERE snapshot_id=? AND src_symbol=?
         """
@@ -83,7 +83,7 @@ async def get_callees_of(
         # All symbols defined in this file (src_symbol starts with "file_path::")
         prefix = f"{file_path}::"
         query = """
-            SELECT src_symbol, dst_symbol, edge_type, confidence, evidence_lines
+            SELECT src_symbol, dst_symbol, edge_type, confidence, confidence_score, evidence_lines
             FROM symbol_graph_edges
             WHERE snapshot_id=? AND (src_symbol LIKE ? ESCAPE '\\' OR src_symbol=?)
         """
@@ -91,7 +91,7 @@ async def get_callees_of(
         params = [snapshot_id, escaped, prefix.rstrip("::")]
 
     if high_confidence_only:
-        query += " AND confidence='high'"
+        query += " AND confidence_score >= 0.7"
 
     if min_confidence is not None:
         query += " AND confidence_score >= ?"
@@ -134,7 +134,7 @@ async def get_callers_of(
     if symbol:
         prefix = f"{file_path}::{symbol}"
         query = """
-            SELECT src_symbol, dst_symbol, edge_type, confidence, evidence_lines
+            SELECT src_symbol, dst_symbol, edge_type, confidence, confidence_score, evidence_lines
             FROM symbol_graph_edges
             WHERE snapshot_id=? AND dst_symbol=?
         """
@@ -142,7 +142,7 @@ async def get_callers_of(
     else:
         prefix = f"{file_path}::"
         query = """
-            SELECT src_symbol, dst_symbol, edge_type, confidence, evidence_lines
+            SELECT src_symbol, dst_symbol, edge_type, confidence, confidence_score, evidence_lines
             FROM symbol_graph_edges
             WHERE snapshot_id=? AND (dst_symbol LIKE ? ESCAPE '\\' OR dst_symbol=?)
         """
@@ -150,7 +150,7 @@ async def get_callers_of(
         params = [snapshot_id, escaped, prefix.rstrip("::")]
 
     if high_confidence_only:
-        query += " AND confidence='high'"
+        query += " AND confidence_score >= 0.7"
 
     if min_confidence is not None:
         query += " AND confidence_score >= ?"

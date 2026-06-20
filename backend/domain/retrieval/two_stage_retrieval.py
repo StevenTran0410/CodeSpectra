@@ -10,6 +10,7 @@ from infrastructure.db.database import get_db
 from shared.logger import logger
 
 from .bm25_scorer import CHUNK_TYPE_WEIGHT, BM25Scorer, _query_terms
+from .quality import compute_retrieval_quality
 from .service import _CHUNK_FULL_COLS
 from .types import (
     RankedChunk,
@@ -22,7 +23,6 @@ from .types import (
     TwoStageBundle,
     TwoStageStage3Result,
 )
-from .quality import compute_retrieval_quality
 
 _WORD = re.compile(r"[A-Za-z0-9_]+")
 

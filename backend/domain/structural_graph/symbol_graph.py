@@ -53,14 +53,13 @@ class SymbolEdge:
     resolution_method: str = "unknown"
     evidence_lines: list[int] = field(default_factory=list)
 
-    def __post_init__(self) -> None:
-        """Derive legacy confidence string from confidence_score for back-compat."""
-        # Ensure confidence field is set based on confidence_score
-        object.__setattr__(self, "confidence", "high" if self.confidence_score >= 0.7 else "low")
-
     @property
     def confidence(self) -> str:
-        """Legacy confidence string derived from confidence_score."""
+        """Legacy confidence string derived from confidence_score for back-compat.
+
+        Returns 'high' if score >= 0.7 else 'low' to maintain backward compatibility
+        with existing string-based filters.
+        """
         return "high" if self.confidence_score >= 0.7 else "low"
 
 

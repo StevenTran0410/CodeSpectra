@@ -240,6 +240,7 @@ class TestAmbiguousCasesUnchanged:
 @pytest.mark.asyncio
 async def test_legacy_confidence_string_filter_backward_compat(
     test_snapshot_id: str,
+    cleanup_test_data: None,
 ) -> None:
     """Verify high_confidence_only=True still excludes confidence < 0.7 rows."""
     db = get_db()
@@ -276,7 +277,10 @@ async def test_legacy_confidence_string_filter_backward_compat(
 
 
 @pytest.mark.asyncio
-async def test_min_confidence_filtering_get_callees_of(test_snapshot_id: str) -> None:
+async def test_min_confidence_filtering_get_callees_of(
+    test_snapshot_id: str,
+    cleanup_test_data: None,
+) -> None:
     """Verify min_confidence parameter filters correctly (inclusive >=)."""
     db = get_db()
 
@@ -309,11 +313,14 @@ async def test_min_confidence_filtering_get_callees_of(test_snapshot_id: str) ->
     )
     dests_half = {hop.dst_symbol for hop in result_half}
 
-    assert dests_half == {"b.py::t1", "b.py::t2", "b.py::t3"}, "All 3 edges >= 0.5"
+    assert dests_half == {"b.py::t1", "b.py::t2"}, "Only t1 (0.95) and t2 (0.85) are >= 0.5; t3 (0.4) is excluded"
 
 
 @pytest.mark.asyncio
-async def test_min_confidence_filtering_get_callers_of(test_snapshot_id: str) -> None:
+async def test_min_confidence_filtering_get_callers_of(
+    test_snapshot_id: str,
+    cleanup_test_data: None,
+) -> None:
     """Verify min_confidence parameter works for reverse lookup (get_callers_of)."""
     db = get_db()
 
@@ -342,7 +349,10 @@ async def test_min_confidence_filtering_get_callers_of(test_snapshot_id: str) ->
 
 
 @pytest.mark.asyncio
-async def test_min_confidence_none_unfiltered(test_snapshot_id: str) -> None:
+async def test_min_confidence_none_unfiltered(
+    test_snapshot_id: str,
+    cleanup_test_data: None,
+) -> None:
     """Verify min_confidence=None means unfiltered (default, preserve current recall)."""
     db = get_db()
 
@@ -377,9 +387,9 @@ def test_snapshot_id() -> str:
     return f"test-snap-{uuid.uuid4().hex[:8]}"
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture
 async def cleanup_test_data(test_snapshot_id: str) -> None:
-    """Clean up test edges after test runs."""
+    """Clean up test edges after test runs (async/DB integration tests only)."""
     yield
     db = get_db()
     await db.execute(
