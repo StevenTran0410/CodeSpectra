@@ -413,6 +413,7 @@ class StructuralGraphService:
                                 edge.edge_type,
                                 edge.confidence_score,
                                 edge.resolution_method,
+                                edge.confidence,
                                 json.dumps(edge.evidence_lines),
                             )
                         )
@@ -423,8 +424,8 @@ class StructuralGraphService:
                 await db.executemany(
                     """
                     INSERT INTO symbol_graph_edges
-                    (snapshot_id, src_symbol, dst_symbol, edge_type, confidence_score, resolution_method, evidence_lines)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (snapshot_id, src_symbol, dst_symbol, edge_type, confidence_score, resolution_method, confidence, evidence_lines)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     _symbol_edge_rows,
                 )
