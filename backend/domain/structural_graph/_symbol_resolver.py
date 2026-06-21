@@ -22,8 +22,12 @@ Resolution method mapping (CS-240):
     assignment tracking, exactly 1 type assigned to attr
     (confidence_score=0.85). Moderate-high: heuristic but unambiguous.
   - 'name_heuristic_ambiguous': self.attr.method() or interface implementor
-    with 2+ possible target types (confidence_score=0.4). Low confidence:
-    multiple candidates, may pick wrong one.
+    with 2+ possible target types (confidence_score computed dynamically via
+    _ambiguous_confidence(num_candidates)). Low confidence: multiple candidates,
+    may pick wrong one. Formula: max(0.15, 0.6/num_candidates) ensures confidence
+    decays with fan-out but never drops below 0.15 floor. For 2-5 candidates,
+    this yields 0.3-0.2 (firmly 'low' per the >=0.7 'high' boundary); for 20+
+    candidates, it yields 0.15 floor.
   - 'unknown': fallback for initialization defaults (confidence_score=0.7).
 
 Legacy string confidence values ('high'/'low'/'none') are preserved for
@@ -59,6 +63,31 @@ CONF_NONE = "none"
 
 # Maximum MRO depth to prevent infinite loops in pathological inheritance
 _MAX_MRO_DEPTH = 20
+
+
+def _ambiguous_confidence(num_candidates: int) -> float:
+    """Compute confidence score for ambiguous resolution based on candidate count.
+
+    When a call site has multiple possible targets (interface implementors,
+    multiple constructor-assigned types), confidence decays with the number
+    of candidates — lower certainty when choosing among many options.
+
+    Formula: max(0.15, 0.6 / max(1, num_candidates))
+    - 1 candidate: 0.6 (still "low" confidence per >=0.7 derivation, but highest ambiguous score)
+    - 2 candidates: 0.3
+    - 3 candidates: 0.2
+    - 5+ candidates: 0.15 (floor)
+
+    This ensures all ambiguous edges remain "low" under the legacy >=0.7 "high" boundary,
+    while still preserving the numeric gradient for ranking/filtering downstream (3c).
+
+    Args:
+        num_candidates: Number of possible resolution targets (>=1).
+
+    Returns:
+        Confidence score in [0.15, 0.6].
+    """
+    return max(0.15, 0.6 / max(1, num_candidates))
 
 
 # ---------------------------------------------------------------------------
@@ -254,7 +283,7 @@ def _resolve(
                                 src_symbol=call.caller_fqn,
                                 dst_symbol=target_fqn,
                                 edge_type="calls",
-                                confidence_score=0.4,
+                                confidence_score=_ambiguous_confidence(len(implementors)),
                                 resolution_method="name_heuristic_ambiguous",
                                 evidence_lines=[call.line],
                             )
@@ -268,7 +297,7 @@ def _resolve(
                         src_symbol=call.caller_fqn,
                         dst_symbol=target_fqn,
                         edge_type="calls",
-                        confidence_score=0.85 if is_single_type else 0.4,
+                        confidence_score=0.85 if is_single_type else _ambiguous_confidence(len(assigned_types)),
                         resolution_method="constructor_type_trace" if is_single_type else "name_heuristic_ambiguous",
                         evidence_lines=[call.line],
                     )

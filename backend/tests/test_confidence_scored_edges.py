@@ -133,14 +133,16 @@ class Runner:
         beta_edge = _find(edges, "reassign.py::Runner.execute", "reassign.py::Beta.run")
 
         # Should have both edges, both marked as low confidence
+        # With 2 assigned types, _ambiguous_confidence(2) = 0.6/2 = 0.3
+        expected_score = 0.3  # _ambiguous_confidence(2)
         if alpha_edge:
-            assert alpha_edge.confidence_score == 0.4, f"Expected 0.4 for Alpha, got {alpha_edge.confidence_score}"
+            assert alpha_edge.confidence_score == expected_score, f"Expected {expected_score} for Alpha, got {alpha_edge.confidence_score}"
             assert alpha_edge.resolution_method == "name_heuristic_ambiguous"
-            assert alpha_edge.confidence == "low", "Score 0.4 < 0.7 → confidence='low'"
+            assert alpha_edge.confidence == "low", f"Score {expected_score} < 0.7 → confidence='low'"
         if beta_edge:
-            assert beta_edge.confidence_score == 0.4, f"Expected 0.4 for Beta, got {beta_edge.confidence_score}"
+            assert beta_edge.confidence_score == expected_score, f"Expected {expected_score} for Beta, got {beta_edge.confidence_score}"
             assert beta_edge.resolution_method == "name_heuristic_ambiguous"
-            assert beta_edge.confidence == "low", "Score 0.4 < 0.7 → confidence='low'"
+            assert beta_edge.confidence == "low", f"Score {expected_score} < 0.7 → confidence='low'"
 
     def test_module_call_import_resolved(self) -> None:
         """_resolve_module_call via import → confidence_score=0.95, resolution_method='import_path_match'."""

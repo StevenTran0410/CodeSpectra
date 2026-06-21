@@ -59,6 +59,7 @@ class RetrieveRequest(BaseModel):
     section: RetrievalSection
     mode: RetrievalMode = RetrievalMode.HYBRID
     max_results: int = 20
+    min_confidence: float | None = None
 
 
 class RetrievalCompareResponse(BaseModel):
@@ -77,6 +78,7 @@ class TwoStageRequest(BaseModel):
     query: str
     section: RetrievalSection
     budget: int | None = None
+    min_confidence: float | None = None
 
 
 class StageCandidate(BaseModel):

@@ -510,6 +510,7 @@ class RetrievalService:
                 section=req.section,
                 budget=budget,
                 mode=req.mode,
+                min_confidence=req.min_confidence,
             )
         except Exception:
             logger.warning(
@@ -665,6 +666,7 @@ class RetrievalService:
             query=req.query,
             section=req.section,
             budget=budget,
+            min_confidence=req.min_confidence,
         )
 
     async def compare(self, req: RetrieveRequest) -> RetrievalCompareResponse:

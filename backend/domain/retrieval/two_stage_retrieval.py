@@ -588,6 +588,7 @@ async def retrieve_two_stage(
     query: str,
     section: RetrievalSection,
     budget: int,
+    min_confidence: float | None = None,
 ) -> TwoStageBundle:
     if not query.strip():
         raise ValueError("Query is required")
@@ -616,7 +617,7 @@ async def retrieve_two_stage(
     if scorer is None:
         logger.debug("[two_stage] BM25 stats not found for %s — using lexical fallback", snapshot_id)
 
-    ctx = await _load_graph_context(snapshot_id)
+    ctx = await _load_graph_context(snapshot_id, min_confidence=min_confidence)
     symbol_index = await load_symbol_index(snapshot_id)
 
     stage1 = _stage1_score_rows(all_rows, scorer, terms, top_k=100)
@@ -710,9 +711,10 @@ async def retrieve_two_stage_as_bundle(
     section: RetrievalSection,
     budget: int,
     mode: RetrievalMode = RetrievalMode.HYBRID,
+    min_confidence: float | None = None,
 ) -> RetrievalBundle:
     """Run the 2-stage pipeline and return a RetrievalBundle (agent-compatible interface)."""
-    bundle = await retrieve_two_stage(snapshot_id, query, section, budget)
+    bundle = await retrieve_two_stage(snapshot_id, query, section, budget, min_confidence=min_confidence)
     evidences = [
         RetrievalEvidence(
             chunk_id=c.chunk_id,

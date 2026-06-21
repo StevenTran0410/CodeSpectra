@@ -19,6 +19,7 @@ class SymbolHop:
     edge_type: str  # "calls" | "returns" | "param_type"
     confidence: str  # "high" | "low" | "none"
     evidence_lines: list[int] = field(default_factory=list)
+    confidence_score: float = 1.0  # numeric score (0.0-1.0); default for safety if not populated
 
     @property
     def src_file(self) -> str:
@@ -40,6 +41,7 @@ class TraceStep:
     symbols_involved: list[str]
     hops: list[SymbolHop]
     is_seed: bool = False
+    path_confidence: float = 1.0  # multiplicative confidence from chain start to this step
 
 
 @dataclass
@@ -107,6 +109,7 @@ async def get_callees_of(
             edge_type=r["edge_type"],
             confidence=r["confidence"],
             evidence_lines=json.loads(r["evidence_lines"] or "[]"),
+            confidence_score=r["confidence_score"],
         )
         for r in rows
     ]
@@ -166,6 +169,7 @@ async def get_callers_of(
             edge_type=r["edge_type"],
             confidence=r["confidence"],
             evidence_lines=json.loads(r["evidence_lines"] or "[]"),
+            confidence_score=r["confidence_score"],
         )
         for r in rows
     ]
@@ -177,12 +181,17 @@ async def trace_call_chain(
     direction: str,  # "forward" | "backward"
     max_hops: int = 4,
     high_confidence_only: bool = True,
+    min_confidence: float | None = None,
 ) -> list[TraceStep]:
     """Multi-hop call chain traversal starting from start_file.
 
     Each hop discovers new files reachable via symbol-level call edges.
     Returns ordered list of TraceStep, one per file discovered.
     Stops when max_hops reached, no new files, or > 30 total files visited.
+
+    Args:
+        min_confidence: Optional numeric threshold (0.0-1.0); when set, filters to
+                        confidence_score >= min_confidence. Orthogonal to high_confidence_only.
     """
     visited: set[str] = {start_file}
     steps: list[TraceStep] = []
@@ -199,9 +208,9 @@ async def trace_call_chain(
 
         for current_file in frontier:
             if direction == "forward":
-                hops = await get_callees_of(snapshot_id, current_file, high_confidence_only=high_confidence_only)
+                hops = await get_callees_of(snapshot_id, current_file, high_confidence_only=high_confidence_only, min_confidence=min_confidence)
             else:
-                hops = await get_callers_of(snapshot_id, current_file, high_confidence_only=high_confidence_only)
+                hops = await get_callers_of(snapshot_id, current_file, high_confidence_only=high_confidence_only, min_confidence=min_confidence)
 
             all_hops.extend(hops)
             for hop in hops:
@@ -220,12 +229,19 @@ async def trace_call_chain(
                 if (direction == "forward" and h.dst_file == new_file) or (direction == "backward" and h.src_file == new_file)
             ]
             symbols = list({h.dst_symbol if direction == "forward" else h.src_symbol for h in file_hops})
+            # Path confidence: multiply parent step's confidence by the max confidence among parallel hops
+            # that discover this file (one strong edge suffices — OR relationship), multiply across step depth
+            # (a chain requires every hop to hold — AND relationship).
+            parent_step = steps[-1]  # Last step added is the parent frontier
+            max_hop_confidence = max((h.confidence_score for h in file_hops), default=1.0)
+            new_path_confidence = parent_step.path_confidence * max_hop_confidence
             steps.append(
                 TraceStep(
                     step=hop_num,
                     file=new_file,
                     symbols_involved=symbols[:5],
                     hops=file_hops[:10],
+                    path_confidence=new_path_confidence,
                 )
             )
 
