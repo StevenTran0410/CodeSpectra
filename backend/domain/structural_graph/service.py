@@ -239,6 +239,8 @@ class StructuralGraphService:
         if req.force_rebuild:
             await db.execute("DELETE FROM structural_graph_edges WHERE snapshot_id=?", (req.snapshot_id,))
             await db.execute("DELETE FROM structural_graph_summaries WHERE snapshot_id=?", (req.snapshot_id,))
+            if _SYMBOL_GRAPH_BUILDER_ENABLED:
+                await db.execute("DELETE FROM symbol_graph_edges WHERE snapshot_id=?", (req.snapshot_id,))
         else:
             async with db.execute(
                 "SELECT 1 FROM structural_graph_summaries WHERE snapshot_id=? LIMIT 1",
@@ -264,6 +266,7 @@ class StructuralGraphService:
             load_previous_cache,
             classify_files,
             copy_unchanged_edges,
+            copy_unchanged_symbol_edges,
             write_cache as write_cache_db,
             _get_previous_snapshot_id,
         )
@@ -290,6 +293,16 @@ class StructuralGraphService:
                 cache_result.unchanged_paths,
             )
             logger.info("[structural_graph] copied %d edges from cache for unchanged files", copied)
+
+        # Copy symbol graph edges for unchanged files (CS-249)
+        if _SYMBOL_GRAPH_BUILDER_ENABLED and cache_result.previous_snapshot_id and cache_result.unchanged_paths:
+            copied_symbols = await copy_unchanged_symbol_edges(
+                db,
+                cache_result.previous_snapshot_id,
+                req.snapshot_id,
+                cache_result.unchanged_paths,
+            )
+            logger.info("[structural_graph] copied %d symbol edges from cache for unchanged files", copied_symbols)
 
         # Extract imports ONLY from changed files
         files_to_process = cache_result.changed_files
