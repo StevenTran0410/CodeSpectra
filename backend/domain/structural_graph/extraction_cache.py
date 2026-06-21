@@ -246,7 +246,7 @@ async def copy_unchanged_symbol_edges(
         count_params = (previous_snapshot_id, *params_list)
         async with db.execute(count_query, count_params) as cur:
             count_row = await cur.fetchone()
-            chunk_count = count_row["cnt"]
+            chunk_count = count_row["cnt"] if count_row is not None else 0
 
         await db.execute(query, params)
         total_copied += chunk_count
