@@ -329,18 +329,15 @@ async def test_build_fresh_snapshot_no_previous(
     assert response.summary is not None
     assert response.summary.total_nodes >= 1  # At least foo.py should be a node
 
-    # Verify symbol edges were created (if SYMBOL_GRAPH_BUILDER_ENABLED is true)
+    # Verify symbol edges were created from foo.py (which has caller->helper edge)
     async with db.execute(
         "SELECT COUNT(*) as cnt FROM symbol_graph_edges WHERE snapshot_id=?",
         (snap_id,),
     ) as cur:
         row = await cur.fetchone()
-        # Fresh snapshot should have some symbol edges from building foo.py/bar.py
-        # At minimum, if the builder ran, it should have edges
         edge_count = row["cnt"]
-        # Note: exact count depends on whether SYMBOL_GRAPH_BUILDER_ENABLED is set
-        # Just verify it's reasonable (>= 0; if builder ran we'd expect >= 1)
-        assert edge_count >= 0
+        # foo.py has def caller(): helper() which should produce at least one symbol edge
+        assert edge_count >= 1, f"Fresh snapshot should have at least 1 symbol edge from foo.py, got {edge_count}"
 
 
 @pytest.mark.asyncio
@@ -429,7 +426,7 @@ async def test_build_mixed_changed_unchanged_carry_forward(
     foo_file = Path(local_path) / "foo.py"
     bar_file = Path(local_path) / "bar.py"
     foo_file.write_text("def helper(): pass\ndef caller(): helper()")
-    bar_file.write_text("def process(): pass")
+    bar_file.write_text("def util(): pass\ndef process(): util()")
 
     # === Snapshot 1 ===
     now = utc_now_iso()
@@ -498,33 +495,41 @@ async def test_build_mixed_changed_unchanged_carry_forward(
         snap2_edges = await cur.fetchall()
 
     # === Verify carry-forward behavior ===
-    # Edges from unchanged files (bar.py) should exist in snap2 with identical values
-    if snap1_edge_count > 0:
-        # Find bar.py edges in snap1
-        bar_edges_snap1 = [e for e in snap1_edges if e["src_symbol"].startswith("bar.py::")]
+    # Snap1 must have produced edges for the test to be meaningful
+    assert snap1_edge_count > 0, "Fixture produced no edges in snap1 — test is vacuous"
 
-        if bar_edges_snap1:
-            # These should be carried forward to snap2
-            bar_edges_snap2 = [e for e in snap2_edges if e["src_symbol"].startswith("bar.py::")]
-            assert len(bar_edges_snap2) == len(bar_edges_snap1), (
-                f"bar.py edges not carried forward: snap1 had {len(bar_edges_snap1)}, snap2 has {len(bar_edges_snap2)}"
-            )
+    # Find bar.py edges in snap1 (bar.py is unchanged, should be carried forward)
+    bar_edges_snap1 = [e for e in snap1_edges if e["src_symbol"].startswith("bar.py::")]
+    assert bar_edges_snap1, "bar.py produced no edges in snap1 — fixture broken"
 
-            # Verify confidence_score and resolution_method are preserved
-            for orig_edge in bar_edges_snap1:
-                matching = [
-                    e
-                    for e in bar_edges_snap2
-                    if e["src_symbol"] == orig_edge["src_symbol"]
-                    and e["dst_symbol"] == orig_edge["dst_symbol"]
-                ]
-                assert matching, f"Edge {orig_edge['src_symbol']} -> {orig_edge['dst_symbol']} not carried forward"
-                carried = matching[0]
-                assert carried["confidence_score"] == orig_edge["confidence_score"], (
-                    f"Confidence mismatch for {orig_edge['src_symbol']}: "
-                    f"{orig_edge['confidence_score']} -> {carried['confidence_score']}"
-                )
-                assert carried["resolution_method"] == orig_edge["resolution_method"], (
-                    f"Resolution method mismatch for {orig_edge['src_symbol']}: "
-                    f"{orig_edge['resolution_method']} -> {carried['resolution_method']}"
-                )
+    # These should be carried forward to snap2
+    bar_edges_snap2 = [e for e in snap2_edges if e["src_symbol"].startswith("bar.py::")]
+    assert len(bar_edges_snap2) == len(bar_edges_snap1), (
+        f"bar.py edges not carried forward: snap1 had {len(bar_edges_snap1)}, snap2 has {len(bar_edges_snap2)}"
+    )
+
+    # Verify confidence_score and resolution_method are preserved on carry-forward
+    for orig_edge in bar_edges_snap1:
+        matching = [
+            e
+            for e in bar_edges_snap2
+            if e["src_symbol"] == orig_edge["src_symbol"]
+            and e["dst_symbol"] == orig_edge["dst_symbol"]
+        ]
+        assert matching, f"Edge {orig_edge['src_symbol']} -> {orig_edge['dst_symbol']} not carried forward"
+        carried = matching[0]
+        assert carried["confidence_score"] == orig_edge["confidence_score"], (
+            f"Confidence mismatch for {orig_edge['src_symbol']}: "
+            f"{orig_edge['confidence_score']} -> {carried['confidence_score']}"
+        )
+        assert carried["resolution_method"] == orig_edge["resolution_method"], (
+            f"Resolution method mismatch for {orig_edge['src_symbol']}: "
+            f"{orig_edge['resolution_method']} -> {carried['resolution_method']}"
+        )
+
+    # Verify foo.py edges in snap2 are from fresh computation, not carry-forward
+    # foo.py was modified between snapshots, so its edges must be recomputed
+    foo_edges_snap2 = [e for e in snap2_edges if e["src_symbol"].startswith("foo.py::")]
+    assert foo_edges_snap2, "foo.py edges missing in snap2 (changed file must be recomputed)"
+    # foo.py should still have its caller->helper edge after modification (comment added)
+    # This implicitly verifies foo.py was not carried forward and was genuinely rebuilt
