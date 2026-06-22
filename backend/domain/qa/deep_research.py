@@ -93,6 +93,25 @@ def _symbol_graph_path(trace: list[TraceStep], limit: int = 6) -> list[str]:
     return path
 
 
+def _path_confidence_breakdown(trace: list[TraceStep], limit: int = 6) -> tuple[float, list[float]]:
+    """Extract final path confidence and per-hop confidence scores from trace.
+
+    Returns:
+        (final_path_confidence, hop_confidences) where hop_confidences is the
+        confidence_score for each hop in the path (excluding seed step 0).
+    """
+    if not trace:
+        return 1.0, []
+    # Use the last non-seed step's path confidence as the final value
+    final_conf = trace[-1].path_confidence if trace else 1.0
+    hop_confs = []
+    for step in trace[1:limit]:  # Skip seed (step 0)
+        # Collect the max confidence from this step's hops
+        max_conf = max((h.confidence_score for h in step.hops), default=1.0)
+        hop_confs.append(max_conf)
+    return final_conf, hop_confs
+
+
 def _community_context_block(files: list[str], ctx: _GraphCtx) -> str:
     """Produce a compact module-context note for a list of files."""
     if not ctx.community_of:
@@ -126,6 +145,8 @@ class ResearchStepResult(BaseModel):
     files_involved: list[str]
     finding: str
     graph_path: list[str] | None = None
+    tentative_files: list[str] = []  # files found only via low-confidence fallback
+    tentative_confidence: dict[str, float] = {}  # tentative file -> max hop confidence
 
 
 class DeepResearchResult(BaseModel):
@@ -226,7 +247,8 @@ Output ONLY the JSON object. No markdown, no prose.
 
 _SYNTHESIZE_META_SCHEMA = (
     '{"reasoning_chain": [{"step_number": 1, "description": "string", '
-    '"files_involved": ["string"], "finding": "string", "graph_path": ["string"]}], '
+    '"files_involved": ["string"], "finding": "string", "graph_path": ["string"], '
+    '"tentative_files": ["string"], "tentative_confidence": {"file": 0.5}}], '
     '"confidence": "high|medium|low", "unknowns": ["string"]}'
 )
 
@@ -298,6 +320,9 @@ class DeepResearchAgent(BaseTypedAgent):
             new_files: list[str] = []
             graph_path: list[str] | None = None
 
+            tentative_files: list[str] = []
+            tentative_confidence: dict[str, float] = {}
+
             if step_type in ("trace_forward", "trace_backward"):
                 direction = "forward" if step_type == "trace_forward" else "backward"
                 trace = await trace_call_chain(
@@ -321,11 +346,25 @@ class DeepResearchAgent(BaseTypedAgent):
                     if extra:
                         logger.debug("[DeepResearch] confidence fallback added %d files", len(extra))
                         new_files.extend(extra[:5])
+                        # Capture tentative files and their max hop confidences before overwriting trace
+                        tentative_files = extra[:5]
+                        for file in tentative_files:
+                            # Find max confidence among hops that led to this file in trace_low
+                            for step in trace_low:
+                                if step.file == file:
+                                    max_conf = max((h.confidence_score for h in step.hops), default=1.0)
+                                    tentative_confidence[file] = max_conf
+                                    break
                     trace = trace_low  # use richer trace for symbol path
 
-                # Enhancement 3: symbol-level graph path
+                # Enhancement 3: symbol-level graph path with confidence breakdown
                 if len(trace) > 1:
                     graph_path = _symbol_graph_path(trace, limit=6)
+                    path_conf, hop_confs = _path_confidence_breakdown(trace, limit=6)
+                    # Format: "CALL GRAPH PATH (confidence: 0.61, hops: 0.9→0.85→0.4→...)"
+                    hop_str = "→".join(f"{c:.2f}" for c in hop_confs) if hop_confs else ""
+                    confidence_note = f" (confidence: {path_conf:.2f}" + (f", hops: {hop_str}" if hop_str else "") + ")"
+                    graph_path_with_conf = [confidence_note] + graph_path
 
             elif step_type == "impact":
                 impact = await get_impact_cone(snapshot_id, target, hops=3)
@@ -419,7 +458,12 @@ class DeepResearchAgent(BaseTypedAgent):
             if prior_evidence_block:
                 user_prompt += f"PREVIOUSLY SEEN CODE (condensed):\n{prior_evidence_block}\n\n"
             if graph_path:
-                user_prompt += f"CALL GRAPH PATH (symbol-level): {' → '.join(graph_path)}\n\n"
+                # Display format includes confidence breakdown when available
+                if len(graph_path) > 1 and isinstance(graph_path[0], str) and graph_path[0].startswith(" (confidence:"):
+                    # graph_path_with_conf format: [confidence_note, ...symbols]
+                    user_prompt += f"CALL GRAPH PATH (symbol-level){graph_path[0]}: {' → '.join(graph_path[1:])}\n\n"
+                else:
+                    user_prompt += f"CALL GRAPH PATH (symbol-level): {' → '.join(graph_path)}\n\n"
             user_prompt += f"CURRENT STEP CODE EVIDENCE:\n{current_evidence_block}"
 
             step_schema = '{"finding": "string", "key_files": ["string"], "graph_path": ["string"], "sufficient": true}'
@@ -432,13 +476,17 @@ class DeepResearchAgent(BaseTypedAgent):
                 max_completion_tokens=800,
             )
 
+            # Use graph_path_with_conf for storing in findings if it exists (includes confidence info)
+            stored_graph_path = graph_path_with_conf if "graph_path_with_conf" in locals() else graph_path
             step_findings.append(
                 {
                     "step_number": len(step_findings) + 1,
                     "description": description,
                     "files_involved": step_result.get("key_files") or new_files[:5],
                     "finding": str(step_result.get("finding") or ""),
-                    "graph_path": step_result.get("graph_path") or graph_path,
+                    "graph_path": step_result.get("graph_path") or stored_graph_path,
+                    "tentative_files": tentative_files,
+                    "tentative_confidence": tentative_confidence,
                 }
             )
 
@@ -453,6 +501,8 @@ class DeepResearchAgent(BaseTypedAgent):
             f"Step {f['step_number']}: {f['description']}\n"
             f"  Finding: {f['finding']}\n"
             f"  Files: {', '.join(f['files_involved'][:3])}"
+            + (f"\n  [Note: {len(f.get('tentative_files', []))} tentative (low-confidence fallback)]"
+               if f.get('tentative_files') else "")
             for f in step_findings
         )
         synthesis_base = (

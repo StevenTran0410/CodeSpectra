@@ -183,9 +183,75 @@ async def copy_unchanged_edges(
             *chunk,
         )
 
+        # CS-255: baseline captured immediately before execute(), not tracked as a
+        # running total from 0 -- total_changes is cumulative for the whole connection's
+        # lifetime, so any prior writes on this connection would otherwise be
+        # misattributed to this chunk's insert count (same fix as the symbol-edges
+        # sibling below).
+        before = db.total_changes
         await db.execute(query, params)
-        rows_affected = db.total_changes - total_copied
-        total_copied += rows_affected
+        total_copied += db.total_changes - before
+
+    await db.commit()
+    return total_copied
+
+
+async def copy_unchanged_symbol_edges(
+    db: aiosqlite.Connection,
+    previous_snapshot_id: str,
+    current_snapshot_id: str,
+    unchanged_paths: list[str],
+) -> int:
+    """Copy symbol edges for unchanged files from previous snapshot via bulk INSERT SELECT (CS-249).
+
+    Matches symbol edges belonging to unchanged files using substr-based prefix matching
+    on src_symbol (format: 'path::symbol_name'). Preserves all edge properties including
+    confidence_score and resolution_method.
+
+    Chunks unchanged_paths into groups of 200 to account for 2 bind params per path
+    (path and path:: prefix), staying well under SQLite's variable limit.
+
+    Returns total symbol edges copied.
+    """
+    if not unchanged_paths:
+        return 0
+
+    total_copied = 0
+    chunk_size = 200  # Conservative: 2 params per path + 2 fixed params = 402 params max
+
+    for i in range(0, len(unchanged_paths), chunk_size):
+        chunk = unchanged_paths[i : i + chunk_size]
+
+        # Build OR'd conditions for each unchanged path:
+        # substr(src_symbol, 1, length(?) + 2) = ? || '::'
+        # This ensures 'foo.py' only matches 'foo.py::*', not 'foo2.py::*'
+        conditions = []
+        params_list = []
+        for path in chunk:
+            conditions.append("substr(src_symbol, 1, length(?) + 2) = ? || '::'")
+            params_list.extend([path, path])
+
+        condition_str = " OR ".join(f"({c})" for c in conditions)
+
+        query = f"""
+            INSERT INTO symbol_graph_edges
+            (snapshot_id, src_symbol, dst_symbol, edge_type, confidence_score, resolution_method, confidence, evidence_lines)
+            SELECT ?, src_symbol, dst_symbol, edge_type, confidence_score, resolution_method, confidence, evidence_lines
+            FROM symbol_graph_edges
+            WHERE snapshot_id=? AND ({condition_str})
+        """
+        params = (current_snapshot_id, previous_snapshot_id, *params_list)
+
+        # CS-255: get the inserted count from the db.total_changes delta across just
+        # this execute() (one round-trip total), instead of running a separate COUNT
+        # query before the INSERT (was 2 round-trips per chunk). Note this captures a
+        # fresh baseline immediately before each execute rather than tracking a
+        # running total from 0 -- total_changes is cumulative for the whole connection's
+        # lifetime, so any prior writes on this connection (e.g. test fixture setup)
+        # would otherwise be misattributed to the first chunk's insert count.
+        before = db.total_changes
+        await db.execute(query, params)
+        total_copied += db.total_changes - before
 
     await db.commit()
     return total_copied

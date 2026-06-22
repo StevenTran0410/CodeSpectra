@@ -4,7 +4,6 @@ import { ArrowLeft, Loader2, Save, Search } from 'lucide-react'
 import type {
   RetrievalBundle,
   RetrievalCompareResponse,
-  RetrievalMode,
   RetrievalSection,
   RepoMapSummary,
   StructuralGraphSummary,
@@ -13,9 +12,97 @@ import type {
   TwoStageCandidate,
   TwoStageExpansion,
   TwoStageRankedChunk,
+  RrfFusionDebugBundle,
+  SignalRankEntry,
+  FusedRankEntry,
 } from '../../types/electron'
 import { ErrorBanner } from '../../components/ui/ErrorBanner'
 import { toErrorMessage } from '../../lib/errors'
+
+const QUERY_CSV_MAX_ROWS = 20
+
+function csvEscape(value: string | number): string {
+  const s = String(value)
+  if (s.includes(',') || s.includes('"') || s.includes('\n')) {
+    return `"${s.replace(/"/g, '""')}"`
+  }
+  return s
+}
+
+/**
+ * Builds one combined CSV from both query systems' FINAL results only
+ * (Stage 3 re-ranked for 2-stage, fused results for RRF) — capped at
+ * QUERY_CSV_MAX_ROWS entries per system, not the full debug breakdown.
+ */
+function buildQueryComparisonCsv(
+  twoStageBundle: TwoStageDebugBundle | null,
+  rrfFusionBundle: RrfFusionDebugBundle | null
+): string | null {
+  if (!twoStageBundle && !rrfFusionBundle) return null
+
+  const rows: string[] = ['system,rank,rel_path,score,details']
+
+  if (twoStageBundle) {
+    twoStageBundle.stage3.ranked.slice(0, QUERY_CSV_MAX_ROWS).forEach((chunk, i) => {
+      const details = `bm25=${chunk.bm25_component.toFixed(2)} sym=${chunk.symbol_bonus.toFixed(2)} mod=${chunk.module_bonus.toFixed(2)} cent=${chunk.centrality_bonus.toFixed(2)}`
+      rows.push(
+        [
+          'two_stage',
+          String(i + 1),
+          csvEscape(chunk.rel_path),
+          chunk.score.toFixed(2),
+          csvEscape(details),
+        ].join(',')
+      )
+    })
+  }
+
+  if (rrfFusionBundle) {
+    rrfFusionBundle.fused.slice(0, QUERY_CSV_MAX_ROWS).forEach((entry, i) => {
+      const details = Object.entries(entry.per_signal_ranks)
+        .map(([name, rank]) => `${name}=#${rank}`)
+        .join(' ')
+      rows.push(
+        [
+          'rrf_fusion',
+          String(i + 1),
+          csvEscape(entry.rel_path),
+          entry.fused_score.toFixed(4),
+          csvEscape(details),
+        ].join(',')
+      )
+    })
+  }
+
+  return rows.join('\n')
+}
+
+/** Dedupe a RetrievalBundle's evidences down to the best-scoring chunk per file. */
+function dedupeEvidences(
+  evidences: RetrievalBundle['evidences']
+): RetrievalBundle['evidences'] {
+  const seen = new Map<string, RetrievalBundle['evidences'][0]>()
+  for (const e of evidences) {
+    const prev = seen.get(e.rel_path)
+    if (!prev || e.score > prev.score) seen.set(e.rel_path, e)
+  }
+  return Array.from(seen.values()).sort((a, b) => b.score - a.score)
+}
+
+/** Adapt RRF's FusedRankEntry list into RetrievalResultPanel's expected shape, so
+ * "Run retrieval" can reuse the same display component when wired to RRF fusion. */
+function adaptFusedEntriesForPanel(
+  fused: FusedRankEntry[]
+): Array<{ rel_path: string; chunk_index: number; reason_codes: string[]; score: number; token_estimate: number; excerpt: string }> {
+  return fused.map((e) => ({
+    rel_path: e.rel_path,
+    chunk_index: 0,
+    reason_codes: Object.entries(e.per_signal_ranks).map(([name, rank]) => `${name}#${rank}`),
+    score: e.fused_score,
+    token_estimate: e.token_estimate ?? 0,
+    excerpt: e.excerpt,
+  }))
+}
 
 function RetrievalResultPanel({
   deduped,
@@ -198,6 +285,165 @@ function Stage3Panel({
   )
 }
 
+function RrfBm25SignalPanel({ entries }: { entries: SignalRankEntry[] }): React.ReactElement {
+  const [expanded, setExpanded] = React.useState<string | null>(null)
+  return (
+    <div className="p-2 space-y-1 max-h-80 overflow-y-auto">
+      {entries.map((e) => {
+        const key = `${e.rel_path}#${e.rank}`
+        const isOpen = expanded === key
+        return (
+          <div key={key} className="border border-zinc-800 rounded">
+            <button
+              className="w-full text-left px-2 py-1 flex items-center gap-1.5 hover:bg-zinc-800/40 transition-colors text-[11px]"
+              onClick={() => setExpanded(isOpen ? null : key)}
+            >
+              <span className={`shrink-0 text-[9px] transition-transform ${isOpen ? 'rotate-90' : ''}`}>▶</span>
+              <span className="shrink-0 text-zinc-500 font-mono">#{e.rank}</span>
+              <span className="shrink-0 text-zinc-300 font-mono truncate flex-1">{e.rel_path}</span>
+              <span className="shrink-0 text-zinc-700 mx-1">|</span>
+              <span className="shrink-0 text-zinc-400 font-mono">score={e.raw_score.toFixed(2)}</span>
+            </button>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function RrfGraphSignalPanel({ entries }: { entries: SignalRankEntry[] }): React.ReactElement {
+  const [expanded, setExpanded] = React.useState<string | null>(null)
+  return (
+    <div className="p-2 space-y-1 max-h-80 overflow-y-auto">
+      {entries.map((e) => {
+        const key = `${e.rel_path}#${e.rank}`
+        const isOpen = expanded === key
+        return (
+          <div key={key} className="border border-zinc-800 rounded">
+            <button
+              className="w-full text-left px-2 py-1 flex items-center gap-1.5 hover:bg-zinc-800/40 transition-colors text-[11px]"
+              onClick={() => setExpanded(isOpen ? null : key)}
+            >
+              <span className={`shrink-0 text-[9px] transition-transform ${isOpen ? 'rotate-90' : ''}`}>▶</span>
+              <span className="shrink-0 text-zinc-500 font-mono">#{e.rank}</span>
+              <span className="shrink-0 text-zinc-300 font-mono truncate flex-1">{e.rel_path}</span>
+              <span className="shrink-0 text-zinc-700 mx-1">|</span>
+              <span className="shrink-0 text-zinc-400 font-mono">conf_sum={e.raw_score.toFixed(2)}</span>
+            </button>
+            {isOpen && (
+              <div className="mx-2 mb-2 p-2 bg-zinc-950 border border-zinc-800 rounded text-[10px] text-zinc-400">
+                <div>Confidence-weighted graph signal (capped at 2.0)</div>
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function RrfModuleProximitySignalPanel({ entries }: { entries: SignalRankEntry[] }): React.ReactElement {
+  const [expanded, setExpanded] = React.useState<string | null>(null)
+  return (
+    <div className="p-2 space-y-1 max-h-80 overflow-y-auto">
+      {entries.map((e) => {
+        const key = `${e.rel_path}#${e.rank}`
+        const isOpen = expanded === key
+        return (
+          <div key={key} className="border border-zinc-800 rounded">
+            <button
+              className="w-full text-left px-2 py-1 flex items-center gap-1.5 hover:bg-zinc-800/40 transition-colors text-[11px]"
+              onClick={() => setExpanded(isOpen ? null : key)}
+            >
+              <span className={`shrink-0 text-[9px] transition-transform ${isOpen ? 'rotate-90' : ''}`}>▶</span>
+              <span className="shrink-0 text-zinc-500 font-mono">#{e.rank}</span>
+              <span className="shrink-0 text-zinc-300 font-mono truncate flex-1">{e.rel_path}</span>
+              <span className="shrink-0 text-zinc-700 mx-1">|</span>
+              <span className="shrink-0 text-zinc-400 font-mono">mod_bonus={e.raw_score.toFixed(2)}</span>
+            </button>
+            {isOpen && (
+              <div className="mx-2 mb-2 p-2 bg-zinc-950 border border-zinc-800 rounded text-[10px] text-zinc-400">
+                <div>Module-proximity signal: file shares a Stage-1 seed community</div>
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function RrfCategoryHintSignalPanel({ entries }: { entries: SignalRankEntry[] }): React.ReactElement {
+  const [expanded, setExpanded] = React.useState<string | null>(null)
+  return (
+    <div className="p-2 space-y-1 max-h-80 overflow-y-auto">
+      {entries.map((e) => {
+        const key = `${e.rel_path}#${e.rank}`
+        const isOpen = expanded === key
+        return (
+          <div key={key} className="border border-zinc-800 rounded">
+            <button
+              className="w-full text-left px-2 py-1 flex items-center gap-1.5 hover:bg-zinc-800/40 transition-colors text-[11px]"
+              onClick={() => setExpanded(isOpen ? null : key)}
+            >
+              <span className={`shrink-0 text-[9px] transition-transform ${isOpen ? 'rotate-90' : ''}`}>▶</span>
+              <span className="shrink-0 text-zinc-500 font-mono">#{e.rank}</span>
+              <span className="shrink-0 text-zinc-300 font-mono truncate flex-1">{e.rel_path}</span>
+              <span className="shrink-0 text-zinc-700 mx-1">|</span>
+              <span className="shrink-0 text-zinc-400 font-mono">category_bonus={e.raw_score.toFixed(2)}</span>
+            </button>
+            {isOpen && (
+              <div className="mx-2 mb-2 p-2 bg-zinc-950 border border-zinc-800 rounded text-[10px] text-zinc-400">
+                <div>Category-hint signal: chunk category matches section hint set</div>
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function RrfFusedPanel({ entries }: { entries: FusedRankEntry[] }): React.ReactElement {
+  const [expanded, setExpanded] = React.useState<string | null>(null)
+  return (
+    <div className="p-2 space-y-1.5">
+      <div className="text-[10px] text-zinc-600 px-2 py-1">
+        Note: RRF fused scores are NOT comparable in magnitude to two-stage scores (10-20+ range). Rank/order is the meaningful output, not raw score.
+      </div>
+      <div className="max-h-80 overflow-y-auto space-y-1">
+        {entries.map((e) => {
+          const key = `${e.rel_path}#${e.chunk_id}`
+          const isOpen = expanded === key
+          const ranksStr = Object.entries(e.per_signal_ranks)
+            .map(([signal, rank]) => `${signal}=#${rank}`)
+            .join(' ')
+          return (
+            <div key={key} className="border border-zinc-800 rounded">
+              <button
+                className="w-full text-left px-2 py-1 flex items-center gap-1 hover:bg-zinc-800/40 transition-colors text-[11px]"
+                onClick={() => setExpanded(isOpen ? null : key)}
+              >
+                <span className={`shrink-0 text-[9px] transition-transform ${isOpen ? 'rotate-90' : ''}`}>▶</span>
+                <span className="text-zinc-300 font-mono truncate flex-1">{e.rel_path}</span>
+                <span className="shrink-0 text-zinc-700 mx-1">|</span>
+                <span className="shrink-0 text-zinc-400 font-mono">{e.fused_score.toFixed(2)}</span>
+                <span className="shrink-0 text-zinc-700 mx-1">|</span>
+                <span className="shrink-0 text-zinc-600 font-mono text-[10px]">{ranksStr}</span>
+              </button>
+              {isOpen && (
+                <pre className="mx-2 mb-2 p-2 bg-zinc-950 border border-zinc-800 rounded text-[10px] text-zinc-300 font-mono whitespace-pre-wrap break-all max-h-40 overflow-y-auto leading-4">
+                  {e.excerpt || '(no excerpt)'}
+                </pre>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 
 export default function IndexOverviewScreen(): React.ReactElement {
   const navigate = useNavigate()
@@ -219,12 +465,13 @@ export default function IndexOverviewScreen(): React.ReactElement {
   const [success, setSuccess] = useState<string | null>(null)
   const [retrievalQuery, setRetrievalQuery] = useState('')
   const [retrievalSection, setRetrievalSection] = useState<RetrievalSection>('architecture')
-  const [retrievalMode, setRetrievalMode] = useState<RetrievalMode>('hybrid')
   const [retrievalBusy, setRetrievalBusy] = useState(false)
-  const [retrievalBundle, setRetrievalBundle] = useState<RetrievalBundle | null>(null)
   const [retrievalCompare, setRetrievalCompare] = useState<RetrievalCompareResponse | null>(null)
+  const [primaryRrfBundle, setPrimaryRrfBundle] = useState<RrfFusionDebugBundle | null>(null)
   const [twoStageBundle, setTwoStageBundle] = React.useState<TwoStageDebugBundle | null>(null)
   const [twoStageBusy, setTwoStageBusy] = React.useState(false)
+  const [rrfFusionBundle, setRrfFusionBundle] = React.useState<RrfFusionDebugBundle | null>(null)
+  const [rrfFusionBusy, setRrfFusionBusy] = React.useState(false)
 
   useEffect(() => {
     const run = async () => {
@@ -475,7 +722,7 @@ export default function IndexOverviewScreen(): React.ReactElement {
 
             <div className="bg-zinc-900/60 border border-zinc-700 rounded-lg p-3 space-y-2">
               <div className="text-xs font-semibold text-zinc-100">Retrieval Debug</div>
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
                 <input
                   value={retrievalQuery}
                   onChange={(e) => setRetrievalQuery(e.target.value)}
@@ -493,14 +740,6 @@ export default function IndexOverviewScreen(): React.ReactElement {
                   <option value="important_files">important_files</option>
                   <option value="glossary">glossary</option>
                 </select>
-                <select
-                  value={retrievalMode}
-                  onChange={(e) => setRetrievalMode(e.target.value as RetrievalMode)}
-                  className="bg-zinc-950 border border-zinc-700 rounded-md px-2 py-1.5 text-xs text-zinc-200"
-                >
-                  <option value="hybrid">hybrid</option>
-                  <option value="vectorless">vectorless</option>
-                </select>
               </div>
               <div className="flex items-center gap-2">
                 <button
@@ -508,18 +747,23 @@ export default function IndexOverviewScreen(): React.ReactElement {
                     if (!snapshotId) return
                     setRetrievalBusy(true)
                     setError(null)
-                    setRetrievalBundle(null)
+                    setPrimaryRrfBundle(null)
                     setRetrievalCompare(null)
                     try {
                       await window.api.retrieval.buildIndex(snapshotId, false)
-                      const out = await window.api.retrieval.retrieve({
+                      // Wired to RRF fusion instead of the legacy two-stage retrieve()
+                      // for this debug button specifically -- the actual production
+                      // Ask Mode/Deep Research path (RetrievalService.retrieve()) is
+                      // left untouched, since RRF still has a known open weakness
+                      // (magnitude-blindness on dominant-signal queries) pending CS-254's
+                      // reranker. This button is for comparing RRF's shape, not a
+                      // claim that RRF has replaced production retrieval.
+                      const out = await window.api.retrieval.retrieveRrfFusion({
                         snapshot_id: snapshotId,
                         query: retrievalQuery.trim(),
                         section: retrievalSection,
-                        mode: retrievalMode,
-                        max_results: 20,
                       })
-                      setRetrievalBundle(out)
+                      setPrimaryRrfBundle(out)
                     } catch (err) {
                       setError(toErrorMessage(err))
                     } finally {
@@ -529,14 +773,14 @@ export default function IndexOverviewScreen(): React.ReactElement {
                   disabled={retrievalBusy || !retrievalQuery.trim()}
                   className="px-2.5 py-1.5 text-xs border border-zinc-700 rounded-md text-zinc-300 hover:border-zinc-600 disabled:opacity-50"
                 >
-                  {retrievalBusy ? 'Running...' : 'Run retrieval'}
+                  {retrievalBusy ? 'Running...' : 'Run retrieval (RRF)'}
                 </button>
                 <button
                   onClick={async () => {
                     if (!snapshotId) return
                     setRetrievalBusy(true)
                     setError(null)
-                    setRetrievalBundle(null)
+                    setPrimaryRrfBundle(null)
                     try {
                       await window.api.retrieval.buildIndex(snapshotId, false)
                       const out = await window.api.retrieval.compare({
@@ -558,31 +802,47 @@ export default function IndexOverviewScreen(): React.ReactElement {
                   {retrievalBusy ? 'Comparing...' : 'A/B compare'}
                 </button>
               </div>
-              {retrievalBundle && (() => {
-                // Dedupe: keep best-scoring chunk per file
-                const seen = new Map<string, typeof retrievalBundle.evidences[0]>()
-                for (const e of retrievalBundle.evidences) {
-                  const prev = seen.get(e.rel_path)
-                  if (!prev || e.score > prev.score) seen.set(e.rel_path, e)
-                }
-                const deduped = Array.from(seen.values()).sort((a, b) => b.score - a.score)
-                return (
-                  <RetrievalResultPanel
-                    deduped={deduped}
-                    totalChunks={retrievalBundle.evidences.length}
-                    mode={retrievalBundle.mode}
-                    usedTokens={retrievalBundle.used_tokens}
-                    budgetTokens={retrievalBundle.budget_tokens}
-                  />
-                )
-              })()}
+              {primaryRrfBundle && (
+                <RetrievalResultPanel
+                  deduped={adaptFusedEntriesForPanel(primaryRrfBundle.fused)}
+                  totalChunks={primaryRrfBundle.fused.length}
+                  mode="rrf_fusion"
+                  usedTokens={primaryRrfBundle.fused.reduce((acc, e) => acc + (e.token_estimate ?? 0), 0)}
+                  budgetTokens={0}
+                />
+              )}
               {retrievalCompare && (
-                <div className="text-[11px] text-zinc-500 border border-zinc-800 rounded-md p-2">
-                  delta p@5: <span className="text-zinc-300">{retrievalCompare.precision_at_5_delta.toFixed(3)}</span>
-                  <span className="mx-2 text-zinc-700">|</span>
-                  delta hit-rate: <span className="text-zinc-300">{retrievalCompare.evidence_hit_rate_delta.toFixed(3)}</span>
-                  <span className="mx-2 text-zinc-700">|</span>
-                  delta tokens: <span className="text-zinc-300">{retrievalCompare.token_cost_delta}</span>
+                <div className="space-y-2">
+                  <div className="text-[11px] text-zinc-500 border border-zinc-800 rounded-md p-2">
+                    delta p@5: <span className="text-zinc-300">{retrievalCompare.precision_at_5_delta.toFixed(3)}</span>
+                    <span className="mx-2 text-zinc-700">|</span>
+                    delta hit-rate: <span className="text-zinc-300">{retrievalCompare.evidence_hit_rate_delta.toFixed(3)}</span>
+                    <span className="mx-2 text-zinc-700">|</span>
+                    delta tokens: <span className="text-zinc-300">{retrievalCompare.token_cost_delta}</span>
+                    <span className="ml-2 text-zinc-600">(vectorless minus hybrid — both run unconditionally, ignoring the Mode dropdown)</span>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                    <div>
+                      <div className="text-[10px] text-zinc-500 mb-1">Baseline (hybrid)</div>
+                      <RetrievalResultPanel
+                        deduped={dedupeEvidences(retrievalCompare.baseline.evidences)}
+                        totalChunks={retrievalCompare.baseline.evidences.length}
+                        mode={retrievalCompare.baseline.mode}
+                        usedTokens={retrievalCompare.baseline.used_tokens}
+                        budgetTokens={retrievalCompare.baseline.budget_tokens}
+                      />
+                    </div>
+                    <div>
+                      <div className="text-[10px] text-zinc-500 mb-1">Vectorless</div>
+                      <RetrievalResultPanel
+                        deduped={dedupeEvidences(retrievalCompare.vectorless.evidences)}
+                        totalChunks={retrievalCompare.vectorless.evidences.length}
+                        mode={retrievalCompare.vectorless.mode}
+                        usedTokens={retrievalCompare.vectorless.used_tokens}
+                        budgetTokens={retrievalCompare.vectorless.budget_tokens}
+                      />
+                    </div>
+                  </div>
                 </div>
               )}
             </div>
@@ -614,6 +874,55 @@ export default function IndexOverviewScreen(): React.ReactElement {
                 >
                   {twoStageBusy ? 'Running...' : 'Run 2-stage retrieval'}
                 </button>
+                <button
+                  onClick={async () => {
+                    if (!snapshotId) return
+                    setRrfFusionBusy(true)
+                    setError(null)
+                    setRrfFusionBundle(null)
+                    try {
+                      await window.api.retrieval.buildIndex(snapshotId, false)
+                      const out = await window.api.retrieval.retrieveRrfFusion({
+                        snapshot_id: snapshotId,
+                        query: retrievalQuery.trim(),
+                        section: retrievalSection,
+                      })
+                      setRrfFusionBundle(out)
+                    } catch (err) {
+                      setError(toErrorMessage(err))
+                    } finally {
+                      setRrfFusionBusy(false)
+                    }
+                  }}
+                  disabled={rrfFusionBusy || !retrievalQuery.trim()}
+                  className="px-2.5 py-1.5 text-xs border border-zinc-700 rounded-md text-zinc-300 hover:border-zinc-600 disabled:opacity-50"
+                >
+                  {rrfFusionBusy ? 'Running...' : 'Run RRF fusion'}
+                </button>
+                <button
+                  onClick={async () => {
+                    setError(null)
+                    setSuccess(null)
+                    const csv = buildQueryComparisonCsv(twoStageBundle, rrfFusionBundle)
+                    if (!csv) {
+                      setError('Run 2-stage retrieval and/or RRF fusion first — nothing to export yet')
+                      return
+                    }
+                    try {
+                      const defaultName = `query-comparison-${(snapshotId || 'snapshot').slice(0, 8)}.csv`
+                      const out = await window.api.query.exportCsv(csv, defaultName)
+                      if (out.saved && out.file_path) {
+                        setSuccess(`CSV saved: ${out.file_path}`)
+                      }
+                    } catch (err) {
+                      setError(toErrorMessage(err))
+                    }
+                  }}
+                  disabled={!twoStageBundle && !rrfFusionBundle}
+                  className="px-2.5 py-1.5 text-xs border border-zinc-700 rounded-md text-zinc-300 hover:border-zinc-600 disabled:opacity-50"
+                >
+                  Export CSV
+                </button>
                 <span className="text-[11px] text-zinc-600">Uses same query field as Retrieval Debug</span>
               </div>
               {twoStageBundle && (
@@ -640,6 +949,45 @@ export default function IndexOverviewScreen(): React.ReactElement {
                       budgetTokens={twoStageBundle.stage3.budget_tokens}
                       usedCpp={twoStageBundle.stage3.used_cpp_ranker}
                     />
+                  </details>
+                </div>
+              )}
+              {rrfFusionBundle && (
+                <div className="space-y-1.5 mt-3">
+                  <details className="border border-zinc-800 rounded">
+                    <summary className="px-2 py-1 text-[11px] text-zinc-400 cursor-pointer hover:text-zinc-200">
+                      BM25 Signal — {rrfFusionBundle.bm25_signal.length} entries
+                    </summary>
+                    <RrfBm25SignalPanel entries={rrfFusionBundle.bm25_signal} />
+                  </details>
+                  <details className="border border-zinc-800 rounded">
+                    <summary className="px-2 py-1 text-[11px] text-zinc-400 cursor-pointer hover:text-zinc-200">
+                      Graph/Confidence Signal — {rrfFusionBundle.graph_signal.length} entries
+                    </summary>
+                    <RrfGraphSignalPanel entries={rrfFusionBundle.graph_signal} />
+                  </details>
+                  <details className="border border-zinc-800 rounded">
+                    <summary className="px-2 py-1 text-[11px] text-zinc-400 cursor-pointer hover:text-zinc-200">
+                      Module Proximity Signal — {rrfFusionBundle.module_signal.length} entries
+                    </summary>
+                    <RrfModuleProximitySignalPanel entries={rrfFusionBundle.module_signal} />
+                  </details>
+                  <details className="border border-zinc-800 rounded">
+                    <summary className="px-2 py-1 text-[11px] text-zinc-400 cursor-pointer hover:text-zinc-200">
+                      Category Hint Signal — {rrfFusionBundle.category_signal.length} entries
+                    </summary>
+                    <RrfCategoryHintSignalPanel entries={rrfFusionBundle.category_signal} />
+                  </details>
+                  <details open className="border border-zinc-800 rounded">
+                    <summary className="px-2 py-1 text-[11px] text-zinc-400 cursor-pointer hover:text-zinc-200">
+                      RRF Fused Results — {rrfFusionBundle.fused.length} entries
+                      {' · '}
+                      <span className="text-zinc-300">
+                        tokens={rrfFusionBundle.fused.reduce((acc, e) => acc + (e.token_estimate ?? 0), 0)}
+                      </span>
+                      <span className="text-zinc-600"> (no budget cap — unbounded debug path)</span>
+                    </summary>
+                    <RrfFusedPanel entries={rrfFusionBundle.fused} />
                   </details>
                 </div>
               )}

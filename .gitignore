@@ -40,6 +40,8 @@ backend/.ruff_cache/
 *.db
 *.db-shm
 *.db-wal
+classifier_model.pkl
+classifier_meta.json
 
 # Editor
 .idea/

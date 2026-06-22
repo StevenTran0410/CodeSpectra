@@ -11,6 +11,7 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import dagre from '@dagrejs/dagre'
+import * as d3force from 'd3-force'
 import { Loader2, AlertCircle, Save, Zap, X } from 'lucide-react'
 import { Button, PageLoading, useToastStore } from '../../components/ui'
 
@@ -79,6 +80,32 @@ type ImpactState = {
   active: boolean
   seedFiles: string[]
   result: BlastRadiusResponse | null
+}
+
+type SymbolEdgeInfo = {
+  src_symbol: string
+  dst_symbol: string
+  edge_type: string
+  confidence_score: number
+  resolution_method: string
+}
+
+type FileSymbolEdgesResponse = {
+  snapshot_id: string
+  file_path: string
+  defined_symbols: string[]
+  outgoing: SymbolEdgeInfo[]
+  incoming: SymbolEdgeInfo[]
+}
+
+/** "file.py::Class.method" -> "file.py" */
+function symbolFile(symbol: string): string {
+  return symbol.includes('::') ? symbol.split('::')[0] : symbol
+}
+
+/** "file.py::Class.method" -> "Class.method" */
+function symbolName(symbol: string): string {
+  return symbol.includes('::') ? symbol.split('::').slice(1).join('::') : symbol
 }
 
 const COMMUNITY_COLORS = [
@@ -160,8 +187,8 @@ function buildFlowGraph(
       id: `${e.src}->${e.dst}`,
       source: e.src,
       target: e.dst,
-      style: { stroke: '#52525b', strokeWidth: 1 },
-      markerEnd: { type: MarkerType.ArrowClosed, color: '#52525b' },
+      style: { stroke: '#71717a', strokeWidth: 1.25, opacity: 0.7 },
+      markerEnd: { type: MarkerType.ArrowClosed, color: '#71717a' },
     }))
 
   return { nodes, edges }
@@ -183,6 +210,153 @@ function applyDagreLayout(nodes: Node[], edges: Edge[]): Node[] {
   })
 }
 
+interface ForceNode extends d3force.SimulationNodeDatum {
+  id: string
+  communityId: number
+}
+
+/**
+ * Force-directed layout with community clustering (Neo4j-Browser style): nodes
+ * repel each other and are pulled along edges, PLUS an extra custom force that
+ * pulls every node toward its own community's centroid each tick. That cluster
+ * force is what actually produces visually distinct blobs — plain repulsion +
+ * links alone (no cluster force) just spreads everything out evenly with no
+ * separation between communities, which isn't what we want here.
+ *
+ * Replaces an earlier single-ring layout that was far too literal a reading of
+ * "arrange in a circle" — a real force simulation is what actually looks like
+ * the reference (organic clusters, not one ordered ring).
+ */
+function applyForceClusterLayout(nodes: Node[], edges: Edge[]): Node[] {
+  const n = nodes.length
+  if (n === 0) return nodes
+
+  // Seed positions on a circle so the simulation starts from a reasonable
+  // spread instead of every node collapsing onto the origin.
+  const seedRadius = Math.max(300, n * 4)
+  const forceNodes: ForceNode[] = nodes.map((node, i) => {
+    const angle = (2 * Math.PI * i) / n
+    return {
+      id: node.id,
+      communityId: (node.data?.communityId as number | undefined) ?? -1,
+      x: seedRadius * Math.cos(angle),
+      y: seedRadius * Math.sin(angle),
+    }
+  })
+
+  const nodeById = new Map(forceNodes.map((fn) => [fn.id, fn]))
+  const forceLinks = edges
+    .filter((e) => nodeById.has(e.source) && nodeById.has(e.target))
+    .map((e) => ({ source: e.source, target: e.target }))
+
+  // Community sizes, computed once -- singleton/tiny communities (1-2 nodes)
+  // get a much weaker cluster pull below, since "pull toward your own
+  // centroid" is meaningless for a lone node and was previously the reason
+  // small communities drifted away with nothing bounding them.
+  const communitySize = new Map<number, number>()
+  for (const fn of forceNodes) {
+    communitySize.set(fn.communityId, (communitySize.get(fn.communityId) ?? 0) + 1)
+  }
+
+  // Minimum desired distance between two DIFFERENT communities' centroids.
+  // This -- not raw node-level repulsion -- is what actually keeps clusters
+  // visually distinct. A previous version relied on generic charge + a global
+  // gravity force fighting each other, which either flung small clusters away
+  // (gravity too weak) or crushed everything into one ball (gravity too
+  // strong relative to charge) -- there was never a force that specifically
+  // said "different clusters should stay apart," only "things in general
+  // repel" vs "things in general are pulled to the center."
+  const MIN_CLUSTER_SEPARATION = 260
+
+  function clusterForce(alpha: number): void {
+    const centroids = new Map<number, { x: number; y: number; count: number }>()
+    for (const fn of forceNodes) {
+      const c = centroids.get(fn.communityId) ?? { x: 0, y: 0, count: 0 }
+      c.x += fn.x ?? 0
+      c.y += fn.y ?? 0
+      c.count += 1
+      centroids.set(fn.communityId, c)
+    }
+    const centroidList = Array.from(centroids.entries()).map(([id, c]) => ({
+      id,
+      x: c.x / c.count,
+      y: c.y / c.count,
+    }))
+
+    // 1. Cohesion: pull each node toward its own community's centroid.
+    for (const fn of forceNodes) {
+      const c = centroids.get(fn.communityId)
+      if (!c || c.count === 0) continue
+      const size = communitySize.get(fn.communityId) ?? 1
+      // Bigger communities pull together more strongly (denser, more cohesive
+      // blob); singletons/pairs barely self-pull (there's nothing to cohere to).
+      const strength = size <= 2 ? 0.02 : 0.12
+      fn.vx = (fn.vx ?? 0) + (c.x / c.count - (fn.x ?? 0)) * alpha * strength
+      fn.vy = (fn.vy ?? 0) + (c.y / c.count - (fn.y ?? 0)) * alpha * strength
+    }
+
+    // 2. Separation: push two communities' centroids apart whenever they're
+    // closer than MIN_CLUSTER_SEPARATION, applied to every node in both
+    // communities (moves each cluster as a whole, not node-by-node). This is
+    // the piece that actually produces visible gaps between distinct blobs.
+    for (let i = 0; i < centroidList.length; i++) {
+      for (let j = i + 1; j < centroidList.length; j++) {
+        const a = centroidList[i]
+        const b = centroidList[j]
+        const dx = b.x - a.x
+        const dy = b.y - a.y
+        const dist = Math.sqrt(dx * dx + dy * dy) || 1
+        if (dist >= MIN_CLUSTER_SEPARATION) continue
+        const push = ((MIN_CLUSTER_SEPARATION - dist) / MIN_CLUSTER_SEPARATION) * alpha * 0.5
+        const ux = dx / dist
+        const uy = dy / dist
+        for (const fn of forceNodes) {
+          if (fn.communityId === a.id) {
+            fn.vx = (fn.vx ?? 0) - ux * push
+            fn.vy = (fn.vy ?? 0) - uy * push
+          } else if (fn.communityId === b.id) {
+            fn.vx = (fn.vx ?? 0) + ux * push
+            fn.vy = (fn.vy ?? 0) + uy * push
+          }
+        }
+      }
+    }
+  }
+
+  const simulation = d3force
+    .forceSimulation(forceNodes)
+    .force('charge', d3force.forceManyBody().strength(-60))
+    .force(
+      'link',
+      d3force
+        .forceLink<ForceNode, { source: string; target: string }>(forceLinks)
+        .id((d) => d.id)
+        .distance(70)
+        .strength(0.35)
+    )
+    // Minimum spacing between node centers so labels never overlap within a
+    // cluster. Radius approximates the node's 160x36 bounding box (half-
+    // diagonal ~82) plus a small gap.
+    .force('collide', d3force.forceCollide(95))
+    // Very weak per-node gravity -- just enough of a safety net to stop a
+    // fully-disconnected node from sailing off to infinity, not strong enough
+    // to compete with cluster separation above (that was the overcorrection:
+    // 0.025 was strong enough to crush every cluster into the same point).
+    .force('gravityX', d3force.forceX(0).strength(0.004))
+    .force('gravityY', d3force.forceY(0).strength(0.004))
+    .stop()
+
+  // Run synchronously to a settled state (no live animation needed — React Flow
+  // just needs final positions), interleaving our custom cluster force each tick.
+  for (let tick = 0; tick < 300; tick++) {
+    simulation.tick()
+    clusterForce(simulation.alpha())
+  }
+
+  const positionById = new Map(forceNodes.map((fn) => [fn.id, { x: fn.x ?? 0, y: fn.y ?? 0 }]))
+  return nodes.map((node) => ({ ...node, position: positionById.get(node.id) ?? { x: 0, y: 0 } }))
+}
+
 interface LeftPanelProps {
   selectedNode: string | null
   graphData: ExportJson | null
@@ -191,6 +365,8 @@ interface LeftPanelProps {
   neighborLoading: boolean
   impactState: ImpactState
   impactLoading: boolean
+  symbolEdgesData: FileSymbolEdgesResponse | null
+  symbolEdgesLoading: boolean
 }
 
 function LeftPanel({
@@ -201,6 +377,8 @@ function LeftPanel({
   neighborLoading,
   impactState,
   impactLoading,
+  symbolEdgesData,
+  symbolEdgesLoading,
 }: LeftPanelProps) {
   const showImpactPanel = impactState.active && (impactState.result !== null || impactState.seedFiles.length > 0 || impactLoading)
 
@@ -232,11 +410,39 @@ function LeftPanel({
 
   const blastRadiusFiles = neighborData?.nodes.filter((n) => n !== selectedNode) ?? []
 
+  // Centrality score, computed client-side from already-loaded edges using the
+  // same formula as the backend's _compute_scores_python: indegree*3 + outdegree.
+  const indegree = incomingEdges.length
+  const outdegree = outgoingEdges.length
+  const centralityScore = indegree * 3 + outdegree
+
+  // Cross-file function calls only (drop same-file self-references, which are
+  // noise for "who else does this file talk to").
+  const outgoingCalls = (symbolEdgesData?.outgoing ?? []).filter(
+    (e) => symbolFile(e.dst_symbol) !== selectedNode
+  )
+  const incomingCalls = (symbolEdgesData?.incoming ?? []).filter(
+    (e) => symbolFile(e.src_symbol) !== selectedNode
+  )
+
   return (
     <div className="w-80 border-r border-zinc-700 bg-zinc-900 p-4 overflow-y-auto text-xs space-y-4">
       {/* Node info */}
       <div>
         <div className="text-zinc-300 font-mono text-[10px] break-words">{selectedNode}</div>
+      </div>
+
+      {/* Centrality score breakdown */}
+      <div>
+        <div className="text-zinc-400 font-semibold mb-2">Centrality score</div>
+        <div className="text-zinc-200 text-base font-semibold">{centralityScore}</div>
+        <div className="text-[10px] text-zinc-500 mt-1">
+          = indegree ({indegree}) × 3 + outdegree ({outdegree})
+        </div>
+        <div className="text-[10px] text-zinc-500">
+          Higher indegree (more files depend on this) weighs 3× more than outdegree
+          (this file depending on others).
+        </div>
       </div>
 
       {/* Community */}
@@ -318,6 +524,99 @@ function LeftPanel({
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {/* Function-level drill-down (CS-250, backed by CS-240/CS-249's symbol_graph_edges) */}
+      {symbolEdgesData && !symbolEdgesLoading && (
+        <div>
+          <div className="text-zinc-400 font-semibold mb-2">
+            Functions in this file ({symbolEdgesData.defined_symbols.length})
+          </div>
+          {symbolEdgesData.defined_symbols.length === 0 ? (
+            <div className="text-[10px] text-zinc-500 italic">
+              No function-level call data yet — only Python/TypeScript files are
+              analyzed at this level, and the graph may need rebuilding.
+            </div>
+          ) : (
+            <div className="space-y-1 mb-3">
+              {symbolEdgesData.defined_symbols.slice(0, 10).map((s) => (
+                <div key={s} className="text-[10px] text-zinc-400 font-mono truncate">
+                  {s}
+                </div>
+              ))}
+              {symbolEdgesData.defined_symbols.length > 10 && (
+                <div className="text-[10px] text-zinc-500 italic">
+                  and {symbolEdgesData.defined_symbols.length - 10} more...
+                </div>
+              )}
+            </div>
+          )}
+
+          {outgoingCalls.length > 0 && (
+            <div className="mb-3">
+              <div className="text-[10px] text-zinc-500 mb-1">Calls out to other files:</div>
+              <div className="space-y-1">
+                {outgoingCalls.slice(0, 8).map((e, i) => (
+                  <div key={i} className="text-[10px] text-zinc-400">
+                    <span className="font-mono">{symbolName(e.src_symbol)}</span>
+                    {' → '}
+                    <span className="font-mono text-zinc-300">
+                      {symbolFile(e.dst_symbol).split('/').pop()}::{symbolName(e.dst_symbol)}
+                    </span>
+                    <span
+                      className={
+                        'ml-1 ' + (e.confidence_score >= 0.7 ? 'text-emerald-500' : 'text-amber-500')
+                      }
+                    >
+                      ({e.resolution_method}, {e.confidence_score.toFixed(2)})
+                    </span>
+                  </div>
+                ))}
+                {outgoingCalls.length > 8 && (
+                  <div className="text-[10px] text-zinc-500 italic">
+                    and {outgoingCalls.length - 8} more...
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {incomingCalls.length > 0 && (
+            <div>
+              <div className="text-[10px] text-zinc-500 mb-1">Called from other files:</div>
+              <div className="space-y-1">
+                {incomingCalls.slice(0, 8).map((e, i) => (
+                  <div key={i} className="text-[10px] text-zinc-400">
+                    <span className="font-mono text-zinc-300">
+                      {symbolFile(e.src_symbol).split('/').pop()}::{symbolName(e.src_symbol)}
+                    </span>
+                    {' → '}
+                    <span className="font-mono">{symbolName(e.dst_symbol)}</span>
+                    <span
+                      className={
+                        'ml-1 ' + (e.confidence_score >= 0.7 ? 'text-emerald-500' : 'text-amber-500')
+                      }
+                    >
+                      ({e.resolution_method}, {e.confidence_score.toFixed(2)})
+                    </span>
+                  </div>
+                ))}
+                {incomingCalls.length > 8 && (
+                  <div className="text-[10px] text-zinc-500 italic">
+                    and {incomingCalls.length - 8} more...
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {symbolEdgesLoading && (
+        <div className="flex items-center gap-2 text-zinc-500">
+          <Loader2 size={12} className="animate-spin" />
+          <span>Loading function-level calls...</span>
         </div>
       )}
 
@@ -509,7 +808,10 @@ export default function GraphScreen(): React.ReactElement {
   const [selectedNode, setSelectedNode] = useState<string | null>(null)
   const [neighborData, setNeighborData] = useState<NeighborResult | null>(null)
   const [neighborLoading, setNeighborLoading] = useState(false)
+  const [symbolEdgesData, setSymbolEdgesData] = useState<FileSymbolEdgesResponse | null>(null)
+  const [symbolEdgesLoading, setSymbolEdgesLoading] = useState(false)
   const [exporting, setExporting] = useState(false)
+  const [layoutMode, setLayoutMode] = useState<'cluster' | 'hierarchical'>('cluster')
   const [impactState, setImpactState] = useState<ImpactState>({ active: false, seedFiles: [], result: null })
   const [impactLoading, setImpactLoading] = useState(false)
 
@@ -578,6 +880,18 @@ export default function GraphScreen(): React.ReactElement {
       } finally {
         setNeighborLoading(false)
       }
+
+      setSymbolEdgesLoading(true)
+      try {
+        const res = await window.api.graph.symbolEdges(snapshotId, path)
+        setSymbolEdgesData(res)
+      } catch {
+        // Not every file has function-level data (e.g. non-Python/TS files,
+        // or the graph predates CS-240) — treat as "nothing to show", not an error.
+        setSymbolEdgesData(null)
+      } finally {
+        setSymbolEdgesLoading(false)
+      }
     },
     [snapshotId, impactState.active, impactState.seedFiles, toast]
   )
@@ -612,8 +926,8 @@ export default function GraphScreen(): React.ReactElement {
 
   const nodes = useMemo(() => {
     if (rawNodes.length === 0) return []
-    return applyDagreLayout(rawNodes, edges)
-  }, [rawNodes, edges])
+    return layoutMode === 'cluster' ? applyForceClusterLayout(rawNodes, edges) : applyDagreLayout(rawNodes, edges)
+  }, [rawNodes, edges, layoutMode])
 
   const fitViewOptions = { padding: 0.1 }
 
@@ -663,6 +977,8 @@ export default function GraphScreen(): React.ReactElement {
         neighborLoading={neighborLoading}
         impactState={impactState}
         impactLoading={impactLoading}
+        symbolEdgesData={symbolEdgesData}
+        symbolEdgesLoading={symbolEdgesLoading}
       />
 
       {/* Main canvas area */}
@@ -678,6 +994,13 @@ export default function GraphScreen(): React.ReactElement {
             )}
           </div>
           <div className="flex items-center gap-2">
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setLayoutMode((m) => (m === 'cluster' ? 'hierarchical' : 'cluster'))}
+            >
+              {layoutMode === 'cluster' ? 'Layout: Clustered' : 'Layout: Hierarchical'}
+            </Button>
             <Button
               variant={impactState.active ? 'primary' : 'secondary'}
               size="sm"

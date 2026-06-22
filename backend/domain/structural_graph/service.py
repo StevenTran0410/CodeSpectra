@@ -1,8 +1,8 @@
 """Structural graph service (RPA-033)."""
 from __future__ import annotations
 
-import asyncio
 import ast
+import asyncio
 import concurrent.futures
 import importlib
 import json
@@ -16,13 +16,14 @@ from shared.errors import NotFoundError
 from shared.logger import logger
 from shared.sql_queries import SQL_SELECT_MANIFEST_FILES_BY_SNAPSHOT
 from shared.toolchain import detect_cpp_toolchain
-from shared.utils import new_id, read_utf8_lenient, utc_now_iso
+from shared.utils import read_utf8_lenient, utc_now_iso
 
 from .types import (
     BuildGraphRequest,
     BuildGraphResponse,
     CommunityInfo,
     CyclesResponse,
+    FileSymbolEdgesResponse,
     GraphCommunitiesResponse,
     GraphEdge,
     GraphEdgesResponse,
@@ -30,6 +31,14 @@ from .types import (
     GraphNodeScore,
     NodeCommunityResponse,
     StructuralGraphSummary,
+    SymbolEdgeInfo,
+)
+
+# Kill switch for SymbolGraphBuilder wiring (CS-240)
+_SYMBOL_GRAPH_BUILDER_ENABLED = os.getenv("SYMBOL_GRAPH_BUILDER_ENABLED", "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
 )
 
 _RE_TS_IMPORT = re.compile(
@@ -232,6 +241,8 @@ class StructuralGraphService:
         if req.force_rebuild:
             await db.execute("DELETE FROM structural_graph_edges WHERE snapshot_id=?", (req.snapshot_id,))
             await db.execute("DELETE FROM structural_graph_summaries WHERE snapshot_id=?", (req.snapshot_id,))
+            if _SYMBOL_GRAPH_BUILDER_ENABLED:
+                await db.execute("DELETE FROM symbol_graph_edges WHERE snapshot_id=?", (req.snapshot_id,))
         else:
             async with db.execute(
                 "SELECT 1 FROM structural_graph_summaries WHERE snapshot_id=? LIMIT 1",
@@ -254,11 +265,14 @@ class StructuralGraphService:
 
         # ──── Part A: Extraction Cache ────────────────────────────────────────
         from .extraction_cache import (
-            load_previous_cache,
+            _get_previous_snapshot_id,
             classify_files,
             copy_unchanged_edges,
+            copy_unchanged_symbol_edges,
+            load_previous_cache,
+        )
+        from .extraction_cache import (
             write_cache as write_cache_db,
-            _get_previous_snapshot_id,
         )
 
         prev_cache = await load_previous_cache(db, snap["local_repo_id"], req.snapshot_id)
@@ -283,6 +297,16 @@ class StructuralGraphService:
                 cache_result.unchanged_paths,
             )
             logger.info("[structural_graph] copied %d edges from cache for unchanged files", copied)
+
+        # Copy symbol graph edges for unchanged files (CS-249)
+        if _SYMBOL_GRAPH_BUILDER_ENABLED and cache_result.previous_snapshot_id and cache_result.unchanged_paths:
+            copied_symbols = await copy_unchanged_symbol_edges(
+                db,
+                cache_result.previous_snapshot_id,
+                req.snapshot_id,
+                cache_result.unchanged_paths,
+            )
+            logger.info("[structural_graph] copied %d symbol edges from cache for unchanged files", copied_symbols)
 
         # Extract imports ONLY from changed files
         files_to_process = cache_result.changed_files
@@ -355,18 +379,80 @@ class StructuralGraphService:
                 dst_store = dst_path if dst_path else imp
                 edge_inputs.append((rel_path, dst_store, "import", int(is_external)))
                 _edge_rows.append(
-                    (req.snapshot_id, rel_path, dst_store, "import", int(is_external), now)
+                    (req.snapshot_id, rel_path, dst_store, "import", int(is_external), now, 1.0, "import_statement")
                 )
 
         # Batch-insert all edges in one round-trip instead of one await per edge.
         await db.executemany(
             """
             INSERT INTO structural_graph_edges
-            (snapshot_id, src_path, dst_path, edge_type, is_external, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            (snapshot_id, src_path, dst_path, edge_type, is_external, created_at, confidence_score, resolution_method)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             _edge_rows,
         )
+
+        # Wire SymbolGraphBuilder into the pipeline (CS-240)
+        _symbol_edge_rows: list[tuple] = []
+        if _SYMBOL_GRAPH_BUILDER_ENABLED:
+            from .symbol_graph import SymbolGraphBuilder
+
+            # Build symbol edges from changed files only (reuse extraction cache)
+            symbol_sources: dict[str, str] = {}
+            for r in files_to_process:
+                rel_path = r["rel_path"]
+                category = r["category"]
+                # Only process Python/TypeScript source files (not tests)
+                if category not in {"source", "infra"}:
+                    continue
+                if _is_init_file(rel_path):
+                    continue
+                src = (root / rel_path).resolve()
+                if not src.exists() or not src.is_file():
+                    continue
+                # Only for Python and TypeScript (SymbolGraphBuilder supports these)
+                if r["language"] not in {"python", "typescript", "javascript"}:
+                    continue
+                content = read_utf8_lenient(src)
+                if content:
+                    symbol_sources[rel_path] = content
+
+            if symbol_sources:
+                try:
+                    builder = SymbolGraphBuilder()
+                    edges = builder.build(symbol_sources)
+                    for edge in edges:
+                        _symbol_edge_rows.append(
+                            (
+                                req.snapshot_id,
+                                edge.src_symbol,
+                                edge.dst_symbol,
+                                edge.edge_type,
+                                edge.confidence_score,
+                                edge.resolution_method,
+                                edge.confidence,
+                                json.dumps(edge.evidence_lines),
+                            )
+                        )
+                except Exception:
+                    logger.exception("[structural_graph] SymbolGraphBuilder failed for snapshot %s", req.snapshot_id)
+
+            if _symbol_edge_rows:
+                await db.executemany(
+                    """
+                    INSERT INTO symbol_graph_edges
+                    (snapshot_id, src_symbol, dst_symbol, edge_type, confidence_score, resolution_method, confidence, evidence_lines)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    _symbol_edge_rows,
+                )
+                logger.info(
+                    "[structural_graph] symbol_graph_edges: inserted %d rows for snapshot %s",
+                    len(_symbol_edge_rows),
+                    req.snapshot_id,
+                )
+        else:
+            logger.info("[structural_graph] SymbolGraphBuilder wiring disabled via SYMBOL_GRAPH_BUILDER_ENABLED")
 
         all_nodes = {
             f for f in file_set
@@ -870,6 +956,76 @@ class StructuralGraphService:
             sccs = compute_scc_python(edge_tuples)
 
         return CyclesResponse(snapshot_id=snapshot_id, cycles=sccs)
+
+    async def symbol_edges_for_file(self, snapshot_id: str, file_path: str) -> FileSymbolEdgesResponse:
+        """Function-level drill-down (CS-250): symbol_graph_edges for one file.
+
+        Uses an exact length-bounded prefix match (not LIKE) on "file_path::",
+        same collision-safe convention as CS-249's copy_unchanged_symbol_edges,
+        so "foo.py" never matches "foo2.py::...".
+        """
+        db = get_db()
+        prefix = f"{file_path}::"
+        plen = len(prefix)
+
+        # CS-255: combined into one UNION ALL round-trip instead of two separate
+        # queries. A direction discriminator distinguishes outgoing vs incoming rows
+        # (UNION ALL, not UNION, so a self-referential edge -- a symbol in this file
+        # calling another symbol in the same file -- correctly appears in BOTH halves,
+        # exactly as the original two-query version did, not collapsed by a dedup pass).
+        async with db.execute(
+            """
+            SELECT src_symbol, dst_symbol, edge_type, confidence_score, resolution_method,
+                   'outgoing' AS direction
+            FROM symbol_graph_edges
+            WHERE snapshot_id=? AND substr(src_symbol, 1, ?) = ?
+            UNION ALL
+            SELECT src_symbol, dst_symbol, edge_type, confidence_score, resolution_method,
+                   'incoming' AS direction
+            FROM symbol_graph_edges
+            WHERE snapshot_id=? AND substr(dst_symbol, 1, ?) = ?
+            """,
+            (snapshot_id, plen, prefix, snapshot_id, plen, prefix),
+        ) as cur:
+            combined_rows = await cur.fetchall()
+
+        outgoing_rows = [r for r in combined_rows if r["direction"] == "outgoing"]
+        incoming_rows = [r for r in combined_rows if r["direction"] == "incoming"]
+
+        outgoing = [
+            SymbolEdgeInfo(
+                src_symbol=r["src_symbol"],
+                dst_symbol=r["dst_symbol"],
+                edge_type=r["edge_type"],
+                confidence_score=r["confidence_score"],
+                resolution_method=r["resolution_method"],
+            )
+            for r in outgoing_rows
+        ]
+        incoming = [
+            SymbolEdgeInfo(
+                src_symbol=r["src_symbol"],
+                dst_symbol=r["dst_symbol"],
+                edge_type=r["edge_type"],
+                confidence_score=r["confidence_score"],
+                resolution_method=r["resolution_method"],
+            )
+            for r in incoming_rows
+        ]
+
+        defined: set[str] = set()
+        for r in outgoing_rows:
+            defined.add(r["src_symbol"][plen:])
+        for r in incoming_rows:
+            defined.add(r["dst_symbol"][plen:])
+
+        return FileSymbolEdgesResponse(
+            snapshot_id=snapshot_id,
+            file_path=file_path,
+            defined_symbols=sorted(defined),
+            outgoing=outgoing,
+            incoming=incoming,
+        )
 
     async def export_graph_json(self, snapshot_id: str) -> dict:
         """Export full graph structure as a single JSON-serialisable dict.

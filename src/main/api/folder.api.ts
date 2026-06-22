@@ -202,9 +202,32 @@ export function registerFolderHandlers(client: BackendClient): void {
     client.get(`/api/graph/cycles/${snapshotId}`)
   )
 
+  ipcMain.handle('graph:symbolEdges', (_event, snapshotId: string, filePath: string) =>
+    client.get(`/api/graph/symbol-edges/${snapshotId}?file_path=${encodeURIComponent(filePath)}`)
+  )
+
   ipcMain.handle('graph:exportData', (_event, snapshotId: string) =>
     client.get(`/api/graph/export/${snapshotId}`)
   )
+
+  /**
+   * Generic "save already-built CSV text to disk" handler. Used by the
+   * Retrieval Debug query-comparison export (2-stage + RRF fusion final
+   * results) — the CSV is built client-side from data already in the
+   * renderer, so no backend round-trip is needed here.
+   */
+  ipcMain.handle('query:exportCsv', async (_event, csv: string, defaultName: string) => {
+    const save = await dialog.showSaveDialog({
+      title: 'Save Query Comparison CSV',
+      defaultPath: path.join(app.getPath('desktop'), defaultName),
+      filters: [{ name: 'CSV', extensions: ['csv'] }],
+    })
+    if (save.canceled || !save.filePath) {
+      return { saved: false, file_path: null }
+    }
+    await fs.writeFile(save.filePath, csv, 'utf-8')
+    return { saved: true, file_path: save.filePath }
+  })
 
   ipcMain.handle('graph:exportJson', async (_event, snapshotId: string) => {
     const data = await client.get<Record<string, unknown>>(`/api/graph/export/${snapshotId}`)
@@ -254,6 +277,16 @@ export function registerFolderHandlers(client: BackendClient): void {
       section: 'architecture' | 'conventions' | 'feature_map' | 'important_files' | 'glossary'
       budget?: number
     }) => client.post('/api/retrieval/retrieve-two-stage', body)
+  )
+
+  ipcMain.handle(
+    'retrieval:retrieveRrfFusion',
+    (_event, body: {
+      snapshot_id: string
+      query: string
+      section: 'architecture' | 'conventions' | 'feature_map' | 'important_files' | 'glossary'
+      budget?: number
+    }) => client.post('/api/retrieval/retrieve-rrf-fusion', body)
   )
 
   ipcMain.handle(

@@ -29,23 +29,38 @@ class SymbolEdge:
     """A directed call/reference edge between two symbols.
 
     Attributes:
-        src_symbol:     Fully-qualified caller in ``file.py::Class.method`` form.
-        dst_symbol:     Fully-qualified callee in the same form.
-        edge_type:      Relationship kind — ``"calls"``, ``"returns"``, or
-                        ``"param_type"``.
-        confidence:     Resolver certainty — ``"high"`` (statically certain),
-                        ``"low"`` (ambiguous, multiple candidates), or
-                        ``"none"`` (unresolvable — e.g. duck typing / star
-                        import).
-        evidence_lines: Line numbers in the *source* file where the reference
-                        was observed.
+        src_symbol:         Fully-qualified caller in ``file.py::Class.method`` form.
+        dst_symbol:         Fully-qualified callee in the same form.
+        edge_type:          Relationship kind — ``"calls"``, ``"returns"``, or
+                            ``"param_type"``.
+        confidence_score:   Numeric confidence (0.0-1.0) — 1.0 is certain,
+                            0.0 is no confidence.  Stored as REAL in DB.
+        resolution_method:  Label describing how the edge was resolved (e.g.
+                            'import_path_match', 'same_file_scope',
+                            'mro_resolved', 'constructor_type_trace',
+                            'name_heuristic_ambiguous', 'unknown').
+        confidence:         (Legacy) Derived from confidence_score: 'high' if
+                            score >= 0.7 else 'low' (for back-compat with
+                            existing string-based filters).
+        evidence_lines:     Line numbers in the *source* file where the reference
+                            was observed.
     """
 
     src_symbol: str
     dst_symbol: str
     edge_type: str = "calls"
-    confidence: str = "high"
+    confidence_score: float = 0.7
+    resolution_method: str = "unknown"
     evidence_lines: list[int] = field(default_factory=list)
+
+    @property
+    def confidence(self) -> str:
+        """Legacy confidence string derived from confidence_score for back-compat.
+
+        Returns 'high' if score >= 0.7 else 'low' to maintain backward compatibility
+        with existing string-based filters.
+        """
+        return "high" if self.confidence_score >= 0.7 else "low"
 
 
 class SymbolGraphBuilder:

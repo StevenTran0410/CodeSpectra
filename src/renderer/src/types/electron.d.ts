@@ -265,6 +265,24 @@ export interface CyclesResponse {
   cycles: string[][]
 }
 
+// ── CS-250: function-level symbol edge drill-down (graph viewer) ─────────────
+
+export interface SymbolEdgeInfo {
+  src_symbol: string
+  dst_symbol: string
+  edge_type: string
+  confidence_score: number
+  resolution_method: string
+}
+
+export interface FileSymbolEdgesResponse {
+  snapshot_id: string
+  file_path: string
+  defined_symbols: string[]
+  outgoing: SymbolEdgeInfo[]
+  incoming: SymbolEdgeInfo[]
+}
+
 export type RetrievalMode = 'hybrid' | 'vectorless'
 export type RetrievalSection =
   | 'architecture'
@@ -332,6 +350,35 @@ export interface TwoStageRankedChunk {
   centrality_bonus: number
   token_estimate: number
   excerpt: string
+}
+
+export interface SignalRankEntry {
+  chunk_id: string
+  rel_path: string
+  rank: number
+  raw_score: number
+  signal_name: string
+  token_estimate?: number
+}
+
+export interface FusedRankEntry {
+  chunk_id: string
+  rel_path: string
+  fused_score: number
+  per_signal_ranks: Record<string, number>
+  excerpt: string
+  token_estimate?: number
+}
+
+export interface RrfFusionDebugBundle {
+  snapshot_id: string
+  query: string
+  section: string
+  bm25_signal: SignalRankEntry[]
+  graph_signal: SignalRankEntry[]
+  module_signal: SignalRankEntry[]
+  category_signal: SignalRankEntry[]
+  fused: FusedRankEntry[]
 }
 
 export interface TwoStageDebugBundle {
@@ -545,6 +592,7 @@ declare global {
         communities: (snapshotId: string) => Promise<GraphCommunitiesResponse>
         communityForNode: (snapshotId: string, path: string) => Promise<NodeCommunityResponse>
         cycles: (snapshotId: string) => Promise<CyclesResponse>
+        symbolEdges: (snapshotId: string, filePath: string) => Promise<FileSymbolEdgesResponse>
         exportData: (snapshotId: string) => Promise<{
           nodes: string[]
           edges: Array<{ src: string; dst: string; external: boolean }>
@@ -555,6 +603,9 @@ declare global {
           generated_at: string
         }>
         exportJson: (snapshotId: string) => Promise<{ saved: boolean; file_path: string | null }>
+      }
+      query: {
+        exportCsv: (csv: string, defaultName: string) => Promise<{ saved: boolean; file_path: string | null }>
       }
       retrieval: {
         buildIndex: (snapshotId: string, forceRebuild?: boolean) => Promise<{
@@ -582,6 +633,12 @@ declare global {
           section: RetrievalSection
           budget?: number
         }) => Promise<TwoStageDebugBundle>
+        retrieveRrfFusion: (body: {
+          snapshot_id: string
+          query: string
+          section: RetrievalSection
+          budget?: number
+        }) => Promise<RrfFusionDebugBundle>
       }
       analysis: {
         estimate: (repoId: string, snapshotId: string) => Promise<AnalysisEstimateResponse>

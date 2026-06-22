@@ -8,6 +8,33 @@ Confidence levels:
   CONF_LOW   — multiple candidates or interface-typed receiver
   CONF_NONE  — unresolvable; caller MUST NOT emit an edge for these
 
+Resolution method mapping (CS-240):
+  Each SymbolEdge is assigned a confidence_score (0.0-1.0 float) and a
+  resolution_method label indicating how the resolution succeeded:
+
+  - 'import_path_match': bare call resolved via import namespace to a module
+    function (confidence_score=0.95). Exact match: import says where to find it.
+  - 'same_file_scope': bare call found in same file, single candidate
+    (confidence_score=0.85). Fairly certain: no ambiguity in local scope.
+  - 'mro_resolved': self.method() found via MRO walk up inheritance chain
+    (confidence_score=0.9). High confidence: MRO walk is deterministic.
+  - 'constructor_type_trace': self.attr.method() resolved via constructor
+    assignment tracking, exactly 1 type assigned to attr
+    (confidence_score=0.85). Moderate-high: heuristic but unambiguous.
+  - 'name_heuristic_ambiguous': self.attr.method() or interface implementor
+    with 2+ possible target types (confidence_score computed dynamically via
+    _ambiguous_confidence(num_candidates)). Low confidence: multiple candidates,
+    may pick wrong one. Formula: max(0.15, 0.6/num_candidates) ensures confidence
+    decays with fan-out but never drops below 0.15 floor. For 2-5 candidates,
+    this yields 0.3-0.2 (firmly 'low' per the >=0.7 'high' boundary); for 20+
+    candidates, it yields 0.15 floor.
+  - 'unknown': fallback for initialization defaults (confidence_score=0.7).
+
+Legacy string confidence values ('high'/'low'/'none') are preserved for
+backward compatibility with existing consumers (graph_queries.py's string
+equality filter "AND confidence='high'"). Derivation: confidence='high' iff
+confidence_score >= 0.7, else confidence='low' ('none' never written by resolver).
+
 The public entry point is :func:`resolve_edges`.
 """
 from __future__ import annotations
@@ -27,7 +54,7 @@ from ._symbol_parser import (
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Confidence constants
+# Confidence constants (legacy string-based; still used for back-compat)
 # ---------------------------------------------------------------------------
 
 CONF_HIGH = "high"
@@ -36,6 +63,31 @@ CONF_NONE = "none"
 
 # Maximum MRO depth to prevent infinite loops in pathological inheritance
 _MAX_MRO_DEPTH = 20
+
+
+def _ambiguous_confidence(num_candidates: int) -> float:
+    """Compute confidence score for ambiguous resolution based on candidate count.
+
+    When a call site has multiple possible targets (interface implementors,
+    multiple constructor-assigned types), confidence decays with the number
+    of candidates — lower certainty when choosing among many options.
+
+    Formula: max(0.15, 0.6 / max(1, num_candidates))
+    - 1 candidate: 0.6 (still "low" confidence per >=0.7 derivation, but highest ambiguous score)
+    - 2 candidates: 0.3
+    - 3 candidates: 0.2
+    - 5+ candidates: 0.15 (floor)
+
+    This ensures all ambiguous edges remain "low" under the legacy >=0.7 "high" boundary,
+    while still preserving the numeric gradient for ranking/filtering downstream (3c).
+
+    Args:
+        num_candidates: Number of possible resolution targets (>=1).
+
+    Returns:
+        Confidence score in [0.15, 0.6].
+    """
+    return max(0.15, 0.6 / max(1, num_candidates))
 
 
 # ---------------------------------------------------------------------------
@@ -211,7 +263,8 @@ def _resolve(
             return []  # EC-6: no type trace
 
         edges: list[SymbolEdge] = []
-        confidence = CONF_HIGH if len(assigned_types) == 1 else CONF_LOW
+        # Determine resolution_method based on number of assigned types
+        is_single_type = len(assigned_types) == 1
 
         for type_name in assigned_types:
             # Resolve the type name via imports if needed
@@ -230,7 +283,8 @@ def _resolve(
                                 src_symbol=call.caller_fqn,
                                 dst_symbol=target_fqn,
                                 edge_type="calls",
-                                confidence=CONF_LOW,
+                                confidence_score=_ambiguous_confidence(len(implementors)),
+                                resolution_method="name_heuristic_ambiguous",
                                 evidence_lines=[call.line],
                             )
                         )
@@ -243,7 +297,8 @@ def _resolve(
                         src_symbol=call.caller_fqn,
                         dst_symbol=target_fqn,
                         edge_type="calls",
-                        confidence=confidence,
+                        confidence_score=0.85 if is_single_type else _ambiguous_confidence(len(assigned_types)),
+                        resolution_method="constructor_type_trace" if is_single_type else "name_heuristic_ambiguous",
                         evidence_lines=[call.line],
                     )
                 )
@@ -280,7 +335,8 @@ def _resolve_bare_call(
                     src_symbol=call.caller_fqn,
                     dst_symbol=target_fqn,
                     edge_type="calls",
-                    confidence=CONF_HIGH,
+                    confidence_score=0.95,
+                    resolution_method="import_path_match",
                     evidence_lines=[call.line],
                 )
             ]
@@ -298,7 +354,8 @@ def _resolve_bare_call(
                 src_symbol=call.caller_fqn,
                 dst_symbol=candidates[0],
                 edge_type="calls",
-                confidence=CONF_HIGH,
+                confidence_score=0.85,
+                resolution_method="same_file_scope",
                 evidence_lines=[call.line],
             )
         ]
@@ -322,7 +379,8 @@ def _resolve_self_call(
                 src_symbol=call.caller_fqn,
                 dst_symbol=target_fqn,
                 edge_type="calls",
-                confidence=CONF_HIGH,
+                confidence_score=0.9,
+                resolution_method="mro_resolved",
                 evidence_lines=[call.line],
             )
         ]
@@ -355,7 +413,8 @@ def _resolve_module_call(
                     src_symbol=call.caller_fqn,
                     dst_symbol=target_fqn,
                     edge_type="calls",
-                    confidence=CONF_HIGH,
+                    confidence_score=0.95,
+                    resolution_method="import_path_match",
                     evidence_lines=[call.line],
                 )
             ]

@@ -1,17 +1,20 @@
 """Retrieval endpoints (RPA-034)."""
+
 from fastapi import APIRouter
 
 from domain.retrieval.service import RetrievalService
-from shared.http_utils import handle_value_error
 from domain.retrieval.types import (
     BuildRetrievalIndexRequest,
     BuildRetrievalIndexResponse,
-    RetrievalCompareResponse,
     RetrievalBundle,
+    RetrievalCompareResponse,
     RetrieveRequest,
+    RrfFusionBundle,
+    RrfFusionRequest,
     TwoStageBundle,
     TwoStageRequest,
 )
+from shared.http_utils import handle_value_error
 
 router = APIRouter(tags=["retrieval"])
 _service = RetrievalService()
@@ -39,3 +42,9 @@ async def compare_retrieval_modes(body: RetrieveRequest) -> RetrievalCompareResp
 @handle_value_error
 async def retrieve_two_stage(body: TwoStageRequest) -> TwoStageBundle:
     return await _service.retrieve_two_stage(body)
+
+
+@router.post("/retrieve-rrf-fusion", response_model=RrfFusionBundle)
+@handle_value_error
+async def retrieve_rrf_fusion(body: RrfFusionRequest) -> RrfFusionBundle:
+    return await _service.retrieve_rrf_fusion(body)

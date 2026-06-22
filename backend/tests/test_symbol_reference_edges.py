@@ -3,13 +3,10 @@
 Acceptance gate for CS-202 (symbol_graph.py).  Every test here MUST pass
 before CS-202 is considered shippable.
 
-After all 10 edge cases pass on a real codebase snapshot:
-  1. Run this suite one final time.
-  2. Confirm false-positive rate is acceptable.
-  3. Delete this file.
-  4. Close ticket CS-213.
+Extended for CS-240: Verification that confidence_score and resolution_method
+are correctly assigned to each edge per the documented resolver branches.
 
-This file is TEMPORARY — do NOT merge into the permanent test suite.
+This file is now part of the permanent test suite (CS-240 extended its scope).
 """
 from __future__ import annotations
 

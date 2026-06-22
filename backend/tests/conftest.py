@@ -197,3 +197,19 @@ def chat_response_sequence(contents: list[str]) -> MagicMock:
 
     svc.chat = AsyncMock(side_effect=_chat)
     return svc
+
+
+@pytest.fixture(scope="session", autouse=True)
+async def _init_test_db() -> None:
+    """Initialize test database for integration tests."""
+    import os
+    import tempfile
+    from infrastructure.db.database import init_db, close_db
+
+    # Use a temporary directory for test database
+    tmpdir = tempfile.mkdtemp()
+    os.environ["CODESPECTRA_DATA_DIR"] = tmpdir
+
+    await init_db()
+    yield
+    await close_db()

@@ -10,6 +10,7 @@ from infrastructure.db.database import get_db
 from shared.logger import logger
 
 from .bm25_scorer import CHUNK_TYPE_WEIGHT, BM25Scorer, _query_terms
+from .quality import compute_retrieval_quality
 from .service import _CHUNK_FULL_COLS
 from .types import (
     RankedChunk,
@@ -22,7 +23,6 @@ from .types import (
     TwoStageBundle,
     TwoStageStage3Result,
 )
-from .quality import compute_retrieval_quality
 
 _WORD = re.compile(r"[A-Za-z0-9_]+")
 
@@ -37,8 +37,13 @@ def _row_get(row, key: str, default):
 
 _SYMBOL_OVERLAP_BONUS: float = 1.5
 _MODULE_PROXIMITY_BONUS: float = 1.3
+# Flat binary bonus (not a decay function despite the "MAX" name) -- see _compute_chunk_score's
+# cent_bonus assignment below. rrf_fusion.py's build_graph_confidence_rank_list applies its own
+# separate flat centrality_boost (1.5x); the two are intentionally independent (CS-255): one
+# scores a single chunk's BM25-based candidacy, the other scores a file's confidence-weighted
+# rank-fusion signal -- same underlying "is this file structurally central" concept, applied to
+# two different scoring mechanisms (additive score vs RRF input list), not duplicated logic.
 _CENTRALITY_BONUS_MAX: float = 2.6
-_CENTRALITY_BONUS_DECAY: float = 0.08
 
 # Hard floor on rerank final score — chunks below this are dropped entirely
 # before entering _rank_and_budget. Rationale: a "good" match in this pipeline
@@ -259,14 +264,25 @@ class _GraphContext:
     central_files: set[str] = field(default_factory=set)
 
 
-async def _load_graph_context(snapshot_id: str) -> _GraphContext:
+async def _load_graph_context(snapshot_id: str, min_confidence: float | None = None) -> _GraphContext:
+    """Load graph context for symbol expansion.
+
+    Args:
+        snapshot_id: The snapshot to load.
+        min_confidence: Optional numeric confidence threshold (0.0-1.0); when set,
+                        filters symbol_graph_edges to confidence_score >= min_confidence.
+                        Default (None) is unfiltered, preserving current full-recall behavior.
+    """
     db = get_db()
     ctx = _GraphContext()
 
-    async with db.execute(
-        "SELECT DISTINCT src_symbol, dst_symbol FROM symbol_graph_edges WHERE snapshot_id=?",
-        (snapshot_id,),
-    ) as cur:
+    query = "SELECT DISTINCT src_symbol, dst_symbol, confidence_score FROM symbol_graph_edges WHERE snapshot_id=?"
+    params: list = [snapshot_id]
+    if min_confidence is not None:
+        query += " AND confidence_score >= ?"
+        params.append(min_confidence)
+
+    async with db.execute(query, tuple(params)) as cur:
         rows = await cur.fetchall()
     for row in rows:
         src_file = row["src_symbol"].split("::")[0] if "::" in (row["src_symbol"] or "") else row["src_symbol"]
@@ -577,6 +593,7 @@ async def retrieve_two_stage(
     query: str,
     section: RetrievalSection,
     budget: int,
+    min_confidence: float | None = None,
 ) -> TwoStageBundle:
     if not query.strip():
         raise ValueError("Query is required")
@@ -605,7 +622,7 @@ async def retrieve_two_stage(
     if scorer is None:
         logger.debug("[two_stage] BM25 stats not found for %s — using lexical fallback", snapshot_id)
 
-    ctx = await _load_graph_context(snapshot_id)
+    ctx = await _load_graph_context(snapshot_id, min_confidence=min_confidence)
     symbol_index = await load_symbol_index(snapshot_id)
 
     stage1 = _stage1_score_rows(all_rows, scorer, terms, top_k=100)
@@ -699,9 +716,10 @@ async def retrieve_two_stage_as_bundle(
     section: RetrievalSection,
     budget: int,
     mode: RetrievalMode = RetrievalMode.HYBRID,
+    min_confidence: float | None = None,
 ) -> RetrievalBundle:
     """Run the 2-stage pipeline and return a RetrievalBundle (agent-compatible interface)."""
-    bundle = await retrieve_two_stage(snapshot_id, query, section, budget)
+    bundle = await retrieve_two_stage(snapshot_id, query, section, budget, min_confidence=min_confidence)
     evidences = [
         RetrievalEvidence(
             chunk_id=c.chunk_id,
