@@ -37,8 +37,13 @@ def _row_get(row, key: str, default):
 
 _SYMBOL_OVERLAP_BONUS: float = 1.5
 _MODULE_PROXIMITY_BONUS: float = 1.3
+# Flat binary bonus (not a decay function despite the "MAX" name) -- see _compute_chunk_score's
+# cent_bonus assignment below. rrf_fusion.py's build_graph_confidence_rank_list applies its own
+# separate flat centrality_boost (1.5x); the two are intentionally independent (CS-255): one
+# scores a single chunk's BM25-based candidacy, the other scores a file's confidence-weighted
+# rank-fusion signal -- same underlying "is this file structurally central" concept, applied to
+# two different scoring mechanisms (additive score vs RRF input list), not duplicated logic.
 _CENTRALITY_BONUS_MAX: float = 2.6
-_CENTRALITY_BONUS_DECAY: float = 0.08
 
 # Hard floor on rerank final score — chunks below this are dropped entirely
 # before entering _rank_and_budget. Rationale: a "good" match in this pipeline

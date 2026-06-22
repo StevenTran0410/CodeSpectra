@@ -268,6 +268,24 @@ async def detect_todo_hotspots(snapshot_id: str, db: aiosqlite.Connection) -> li
 async def detect_test_coverage_shape(
     snapshot_id: str, db: aiosqlite.Connection
 ) -> list[RiskFinding]:
+    # If the user explicitly excluded test files from indexing (include_tests=False,
+    # the default), manifest_files never contains any test files for this snapshot --
+    # every module would look like it has zero test coverage, which is a guaranteed
+    # false positive caused by the user's own indexing choice, not a real gap. Skip
+    # this detector entirely in that case rather than reporting misleading findings.
+    async with db.execute(
+        """
+        SELECT lr.include_tests
+        FROM repo_snapshots rs
+        JOIN local_repos lr ON lr.id = rs.local_repo_id
+        WHERE rs.id = ?
+        """,
+        (snapshot_id,),
+    ) as cur:
+        repo_row = await cur.fetchone()
+    if repo_row is not None and not repo_row["include_tests"]:
+        return []
+
     async with db.execute(
         "SELECT rel_path FROM manifest_files WHERE snapshot_id=? AND category='source'",
         (snapshot_id,),

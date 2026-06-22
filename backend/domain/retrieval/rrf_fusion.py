@@ -71,6 +71,21 @@ def _symbol_overlap_fallback(
     return None
 
 
+def _group_chunks_by_file(all_rows: list[dict]) -> dict[str, list[dict]]:
+    """Group chunk rows by rel_path.
+
+    Shared by the 3 signal builders that need full per-file chunk lists
+    (graph_confidence, module_proximity, category_hint). build_bm25_rank_list
+    groups differently (by max BM25 score per file, not full chunk lists),
+    so it doesn't use this helper.
+    """
+    file_to_chunks: dict[str, list[dict]] = {}
+    for row in all_rows:
+        rel_path = row["rel_path"]
+        file_to_chunks.setdefault(rel_path, []).append(row)
+    return file_to_chunks
+
+
 def _best_chunk_per_file(
     all_rows: list[dict],
     stage1_candidates: list,
@@ -117,36 +132,57 @@ def _best_chunk_per_file(
     return best_by_file
 
 
-async def _load_confidence_weighted_edges(snapshot_id: str) -> dict[str, list[float]]:
-    """Load confidence scores for symbol graph edges, keyed by destination file.
+async def _load_confidence_weighted_edges(
+    snapshot_id: str, seed_files: set[str]
+) -> dict[str, list[float]]:
+    """Load confidence scores for symbol graph edges from seed files, keyed by destination file.
 
     Returns dict[dst_file] -> list of confidence_score values from edges where src_file
-    is in the seed set (determined by caller). Confidence-lossy _load_graph_context()
-    (from two_stage_retrieval.py:274-286) only stores binary pre-filter (dst_file set),
-    never the confidence value. This function intentionally re-queries to preserve the
-    full confidence signal.
+    is in seed_files. Confidence-lossy _load_graph_context() (from
+    two_stage_retrieval.py:274-286) only stores binary pre-filter (dst_file set), never the
+    confidence value. This function intentionally re-queries to preserve the full confidence
+    signal.
+
+    The seed-file filter is pushed into the SQL WHERE clause (substr-based prefix match,
+    same collision-safe convention as CS-249's copy_unchanged_symbol_edges -- "foo.py" never
+    matches "foo2.py::..."), chunked at 200 paths per round-trip, instead of fetching every
+    edge in the snapshot and filtering in Python (CS-255).
     """
+    if not seed_files:
+        return {}
+
     db = get_db()
     edges_by_dst: dict[str, list[float]] = {}
+    seed_list = sorted(seed_files)
+    chunk_size = 200  # 2 bind params per path + 1 fixed param, well under SQLite's variable limit
 
-    query = (
-        "SELECT DISTINCT src_symbol, dst_symbol, confidence_score "
-        "FROM symbol_graph_edges WHERE snapshot_id=?"
-    )
-    async with db.execute(query, (snapshot_id,)) as cur:
-        rows = await cur.fetchall()
+    for i in range(0, len(seed_list), chunk_size):
+        chunk = seed_list[i : i + chunk_size]
+        conditions = []
+        params: list[str] = [snapshot_id]
+        for path in chunk:
+            conditions.append("substr(src_symbol, 1, length(?) + 2) = ? || '::'")
+            params.extend([path, path])
+        condition_str = " OR ".join(f"({c})" for c in conditions)
 
-    for row in rows:
-        src_symbol = row["src_symbol"] or ""
-        dst_symbol = row["dst_symbol"] or ""
-        confidence = float(row["confidence_score"] or 0.0)
+        query = (
+            "SELECT DISTINCT src_symbol, dst_symbol, confidence_score "
+            f"FROM symbol_graph_edges WHERE snapshot_id=? AND ({condition_str})"
+        )
+        async with db.execute(query, tuple(params)) as cur:
+            rows = await cur.fetchall()
 
-        # Extract file names using :: split convention (matching two_stage_retrieval.py:283-284)
-        src_file = src_symbol.split("::")[0] if "::" in src_symbol else src_symbol
-        dst_file = dst_symbol.split("::")[0] if "::" in dst_symbol else dst_symbol
+        for row in rows:
+            src_symbol = row["src_symbol"] or ""
+            dst_symbol = row["dst_symbol"] or ""
+            confidence = float(row["confidence_score"] or 0.0)
 
-        if src_file and dst_file and src_file != dst_file and confidence > 0.0:
-            edges_by_dst.setdefault(dst_file, []).append(confidence)
+            # Extract file names using :: split convention (matching two_stage_retrieval.py:283-284)
+            src_file = src_symbol.split("::")[0] if "::" in src_symbol else src_symbol
+            dst_file = dst_symbol.split("::")[0] if "::" in dst_symbol else dst_symbol
+
+            if src_file and dst_file and src_file != dst_file and confidence > 0.0:
+                edges_by_dst.setdefault(dst_file, []).append(confidence)
 
     return edges_by_dst
 
@@ -178,10 +214,7 @@ def build_graph_confidence_rank_list(
     Returns:
         List of SignalRankEntry sorted descending by rank_score, with rank=1..N
     """
-    file_to_chunks: dict[str, list[dict]] = {}
-    for row in all_rows:
-        rel_path = row["rel_path"]
-        file_to_chunks.setdefault(rel_path, []).append(row)
+    file_to_chunks = _group_chunks_by_file(all_rows)
 
     # Compute graph-confidence scores per file
     scored_files: list[tuple[float, str, list[dict]]] = []
@@ -215,6 +248,7 @@ def build_graph_confidence_rank_list(
                 raw_score=score,
                 signal_name="graph_confidence",
                 excerpt=excerpt,
+                token_estimate=int(best_chunk.get("token_estimate") or 0),
             )
         )
 
@@ -260,6 +294,7 @@ def build_bm25_rank_list(
                     raw_score=bm25_score,
                     signal_name="bm25",
                     excerpt=excerpt,
+                    token_estimate=int(best_chunk.get("token_estimate") or 0),
                 )
             )
     return entries
@@ -287,10 +322,7 @@ def build_module_proximity_rank_list(
     Returns:
         List of SignalRankEntry with signal_name='module_proximity', sorted descending
     """
-    file_to_chunks: dict[str, list[dict]] = {}
-    for row in all_rows:
-        rel_path = row["rel_path"]
-        file_to_chunks.setdefault(rel_path, []).append(row)
+    file_to_chunks = _group_chunks_by_file(all_rows)
 
     # Score files: _MODULE_PROXIMITY_BONUS if community in seed set, else skip
     scored_files: list[tuple[float, str]] = []
@@ -317,6 +349,7 @@ def build_module_proximity_rank_list(
                     raw_score=score,
                     signal_name="module_proximity",
                     excerpt=excerpt,
+                    token_estimate=int(best_chunk.get("token_estimate") or 0),
                 )
             )
 
@@ -347,10 +380,7 @@ def build_category_hint_rank_list(
     if not category_hints:
         return []
 
-    file_to_chunks: dict[str, list[dict]] = {}
-    for row in all_rows:
-        rel_path = row["rel_path"]
-        file_to_chunks.setdefault(rel_path, []).append(row)
+    file_to_chunks = _group_chunks_by_file(all_rows)
 
     # Score files: _CATEGORY_HINT_BONUS if any chunk's category in hints, else skip
     scored_files: list[tuple[float, str]] = []
@@ -376,6 +406,7 @@ def build_category_hint_rank_list(
                     raw_score=score,
                     signal_name="category_hint",
                     excerpt=excerpt,
+                    token_estimate=int(best_chunk.get("token_estimate") or 0),
                 )
             )
 
@@ -427,47 +458,42 @@ def fuse_signal_lists(
     # Call the real haystack RRF function (k=61 hardcoded inside)
     fused_docs = _reciprocal_rank_fusion(document_lists, weights=weights)
 
-    # Unwrap and build per_signal_ranks mapping
+    # Pre-build chunk_id -> {ranks, excerpt, rel_path} in one O(total entries) pass,
+    # instead of re-scanning every signal's entries per fused doc (was O(signals * M^2),
+    # CS-255). Preserves exact original semantics: per signal, the FIRST occurrence of
+    # a chunk_id (lowest/best rank) wins; for excerpt/rel_path, the first signal list (in
+    # order) yielding a truthy value wins.
+    chunk_meta: dict[str, dict] = {}
+    for signal_name, signal_entries in zip(signal_names, signal_lists):
+        for rank, entry in enumerate(signal_entries, start=1):
+            meta = chunk_meta.setdefault(
+                entry.chunk_id, {"ranks": {}, "excerpt": "", "rel_path": "", "token_estimate": 0}
+            )
+            if signal_name not in meta["ranks"]:
+                meta["ranks"][signal_name] = rank
+            if not meta["excerpt"] and entry.excerpt:
+                meta["excerpt"] = entry.excerpt
+            if not meta["rel_path"] and entry.rel_path:
+                meta["rel_path"] = entry.rel_path
+            if not meta["token_estimate"] and entry.token_estimate:
+                meta["token_estimate"] = entry.token_estimate
+
     fused_entries: list[FusedRankEntry] = []
     for fused_doc in fused_docs:
         chunk_id = fused_doc.id
         fused_score = float(fused_doc.score or 0.0)
-
-        # Build per_signal_ranks: signal_name -> rank from that signal's list
-        per_signal_ranks: dict[str, int] = {}
-        for signal_name, signal_entries in zip(signal_names, signal_lists):
-            for rank, entry in enumerate(signal_entries, start=1):
-                if entry.chunk_id == chunk_id:
-                    per_signal_ranks[signal_name] = rank
-                    break
-
-        # Find the excerpt from the original entries (use first signal that has this chunk)
-        excerpt = ""
-        for signal_entries in signal_lists:
-            for entry in signal_entries:
-                if entry.chunk_id == chunk_id:
-                    excerpt = entry.excerpt
-                    break
-            if excerpt:
-                break
-
-        # Extract rel_path from any signal's entry
-        rel_path = ""
-        for signal_entries in signal_lists:
-            for entry in signal_entries:
-                if entry.chunk_id == chunk_id:
-                    rel_path = entry.rel_path
-                    break
-            if rel_path:
-                break
+        meta = chunk_meta.get(
+            chunk_id, {"ranks": {}, "excerpt": "", "rel_path": "", "token_estimate": 0}
+        )
 
         fused_entries.append(
             FusedRankEntry(
                 chunk_id=chunk_id,
-                rel_path=rel_path,
+                rel_path=meta["rel_path"],
                 fused_score=fused_score,
-                per_signal_ranks=per_signal_ranks,
-                excerpt=excerpt,
+                per_signal_ranks=meta["ranks"],
+                excerpt=meta["excerpt"],
+                token_estimate=meta["token_estimate"],
             )
         )
 
@@ -509,9 +535,8 @@ async def retrieve_rrf_fusion(
     if not terms:
         raise ValueError("Query must contain searchable terms")
 
-    # Load graph context, confidence-weighted edges, and symbol index (same as two_stage_retrieval)
+    # Load graph context and symbol index (same as two_stage_retrieval)
     ctx = await _load_graph_context(snapshot_id, min_confidence)
-    confidence_edges = await _load_confidence_weighted_edges(snapshot_id)
     symbol_index = await load_symbol_index(snapshot_id)
 
     # Load all chunks
@@ -535,6 +560,10 @@ async def retrieve_rrf_fusion(
     # Stage 1: BM25 scoring
     stage1_candidates = _stage1_score_rows(all_rows, scorer, terms, top_k=100)
     stage1_files = {c.rel_path for c in stage1_candidates}
+
+    # Confidence-weighted edges, filtered to seed files in SQL (CS-255) instead of
+    # fetching every edge in the snapshot and filtering in Python.
+    confidence_edges = await _load_confidence_weighted_edges(snapshot_id, stage1_files)
 
     # Compute seed_community_ids from top-20 stage1 candidates
     # (mirrors two_stage_retrieval.py:647-651)

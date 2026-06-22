@@ -968,25 +968,29 @@ class StructuralGraphService:
         prefix = f"{file_path}::"
         plen = len(prefix)
 
+        # CS-255: combined into one UNION ALL round-trip instead of two separate
+        # queries. A direction discriminator distinguishes outgoing vs incoming rows
+        # (UNION ALL, not UNION, so a self-referential edge -- a symbol in this file
+        # calling another symbol in the same file -- correctly appears in BOTH halves,
+        # exactly as the original two-query version did, not collapsed by a dedup pass).
         async with db.execute(
             """
-            SELECT src_symbol, dst_symbol, edge_type, confidence_score, resolution_method
+            SELECT src_symbol, dst_symbol, edge_type, confidence_score, resolution_method,
+                   'outgoing' AS direction
             FROM symbol_graph_edges
             WHERE snapshot_id=? AND substr(src_symbol, 1, ?) = ?
-            """,
-            (snapshot_id, plen, prefix),
-        ) as cur:
-            outgoing_rows = await cur.fetchall()
-
-        async with db.execute(
-            """
-            SELECT src_symbol, dst_symbol, edge_type, confidence_score, resolution_method
+            UNION ALL
+            SELECT src_symbol, dst_symbol, edge_type, confidence_score, resolution_method,
+                   'incoming' AS direction
             FROM symbol_graph_edges
             WHERE snapshot_id=? AND substr(dst_symbol, 1, ?) = ?
             """,
-            (snapshot_id, plen, prefix),
+            (snapshot_id, plen, prefix, snapshot_id, plen, prefix),
         ) as cur:
-            incoming_rows = await cur.fetchall()
+            combined_rows = await cur.fetchall()
+
+        outgoing_rows = [r for r in combined_rows if r["direction"] == "outgoing"]
+        incoming_rows = [r for r in combined_rows if r["direction"] == "incoming"]
 
         outgoing = [
             SymbolEdgeInfo(

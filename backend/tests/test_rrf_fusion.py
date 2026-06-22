@@ -17,6 +17,7 @@ from haystack.utils.misc import _reciprocal_rank_fusion
 from domain.retrieval.rrf_fusion import (
     _CAPPED_SUM_CAP,
     _best_chunk_per_file,
+    _load_confidence_weighted_edges,
     _symbol_overlap_fallback,
     build_bm25_rank_list,
     build_category_hint_rank_list,
@@ -25,6 +26,8 @@ from domain.retrieval.rrf_fusion import (
     fuse_signal_lists,
 )
 from domain.retrieval.types import RetrievalSection, SignalRankEntry, StageCandidate
+from infrastructure.db.database import get_db
+from shared.utils import new_id
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Test Class A: Numeric-exact test of _reciprocal_rank_fusion
@@ -1008,3 +1011,51 @@ async def test_symbol_overlap_fallback_empty_symbol_index():
     result = _symbol_overlap_fallback(chunks, {})
 
     assert result is None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Test Class C (CS-255): seed-file filter push-down in _load_confidence_weighted_edges
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_load_confidence_weighted_edges_filters_to_seed_files_in_sql():
+    """CS-255: _load_confidence_weighted_edges must only fetch edges originating from
+    seed_files, pushed into the SQL WHERE clause -- not fetch every edge in the snapshot
+    and filter in Python. Also verifies the collision guard (seed.py vs seed2.py) and
+    that an empty seed set short-circuits to {} without querying.
+    """
+    db = get_db()
+    snap_id = new_id()
+    rows = [
+        # seed.py -> other.py: should be included (seed.py is in seed_files)
+        (snap_id, "seed.py::caller", "other.py::helper", "calls", 0.9,
+         "import_path_match", "high", "[]"),
+        # seed2.py -> other.py: must NOT be included even though "seed2.py" starts with
+        # "seed" -- proves the substr+"::" collision guard, not a naive LIKE 'seed%'.
+        (snap_id, "seed2.py::unrelated", "other.py::helper", "calls", 0.8,
+         "import_path_match", "high", "[]"),
+        # not_seed.py -> other.py: should NOT be included (not_seed.py is not in seed_files)
+        (snap_id, "not_seed.py::caller", "other.py::helper", "calls", 0.95,
+         "import_path_match", "high", "[]"),
+    ]
+    await db.executemany(
+        """
+        INSERT INTO symbol_graph_edges
+        (snapshot_id, src_symbol, dst_symbol, edge_type, confidence_score,
+         resolution_method, confidence, evidence_lines)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        rows,
+    )
+    await db.commit()
+
+    # Empty seed set short-circuits without querying.
+    empty_result = await _load_confidence_weighted_edges(snap_id, set())
+    assert empty_result == {}
+
+    result = await _load_confidence_weighted_edges(snap_id, {"seed.py"})
+
+    # Only seed.py's edge to other.py should be present -- seed2.py's and
+    # not_seed.py's edges must not leak in.
+    assert result == {"other.py": [0.9]}

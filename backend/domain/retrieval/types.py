@@ -192,6 +192,7 @@ class SignalRankEntry(BaseModel):
     raw_score: float
     signal_name: str
     excerpt: str = ""
+    token_estimate: int = 0
 
 
 class FusedRankEntry(BaseModel):
@@ -200,6 +201,7 @@ class FusedRankEntry(BaseModel):
     fused_score: float
     per_signal_ranks: dict[str, int]
     excerpt: str
+    token_estimate: int = 0
 
 
 class RrfFusionBundle(BaseModel):

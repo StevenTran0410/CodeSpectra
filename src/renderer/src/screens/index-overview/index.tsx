@@ -4,7 +4,6 @@ import { ArrowLeft, Loader2, Save, Search } from 'lucide-react'
 import type {
   RetrievalBundle,
   RetrievalCompareResponse,
-  RetrievalMode,
   RetrievalSection,
   RepoMapSummary,
   StructuralGraphSummary,
@@ -76,6 +75,33 @@ function buildQueryComparisonCsv(
   }
 
   return rows.join('\n')
+}
+
+/** Dedupe a RetrievalBundle's evidences down to the best-scoring chunk per file. */
+function dedupeEvidences(
+  evidences: RetrievalBundle['evidences']
+): RetrievalBundle['evidences'] {
+  const seen = new Map<string, RetrievalBundle['evidences'][0]>()
+  for (const e of evidences) {
+    const prev = seen.get(e.rel_path)
+    if (!prev || e.score > prev.score) seen.set(e.rel_path, e)
+  }
+  return Array.from(seen.values()).sort((a, b) => b.score - a.score)
+}
+
+/** Adapt RRF's FusedRankEntry list into RetrievalResultPanel's expected shape, so
+ * "Run retrieval" can reuse the same display component when wired to RRF fusion. */
+function adaptFusedEntriesForPanel(
+  fused: FusedRankEntry[]
+): Array<{ rel_path: string; chunk_index: number; reason_codes: string[]; score: number; token_estimate: number; excerpt: string }> {
+  return fused.map((e) => ({
+    rel_path: e.rel_path,
+    chunk_index: 0,
+    reason_codes: Object.entries(e.per_signal_ranks).map(([name, rank]) => `${name}#${rank}`),
+    score: e.fused_score,
+    token_estimate: e.token_estimate ?? 0,
+    excerpt: e.excerpt,
+  }))
 }
 
 function RetrievalResultPanel({
@@ -439,10 +465,9 @@ export default function IndexOverviewScreen(): React.ReactElement {
   const [success, setSuccess] = useState<string | null>(null)
   const [retrievalQuery, setRetrievalQuery] = useState('')
   const [retrievalSection, setRetrievalSection] = useState<RetrievalSection>('architecture')
-  const [retrievalMode, setRetrievalMode] = useState<RetrievalMode>('hybrid')
   const [retrievalBusy, setRetrievalBusy] = useState(false)
-  const [retrievalBundle, setRetrievalBundle] = useState<RetrievalBundle | null>(null)
   const [retrievalCompare, setRetrievalCompare] = useState<RetrievalCompareResponse | null>(null)
+  const [primaryRrfBundle, setPrimaryRrfBundle] = useState<RrfFusionDebugBundle | null>(null)
   const [twoStageBundle, setTwoStageBundle] = React.useState<TwoStageDebugBundle | null>(null)
   const [twoStageBusy, setTwoStageBusy] = React.useState(false)
   const [rrfFusionBundle, setRrfFusionBundle] = React.useState<RrfFusionDebugBundle | null>(null)
@@ -697,7 +722,7 @@ export default function IndexOverviewScreen(): React.ReactElement {
 
             <div className="bg-zinc-900/60 border border-zinc-700 rounded-lg p-3 space-y-2">
               <div className="text-xs font-semibold text-zinc-100">Retrieval Debug</div>
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
                 <input
                   value={retrievalQuery}
                   onChange={(e) => setRetrievalQuery(e.target.value)}
@@ -715,14 +740,6 @@ export default function IndexOverviewScreen(): React.ReactElement {
                   <option value="important_files">important_files</option>
                   <option value="glossary">glossary</option>
                 </select>
-                <select
-                  value={retrievalMode}
-                  onChange={(e) => setRetrievalMode(e.target.value as RetrievalMode)}
-                  className="bg-zinc-950 border border-zinc-700 rounded-md px-2 py-1.5 text-xs text-zinc-200"
-                >
-                  <option value="hybrid">hybrid</option>
-                  <option value="vectorless">vectorless</option>
-                </select>
               </div>
               <div className="flex items-center gap-2">
                 <button
@@ -730,18 +747,23 @@ export default function IndexOverviewScreen(): React.ReactElement {
                     if (!snapshotId) return
                     setRetrievalBusy(true)
                     setError(null)
-                    setRetrievalBundle(null)
+                    setPrimaryRrfBundle(null)
                     setRetrievalCompare(null)
                     try {
                       await window.api.retrieval.buildIndex(snapshotId, false)
-                      const out = await window.api.retrieval.retrieve({
+                      // Wired to RRF fusion instead of the legacy two-stage retrieve()
+                      // for this debug button specifically -- the actual production
+                      // Ask Mode/Deep Research path (RetrievalService.retrieve()) is
+                      // left untouched, since RRF still has a known open weakness
+                      // (magnitude-blindness on dominant-signal queries) pending CS-254's
+                      // reranker. This button is for comparing RRF's shape, not a
+                      // claim that RRF has replaced production retrieval.
+                      const out = await window.api.retrieval.retrieveRrfFusion({
                         snapshot_id: snapshotId,
                         query: retrievalQuery.trim(),
                         section: retrievalSection,
-                        mode: retrievalMode,
-                        max_results: 20,
                       })
-                      setRetrievalBundle(out)
+                      setPrimaryRrfBundle(out)
                     } catch (err) {
                       setError(toErrorMessage(err))
                     } finally {
@@ -751,14 +773,14 @@ export default function IndexOverviewScreen(): React.ReactElement {
                   disabled={retrievalBusy || !retrievalQuery.trim()}
                   className="px-2.5 py-1.5 text-xs border border-zinc-700 rounded-md text-zinc-300 hover:border-zinc-600 disabled:opacity-50"
                 >
-                  {retrievalBusy ? 'Running...' : 'Run retrieval'}
+                  {retrievalBusy ? 'Running...' : 'Run retrieval (RRF)'}
                 </button>
                 <button
                   onClick={async () => {
                     if (!snapshotId) return
                     setRetrievalBusy(true)
                     setError(null)
-                    setRetrievalBundle(null)
+                    setPrimaryRrfBundle(null)
                     try {
                       await window.api.retrieval.buildIndex(snapshotId, false)
                       const out = await window.api.retrieval.compare({
@@ -780,31 +802,47 @@ export default function IndexOverviewScreen(): React.ReactElement {
                   {retrievalBusy ? 'Comparing...' : 'A/B compare'}
                 </button>
               </div>
-              {retrievalBundle && (() => {
-                // Dedupe: keep best-scoring chunk per file
-                const seen = new Map<string, typeof retrievalBundle.evidences[0]>()
-                for (const e of retrievalBundle.evidences) {
-                  const prev = seen.get(e.rel_path)
-                  if (!prev || e.score > prev.score) seen.set(e.rel_path, e)
-                }
-                const deduped = Array.from(seen.values()).sort((a, b) => b.score - a.score)
-                return (
-                  <RetrievalResultPanel
-                    deduped={deduped}
-                    totalChunks={retrievalBundle.evidences.length}
-                    mode={retrievalBundle.mode}
-                    usedTokens={retrievalBundle.used_tokens}
-                    budgetTokens={retrievalBundle.budget_tokens}
-                  />
-                )
-              })()}
+              {primaryRrfBundle && (
+                <RetrievalResultPanel
+                  deduped={adaptFusedEntriesForPanel(primaryRrfBundle.fused)}
+                  totalChunks={primaryRrfBundle.fused.length}
+                  mode="rrf_fusion"
+                  usedTokens={primaryRrfBundle.fused.reduce((acc, e) => acc + (e.token_estimate ?? 0), 0)}
+                  budgetTokens={0}
+                />
+              )}
               {retrievalCompare && (
-                <div className="text-[11px] text-zinc-500 border border-zinc-800 rounded-md p-2">
-                  delta p@5: <span className="text-zinc-300">{retrievalCompare.precision_at_5_delta.toFixed(3)}</span>
-                  <span className="mx-2 text-zinc-700">|</span>
-                  delta hit-rate: <span className="text-zinc-300">{retrievalCompare.evidence_hit_rate_delta.toFixed(3)}</span>
-                  <span className="mx-2 text-zinc-700">|</span>
-                  delta tokens: <span className="text-zinc-300">{retrievalCompare.token_cost_delta}</span>
+                <div className="space-y-2">
+                  <div className="text-[11px] text-zinc-500 border border-zinc-800 rounded-md p-2">
+                    delta p@5: <span className="text-zinc-300">{retrievalCompare.precision_at_5_delta.toFixed(3)}</span>
+                    <span className="mx-2 text-zinc-700">|</span>
+                    delta hit-rate: <span className="text-zinc-300">{retrievalCompare.evidence_hit_rate_delta.toFixed(3)}</span>
+                    <span className="mx-2 text-zinc-700">|</span>
+                    delta tokens: <span className="text-zinc-300">{retrievalCompare.token_cost_delta}</span>
+                    <span className="ml-2 text-zinc-600">(vectorless minus hybrid — both run unconditionally, ignoring the Mode dropdown)</span>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                    <div>
+                      <div className="text-[10px] text-zinc-500 mb-1">Baseline (hybrid)</div>
+                      <RetrievalResultPanel
+                        deduped={dedupeEvidences(retrievalCompare.baseline.evidences)}
+                        totalChunks={retrievalCompare.baseline.evidences.length}
+                        mode={retrievalCompare.baseline.mode}
+                        usedTokens={retrievalCompare.baseline.used_tokens}
+                        budgetTokens={retrievalCompare.baseline.budget_tokens}
+                      />
+                    </div>
+                    <div>
+                      <div className="text-[10px] text-zinc-500 mb-1">Vectorless</div>
+                      <RetrievalResultPanel
+                        deduped={dedupeEvidences(retrievalCompare.vectorless.evidences)}
+                        totalChunks={retrievalCompare.vectorless.evidences.length}
+                        mode={retrievalCompare.vectorless.mode}
+                        usedTokens={retrievalCompare.vectorless.used_tokens}
+                        budgetTokens={retrievalCompare.vectorless.budget_tokens}
+                      />
+                    </div>
+                  </div>
                 </div>
               )}
             </div>
@@ -943,6 +981,11 @@ export default function IndexOverviewScreen(): React.ReactElement {
                   <details open className="border border-zinc-800 rounded">
                     <summary className="px-2 py-1 text-[11px] text-zinc-400 cursor-pointer hover:text-zinc-200">
                       RRF Fused Results — {rrfFusionBundle.fused.length} entries
+                      {' · '}
+                      <span className="text-zinc-300">
+                        tokens={rrfFusionBundle.fused.reduce((acc, e) => acc + (e.token_estimate ?? 0), 0)}
+                      </span>
+                      <span className="text-zinc-600"> (no budget cap — unbounded debug path)</span>
                     </summary>
                     <RrfFusedPanel entries={rrfFusionBundle.fused} />
                   </details>

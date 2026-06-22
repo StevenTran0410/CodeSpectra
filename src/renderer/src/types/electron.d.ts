@@ -358,6 +358,7 @@ export interface SignalRankEntry {
   rank: number
   raw_score: number
   signal_name: string
+  token_estimate?: number
 }
 
 export interface FusedRankEntry {
@@ -366,6 +367,7 @@ export interface FusedRankEntry {
   fused_score: number
   per_signal_ranks: Record<string, number>
   excerpt: string
+  token_estimate?: number
 }
 
 export interface RrfFusionDebugBundle {

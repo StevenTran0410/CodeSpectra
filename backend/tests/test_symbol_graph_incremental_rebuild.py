@@ -88,6 +88,11 @@ async def test_symbol_edges_for_file_cs250():
         (snap_id, "bar.py::other", "foo.py::util", "calls", 0.4, "name_heuristic_ambiguous", "low", json.dumps([2])),
         # foo2.py edges must never leak into foo.py's results (collision guard)
         (snap_id, "foo2.py::unrelated", "bar.py::helper", "calls", 0.9, "mro_resolved", "high", json.dumps([3])),
+        # Self-referential: foo.py calling another symbol in foo.py itself. CS-255's
+        # UNION ALL (not UNION) must surface this in BOTH outgoing and incoming --
+        # a plain UNION with identical-looking rows could silently dedupe it.
+        (snap_id, "foo.py::caller", "foo.py::local_helper", "calls", 0.85,
+         "same_file_scope", "high", json.dumps([4])),
     ]
     await db.executemany(
         """
@@ -103,19 +108,26 @@ async def test_symbol_edges_for_file_cs250():
     result = await service.symbol_edges_for_file(snap_id, "foo.py")
 
     assert result.file_path == "foo.py"
-    assert sorted(result.defined_symbols) == ["caller", "util"]
+    assert sorted(result.defined_symbols) == ["caller", "local_helper", "util"]
 
-    assert len(result.outgoing) == 1
-    assert result.outgoing[0].src_symbol == "foo.py::caller"
-    assert result.outgoing[0].dst_symbol == "bar.py::helper"
-    assert result.outgoing[0].confidence_score == 0.95
-    assert result.outgoing[0].resolution_method == "import_path_match"
+    assert len(result.outgoing) == 2
+    outgoing_by_dst = {e.dst_symbol: e for e in result.outgoing}
+    assert outgoing_by_dst["bar.py::helper"].src_symbol == "foo.py::caller"
+    assert outgoing_by_dst["bar.py::helper"].confidence_score == 0.95
+    assert outgoing_by_dst["bar.py::helper"].resolution_method == "import_path_match"
+    # Self-referential edge must appear in outgoing (foo.py -> foo.py)
+    assert outgoing_by_dst["foo.py::local_helper"].src_symbol == "foo.py::caller"
+    assert outgoing_by_dst["foo.py::local_helper"].confidence_score == 0.85
 
-    assert len(result.incoming) == 1
-    assert result.incoming[0].src_symbol == "bar.py::other"
-    assert result.incoming[0].dst_symbol == "foo.py::util"
-    assert result.incoming[0].confidence_score == 0.4
-    assert result.incoming[0].resolution_method == "name_heuristic_ambiguous"
+    assert len(result.incoming) == 2
+    incoming_by_src = {e.src_symbol: e for e in result.incoming}
+    assert incoming_by_src["bar.py::other"].dst_symbol == "foo.py::util"
+    assert incoming_by_src["bar.py::other"].confidence_score == 0.4
+    assert incoming_by_src["bar.py::other"].resolution_method == "name_heuristic_ambiguous"
+    # CS-255: same self-referential edge must ALSO appear in incoming (foo.py -> foo.py) --
+    # UNION ALL must not collapse it just because outgoing already has an identical-looking row.
+    assert incoming_by_src["foo.py::caller"].dst_symbol == "foo.py::local_helper"
+    assert incoming_by_src["foo.py::caller"].confidence_score == 0.85
 
     # Collision guard: foo2.py's edge must not appear anywhere in foo.py's result
     all_symbols = [e.src_symbol for e in result.outgoing + result.incoming] + [
