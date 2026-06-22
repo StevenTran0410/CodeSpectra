@@ -258,6 +258,68 @@ function RrfGraphSignalPanel({ entries }: { entries: SignalRankEntry[] }): React
   )
 }
 
+function RrfModuleProximitySignalPanel({ entries }: { entries: SignalRankEntry[] }): React.ReactElement {
+  const [expanded, setExpanded] = React.useState<string | null>(null)
+  return (
+    <div className="p-2 space-y-1 max-h-80 overflow-y-auto">
+      {entries.map((e) => {
+        const key = `${e.rel_path}#${e.rank}`
+        const isOpen = expanded === key
+        return (
+          <div key={key} className="border border-zinc-800 rounded">
+            <button
+              className="w-full text-left px-2 py-1 flex items-center gap-1.5 hover:bg-zinc-800/40 transition-colors text-[11px]"
+              onClick={() => setExpanded(isOpen ? null : key)}
+            >
+              <span className={`shrink-0 text-[9px] transition-transform ${isOpen ? 'rotate-90' : ''}`}>▶</span>
+              <span className="shrink-0 text-zinc-500 font-mono">#{e.rank}</span>
+              <span className="shrink-0 text-zinc-300 font-mono truncate flex-1">{e.rel_path}</span>
+              <span className="shrink-0 text-zinc-700 mx-1">|</span>
+              <span className="shrink-0 text-zinc-400 font-mono">mod_bonus={e.raw_score.toFixed(2)}</span>
+            </button>
+            {isOpen && (
+              <div className="mx-2 mb-2 p-2 bg-zinc-950 border border-zinc-800 rounded text-[10px] text-zinc-400">
+                <div>Module-proximity signal: file shares a Stage-1 seed community</div>
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function RrfCategoryHintSignalPanel({ entries }: { entries: SignalRankEntry[] }): React.ReactElement {
+  const [expanded, setExpanded] = React.useState<string | null>(null)
+  return (
+    <div className="p-2 space-y-1 max-h-80 overflow-y-auto">
+      {entries.map((e) => {
+        const key = `${e.rel_path}#${e.rank}`
+        const isOpen = expanded === key
+        return (
+          <div key={key} className="border border-zinc-800 rounded">
+            <button
+              className="w-full text-left px-2 py-1 flex items-center gap-1.5 hover:bg-zinc-800/40 transition-colors text-[11px]"
+              onClick={() => setExpanded(isOpen ? null : key)}
+            >
+              <span className={`shrink-0 text-[9px] transition-transform ${isOpen ? 'rotate-90' : ''}`}>▶</span>
+              <span className="shrink-0 text-zinc-500 font-mono">#{e.rank}</span>
+              <span className="shrink-0 text-zinc-300 font-mono truncate flex-1">{e.rel_path}</span>
+              <span className="shrink-0 text-zinc-700 mx-1">|</span>
+              <span className="shrink-0 text-zinc-400 font-mono">category_bonus={e.raw_score.toFixed(2)}</span>
+            </button>
+            {isOpen && (
+              <div className="mx-2 mb-2 p-2 bg-zinc-950 border border-zinc-800 rounded text-[10px] text-zinc-400">
+                <div>Category-hint signal: chunk category matches section hint set</div>
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 function RrfFusedPanel({ entries }: { entries: FusedRankEntry[] }): React.ReactElement {
   const [expanded, setExpanded] = React.useState<string | null>(null)
   return (
@@ -783,6 +845,18 @@ export default function IndexOverviewScreen(): React.ReactElement {
                       Graph/Confidence Signal — {rrfFusionBundle.graph_signal.length} entries
                     </summary>
                     <RrfGraphSignalPanel entries={rrfFusionBundle.graph_signal} />
+                  </details>
+                  <details className="border border-zinc-800 rounded">
+                    <summary className="px-2 py-1 text-[11px] text-zinc-400 cursor-pointer hover:text-zinc-200">
+                      Module Proximity Signal — {rrfFusionBundle.module_signal.length} entries
+                    </summary>
+                    <RrfModuleProximitySignalPanel entries={rrfFusionBundle.module_signal} />
+                  </details>
+                  <details className="border border-zinc-800 rounded">
+                    <summary className="px-2 py-1 text-[11px] text-zinc-400 cursor-pointer hover:text-zinc-200">
+                      Category Hint Signal — {rrfFusionBundle.category_signal.length} entries
+                    </summary>
+                    <RrfCategoryHintSignalPanel entries={rrfFusionBundle.category_signal} />
                   </details>
                   <details open className="border border-zinc-800 rounded">
                     <summary className="px-2 py-1 text-[11px] text-zinc-400 cursor-pointer hover:text-zinc-200">

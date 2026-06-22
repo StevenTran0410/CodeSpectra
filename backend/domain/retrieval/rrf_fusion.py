@@ -13,10 +13,14 @@ from infrastructure.db.database import get_db
 
 from .bm25_scorer import BM25Scorer
 from .two_stage_retrieval import (
+    _CATEGORY_HINT_BONUS,
     _CHUNK_FULL_COLS,
+    _MODULE_PROXIMITY_BONUS,
+    _SECTION_CATEGORY_HINTS,
     _load_graph_context,
     _query_terms,
     _stage1_score_rows,
+    load_symbol_index,
 )
 from .types import FusedRankEntry, RetrievalSection, RrfFusionBundle, SignalRankEntry
 
@@ -24,6 +28,93 @@ from .types import FusedRankEntry, RetrievalSection, RrfFusionBundle, SignalRank
 # Prevents many low-confidence (0.15-0.3) ambiguous edges from outranking 2-3 genuinely
 # high-confidence ones via edge-count gaming. See capped-SUM formula in docstring.
 _CAPPED_SUM_CAP = 2.0
+
+
+def _symbol_overlap_fallback(
+    chunks: list[dict], symbol_index: dict[str, list[tuple[str, int, int]]] | None
+) -> dict | None:
+    """Prefer chunk whose line range overlaps a known symbol definition.
+
+    Args:
+        chunks: List of chunk dicts (must have rel_path, start_line, end_line keys)
+        symbol_index: dict[term_lower, list[(rel_path, start_line, end_line)]]
+            from load_symbol_index
+
+    Returns:
+        First chunk whose [start_line, end_line] overlaps a symbol for that file, or None
+    """
+    if not symbol_index:
+        return None
+
+    # Flatten all symbol ranges by file
+    symbols_by_file: dict[str, list[tuple[int, int]]] = {}
+    for sym_ranges in symbol_index.values():
+        for rel_path, sym_start, sym_end in sym_ranges:
+            symbols_by_file.setdefault(rel_path, []).append((sym_start, sym_end))
+
+    # Check each chunk for overlap
+    for chunk in chunks:
+        chunk_rel_path: str | None = chunk.get("rel_path")
+        if not isinstance(chunk_rel_path, str):
+            continue
+        chunk_start = chunk.get("start_line", 0)
+        chunk_end = chunk.get("end_line", 0)
+
+        if chunk_start == 0 and chunk_end == 0:
+            continue
+
+        for sym_start, sym_end in symbols_by_file.get(chunk_rel_path, []):
+            # Check if symbol range overlaps chunk range
+            if sym_start >= chunk_start and sym_end <= chunk_end:
+                return chunk
+
+    return None
+
+
+def _best_chunk_per_file(
+    all_rows: list[dict],
+    stage1_candidates: list,
+    symbol_index: dict[str, list[tuple[str, int, int]]] | None,
+) -> dict[str, dict]:
+    """Compute best chunk per file using BM25 scores when available.
+
+    Fallback chain:
+    1. Highest BM25-scored chunk for that file (if any passed stage1)
+    2. Chunk overlapping a known symbol definition (if symbol_index available)
+    3. First chunk (chunk_index == 0 semantically, or list order)
+
+    Args:
+        all_rows: Full chunk rows
+        stage1_candidates: Ranked candidates from BM25 stage 1
+        symbol_index: Symbol definition ranges, or None
+
+    Returns:
+        dict[rel_path -> best_row_dict]
+    """
+    # Build BM25 score lookup: chunk_id -> bm25_score
+    chunk_bm25: dict[str, float] = {c.chunk_id: c.bm25_score for c in stage1_candidates}
+
+    # Group all_rows by rel_path
+    file_to_chunks: dict[str, list[dict]] = {}
+    for row in all_rows:
+        rel_path = row.get("rel_path")
+        if rel_path:
+            file_to_chunks.setdefault(rel_path, []).append(row)
+
+    # Pick best chunk per file
+    best_by_file: dict[str, dict] = {}
+    for rel_path, chunks in file_to_chunks.items():
+        # Try BM25 first
+        scored = [(chunk_bm25[c["id"]], c) for c in chunks if c["id"] in chunk_bm25]
+        if scored:
+            best = max(scored, key=lambda t: t[0])[1]
+        else:
+            # No BM25: try symbol overlap, else first chunk
+            best = _symbol_overlap_fallback(chunks, symbol_index) or chunks[0]
+
+        best_by_file[rel_path] = best
+
+    return best_by_file
 
 
 async def _load_confidence_weighted_edges(snapshot_id: str) -> dict[str, list[float]]:
@@ -65,6 +156,7 @@ def build_graph_confidence_rank_list(
     ctx,
     stage1_files: set[str],
     confidence_edges: dict[str, list[float]],
+    best_chunk_by_file: dict[str, dict],
     top_k: int = 100,
 ) -> list[SignalRankEntry]:
     """Build rank list from graph-confidence signal with capped-SUM scoring.
@@ -80,6 +172,7 @@ def build_graph_confidence_rank_list(
         ctx: _GraphContext with central_files, file_symbol_refs
         stage1_files: Set of files that ranked in BM25 stage 1
         confidence_edges: dict[dst_file] -> list[confidence_score] from edges in seed files
+        best_chunk_by_file: dict[rel_path] -> best_row_dict (precomputed from _best_chunk_per_file)
         top_k: Max entries to return
 
     Returns:
@@ -107,10 +200,12 @@ def build_graph_confidence_rank_list(
     scored_files.sort(key=lambda x: (-x[0], x[1]))
     top_files = scored_files[:top_k]
 
-    # Convert to SignalRankEntry: one per top file, using best chunk
+    # Convert to SignalRankEntry: one per top file, using best chunk from precomputed map
     entries: list[SignalRankEntry] = []
     for rank, (score, rel_path, chunks) in enumerate(top_files, start=1):
-        best_chunk = max(chunks, key=lambda c: int(c.get("chunk_index", 0)))
+        best_chunk = best_chunk_by_file.get(rel_path) or max(
+            chunks, key=lambda c: int(c.get("chunk_index", 0))
+        )
         excerpt = best_chunk.get("content", "")[:200] if best_chunk.get("content") else ""
         entries.append(
             SignalRankEntry(
@@ -128,28 +223,162 @@ def build_graph_confidence_rank_list(
 
 def build_bm25_rank_list(
     candidates,  # list[StageCandidate] output from _stage1_score_rows
+    best_chunk_by_file: dict[str, dict],
     top_k: int = 100,
 ) -> list[SignalRankEntry]:
-    """Convert BM25 stage 1 candidates to SignalRankEntry list.
+    """Convert BM25 stage 1 candidates to SignalRankEntry list, collapsed to one per file.
 
     Args:
         candidates: Output from _stage1_score_rows (already sorted descending by BM25)
+        best_chunk_by_file: dict[rel_path] -> best_row_dict (precomputed from _best_chunk_per_file)
         top_k: Max entries to return
 
     Returns:
-        List of SignalRankEntry with rank=1..N
+        List of SignalRankEntry with rank=1..N, collapsed to one per file using best_chunk_by_file
     """
+    # Group candidates by rel_path and keep highest BM25 score
+    file_to_score: dict[str, float] = {}
+    for candidate in candidates:
+        rel_path = candidate.rel_path
+        if rel_path not in file_to_score or candidate.bm25_score > file_to_score[rel_path]:
+            file_to_score[rel_path] = candidate.bm25_score
+
+    # Sort files by score descending
+    sorted_files = sorted(file_to_score.items(), key=lambda x: -x[1])
+
+    # Build entries using best_chunk_by_file for chunk_id
     entries: list[SignalRankEntry] = []
-    for rank, candidate in enumerate(candidates[:top_k], start=1):
-        entries.append(
-            SignalRankEntry(
-                chunk_id=candidate.chunk_id,
-                rel_path=candidate.rel_path,
-                rank=rank,
-                raw_score=candidate.bm25_score,
-                signal_name="bm25",
+    for rank, (rel_path, bm25_score) in enumerate(sorted_files[:top_k], start=1):
+        best_chunk = best_chunk_by_file.get(rel_path)
+        if best_chunk:
+            excerpt = best_chunk.get("content", "")[:200] if best_chunk.get("content") else ""
+            entries.append(
+                SignalRankEntry(
+                    chunk_id=best_chunk["id"],
+                    rel_path=rel_path,
+                    rank=rank,
+                    raw_score=bm25_score,
+                    signal_name="bm25",
+                    excerpt=excerpt,
+                )
             )
-        )
+    return entries
+
+
+def build_module_proximity_rank_list(
+    all_rows: list[dict],
+    ctx,
+    seed_community_ids: set[int],
+    best_chunk_by_file: dict[str, dict],
+    top_k: int = 100,
+) -> list[SignalRankEntry]:
+    """Build rank list from module-proximity signal (community proximity to seed files).
+
+    Ported from two_stage_retrieval.py:490 mod_bonus logic. Applies _MODULE_PROXIMITY_BONUS (1.3)
+    to files in seed communities.
+
+    Args:
+        all_rows: Full chunk rows from retrieval_chunks
+        ctx: _GraphContext with file_community mapping
+        seed_community_ids: Set of community IDs found in top-20 BM25 candidates
+        best_chunk_by_file: dict[rel_path] -> best_row_dict (precomputed from _best_chunk_per_file)
+        top_k: Max entries to return
+
+    Returns:
+        List of SignalRankEntry with signal_name='module_proximity', sorted descending
+    """
+    file_to_chunks: dict[str, list[dict]] = {}
+    for row in all_rows:
+        rel_path = row["rel_path"]
+        file_to_chunks.setdefault(rel_path, []).append(row)
+
+    # Score files: _MODULE_PROXIMITY_BONUS if community in seed set, else skip
+    scored_files: list[tuple[float, str]] = []
+    for rel_path in file_to_chunks.keys():
+        cid = ctx.file_community.get(rel_path)
+        if cid is not None and cid in seed_community_ids:
+            scored_files.append((_MODULE_PROXIMITY_BONUS, rel_path))
+
+    # Sort descending, take top K
+    scored_files.sort(key=lambda x: (-x[0], x[1]))
+    top_files = scored_files[:top_k]
+
+    # Convert to SignalRankEntry
+    entries: list[SignalRankEntry] = []
+    for rank, (score, rel_path) in enumerate(top_files, start=1):
+        best_chunk = best_chunk_by_file.get(rel_path)
+        if best_chunk:
+            excerpt = best_chunk.get("content", "")[:200] if best_chunk.get("content") else ""
+            entries.append(
+                SignalRankEntry(
+                    chunk_id=best_chunk["id"],
+                    rel_path=rel_path,
+                    rank=rank,
+                    raw_score=score,
+                    signal_name="module_proximity",
+                    excerpt=excerpt,
+                )
+            )
+
+    return entries
+
+
+def build_category_hint_rank_list(
+    all_rows: list[dict],
+    section: RetrievalSection,
+    best_chunk_by_file: dict[str, dict],
+    top_k: int = 100,
+) -> list[SignalRankEntry]:
+    """Build rank list from category-hint signal (chunk category matches section hints).
+
+    Ported from two_stage_retrieval.py:485-486 category-hint bonus logic. Applies
+    _CATEGORY_HINT_BONUS (1.4) to files whose chunks match the section's hint category set.
+
+    Args:
+        all_rows: Full chunk rows from retrieval_chunks
+        section: RetrievalSection enum to look up hint categories
+        best_chunk_by_file: dict[rel_path] -> best_row_dict (precomputed from _best_chunk_per_file)
+        top_k: Max entries to return
+
+    Returns:
+        List of SignalRankEntry with signal_name='category_hint', sorted descending
+    """
+    category_hints = _SECTION_CATEGORY_HINTS.get(section, set())
+    if not category_hints:
+        return []
+
+    file_to_chunks: dict[str, list[dict]] = {}
+    for row in all_rows:
+        rel_path = row["rel_path"]
+        file_to_chunks.setdefault(rel_path, []).append(row)
+
+    # Score files: _CATEGORY_HINT_BONUS if any chunk's category in hints, else skip
+    scored_files: list[tuple[float, str]] = []
+    for rel_path, chunks in file_to_chunks.items():
+        if any(c.get("category") in category_hints for c in chunks):
+            scored_files.append((_CATEGORY_HINT_BONUS, rel_path))
+
+    # Sort descending, take top K
+    scored_files.sort(key=lambda x: (-x[0], x[1]))
+    top_files = scored_files[:top_k]
+
+    # Convert to SignalRankEntry
+    entries: list[SignalRankEntry] = []
+    for rank, (score, rel_path) in enumerate(top_files, start=1):
+        best_chunk = best_chunk_by_file.get(rel_path)
+        if best_chunk:
+            excerpt = best_chunk.get("content", "")[:200] if best_chunk.get("content") else ""
+            entries.append(
+                SignalRankEntry(
+                    chunk_id=best_chunk["id"],
+                    rel_path=rel_path,
+                    rank=rank,
+                    raw_score=score,
+                    signal_name="category_hint",
+                    excerpt=excerpt,
+                )
+            )
+
     return entries
 
 
@@ -252,12 +481,13 @@ async def retrieve_rrf_fusion(
     budget: int | None = None,  # Unused in this debug path, kept for API consistency
     min_confidence: float | None = None,
 ) -> RrfFusionBundle:
-    """Run RRF multi-signal fusion retrieval (CS-252 debug path).
+    """Run RRF multi-signal fusion retrieval (CS-252/CS-253 debug path).
 
-    Loads identical all_rows/ctx/symbol_index as retrieve_two_stage, builds both BM25
-    and graph-confidence signal rank lists, fuses via RRF, returns raw unbounded results.
-    Does NOT route through _rank_and_budget()/_apply_diversity_filter() — this is a
-    debug/comparison path, not a production synthesis input.
+    Loads identical all_rows/ctx/symbol_index as retrieve_two_stage, builds all 4 signal
+    rank lists (BM25, graph-confidence, module-proximity, category-hint), fuses via RRF,
+    returns raw unbounded results. Does NOT route through
+    _rank_and_budget()/_apply_diversity_filter() — this is a debug/comparison path, not a
+    production synthesis input.
 
     Args:
         snapshot_id: Snapshot to retrieve from
@@ -267,16 +497,17 @@ async def retrieve_rrf_fusion(
         min_confidence: Optional confidence threshold for graph edges
 
     Returns:
-        RrfFusionBundle with bm25_signal, graph_signal, fused lists
+        RrfFusionBundle with bm25_signal, graph_signal, module_signal, category_signal, fused lists
     """
     db = get_db()
     terms = _query_terms(query)
     if not terms:
         raise ValueError("Query must contain searchable terms")
 
-    # Load graph context and confidence-weighted edges (same as two_stage_retrieval)
+    # Load graph context, confidence-weighted edges, and symbol index (same as two_stage_retrieval)
     ctx = await _load_graph_context(snapshot_id, min_confidence)
     confidence_edges = await _load_confidence_weighted_edges(snapshot_id)
+    symbol_index = await load_symbol_index(snapshot_id)
 
     # Load all chunks
     async with db.execute(
@@ -300,19 +531,49 @@ async def retrieve_rrf_fusion(
     stage1_candidates = _stage1_score_rows(all_rows, scorer, terms, top_k=100)
     stage1_files = {c.rel_path for c in stage1_candidates}
 
-    bm25_signal = build_bm25_rank_list(stage1_candidates, top_k=100)
+    # Compute seed_community_ids from top-20 stage1 candidates
+    # (mirrors two_stage_retrieval.py:647-651)
+    seed_community_ids: set[int] = set()
+    for c in stage1_candidates[:20]:
+        cid = ctx.file_community.get(c.rel_path)
+        if cid is not None:
+            seed_community_ids.add(cid)
 
-    # Build graph-confidence signal
+    # Convert all_rows to dicts once (reuse everywhere)
+    all_rows_dicts = [dict(r) for r in all_rows]
+
+    # Precompute best_chunk_per_file once, thread into all 4 builders
+    best_chunk_by_file = _best_chunk_per_file(all_rows_dicts, stage1_candidates, symbol_index)
+
+    # Build all 4 signal lists
+    bm25_signal = build_bm25_rank_list(stage1_candidates, best_chunk_by_file, top_k=100)
+
     graph_signal = build_graph_confidence_rank_list(
-        [dict(r) for r in all_rows],
+        all_rows_dicts,
         ctx,
         stage1_files,
         confidence_edges,
+        best_chunk_by_file,
         top_k=100,
     )
 
-    # Fuse signals via RRF
-    fused = fuse_signal_lists([bm25_signal, graph_signal])
+    module_signal = build_module_proximity_rank_list(
+        all_rows_dicts,
+        ctx,
+        seed_community_ids,
+        best_chunk_by_file,
+        top_k=100,
+    )
+
+    category_signal = build_category_hint_rank_list(
+        all_rows_dicts,
+        section,
+        best_chunk_by_file,
+        top_k=100,
+    )
+
+    # Fuse all 4 signals via RRF
+    fused = fuse_signal_lists([bm25_signal, graph_signal, module_signal, category_signal])
 
     return RrfFusionBundle(
         snapshot_id=snapshot_id,
@@ -320,5 +581,7 @@ async def retrieve_rrf_fusion(
         section=section,
         bm25_signal=bm25_signal,
         graph_signal=graph_signal,
+        module_signal=module_signal,
+        category_signal=category_signal,
         fused=fused,
     )

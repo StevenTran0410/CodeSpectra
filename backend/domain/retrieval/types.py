@@ -208,6 +208,8 @@ class RrfFusionBundle(BaseModel):
     section: RetrievalSection
     bm25_signal: list[SignalRankEntry]
     graph_signal: list[SignalRankEntry]
+    module_signal: list[SignalRankEntry]
+    category_signal: list[SignalRankEntry]
     fused: list[FusedRankEntry]
 
 

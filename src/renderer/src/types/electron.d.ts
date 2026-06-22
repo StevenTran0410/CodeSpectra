@@ -374,6 +374,8 @@ export interface RrfFusionDebugBundle {
   section: string
   bm25_signal: SignalRankEntry[]
   graph_signal: SignalRankEntry[]
+  module_signal: SignalRankEntry[]
+  category_signal: SignalRankEntry[]
   fused: FusedRankEntry[]
 }
 
