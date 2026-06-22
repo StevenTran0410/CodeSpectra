@@ -20,6 +20,64 @@ import type {
 import { ErrorBanner } from '../../components/ui/ErrorBanner'
 import { toErrorMessage } from '../../lib/errors'
 
+const QUERY_CSV_MAX_ROWS = 20
+
+function csvEscape(value: string | number): string {
+  const s = String(value)
+  if (s.includes(',') || s.includes('"') || s.includes('\n')) {
+    return `"${s.replace(/"/g, '""')}"`
+  }
+  return s
+}
+
+/**
+ * Builds one combined CSV from both query systems' FINAL results only
+ * (Stage 3 re-ranked for 2-stage, fused results for RRF) — capped at
+ * QUERY_CSV_MAX_ROWS entries per system, not the full debug breakdown.
+ */
+function buildQueryComparisonCsv(
+  twoStageBundle: TwoStageDebugBundle | null,
+  rrfFusionBundle: RrfFusionDebugBundle | null
+): string | null {
+  if (!twoStageBundle && !rrfFusionBundle) return null
+
+  const rows: string[] = ['system,rank,rel_path,score,details']
+
+  if (twoStageBundle) {
+    twoStageBundle.stage3.ranked.slice(0, QUERY_CSV_MAX_ROWS).forEach((chunk, i) => {
+      const details = `bm25=${chunk.bm25_component.toFixed(2)} sym=${chunk.symbol_bonus.toFixed(2)} mod=${chunk.module_bonus.toFixed(2)} cent=${chunk.centrality_bonus.toFixed(2)}`
+      rows.push(
+        [
+          'two_stage',
+          String(i + 1),
+          csvEscape(chunk.rel_path),
+          chunk.score.toFixed(2),
+          csvEscape(details),
+        ].join(',')
+      )
+    })
+  }
+
+  if (rrfFusionBundle) {
+    rrfFusionBundle.fused.slice(0, QUERY_CSV_MAX_ROWS).forEach((entry, i) => {
+      const details = Object.entries(entry.per_signal_ranks)
+        .map(([name, rank]) => `${name}=#${rank}`)
+        .join(' ')
+      rows.push(
+        [
+          'rrf_fusion',
+          String(i + 1),
+          csvEscape(entry.rel_path),
+          entry.fused_score.toFixed(4),
+          csvEscape(details),
+        ].join(',')
+      )
+    })
+  }
+
+  return rows.join('\n')
+}
+
 function RetrievalResultPanel({
   deduped,
   totalChunks,
@@ -802,6 +860,30 @@ export default function IndexOverviewScreen(): React.ReactElement {
                   className="px-2.5 py-1.5 text-xs border border-zinc-700 rounded-md text-zinc-300 hover:border-zinc-600 disabled:opacity-50"
                 >
                   {rrfFusionBusy ? 'Running...' : 'Run RRF fusion'}
+                </button>
+                <button
+                  onClick={async () => {
+                    setError(null)
+                    setSuccess(null)
+                    const csv = buildQueryComparisonCsv(twoStageBundle, rrfFusionBundle)
+                    if (!csv) {
+                      setError('Run 2-stage retrieval and/or RRF fusion first — nothing to export yet')
+                      return
+                    }
+                    try {
+                      const defaultName = `query-comparison-${(snapshotId || 'snapshot').slice(0, 8)}.csv`
+                      const out = await window.api.query.exportCsv(csv, defaultName)
+                      if (out.saved && out.file_path) {
+                        setSuccess(`CSV saved: ${out.file_path}`)
+                      }
+                    } catch (err) {
+                      setError(toErrorMessage(err))
+                    }
+                  }}
+                  disabled={!twoStageBundle && !rrfFusionBundle}
+                  className="px-2.5 py-1.5 text-xs border border-zinc-700 rounded-md text-zinc-300 hover:border-zinc-600 disabled:opacity-50"
+                >
+                  Export CSV
                 </button>
                 <span className="text-[11px] text-zinc-600">Uses same query field as Retrieval Debug</span>
               </div>

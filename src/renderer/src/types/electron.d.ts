@@ -602,6 +602,9 @@ declare global {
         }>
         exportJson: (snapshotId: string) => Promise<{ saved: boolean; file_path: string | null }>
       }
+      query: {
+        exportCsv: (csv: string, defaultName: string) => Promise<{ saved: boolean; file_path: string | null }>
+      }
       retrieval: {
         buildIndex: (snapshotId: string, forceRebuild?: boolean) => Promise<{
           snapshot_id: string

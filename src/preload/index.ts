@@ -101,6 +101,10 @@ const api = {
     exportData: (snapshotId: string) => ipcRenderer.invoke('graph:exportData', snapshotId),
     exportJson: (snapshotId: string) => ipcRenderer.invoke('graph:exportJson', snapshotId),
   },
+  query: {
+    exportCsv: (csv: string, defaultName: string) =>
+      ipcRenderer.invoke('query:exportCsv', csv, defaultName),
+  },
   retrieval: {
     buildIndex: (snapshotId: string, forceRebuild = true) =>
       ipcRenderer.invoke('retrieval:buildIndex', snapshotId, forceRebuild),
