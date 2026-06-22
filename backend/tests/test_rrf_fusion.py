@@ -24,7 +24,7 @@ from domain.retrieval.rrf_fusion import (
     build_module_proximity_rank_list,
     fuse_signal_lists,
 )
-from domain.retrieval.types import RetrievalSection, StageCandidate
+from domain.retrieval.types import RetrievalSection, SignalRankEntry, StageCandidate
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Test Class A: Numeric-exact test of _reciprocal_rank_fusion
@@ -80,6 +80,59 @@ class TestReciprocalRankFusion:
 
         # chunk_1 is rank 1 in list1, so higher weight on list1 boosts it
         assert fused_by_id_biased["chunk_1"] > fused_by_id_eq["chunk_1"]
+
+    def test_fuse_signal_lists_output_is_sorted_by_fused_score_descending(self):
+        """Regression test: _reciprocal_rank_fusion() returns documents_map.values()
+        in insertion order (~= first signal list's order), NOT sorted by the fused
+        score it just computed. fuse_signal_lists() must explicitly sort its own
+        output, otherwise "fused" results are just the first signal's order with
+        extra metadata attached -- this exact bug shipped in CS-252 and was only
+        caught by manual testing in the running app, not by any prior test.
+        """
+        # Deliberately construct lists where the signal that determines insertion
+        # order (bm25, first in the list) disagrees with the true fused winner.
+        # "weak_overall" is bm25's #1 pick but appears in no other signal.
+        # "strong_overall" is only bm25's #2 pick but also tops the graph signal,
+        # so its combined RRF score is genuinely higher (0.99 vs 0.5 -- verified
+        # numerically, not assumed) despite being inserted second.
+        bm25_entries = [
+            SignalRankEntry(
+                chunk_id="weak_overall", rel_path="a.py", rank=1, raw_score=10.0, signal_name="bm25"
+            ),
+            SignalRankEntry(
+                chunk_id="strong_overall", rel_path="b.py", rank=2,
+                raw_score=9.0, signal_name="bm25",
+            ),
+            SignalRankEntry(
+                chunk_id="only_in_bm25", rel_path="c.py", rank=3, raw_score=8.0, signal_name="bm25"
+            ),
+        ]
+        graph_entries = [
+            SignalRankEntry(
+                chunk_id="strong_overall",
+                rel_path="b.py",
+                rank=1,
+                raw_score=2.0,
+                signal_name="graph_confidence",
+            ),
+        ]
+
+        fused = fuse_signal_lists([bm25_entries, graph_entries])
+
+        # "weak_overall" is inserted first (bm25 rank 1) but is NOT the true winner
+        # once both signals are combined -- "strong_overall" (bm25 #2, graph #1)
+        # should win. If fuse_signal_lists doesn't sort, insertion order (bm25's
+        # order) would put weak_overall first instead.
+        assert fused[0].chunk_id == "strong_overall", (
+            f"Expected fused results sorted by fused_score descending, "
+            f"got insertion-order leak: {[e.chunk_id for e in fused]}"
+        )
+
+        # General invariant: the full list must be non-increasing by fused_score.
+        scores = [e.fused_score for e in fused]
+        assert scores == sorted(scores, reverse=True), (
+            f"fuse_signal_lists output is not sorted by fused_score descending: {scores}"
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

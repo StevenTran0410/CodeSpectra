@@ -471,6 +471,11 @@ def fuse_signal_lists(
             )
         )
 
+    # _reciprocal_rank_fusion() returns documents_map.values() in insertion
+    # order (≈ first signal list's order), NOT sorted by the fused score it
+    # just computed. Without this sort, "fused" results are just the first
+    # signal's order with extra metadata attached — no actual re-ranking.
+    fused_entries.sort(key=lambda e: e.fused_score, reverse=True)
     return fused_entries
 
 
