@@ -1,19 +1,20 @@
 """Retrieval endpoints (RPA-034)."""
+
 from fastapi import APIRouter
 
 from domain.retrieval.service import RetrievalService
-from shared.http_utils import handle_value_error
 from domain.retrieval.types import (
     BuildRetrievalIndexRequest,
     BuildRetrievalIndexResponse,
-    RetrievalCompareResponse,
     RetrievalBundle,
+    RetrievalCompareResponse,
     RetrieveRequest,
-    TwoStageBundle,
-    TwoStageRequest,
     RrfFusionBundle,
     RrfFusionRequest,
+    TwoStageBundle,
+    TwoStageRequest,
 )
+from shared.http_utils import handle_value_error
 
 router = APIRouter(tags=["retrieval"])
 _service = RetrievalService()

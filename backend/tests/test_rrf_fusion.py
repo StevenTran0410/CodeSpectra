@@ -7,28 +7,25 @@ Covers:
 - Capped-SUM anti-gaming property: high-confidence edges outranking many low-confidence ones,
   and CAP engagement at high fan-out.
 """
+
 from __future__ import annotations
 
 import pytest
-import json
-
 from haystack import Document
 from haystack.utils.misc import _reciprocal_rank_fusion
 
 from domain.retrieval.rrf_fusion import (
+    _CAPPED_SUM_CAP,
     build_bm25_rank_list,
     build_graph_confidence_rank_list,
     fuse_signal_lists,
-    _CAPPED_SUM_CAP,
 )
-from domain.retrieval.types import StageCandidate, SignalRankEntry, FusedRankEntry
-from infrastructure.db.database import get_db
-from shared.utils import new_id
-
+from domain.retrieval.types import StageCandidate
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Test Class A: Numeric-exact test of _reciprocal_rank_fusion
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class TestReciprocalRankFusion:
     """Verify the real haystack._reciprocal_rank_fusion function with k=61."""
@@ -52,27 +49,21 @@ class TestReciprocalRankFusion:
 
         # Fused should have entries with numeric scores
         assert len(fused) > 0
-        assert all(hasattr(d, 'score') and d.score is not None for d in fused)
+        assert all(hasattr(d, "score") and d.score is not None for d in fused)
 
         # chunk_1 and chunk_2 appear in both lists (rank 1, 2 in list1; rank 4, 1 in list2)
         # They should have higher fused scores than chunk_3 (only in list1)
         fused_by_id = {d.id: d.score for d in fused}
-        assert fused_by_id['chunk_1'] > 0
-        assert fused_by_id['chunk_2'] > 0
+        assert fused_by_id["chunk_1"] > 0
+        assert fused_by_id["chunk_2"] > 0
         # chunk_3 only in list1 at rank 3, so lower than chunk_1/chunk_2
-        if 'chunk_3' in fused_by_id:
-            assert fused_by_id['chunk_3'] < fused_by_id['chunk_1']
+        if "chunk_3" in fused_by_id:
+            assert fused_by_id["chunk_3"] < fused_by_id["chunk_1"]
 
     def test_rrf_with_weights(self):
         """Test _reciprocal_rank_fusion with non-uniform weights."""
-        list1 = [
-            Document(id=f"chunk_{i}", content=f"content_{i}", score=None)
-            for i in range(1, 4)
-        ]
-        list2 = [
-            Document(id=f"chunk_{j}", content=f"content_{j}", score=None)
-            for j in [3, 2, 1]
-        ]
+        list1 = [Document(id=f"chunk_{i}", content=f"content_{i}", score=None) for i in range(1, 4)]
+        list2 = [Document(id=f"chunk_{j}", content=f"content_{j}", score=None) for j in [3, 2, 1]]
 
         # With equal weights [1, 1], chunk_2 and chunk_3 should rank above chunk_1
         # (chunk_1 is rank 1 in list2, chunk_2/3 are rank 1-2 in list1)
@@ -84,12 +75,13 @@ class TestReciprocalRankFusion:
         fused_by_id_biased = {d.id: d.score for d in fused_biased}
 
         # chunk_1 is rank 1 in list1, so higher weight on list1 boosts it
-        assert fused_by_id_biased['chunk_1'] > fused_by_id_eq['chunk_1']
+        assert fused_by_id_biased["chunk_1"] > fused_by_id_eq["chunk_1"]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Test Class B: Disagreement acceptance
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.asyncio
 async def test_rrf_fusion_disagreement_acceptance():
@@ -97,11 +89,7 @@ async def test_rrf_fusion_disagreement_acceptance():
     Assert (i) fused order is neither pure-BM25 nor pure-graph,
     (ii) a chunk present in both lists outranks one present in only one list.
     """
-    db = get_db()
-    snapshot_id = new_id()
-
     # Create simple mock rows with two files: file_a.py, file_b.py
-    now = json.dumps([])
     rows = [
         {
             "id": "chunk_a1",
@@ -171,7 +159,7 @@ async def test_rrf_fusion_disagreement_acceptance():
     ctx = MockCtx()
     confidence_edges = {
         "file_b.py": [0.95, 0.85],  # 2 high-confidence edges to file_b
-        "file_a.py": [0.3],          # 1 low-confidence edge to file_a
+        "file_a.py": [0.3],  # 1 low-confidence edge to file_a
     }
     graph_signal = build_graph_confidence_rank_list(
         rows, ctx, {"file_a.py"}, confidence_edges, top_k=10
@@ -200,6 +188,7 @@ async def test_rrf_fusion_disagreement_acceptance():
 # Test Class C: Capped-SUM anti-gaming property
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_capped_sum_1_high_vs_5_low_confidence():
     """A file with 1 edge at confidence=0.95 must outrank a file with 5 edges at confidence=0.15.
@@ -209,6 +198,7 @@ async def test_capped_sum_1_high_vs_5_low_confidence():
     - file_low: sum([0.15, 0.15, 0.15, 0.15, 0.15]) = 0.75, no centrality boost -> score=0.75
     - Expected: file_high > file_low (0.95 > 0.75)
     """
+
     class MockCtx:
         central_files = set()
         file_symbol_refs = {}
@@ -254,6 +244,7 @@ async def test_capped_sum_ambiguous_8_edges_vs_1_high():
     - file_high: sum([0.95]) = 0.95 -> score=0.95
     - Expected: file_ambig > file_high (1.2 > 0.95)
     """
+
     class MockCtx:
         central_files = set()
         file_symbol_refs = {}
@@ -297,6 +288,7 @@ async def test_capped_sum_cap_engagement_15_edges():
     - file_few: sum([0.15] * 10) = 1.5 -> score=1.5
     - Expected: file_many=2.0 > file_few=1.5 (cap prevents further escalation)
     """
+
     class MockCtx:
         central_files = set()
         file_symbol_refs = {}
@@ -320,7 +312,7 @@ async def test_capped_sum_cap_engagement_15_edges():
     ctx = MockCtx()
     confidence_edges = {
         "file_many": [0.15] * 15,  # total 2.25 -> capped to 2.0
-        "file_few": [0.15] * 10,   # total 1.5
+        "file_few": [0.15] * 10,  # total 1.5
     }
 
     graph_signal = build_graph_confidence_rank_list(rows, ctx, set(), confidence_edges, top_k=10)
@@ -344,6 +336,7 @@ async def test_capped_sum_with_centrality_boost():
     A non-central file with 1 edge at 0.95 (score=0.95) should be outranked by
     a central file with 1 edge at 0.7 (score=0.7 * 1.5 = 1.05).
     """
+
     class MockCtx:
         central_files = {"file_central"}
         file_symbol_refs = {}
@@ -366,7 +359,7 @@ async def test_capped_sum_with_centrality_boost():
 
     ctx = MockCtx()
     confidence_edges = {
-        "file_central": [0.7],      # 0.7 * 1.5 = 1.05
+        "file_central": [0.7],  # 0.7 * 1.5 = 1.05
         "file_noncentral": [0.95],  # 0.95 * 1.0 = 0.95
     }
 

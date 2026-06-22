@@ -3,22 +3,22 @@
 Combines BM25 lexical signal with graph-confidence signal via reciprocal rank fusion (RRF).
 Produces debug bundles for analysis and comparison.
 """
+
 from __future__ import annotations
 
-from haystack.utils.misc import _reciprocal_rank_fusion
 from haystack import Document
+from haystack.utils.misc import _reciprocal_rank_fusion
 
 from infrastructure.db.database import get_db
 
-from .types import SignalRankEntry, FusedRankEntry, RrfFusionBundle, RetrievalSection
 from .bm25_scorer import BM25Scorer
 from .two_stage_retrieval import (
-    _load_graph_context,
-    _stage1_score_rows,
-    _query_terms,
     _CHUNK_FULL_COLS,
+    _load_graph_context,
+    _query_terms,
+    _stage1_score_rows,
 )
-
+from .types import FusedRankEntry, RetrievalSection, RrfFusionBundle, SignalRankEntry
 
 # CAP = 2.0: anti-gaming constant derived from "~2-3 high-confidence 0.85-0.95 edges".
 # Prevents many low-confidence (0.15-0.3) ambiguous edges from outranking 2-3 genuinely
@@ -38,7 +38,10 @@ async def _load_confidence_weighted_edges(snapshot_id: str) -> dict[str, list[fl
     db = get_db()
     edges_by_dst: dict[str, list[float]] = {}
 
-    query = "SELECT DISTINCT src_symbol, dst_symbol, confidence_score FROM symbol_graph_edges WHERE snapshot_id=?"
+    query = (
+        "SELECT DISTINCT src_symbol, dst_symbol, confidence_score "
+        "FROM symbol_graph_edges WHERE snapshot_id=?"
+    )
     async with db.execute(query, (snapshot_id,)) as cur:
         rows = await cur.fetchall()
 
@@ -109,14 +112,16 @@ def build_graph_confidence_rank_list(
     for rank, (score, rel_path, chunks) in enumerate(top_files, start=1):
         best_chunk = max(chunks, key=lambda c: int(c.get("chunk_index", 0)))
         excerpt = best_chunk.get("content", "")[:200] if best_chunk.get("content") else ""
-        entries.append(SignalRankEntry(
-            chunk_id=best_chunk["id"],
-            rel_path=rel_path,
-            rank=rank,
-            raw_score=score,
-            signal_name="graph_confidence",
-            excerpt=excerpt,
-        ))
+        entries.append(
+            SignalRankEntry(
+                chunk_id=best_chunk["id"],
+                rel_path=rel_path,
+                rank=rank,
+                raw_score=score,
+                signal_name="graph_confidence",
+                excerpt=excerpt,
+            )
+        )
 
     return entries
 
@@ -136,13 +141,15 @@ def build_bm25_rank_list(
     """
     entries: list[SignalRankEntry] = []
     for rank, candidate in enumerate(candidates[:top_k], start=1):
-        entries.append(SignalRankEntry(
-            chunk_id=candidate.chunk_id,
-            rel_path=candidate.rel_path,
-            rank=rank,
-            raw_score=candidate.bm25_score,
-            signal_name="bm25",
-        ))
+        entries.append(
+            SignalRankEntry(
+                chunk_id=candidate.chunk_id,
+                rel_path=candidate.rel_path,
+                rank=rank,
+                raw_score=candidate.bm25_score,
+                signal_name="bm25",
+            )
+        )
     return entries
 
 
@@ -225,13 +232,15 @@ def fuse_signal_lists(
             if rel_path:
                 break
 
-        fused_entries.append(FusedRankEntry(
-            chunk_id=chunk_id,
-            rel_path=rel_path,
-            fused_score=fused_score,
-            per_signal_ranks=per_signal_ranks,
-            excerpt=excerpt,
-        ))
+        fused_entries.append(
+            FusedRankEntry(
+                chunk_id=chunk_id,
+                rel_path=rel_path,
+                fused_score=fused_score,
+                per_signal_ranks=per_signal_ranks,
+                excerpt=excerpt,
+            )
+        )
 
     return fused_entries
 
@@ -274,7 +283,7 @@ async def retrieve_rrf_fusion(
         f"SELECT {_CHUNK_FULL_COLS} FROM retrieval_chunks WHERE snapshot_id=?",
         (snapshot_id,),
     ) as cur:
-        all_rows = await cur.fetchall()
+        all_rows = list(await cur.fetchall())
 
     if not all_rows:
         raise ValueError("Retrieval index not built for this snapshot")
@@ -295,7 +304,7 @@ async def retrieve_rrf_fusion(
 
     # Build graph-confidence signal
     graph_signal = build_graph_confidence_rank_list(
-        all_rows,
+        [dict(r) for r in all_rows],
         ctx,
         stage1_files,
         confidence_edges,

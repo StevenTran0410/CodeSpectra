@@ -1,17 +1,19 @@
 """Retrieval types (RPA-034)."""
+
 from __future__ import annotations
+
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 from pydantic import BaseModel
 
 
-class RetrievalMode(str, Enum):
+class RetrievalMode(StrEnum):
     HYBRID = "hybrid"
     VECTORLESS = "vectorless"
 
 
-class RetrievalSection(str, Enum):
+class RetrievalSection(StrEnum):
     ARCHITECTURE = "architecture"
     CONVENTIONS = "conventions"
     FEATURE_MAP = "feature_map"
@@ -103,7 +105,7 @@ class RankedChunk(BaseModel):
     rel_path: str
     chunk_index: int
     score: float
-    chunk_type: str = 'block'
+    chunk_type: str = "block"
     bm25_component: float
     symbol_bonus: float
     module_bonus: float
@@ -173,11 +175,11 @@ class CommunityImpact(BaseModel):
 class ImpactRetrievalBundle(BaseModel):
     seed_files: list[str]
     query: str | None
-    impact_cone: dict[str, int]              # file -> hop_distance
+    impact_cone: dict[str, int]  # file -> hop_distance
     affected_communities: list[CommunityImpact]
-    call_chains: list[dict]                  # TraceStep serialized
+    call_chains: list[dict]  # TraceStep serialized
     ranked_chunks: list[ImpactRankedChunk]
-    risk_summary: dict                       # high_risk_files, total_affected, affected_community_count
+    risk_summary: dict  # high_risk_files, total_affected, affected_community_count
 
 
 # ── RRF Multi-Signal Fusion Types (CS-252) ──────────────────────────────────

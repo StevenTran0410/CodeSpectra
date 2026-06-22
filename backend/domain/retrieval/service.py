@@ -1,4 +1,5 @@
 """Retrieval service (RPA-034): chunking + lexical + hybrid/vectorless retrieval."""
+
 from __future__ import annotations
 
 import hashlib
@@ -15,7 +16,7 @@ from shared.sql_queries import SQL_SELECT_MANIFEST_FILES_BY_SNAPSHOT
 from shared.utils import new_id, read_utf8_lenient, utc_now_iso
 
 from .bm25_scorer import BM25Scorer, _query_terms
-from .chunker_ast import ASTChunker
+from .chunker_ast import ASTChunk, ASTChunker
 from .types import (
     BuildRetrievalIndexRequest,
     BuildRetrievalIndexResponse,
@@ -25,22 +26,51 @@ from .types import (
     RetrievalMode,
     RetrievalSection,
     RetrieveRequest,
-    TwoStageBundle,
-    TwoStageRequest,
     RrfFusionBundle,
     RrfFusionRequest,
+    TwoStageBundle,
+    TwoStageRequest,
 )
 
 _WS = re.compile(r"\s+")
 _WORD = re.compile(r"[A-Za-z0-9_]+")
 
 # Languages that get AST-based semantic chunking (CS-101).
-_AST_LANGS: frozenset[str] = frozenset({
-    "python", "typescript", "javascript", "cpp", "go", "java", "c", "rust",
-    "ruby", "php", "csharp", "kotlin", "scala", "bash", "sh", "lua", "zig",
-    "haskell", "elixir", "ocaml", "julia",
-    "yaml", "toml", "html", "css", "json", "markdown", "groovy", "cmake", "svelte", "sql",
-})
+_AST_LANGS: frozenset[str] = frozenset(
+    {
+        "python",
+        "typescript",
+        "javascript",
+        "cpp",
+        "go",
+        "java",
+        "c",
+        "rust",
+        "ruby",
+        "php",
+        "csharp",
+        "kotlin",
+        "scala",
+        "bash",
+        "sh",
+        "lua",
+        "zig",
+        "haskell",
+        "elixir",
+        "ocaml",
+        "julia",
+        "yaml",
+        "toml",
+        "html",
+        "css",
+        "json",
+        "markdown",
+        "groovy",
+        "cmake",
+        "svelte",
+        "sql",
+    }
+)
 
 # Module-level singleton — parser/Language objects are cached inside.
 _ast_chunker = ASTChunker()
@@ -48,8 +78,9 @@ _ast_chunker = ASTChunker()
 _SECTION_BUDGETS: dict[RetrievalSection, int] = {
     # Increased from ~2K to 6-10K.
     # Modern LLMs: 128K-200K context; even local 8B models have 8K+.
-    # Cursor sends 8K-20K code tokens per query — our old 2600 was severe under-use.
-    # Budget here = tokens reserved for evidence only (system prompt + user preamble add ~800 on top).
+    # Cursor sends 8K-20K code tokens per query — our old 2600 was severe
+    # under-use. Budget = tokens reserved for evidence only (system prompt +
+    # user preamble add ~800 on top).
     RetrievalSection.ARCHITECTURE: 14_000,
     RetrievalSection.CONVENTIONS: 10_000,
     RetrievalSection.FEATURE_MAP: 14_000,
@@ -135,9 +166,21 @@ def _chunk_size_for(category: str, language: str | None) -> int:
 
 
 _BRACE_LANGS = {
-    "javascript", "typescript", "java", "cpp", "c", "go", "rust",
-    "csharp", "kotlin", "scala", "groovy",
-    "php", "zig", "dart", "swift",
+    "javascript",
+    "typescript",
+    "java",
+    "cpp",
+    "c",
+    "go",
+    "rust",
+    "csharp",
+    "kotlin",
+    "scala",
+    "groovy",
+    "php",
+    "zig",
+    "dart",
+    "swift",
 }
 
 
@@ -156,10 +199,10 @@ def _ends_mid_function(content: str, language: str | None) -> bool:
 
     if (language or "").lower() == "python":
         lines = content.splitlines()
-        non_empty = [l for l in lines if l.strip()]
+        non_empty = [line for line in lines if line.strip()]
         if not non_empty:
             return False
-        has_def = any(re.match(r"[ \t]*(def |class |async def )", l) for l in lines)
+        has_def = any(re.match(r"[ \t]*(def |class |async def )", line) for line in lines)
         last = non_empty[-1]
         # If the last line is still indented and the chunk has a def/class, likely mid-body
         return has_def and (last.startswith(" ") or last.startswith("\t"))
@@ -182,8 +225,6 @@ def _split_chunks(text: str, target_size: int) -> list[str]:
             break
         start = max(0, end - overlap)
     return out
-
-
 
 
 def _maybe_expand_to_boundary(
@@ -265,7 +306,9 @@ async def _apply_incremental_idf_update(
             "[build_index] Forcing full rebuild at index_version=%d to prevent IDF drift",
             prior_index_version,
         )
-        return BM25Scorer.build_idf(tokenized_corpus, len(tokenized_corpus)), prior_index_version + 1
+        return BM25Scorer.build_idf(
+            tokenized_corpus, len(tokenized_corpus)
+        ), prior_index_version + 1
 
     # Fetch old hashes and detect changed chunks
     async with db.execute(
@@ -284,7 +327,9 @@ async def _apply_incremental_idf_update(
     # Check if incremental update is feasible
     total_chunks = len(old_hashes)
     if total_chunks == 0:
-        return BM25Scorer.build_idf(tokenized_corpus, len(tokenized_corpus)), prior_index_version + 1
+        return BM25Scorer.build_idf(
+            tokenized_corpus, len(tokenized_corpus)
+        ), prior_index_version + 1
 
     change_ratio = len(changed_chunk_ids) / total_chunks
     if change_ratio >= 0.10:
@@ -292,12 +337,16 @@ async def _apply_incremental_idf_update(
             "[build_index] Change ratio %.1f%% >= 10%% threshold; full rebuild",
             change_ratio * 100,
         )
-        return BM25Scorer.build_idf(tokenized_corpus, len(tokenized_corpus)), prior_index_version + 1
+        return BM25Scorer.build_idf(
+            tokenized_corpus, len(tokenized_corpus)
+        ), prior_index_version + 1
 
     # Incremental IDF: only reuse prior IDF if no chunks changed (rare case)
     logger.info(
         "[build_index] Incremental path: %.1f%% changed (%d/%d chunks)",
-        change_ratio * 100, len(changed_chunk_ids), total_chunks,
+        change_ratio * 100,
+        len(changed_chunk_ids),
+        total_chunks,
     )
 
     if not changed_chunk_ids:
@@ -316,7 +365,9 @@ async def _apply_incremental_idf_update(
 class RetrievalService:
     async def build_index(self, req: BuildRetrievalIndexRequest) -> BuildRetrievalIndexResponse:
         db = get_db()
-        async with db.execute("SELECT local_path FROM repo_snapshots WHERE id=?", (req.snapshot_id,)) as cur:
+        async with db.execute(
+            "SELECT local_path FROM repo_snapshots WHERE id=?", (req.snapshot_id,)
+        ) as cur:
             snap = await cur.fetchone()
         if snap is None:
             raise NotFoundError("RepoSnapshot", req.snapshot_id)
@@ -326,8 +377,12 @@ class RetrievalService:
 
         if req.force_rebuild:
             await db.execute("DELETE FROM retrieval_chunks WHERE snapshot_id=?", (req.snapshot_id,))
-            await db.execute("DELETE FROM retrieval_indexes WHERE snapshot_id=?", (req.snapshot_id,))
-            await db.execute("DELETE FROM retrieval_bm25_stats WHERE snapshot_id=?", (req.snapshot_id,))
+            await db.execute(
+                "DELETE FROM retrieval_indexes WHERE snapshot_id=?", (req.snapshot_id,)
+            )
+            await db.execute(
+                "DELETE FROM retrieval_bm25_stats WHERE snapshot_id=?", (req.snapshot_id,)
+            )
         else:
             async with db.execute(
                 "SELECT COUNT(*) as c FROM retrieval_chunks WHERE snapshot_id=?",
@@ -344,7 +399,8 @@ class RetrievalService:
                 if bm25_exists:
                     logger.info(
                         "[retrieval] snapshot %s already indexed (%d chunks), skipping",
-                        req.snapshot_id, row["c"],
+                        req.snapshot_id,
+                        row["c"],
                     )
                     return BuildRetrievalIndexResponse(
                         snapshot_id=req.snapshot_id,
@@ -355,28 +411,39 @@ class RetrievalService:
                 # BM25 stats missing — rebuild from existing chunks without re-chunking.
                 logger.info(
                     "[retrieval] snapshot %s has %d chunks but no BM25 stats — rebuilding stats only",
-                    req.snapshot_id, row["c"],
+                    req.snapshot_id,
+                    row["c"],
                 )
                 async with db.execute(
                     "SELECT content FROM retrieval_chunks WHERE snapshot_id=?",
                     (req.snapshot_id,),
                 ) as cur:
                     chunk_rows = await cur.fetchall()
-                tokenized_corpus = [_WORD.findall(r["content"].lower()) for r in chunk_rows]
-                if tokenized_corpus:
-                    avgdl = sum(len(t) for t in tokenized_corpus) / len(tokenized_corpus)
-                    idf = BM25Scorer.build_idf(tokenized_corpus, len(tokenized_corpus))
+                cached_tokenized_corpus = [_WORD.findall(r["content"].lower()) for r in chunk_rows]
+                if cached_tokenized_corpus:
+                    avgdl = sum(len(t) for t in cached_tokenized_corpus) / len(cached_tokenized_corpus)
+                    idf = BM25Scorer.build_idf(cached_tokenized_corpus, len(cached_tokenized_corpus))
                     now_str = datetime.utcnow().isoformat()
                     await db.execute(
                         """INSERT OR REPLACE INTO retrieval_bm25_stats
                            (snapshot_id, chunk_count, avgdl, idf_json, k1, b, generated_at)
                            VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                        (req.snapshot_id, len(tokenized_corpus), avgdl, json.dumps(idf), 2.0, 0.75, now_str),
+                        (
+                            req.snapshot_id,
+                            len(cached_tokenized_corpus),
+                            avgdl,
+                            json.dumps(idf),
+                            2.0,
+                            0.75,
+                            now_str,
+                        ),
                     )
                     await db.commit()
                     logger.info(
                         "BM25 stats rebuilt: %d docs, avgdl=%.1f, vocab=%d",
-                        len(tokenized_corpus), avgdl, len(idf),
+                        len(cached_tokenized_corpus),
+                        avgdl,
+                        len(idf),
                     )
                 return BuildRetrievalIndexResponse(
                     snapshot_id=req.snapshot_id,
@@ -414,9 +481,11 @@ class RetrievalService:
             if lang_key in _AST_LANGS and category not in {"docs", "config"}:
                 # AST chunking: operate on raw source — normalization after.
                 ast_chunks = _ast_chunker.chunk(text, lang_key, target_size)
-                ast_pieces = [(c, _normalize_text(c.text)) for c in ast_chunks]
+                ast_pieces: list[tuple[ASTChunk | None, str]] = [(c, _normalize_text(c.text)) for c in ast_chunks]
             else:
-                ast_pieces = [(None, piece) for piece in _split_chunks(_normalize_text(text), target_size)]
+                ast_pieces = [
+                    (None, piece) for piece in _split_chunks(_normalize_text(text), target_size)
+                ]
             files_indexed += 1
 
             file_chunk_rows: list[tuple] = []
@@ -435,25 +504,34 @@ class RetrievalService:
                 chunk_id = new_id()
                 content_hash = _compute_content_hash(piece)
                 chunk_hash_map[chunk_id] = content_hash  # Track for incremental IDF (CS-229)
-                file_chunk_rows.append((
-                    chunk_id,
-                    req.snapshot_id,
-                    rel_path,
-                    language,
-                    category,
-                    i,
-                    piece,
-                    token_est,
-                    chunk_type,
-                    start_line,
-                    end_line,
-                    content_hash,
-                    now,
-                ))
+                file_chunk_rows.append(
+                    (
+                        chunk_id,
+                        req.snapshot_id,
+                        rel_path,
+                        language,
+                        category,
+                        i,
+                        piece,
+                        token_est,
+                        chunk_type,
+                        start_line,
+                        end_line,
+                        content_hash,
+                        now,
+                    )
+                )
                 # Minimal lexical index row (prefix preview for quick debug/search metadata).
-                file_index_rows.append((
-                    new_id(), req.snapshot_id, rel_path, i, preview, now,
-                ))
+                file_index_rows.append(
+                    (
+                        new_id(),
+                        req.snapshot_id,
+                        rel_path,
+                        i,
+                        preview,
+                        now,
+                    )
+                )
                 # Token frequency rows for incremental IDF updates (CS-229).
                 token_freq = Counter(tokens)
                 for term, tf in token_freq.items():
@@ -481,10 +559,24 @@ class RetrievalService:
                 """INSERT OR REPLACE INTO retrieval_bm25_stats
                    (snapshot_id, chunk_count, avgdl, idf_json, k1, b, index_version, generated_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (req.snapshot_id, len(tokenized_corpus), avgdl, json.dumps(idf), 2.0, 0.75, next_index_version, now_str),
+                (
+                    req.snapshot_id,
+                    len(tokenized_corpus),
+                    avgdl,
+                    json.dumps(idf),
+                    2.0,
+                    0.75,
+                    next_index_version,
+                    now_str,
+                ),
             )
-            logger.info("BM25 stats built: %d docs, avgdl=%.1f, vocab=%d, index_version=%d",
-                       len(tokenized_corpus), avgdl, len(idf), next_index_version)
+            logger.info(
+                "BM25 stats built: %d docs, avgdl=%.1f, vocab=%d, index_version=%d",
+                len(tokenized_corpus),
+                avgdl,
+                len(idf),
+                next_index_version,
+            )
 
         await db.commit()
         return BuildRetrievalIndexResponse(
@@ -506,6 +598,7 @@ class RetrievalService:
         # Delegate to 2-stage pipeline (CS-203); fall back to legacy single-pass on error.
         try:
             from .two_stage_retrieval import retrieve_two_stage_as_bundle
+
             return await retrieve_two_stage_as_bundle(
                 snapshot_id=req.snapshot_id,
                 query=req.query,
@@ -517,7 +610,9 @@ class RetrievalService:
         except Exception:
             logger.warning(
                 "[retrieve] 2-stage pipeline failed for snapshot=%s query=%r — using fallback single-pass",
-                req.snapshot_id, req.query[:60], exc_info=True,
+                req.snapshot_id,
+                req.query[:60],
+                exc_info=True,
             )
 
         logger.info("[retrieve] using fallback single-pass for snapshot=%s", req.snapshot_id)
@@ -531,7 +626,7 @@ class RetrievalService:
             """,
             (req.snapshot_id,),
         ) as cur:
-            rows = await cur.fetchall()
+            rows = list(await cur.fetchall())
 
         if not rows:
             raise ValueError("Retrieval index not built for this snapshot")
@@ -562,7 +657,9 @@ class RetrievalService:
             bm25_row = await cur.fetchone()
         scorer = BM25Scorer.from_stats_row(bm25_row)
         if scorer is None:
-            logger.warning("BM25 stats not found for snapshot %s — using lexical fallback", req.snapshot_id)
+            logger.warning(
+                "BM25 stats not found for snapshot %s — using lexical fallback", req.snapshot_id
+            )
 
         scored: list[tuple[float, RetrievalEvidence]] = []
         for r in rows:
@@ -628,7 +725,7 @@ class RetrievalService:
 
         # Build a lookup for adjacent-chunk expansion: (rel_path, chunk_index) -> row
         chunk_lookup: dict[tuple[str, int], dict] = {
-            (r["rel_path"], r["chunk_index"]): r for r in rows
+            (r["rel_path"], r["chunk_index"]): dict(r) for r in rows
         }
 
         used = 0
@@ -662,6 +759,7 @@ class RetrievalService:
 
     async def retrieve_two_stage(self, req: TwoStageRequest) -> TwoStageBundle:
         from .two_stage_retrieval import retrieve_two_stage as _run
+
         budget = req.budget or _SECTION_BUDGETS.get(req.section, 10_000)
         return await _run(
             snapshot_id=req.snapshot_id,
@@ -673,6 +771,7 @@ class RetrievalService:
 
     async def retrieve_rrf_fusion(self, req: RrfFusionRequest) -> RrfFusionBundle:
         from .rrf_fusion import retrieve_rrf_fusion as _run
+
         return await _run(
             snapshot_id=req.snapshot_id,
             query=req.query,
