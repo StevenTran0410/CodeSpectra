@@ -13,6 +13,9 @@ import type {
   TwoStageCandidate,
   TwoStageExpansion,
   TwoStageRankedChunk,
+  RrfFusionDebugBundle,
+  SignalRankEntry,
+  FusedRankEntry,
 } from '../../types/electron'
 import { ErrorBanner } from '../../components/ui/ErrorBanner'
 import { toErrorMessage } from '../../lib/errors'
@@ -198,6 +201,103 @@ function Stage3Panel({
   )
 }
 
+function RrfBm25SignalPanel({ entries }: { entries: SignalRankEntry[] }): React.ReactElement {
+  const [expanded, setExpanded] = React.useState<string | null>(null)
+  return (
+    <div className="p-2 space-y-1 max-h-80 overflow-y-auto">
+      {entries.map((e) => {
+        const key = `${e.rel_path}#${e.rank}`
+        const isOpen = expanded === key
+        return (
+          <div key={key} className="border border-zinc-800 rounded">
+            <button
+              className="w-full text-left px-2 py-1 flex items-center gap-1.5 hover:bg-zinc-800/40 transition-colors text-[11px]"
+              onClick={() => setExpanded(isOpen ? null : key)}
+            >
+              <span className={`shrink-0 text-[9px] transition-transform ${isOpen ? 'rotate-90' : ''}`}>▶</span>
+              <span className="shrink-0 text-zinc-500 font-mono">#{e.rank}</span>
+              <span className="shrink-0 text-zinc-300 font-mono truncate flex-1">{e.rel_path}</span>
+              <span className="shrink-0 text-zinc-700 mx-1">|</span>
+              <span className="shrink-0 text-zinc-400 font-mono">score={e.raw_score.toFixed(2)}</span>
+            </button>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function RrfGraphSignalPanel({ entries }: { entries: SignalRankEntry[] }): React.ReactElement {
+  const [expanded, setExpanded] = React.useState<string | null>(null)
+  return (
+    <div className="p-2 space-y-1 max-h-80 overflow-y-auto">
+      {entries.map((e) => {
+        const key = `${e.rel_path}#${e.rank}`
+        const isOpen = expanded === key
+        return (
+          <div key={key} className="border border-zinc-800 rounded">
+            <button
+              className="w-full text-left px-2 py-1 flex items-center gap-1.5 hover:bg-zinc-800/40 transition-colors text-[11px]"
+              onClick={() => setExpanded(isOpen ? null : key)}
+            >
+              <span className={`shrink-0 text-[9px] transition-transform ${isOpen ? 'rotate-90' : ''}`}>▶</span>
+              <span className="shrink-0 text-zinc-500 font-mono">#{e.rank}</span>
+              <span className="shrink-0 text-zinc-300 font-mono truncate flex-1">{e.rel_path}</span>
+              <span className="shrink-0 text-zinc-700 mx-1">|</span>
+              <span className="shrink-0 text-zinc-400 font-mono">conf_sum={e.raw_score.toFixed(2)}</span>
+            </button>
+            {isOpen && (
+              <div className="mx-2 mb-2 p-2 bg-zinc-950 border border-zinc-800 rounded text-[10px] text-zinc-400">
+                <div>Confidence-weighted graph signal (capped at 2.0)</div>
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function RrfFusedPanel({ entries }: { entries: FusedRankEntry[] }): React.ReactElement {
+  const [expanded, setExpanded] = React.useState<string | null>(null)
+  return (
+    <div className="p-2 space-y-1.5">
+      <div className="text-[10px] text-zinc-600 px-2 py-1">
+        Note: RRF fused scores are NOT comparable in magnitude to two-stage scores (10-20+ range). Rank/order is the meaningful output, not raw score.
+      </div>
+      <div className="max-h-80 overflow-y-auto space-y-1">
+        {entries.map((e) => {
+          const key = `${e.rel_path}#${e.chunk_id}`
+          const isOpen = expanded === key
+          const ranksStr = Object.entries(e.per_signal_ranks)
+            .map(([signal, rank]) => `${signal}=#${rank}`)
+            .join(' ')
+          return (
+            <div key={key} className="border border-zinc-800 rounded">
+              <button
+                className="w-full text-left px-2 py-1 flex items-center gap-1 hover:bg-zinc-800/40 transition-colors text-[11px]"
+                onClick={() => setExpanded(isOpen ? null : key)}
+              >
+                <span className={`shrink-0 text-[9px] transition-transform ${isOpen ? 'rotate-90' : ''}`}>▶</span>
+                <span className="text-zinc-300 font-mono truncate flex-1">{e.rel_path}</span>
+                <span className="shrink-0 text-zinc-700 mx-1">|</span>
+                <span className="shrink-0 text-zinc-400 font-mono">{e.fused_score.toFixed(2)}</span>
+                <span className="shrink-0 text-zinc-700 mx-1">|</span>
+                <span className="shrink-0 text-zinc-600 font-mono text-[10px]">{ranksStr}</span>
+              </button>
+              {isOpen && (
+                <pre className="mx-2 mb-2 p-2 bg-zinc-950 border border-zinc-800 rounded text-[10px] text-zinc-300 font-mono whitespace-pre-wrap break-all max-h-40 overflow-y-auto leading-4">
+                  {e.excerpt || '(no excerpt)'}
+                </pre>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 
 export default function IndexOverviewScreen(): React.ReactElement {
   const navigate = useNavigate()
@@ -225,6 +325,8 @@ export default function IndexOverviewScreen(): React.ReactElement {
   const [retrievalCompare, setRetrievalCompare] = useState<RetrievalCompareResponse | null>(null)
   const [twoStageBundle, setTwoStageBundle] = React.useState<TwoStageDebugBundle | null>(null)
   const [twoStageBusy, setTwoStageBusy] = React.useState(false)
+  const [rrfFusionBundle, setRrfFusionBundle] = React.useState<RrfFusionDebugBundle | null>(null)
+  const [rrfFusionBusy, setRrfFusionBusy] = React.useState(false)
 
   useEffect(() => {
     const run = async () => {
@@ -614,6 +716,31 @@ export default function IndexOverviewScreen(): React.ReactElement {
                 >
                   {twoStageBusy ? 'Running...' : 'Run 2-stage retrieval'}
                 </button>
+                <button
+                  onClick={async () => {
+                    if (!snapshotId) return
+                    setRrfFusionBusy(true)
+                    setError(null)
+                    setRrfFusionBundle(null)
+                    try {
+                      await window.api.retrieval.buildIndex(snapshotId, false)
+                      const out = await window.api.retrieval.retrieveRrfFusion({
+                        snapshot_id: snapshotId,
+                        query: retrievalQuery.trim(),
+                        section: retrievalSection,
+                      })
+                      setRrfFusionBundle(out)
+                    } catch (err) {
+                      setError(toErrorMessage(err))
+                    } finally {
+                      setRrfFusionBusy(false)
+                    }
+                  }}
+                  disabled={rrfFusionBusy || !retrievalQuery.trim()}
+                  className="px-2.5 py-1.5 text-xs border border-zinc-700 rounded-md text-zinc-300 hover:border-zinc-600 disabled:opacity-50"
+                >
+                  {rrfFusionBusy ? 'Running...' : 'Run RRF fusion'}
+                </button>
                 <span className="text-[11px] text-zinc-600">Uses same query field as Retrieval Debug</span>
               </div>
               {twoStageBundle && (
@@ -640,6 +767,28 @@ export default function IndexOverviewScreen(): React.ReactElement {
                       budgetTokens={twoStageBundle.stage3.budget_tokens}
                       usedCpp={twoStageBundle.stage3.used_cpp_ranker}
                     />
+                  </details>
+                </div>
+              )}
+              {rrfFusionBundle && (
+                <div className="space-y-1.5 mt-3">
+                  <details className="border border-zinc-800 rounded">
+                    <summary className="px-2 py-1 text-[11px] text-zinc-400 cursor-pointer hover:text-zinc-200">
+                      BM25 Signal — {rrfFusionBundle.bm25_signal.length} entries
+                    </summary>
+                    <RrfBm25SignalPanel entries={rrfFusionBundle.bm25_signal} />
+                  </details>
+                  <details className="border border-zinc-800 rounded">
+                    <summary className="px-2 py-1 text-[11px] text-zinc-400 cursor-pointer hover:text-zinc-200">
+                      Graph/Confidence Signal — {rrfFusionBundle.graph_signal.length} entries
+                    </summary>
+                    <RrfGraphSignalPanel entries={rrfFusionBundle.graph_signal} />
+                  </details>
+                  <details open className="border border-zinc-800 rounded">
+                    <summary className="px-2 py-1 text-[11px] text-zinc-400 cursor-pointer hover:text-zinc-200">
+                      RRF Fused Results — {rrfFusionBundle.fused.length} entries
+                    </summary>
+                    <RrfFusedPanel entries={rrfFusionBundle.fused} />
                   </details>
                 </div>
               )}

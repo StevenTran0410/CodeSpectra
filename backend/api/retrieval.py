@@ -11,6 +11,8 @@ from domain.retrieval.types import (
     RetrieveRequest,
     TwoStageBundle,
     TwoStageRequest,
+    RrfFusionBundle,
+    RrfFusionRequest,
 )
 
 router = APIRouter(tags=["retrieval"])
@@ -39,3 +41,9 @@ async def compare_retrieval_modes(body: RetrieveRequest) -> RetrievalCompareResp
 @handle_value_error
 async def retrieve_two_stage(body: TwoStageRequest) -> TwoStageBundle:
     return await _service.retrieve_two_stage(body)
+
+
+@router.post("/retrieve-rrf-fusion", response_model=RrfFusionBundle)
+@handle_value_error
+async def retrieve_rrf_fusion(body: RrfFusionRequest) -> RrfFusionBundle:
+    return await _service.retrieve_rrf_fusion(body)

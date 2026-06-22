@@ -27,6 +27,8 @@ from .types import (
     RetrieveRequest,
     TwoStageBundle,
     TwoStageRequest,
+    RrfFusionBundle,
+    RrfFusionRequest,
 )
 
 _WS = re.compile(r"\s+")
@@ -666,6 +668,16 @@ class RetrievalService:
             query=req.query,
             section=req.section,
             budget=budget,
+            min_confidence=req.min_confidence,
+        )
+
+    async def retrieve_rrf_fusion(self, req: RrfFusionRequest) -> RrfFusionBundle:
+        from .rrf_fusion import retrieve_rrf_fusion as _run
+        return await _run(
+            snapshot_id=req.snapshot_id,
+            query=req.query,
+            section=req.section,
+            budget=req.budget,
             min_confidence=req.min_confidence,
         )
 

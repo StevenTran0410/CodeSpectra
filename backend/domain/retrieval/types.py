@@ -178,3 +178,40 @@ class ImpactRetrievalBundle(BaseModel):
     call_chains: list[dict]                  # TraceStep serialized
     ranked_chunks: list[ImpactRankedChunk]
     risk_summary: dict                       # high_risk_files, total_affected, affected_community_count
+
+
+# ── RRF Multi-Signal Fusion Types (CS-252) ──────────────────────────────────
+
+
+class SignalRankEntry(BaseModel):
+    chunk_id: str
+    rel_path: str
+    rank: int
+    raw_score: float
+    signal_name: str
+    excerpt: str = ""
+
+
+class FusedRankEntry(BaseModel):
+    chunk_id: str
+    rel_path: str
+    fused_score: float
+    per_signal_ranks: dict[str, int]
+    excerpt: str
+
+
+class RrfFusionBundle(BaseModel):
+    snapshot_id: str
+    query: str
+    section: RetrievalSection
+    bm25_signal: list[SignalRankEntry]
+    graph_signal: list[SignalRankEntry]
+    fused: list[FusedRankEntry]
+
+
+class RrfFusionRequest(BaseModel):
+    snapshot_id: str
+    query: str
+    section: RetrievalSection
+    budget: int | None = None
+    min_confidence: float | None = None

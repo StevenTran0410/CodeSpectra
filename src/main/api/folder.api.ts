@@ -202,6 +202,10 @@ export function registerFolderHandlers(client: BackendClient): void {
     client.get(`/api/graph/cycles/${snapshotId}`)
   )
 
+  ipcMain.handle('graph:symbolEdges', (_event, snapshotId: string, filePath: string) =>
+    client.get(`/api/graph/symbol-edges/${snapshotId}?file_path=${encodeURIComponent(filePath)}`)
+  )
+
   ipcMain.handle('graph:exportData', (_event, snapshotId: string) =>
     client.get(`/api/graph/export/${snapshotId}`)
   )
@@ -254,6 +258,16 @@ export function registerFolderHandlers(client: BackendClient): void {
       section: 'architecture' | 'conventions' | 'feature_map' | 'important_files' | 'glossary'
       budget?: number
     }) => client.post('/api/retrieval/retrieve-two-stage', body)
+  )
+
+  ipcMain.handle(
+    'retrieval:retrieveRrfFusion',
+    (_event, body: {
+      snapshot_id: string
+      query: string
+      section: 'architecture' | 'conventions' | 'feature_map' | 'important_files' | 'glossary'
+      budget?: number
+    }) => client.post('/api/retrieval/retrieve-rrf-fusion', body)
   )
 
   ipcMain.handle(
