@@ -85,3 +85,21 @@ class NodeCommunityResponse(BaseModel):
 class CyclesResponse(BaseModel):
     snapshot_id: str
     cycles: list[list[str]]
+
+
+# ── CS-250: function-level symbol edge drill-down (graph viewer) ─────────────
+
+class SymbolEdgeInfo(BaseModel):
+    src_symbol: str
+    dst_symbol: str
+    edge_type: str
+    confidence_score: float
+    resolution_method: str
+
+
+class FileSymbolEdgesResponse(BaseModel):
+    snapshot_id: str
+    file_path: str
+    defined_symbols: list[str]
+    outgoing: list[SymbolEdgeInfo]
+    incoming: list[SymbolEdgeInfo]

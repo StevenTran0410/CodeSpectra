@@ -3,17 +3,18 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
 
 from domain.structural_graph.service import StructuralGraphService
-from shared.http_utils import handle_value_error
 from domain.structural_graph.types import (
     BuildGraphRequest,
     BuildGraphResponse,
     CyclesResponse,
+    FileSymbolEdgesResponse,
     GraphCommunitiesResponse,
     GraphEdgesResponse,
     GraphNeighborsResponse,
     NodeCommunityResponse,
     StructuralGraphSummary,
 )
+from shared.http_utils import handle_value_error
 
 router = APIRouter(tags=["structural-graph"])
 _service = StructuralGraphService()
@@ -76,6 +77,24 @@ async def graph_cycles(snapshot_id: str) -> CyclesResponse:
     """Return circular import cycles (strongly connected components)."""
     try:
         return await _service.cycles(snapshot_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/symbol-edges/{snapshot_id}", response_model=FileSymbolEdgesResponse)
+async def symbol_edges_for_file(
+    snapshot_id: str,
+    file_path: str = Query(..., description="File path to drill into (function-level edges)"),
+) -> FileSymbolEdgesResponse:
+    """Function-level drill-down (CS-250): symbol_graph_edges for one file.
+
+    Returns the functions/classes defined in this file plus their cross-file
+    call edges (outgoing = this file's functions calling elsewhere, incoming =
+    other files' functions calling into this file), each with the CS-240
+    confidence_score/resolution_method.
+    """
+    try:
+        return await _service.symbol_edges_for_file(snapshot_id, file_path)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

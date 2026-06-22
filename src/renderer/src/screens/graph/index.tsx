@@ -81,6 +81,32 @@ type ImpactState = {
   result: BlastRadiusResponse | null
 }
 
+type SymbolEdgeInfo = {
+  src_symbol: string
+  dst_symbol: string
+  edge_type: string
+  confidence_score: number
+  resolution_method: string
+}
+
+type FileSymbolEdgesResponse = {
+  snapshot_id: string
+  file_path: string
+  defined_symbols: string[]
+  outgoing: SymbolEdgeInfo[]
+  incoming: SymbolEdgeInfo[]
+}
+
+/** "file.py::Class.method" -> "file.py" */
+function symbolFile(symbol: string): string {
+  return symbol.includes('::') ? symbol.split('::')[0] : symbol
+}
+
+/** "file.py::Class.method" -> "Class.method" */
+function symbolName(symbol: string): string {
+  return symbol.includes('::') ? symbol.split('::').slice(1).join('::') : symbol
+}
+
 const COMMUNITY_COLORS = [
   '#6366f1', '#0ea5e9', '#10b981', '#f59e0b',
   '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6',
@@ -191,6 +217,8 @@ interface LeftPanelProps {
   neighborLoading: boolean
   impactState: ImpactState
   impactLoading: boolean
+  symbolEdgesData: FileSymbolEdgesResponse | null
+  symbolEdgesLoading: boolean
 }
 
 function LeftPanel({
@@ -201,6 +229,8 @@ function LeftPanel({
   neighborLoading,
   impactState,
   impactLoading,
+  symbolEdgesData,
+  symbolEdgesLoading,
 }: LeftPanelProps) {
   const showImpactPanel = impactState.active && (impactState.result !== null || impactState.seedFiles.length > 0 || impactLoading)
 
@@ -232,11 +262,39 @@ function LeftPanel({
 
   const blastRadiusFiles = neighborData?.nodes.filter((n) => n !== selectedNode) ?? []
 
+  // Centrality score, computed client-side from already-loaded edges using the
+  // same formula as the backend's _compute_scores_python: indegree*3 + outdegree.
+  const indegree = incomingEdges.length
+  const outdegree = outgoingEdges.length
+  const centralityScore = indegree * 3 + outdegree
+
+  // Cross-file function calls only (drop same-file self-references, which are
+  // noise for "who else does this file talk to").
+  const outgoingCalls = (symbolEdgesData?.outgoing ?? []).filter(
+    (e) => symbolFile(e.dst_symbol) !== selectedNode
+  )
+  const incomingCalls = (symbolEdgesData?.incoming ?? []).filter(
+    (e) => symbolFile(e.src_symbol) !== selectedNode
+  )
+
   return (
     <div className="w-80 border-r border-zinc-700 bg-zinc-900 p-4 overflow-y-auto text-xs space-y-4">
       {/* Node info */}
       <div>
         <div className="text-zinc-300 font-mono text-[10px] break-words">{selectedNode}</div>
+      </div>
+
+      {/* Centrality score breakdown */}
+      <div>
+        <div className="text-zinc-400 font-semibold mb-2">Centrality score</div>
+        <div className="text-zinc-200 text-base font-semibold">{centralityScore}</div>
+        <div className="text-[10px] text-zinc-500 mt-1">
+          = indegree ({indegree}) × 3 + outdegree ({outdegree})
+        </div>
+        <div className="text-[10px] text-zinc-500">
+          Higher indegree (more files depend on this) weighs 3× more than outdegree
+          (this file depending on others).
+        </div>
       </div>
 
       {/* Community */}
@@ -318,6 +376,99 @@ function LeftPanel({
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {/* Function-level drill-down (CS-250, backed by CS-240/CS-249's symbol_graph_edges) */}
+      {symbolEdgesData && !symbolEdgesLoading && (
+        <div>
+          <div className="text-zinc-400 font-semibold mb-2">
+            Functions in this file ({symbolEdgesData.defined_symbols.length})
+          </div>
+          {symbolEdgesData.defined_symbols.length === 0 ? (
+            <div className="text-[10px] text-zinc-500 italic">
+              No function-level call data yet — only Python/TypeScript files are
+              analyzed at this level, and the graph may need rebuilding.
+            </div>
+          ) : (
+            <div className="space-y-1 mb-3">
+              {symbolEdgesData.defined_symbols.slice(0, 10).map((s) => (
+                <div key={s} className="text-[10px] text-zinc-400 font-mono truncate">
+                  {s}
+                </div>
+              ))}
+              {symbolEdgesData.defined_symbols.length > 10 && (
+                <div className="text-[10px] text-zinc-500 italic">
+                  and {symbolEdgesData.defined_symbols.length - 10} more...
+                </div>
+              )}
+            </div>
+          )}
+
+          {outgoingCalls.length > 0 && (
+            <div className="mb-3">
+              <div className="text-[10px] text-zinc-500 mb-1">Calls out to other files:</div>
+              <div className="space-y-1">
+                {outgoingCalls.slice(0, 8).map((e, i) => (
+                  <div key={i} className="text-[10px] text-zinc-400">
+                    <span className="font-mono">{symbolName(e.src_symbol)}</span>
+                    {' → '}
+                    <span className="font-mono text-zinc-300">
+                      {symbolFile(e.dst_symbol).split('/').pop()}::{symbolName(e.dst_symbol)}
+                    </span>
+                    <span
+                      className={
+                        'ml-1 ' + (e.confidence_score >= 0.7 ? 'text-emerald-500' : 'text-amber-500')
+                      }
+                    >
+                      ({e.resolution_method}, {e.confidence_score.toFixed(2)})
+                    </span>
+                  </div>
+                ))}
+                {outgoingCalls.length > 8 && (
+                  <div className="text-[10px] text-zinc-500 italic">
+                    and {outgoingCalls.length - 8} more...
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {incomingCalls.length > 0 && (
+            <div>
+              <div className="text-[10px] text-zinc-500 mb-1">Called from other files:</div>
+              <div className="space-y-1">
+                {incomingCalls.slice(0, 8).map((e, i) => (
+                  <div key={i} className="text-[10px] text-zinc-400">
+                    <span className="font-mono text-zinc-300">
+                      {symbolFile(e.src_symbol).split('/').pop()}::{symbolName(e.src_symbol)}
+                    </span>
+                    {' → '}
+                    <span className="font-mono">{symbolName(e.dst_symbol)}</span>
+                    <span
+                      className={
+                        'ml-1 ' + (e.confidence_score >= 0.7 ? 'text-emerald-500' : 'text-amber-500')
+                      }
+                    >
+                      ({e.resolution_method}, {e.confidence_score.toFixed(2)})
+                    </span>
+                  </div>
+                ))}
+                {incomingCalls.length > 8 && (
+                  <div className="text-[10px] text-zinc-500 italic">
+                    and {incomingCalls.length - 8} more...
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {symbolEdgesLoading && (
+        <div className="flex items-center gap-2 text-zinc-500">
+          <Loader2 size={12} className="animate-spin" />
+          <span>Loading function-level calls...</span>
         </div>
       )}
 
@@ -509,6 +660,8 @@ export default function GraphScreen(): React.ReactElement {
   const [selectedNode, setSelectedNode] = useState<string | null>(null)
   const [neighborData, setNeighborData] = useState<NeighborResult | null>(null)
   const [neighborLoading, setNeighborLoading] = useState(false)
+  const [symbolEdgesData, setSymbolEdgesData] = useState<FileSymbolEdgesResponse | null>(null)
+  const [symbolEdgesLoading, setSymbolEdgesLoading] = useState(false)
   const [exporting, setExporting] = useState(false)
   const [impactState, setImpactState] = useState<ImpactState>({ active: false, seedFiles: [], result: null })
   const [impactLoading, setImpactLoading] = useState(false)
@@ -577,6 +730,18 @@ export default function GraphScreen(): React.ReactElement {
         setNeighborData(null)
       } finally {
         setNeighborLoading(false)
+      }
+
+      setSymbolEdgesLoading(true)
+      try {
+        const res = await window.api.graph.symbolEdges(snapshotId, path)
+        setSymbolEdgesData(res)
+      } catch {
+        // Not every file has function-level data (e.g. non-Python/TS files,
+        // or the graph predates CS-240) — treat as "nothing to show", not an error.
+        setSymbolEdgesData(null)
+      } finally {
+        setSymbolEdgesLoading(false)
       }
     },
     [snapshotId, impactState.active, impactState.seedFiles, toast]
@@ -663,6 +828,8 @@ export default function GraphScreen(): React.ReactElement {
         neighborLoading={neighborLoading}
         impactState={impactState}
         impactLoading={impactLoading}
+        symbolEdgesData={symbolEdgesData}
+        symbolEdgesLoading={symbolEdgesLoading}
       />
 
       {/* Main canvas area */}

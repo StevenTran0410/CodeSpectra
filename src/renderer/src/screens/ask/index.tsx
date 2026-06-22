@@ -147,6 +147,10 @@ export default function AskScreen(): React.ReactElement {
   const [streamPhase, setStreamPhase] = useState<string | null>(null)
   const [liveContent, setLiveContent] = useState<string>('')
   const [isStalled, setIsStalled] = useState(false)
+  // Conversation that owns the in-flight stream. Used to gate the streaming UI
+  // to the originating tab — switching tabs no longer bleeds "Streaming…" into
+  // unrelated conversations.
+  const [streamingConvoId, setStreamingConvoId] = useState<string | null>(null)
   // Token buffer for rAF flush — accumulates tokens without triggering re-renders per token
   const tokenBufferRef = useRef<string[]>([])
   const rafIdRef = useRef<number>(0)
@@ -282,6 +286,7 @@ export default function AskScreen(): React.ReactElement {
     setLoading(false)
     setStreamPhase(null)
     setIsStalled(false)
+    setStreamingConvoId(null)
     prevIsStalledRef.current = false
   }, [])
 
@@ -303,6 +308,7 @@ export default function AskScreen(): React.ReactElement {
    */
   const runAskStream = useCallback(async (convoId: string, snapshotId: string, question: string) => {
     const cfg = getConfig()
+    setStreamingConvoId(convoId)
     const myTag = beginStream()
 
     return new Promise<void>((resolve) => {
@@ -352,6 +358,7 @@ export default function AskScreen(): React.ReactElement {
    */
   const runDeepResearchStream = useCallback(async (convoId: string, snapshotId: string, question: string) => {
     const cfg = getConfig()
+    setStreamingConvoId(convoId)
     const myTag = beginStream()
 
     return new Promise<void>((resolve) => {
@@ -815,7 +822,7 @@ export default function AskScreen(): React.ReactElement {
                         </div>
 
                         {/* Citations */}
-                        {msg.response.citations.length > 0 && (
+                        {(msg.response.citations?.length ?? 0) > 0 && (
                           <div>
                             <p className="text-xs text-gray-400 mb-1">Citations:</p>
                             <div className="flex flex-wrap gap-1">
@@ -835,7 +842,7 @@ export default function AskScreen(): React.ReactElement {
                         )}
 
                         {/* Unknowns */}
-                        {msg.response.unknowns.length > 0 && (
+                        {(msg.response.unknowns?.length ?? 0) > 0 && (
                           <div>
                             <p className="text-xs text-gray-400 mb-1">Unknown:</p>
                             <ul className="text-xs text-gray-300 list-disc list-inside space-y-0.5">
@@ -847,7 +854,7 @@ export default function AskScreen(): React.ReactElement {
                         )}
 
                         {/* Suggested files */}
-                        {msg.response.suggested_files.length > 0 && (
+                        {(msg.response.suggested_files?.length ?? 0) > 0 && (
                           <div>
                             <p className="text-xs text-gray-400 mb-1">Suggested files:</p>
                             <div className="flex flex-wrap gap-1">
@@ -886,8 +893,9 @@ export default function AskScreen(): React.ReactElement {
           ))
         )}
 
-        {/* Loading state — granular phase label */}
-        {loading && streamPhase !== 'streaming' && (
+        {/* Loading state — granular phase label. Gated to the originating
+            conversation so switching tabs no longer bleeds the streaming UI. */}
+        {loading && streamPhase !== 'streaming' && streamingConvoId === activeConvo?.id && (
           <div className="flex justify-start">
             <div className="flex items-center gap-2 px-4 py-3 rounded-lg bg-surface-overlay">
               <Loader2 className="w-4 h-4 animate-spin text-blue-400" />
@@ -904,8 +912,9 @@ export default function AskScreen(): React.ReactElement {
           </div>
         )}
 
-        {/* Live streaming bubble — tokens flush in via rAF */}
-        {liveContent.length > 0 && (
+        {/* Live streaming bubble — tokens flush in via rAF. Same per-conversation
+            gate as the loading indicator above. */}
+        {liveContent.length > 0 && streamingConvoId === activeConvo?.id && (
           <div className="flex justify-start">
             <div className="relative max-w-2xl">
               <div className="rounded-lg px-4 py-3 bg-surface-overlay text-gray-200">
@@ -963,7 +972,7 @@ export default function AskScreen(): React.ReactElement {
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder={forceDeepResearch ? 'Deep Research mode — ask anything...' : 'Ask a question about the codebase...'}
-              disabled={loading}
+              disabled={loading && streamingConvoId === activeConvo?.id}
               className={`flex-1 px-4 py-2 bg-surface-overlay border rounded-lg text-gray-100 placeholder-gray-500 focus:outline-none disabled:opacity-50 transition-colors ${
                 forceDeepResearch ? 'border-purple-500/60 focus:border-purple-400' : 'border-surface-border focus:border-blue-500'
               }`}
@@ -971,6 +980,7 @@ export default function AskScreen(): React.ReactElement {
             <button
               onClick={handleAsk}
               disabled={loading || !input.trim()}
+              title={loading && streamingConvoId !== activeConvo?.id ? 'Another conversation is streaming — please wait' : undefined}
               className={`px-4 py-2 text-white rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-2 ${
                 forceDeepResearch ? 'bg-purple-700 hover:bg-purple-600' : 'bg-blue-700 hover:bg-blue-600'
               }`}

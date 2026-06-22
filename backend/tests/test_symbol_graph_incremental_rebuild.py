@@ -72,6 +72,59 @@ async def test_copy_unchanged_symbol_edges_basic():
 
 
 @pytest.mark.asyncio
+async def test_symbol_edges_for_file_cs250():
+    """CS-250: symbol_edges_for_file returns defined symbols + outgoing/incoming
+    cross-file edges with confidence_score/resolution_method, using the same
+    collision-safe prefix match as copy_unchanged_symbol_edges (foo.py vs foo2.py)."""
+    from domain.structural_graph.service import StructuralGraphService
+
+    db = get_db()
+    snap_id = new_id()
+    now = utc_now_iso()
+    rows = [
+        # foo.py calls out to bar.py (outgoing for foo.py)
+        (snap_id, "foo.py::caller", "bar.py::helper", "calls", 0.95, "import_path_match", "high", json.dumps([1])),
+        # bar.py calls back into foo.py (incoming for foo.py)
+        (snap_id, "bar.py::other", "foo.py::util", "calls", 0.4, "name_heuristic_ambiguous", "low", json.dumps([2])),
+        # foo2.py edges must never leak into foo.py's results (collision guard)
+        (snap_id, "foo2.py::unrelated", "bar.py::helper", "calls", 0.9, "mro_resolved", "high", json.dumps([3])),
+    ]
+    await db.executemany(
+        """
+        INSERT INTO symbol_graph_edges
+        (snapshot_id, src_symbol, dst_symbol, edge_type, confidence_score, resolution_method, confidence, evidence_lines)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        rows,
+    )
+    await db.commit()
+
+    service = StructuralGraphService()
+    result = await service.symbol_edges_for_file(snap_id, "foo.py")
+
+    assert result.file_path == "foo.py"
+    assert sorted(result.defined_symbols) == ["caller", "util"]
+
+    assert len(result.outgoing) == 1
+    assert result.outgoing[0].src_symbol == "foo.py::caller"
+    assert result.outgoing[0].dst_symbol == "bar.py::helper"
+    assert result.outgoing[0].confidence_score == 0.95
+    assert result.outgoing[0].resolution_method == "import_path_match"
+
+    assert len(result.incoming) == 1
+    assert result.incoming[0].src_symbol == "bar.py::other"
+    assert result.incoming[0].dst_symbol == "foo.py::util"
+    assert result.incoming[0].confidence_score == 0.4
+    assert result.incoming[0].resolution_method == "name_heuristic_ambiguous"
+
+    # Collision guard: foo2.py's edge must not appear anywhere in foo.py's result
+    all_symbols = [e.src_symbol for e in result.outgoing + result.incoming] + [
+        e.dst_symbol for e in result.outgoing + result.incoming
+    ]
+    assert not any(s.startswith("foo2.py") for s in all_symbols)
+
+
+@pytest.mark.asyncio
 async def test_copy_unchanged_symbol_edges_collision_guard():
     """Test that foo.py carry-forward never matches foo2.py edges (collision guard)."""
     db = get_db()

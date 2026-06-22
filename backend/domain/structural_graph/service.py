@@ -1,8 +1,8 @@
 """Structural graph service (RPA-033)."""
 from __future__ import annotations
 
-import asyncio
 import ast
+import asyncio
 import concurrent.futures
 import importlib
 import json
@@ -16,13 +16,14 @@ from shared.errors import NotFoundError
 from shared.logger import logger
 from shared.sql_queries import SQL_SELECT_MANIFEST_FILES_BY_SNAPSHOT
 from shared.toolchain import detect_cpp_toolchain
-from shared.utils import new_id, read_utf8_lenient, utc_now_iso
+from shared.utils import read_utf8_lenient, utc_now_iso
 
 from .types import (
     BuildGraphRequest,
     BuildGraphResponse,
     CommunityInfo,
     CyclesResponse,
+    FileSymbolEdgesResponse,
     GraphCommunitiesResponse,
     GraphEdge,
     GraphEdgesResponse,
@@ -30,6 +31,7 @@ from .types import (
     GraphNodeScore,
     NodeCommunityResponse,
     StructuralGraphSummary,
+    SymbolEdgeInfo,
 )
 
 # Kill switch for SymbolGraphBuilder wiring (CS-240)
@@ -263,12 +265,14 @@ class StructuralGraphService:
 
         # ──── Part A: Extraction Cache ────────────────────────────────────────
         from .extraction_cache import (
-            load_previous_cache,
+            _get_previous_snapshot_id,
             classify_files,
             copy_unchanged_edges,
             copy_unchanged_symbol_edges,
+            load_previous_cache,
+        )
+        from .extraction_cache import (
             write_cache as write_cache_db,
-            _get_previous_snapshot_id,
         )
 
         prev_cache = await load_previous_cache(db, snap["local_repo_id"], req.snapshot_id)
@@ -952,6 +956,72 @@ class StructuralGraphService:
             sccs = compute_scc_python(edge_tuples)
 
         return CyclesResponse(snapshot_id=snapshot_id, cycles=sccs)
+
+    async def symbol_edges_for_file(self, snapshot_id: str, file_path: str) -> FileSymbolEdgesResponse:
+        """Function-level drill-down (CS-250): symbol_graph_edges for one file.
+
+        Uses an exact length-bounded prefix match (not LIKE) on "file_path::",
+        same collision-safe convention as CS-249's copy_unchanged_symbol_edges,
+        so "foo.py" never matches "foo2.py::...".
+        """
+        db = get_db()
+        prefix = f"{file_path}::"
+        plen = len(prefix)
+
+        async with db.execute(
+            """
+            SELECT src_symbol, dst_symbol, edge_type, confidence_score, resolution_method
+            FROM symbol_graph_edges
+            WHERE snapshot_id=? AND substr(src_symbol, 1, ?) = ?
+            """,
+            (snapshot_id, plen, prefix),
+        ) as cur:
+            outgoing_rows = await cur.fetchall()
+
+        async with db.execute(
+            """
+            SELECT src_symbol, dst_symbol, edge_type, confidence_score, resolution_method
+            FROM symbol_graph_edges
+            WHERE snapshot_id=? AND substr(dst_symbol, 1, ?) = ?
+            """,
+            (snapshot_id, plen, prefix),
+        ) as cur:
+            incoming_rows = await cur.fetchall()
+
+        outgoing = [
+            SymbolEdgeInfo(
+                src_symbol=r["src_symbol"],
+                dst_symbol=r["dst_symbol"],
+                edge_type=r["edge_type"],
+                confidence_score=r["confidence_score"],
+                resolution_method=r["resolution_method"],
+            )
+            for r in outgoing_rows
+        ]
+        incoming = [
+            SymbolEdgeInfo(
+                src_symbol=r["src_symbol"],
+                dst_symbol=r["dst_symbol"],
+                edge_type=r["edge_type"],
+                confidence_score=r["confidence_score"],
+                resolution_method=r["resolution_method"],
+            )
+            for r in incoming_rows
+        ]
+
+        defined: set[str] = set()
+        for r in outgoing_rows:
+            defined.add(r["src_symbol"][plen:])
+        for r in incoming_rows:
+            defined.add(r["dst_symbol"][plen:])
+
+        return FileSymbolEdgesResponse(
+            snapshot_id=snapshot_id,
+            file_path=file_path,
+            defined_symbols=sorted(defined),
+            outgoing=outgoing,
+            incoming=incoming,
+        )
 
     async def export_graph_json(self, snapshot_id: str) -> dict:
         """Export full graph structure as a single JSON-serialisable dict.

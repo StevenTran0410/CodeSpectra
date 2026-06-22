@@ -3,6 +3,16 @@ import { electronApp, is, optimizer } from '@electron-toolkit/utils'
 
 // Suppress Electron security warnings in dev (unsafe-eval is required by Vite HMR)
 if (is.dev) process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = 'true'
+
+// Silence harmless Chromium-internal DevTools noise ("Autofill.enable wasn't
+// found" / "Autofill.setAddresses wasn't found"). This is a known DevTools
+// frontend/backend version mismatch inside Electron's bundled Chromium (the
+// inspector frontend calls a CDP method this Chromium build doesn't
+// implement) — it cannot be intercepted via any JS API since it's native
+// Chromium stderr logging, not our app's console. Raising the native log
+// threshold to FATAL-only hides it without touching our own logger (a
+// separate channel via shared/logger.ts), so real app errors are unaffected.
+app.commandLine.appendSwitch('log-level', '3')
 import { createMainWindow } from './window'
 import { startPythonServer, stopPythonServer } from './infrastructure/python-server/server'
 import { registerWorkspaceHandlers } from './api/workspace.api'
