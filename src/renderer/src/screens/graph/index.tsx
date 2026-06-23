@@ -216,16 +216,19 @@ interface ForceNode extends d3force.SimulationNodeDatum {
 }
 
 /**
- * Force-directed layout with community clustering (Neo4j-Browser style): nodes
- * repel each other and are pulled along edges, PLUS an extra custom force that
- * pulls every node toward its own community's centroid each tick. That cluster
- * force is what actually produces visually distinct blobs — plain repulsion +
- * links alone (no cluster force) just spreads everything out evenly with no
- * separation between communities, which isn't what we want here.
+ * Force-directed layout with community clustering, following the standard
+ * technique from D3 creator Mike Bostock's reference "Clustered Force Layout"
+ * (https://gist.github.com/mbostock/7881887): differential collision padding,
+ * not competing global forces.
  *
- * Replaces an earlier single-ring layout that was far too literal a reading of
- * "arrange in a circle" — a real force simulation is what actually looks like
- * the reference (organic clusters, not one ordered ring).
+ * The key idea: use ONE collision rule where the minimum allowed distance
+ * between two nodes depends on whether they share a community — small padding
+ * for same-cluster pairs (tight packing), much larger padding for different-
+ * cluster pairs (visible gaps). That single rule does both "don't overlap
+ * within a cluster" and "keep clusters apart" at once. Bostock's own example
+ * sets charge to 0 entirely, since generic repulsion fighting a separate
+ * separation force is exactly what caused this layout's earlier overcorrection
+ * (clusters either flew apart or crushed together depending on which force won).
  */
 function applyForceClusterLayout(nodes: Node[], edges: Edge[]): Node[] {
   const n = nodes.length
@@ -249,26 +252,39 @@ function applyForceClusterLayout(nodes: Node[], edges: Edge[]): Node[] {
     .filter((e) => nodeById.has(e.source) && nodeById.has(e.target))
     .map((e) => ({ source: e.source, target: e.target }))
 
-  // Community sizes, computed once -- singleton/tiny communities (1-2 nodes)
-  // get a much weaker cluster pull below, since "pull toward your own
-  // centroid" is meaningless for a lone node and was previously the reason
-  // small communities drifted away with nothing bounding them.
-  const communitySize = new Map<number, number>()
-  for (const fn of forceNodes) {
-    communitySize.set(fn.communityId, (communitySize.get(fn.communityId) ?? 0) + 1)
+  // Padding distances, sized for this app's ~160x36 node boxes (vs. Bostock's
+  // small circular dots) -- same-cluster pairs get just enough room to avoid
+  // label overlap; different-cluster pairs get a much wider gap so distinct
+  // blobs are visually obvious.
+  const SAME_CLUSTER_PADDING = 100
+  const DIFF_CLUSTER_PADDING = 230
+
+  // Brute-force O(n^2) pairwise collision check. Fine at this scale (a few
+  // hundred nodes, run for a bounded number of ticks) -- a quadtree-accelerated
+  // version (what Bostock's example actually uses) only pays off at much larger
+  // node counts than this app's graphs reach.
+  function differentialCollide(alpha: number): void {
+    for (let i = 0; i < forceNodes.length; i++) {
+      const a = forceNodes[i]
+      for (let j = i + 1; j < forceNodes.length; j++) {
+        const b = forceNodes[j]
+        const dx = (b.x ?? 0) - (a.x ?? 0)
+        const dy = (b.y ?? 0) - (a.y ?? 0)
+        const dist = Math.sqrt(dx * dx + dy * dy) || 0.01
+        const minDist = a.communityId === b.communityId ? SAME_CLUSTER_PADDING : DIFF_CLUSTER_PADDING
+        if (dist >= minDist) continue
+        const push = ((minDist - dist) / dist) * alpha * 0.5
+        const ox = dx * push
+        const oy = dy * push
+        a.vx = (a.vx ?? 0) - ox
+        a.vy = (a.vy ?? 0) - oy
+        b.vx = (b.vx ?? 0) + ox
+        b.vy = (b.vy ?? 0) + oy
+      }
+    }
   }
 
-  // Minimum desired distance between two DIFFERENT communities' centroids.
-  // This -- not raw node-level repulsion -- is what actually keeps clusters
-  // visually distinct. A previous version relied on generic charge + a global
-  // gravity force fighting each other, which either flung small clusters away
-  // (gravity too weak) or crushed everything into one ball (gravity too
-  // strong relative to charge) -- there was never a force that specifically
-  // said "different clusters should stay apart," only "things in general
-  // repel" vs "things in general are pulled to the center."
-  const MIN_CLUSTER_SEPARATION = 260
-
-  function clusterForce(alpha: number): void {
+  function clusterCohesion(alpha: number): void {
     const centroids = new Map<number, { x: number; y: number; count: number }>()
     for (const fn of forceNodes) {
       const c = centroids.get(fn.communityId) ?? { x: 0, y: 0, count: 0 }
@@ -277,80 +293,44 @@ function applyForceClusterLayout(nodes: Node[], edges: Edge[]): Node[] {
       c.count += 1
       centroids.set(fn.communityId, c)
     }
-    const centroidList = Array.from(centroids.entries()).map(([id, c]) => ({
-      id,
-      x: c.x / c.count,
-      y: c.y / c.count,
-    }))
-
-    // 1. Cohesion: pull each node toward its own community's centroid.
     for (const fn of forceNodes) {
       const c = centroids.get(fn.communityId)
-      if (!c || c.count === 0) continue
-      const size = communitySize.get(fn.communityId) ?? 1
-      // Bigger communities pull together more strongly (denser, more cohesive
-      // blob); singletons/pairs barely self-pull (there's nothing to cohere to).
-      const strength = size <= 2 ? 0.02 : 0.12
-      fn.vx = (fn.vx ?? 0) + (c.x / c.count - (fn.x ?? 0)) * alpha * strength
-      fn.vy = (fn.vy ?? 0) + (c.y / c.count - (fn.y ?? 0)) * alpha * strength
-    }
-
-    // 2. Separation: push two communities' centroids apart whenever they're
-    // closer than MIN_CLUSTER_SEPARATION, applied to every node in both
-    // communities (moves each cluster as a whole, not node-by-node). This is
-    // the piece that actually produces visible gaps between distinct blobs.
-    for (let i = 0; i < centroidList.length; i++) {
-      for (let j = i + 1; j < centroidList.length; j++) {
-        const a = centroidList[i]
-        const b = centroidList[j]
-        const dx = b.x - a.x
-        const dy = b.y - a.y
-        const dist = Math.sqrt(dx * dx + dy * dy) || 1
-        if (dist >= MIN_CLUSTER_SEPARATION) continue
-        const push = ((MIN_CLUSTER_SEPARATION - dist) / MIN_CLUSTER_SEPARATION) * alpha * 0.5
-        const ux = dx / dist
-        const uy = dy / dist
-        for (const fn of forceNodes) {
-          if (fn.communityId === a.id) {
-            fn.vx = (fn.vx ?? 0) - ux * push
-            fn.vy = (fn.vy ?? 0) - uy * push
-          } else if (fn.communityId === b.id) {
-            fn.vx = (fn.vx ?? 0) + ux * push
-            fn.vy = (fn.vy ?? 0) + uy * push
-          }
-        }
-      }
+      if (!c || c.count <= 2) continue // singleton/pair communities: nothing to cohere to
+      fn.vx = (fn.vx ?? 0) + (c.x / c.count - (fn.x ?? 0)) * alpha * 0.1
+      fn.vy = (fn.vy ?? 0) + (c.y / c.count - (fn.y ?? 0)) * alpha * 0.1
     }
   }
 
   const simulation = d3force
     .forceSimulation(forceNodes)
-    .force('charge', d3force.forceManyBody().strength(-60))
+    // No generic repulsion (matches Bostock's reference) -- differential
+    // collision below already does all the separation work, so adding charge
+    // on top would just be a second force fighting for the same job again.
     .force(
       'link',
       d3force
         .forceLink<ForceNode, { source: string; target: string }>(forceLinks)
         .id((d) => d.id)
         .distance(70)
-        .strength(0.35)
+        .strength(0.3)
     )
-    // Minimum spacing between node centers so labels never overlap within a
-    // cluster. Radius approximates the node's 160x36 bounding box (half-
-    // diagonal ~82) plus a small gap.
-    .force('collide', d3force.forceCollide(95))
-    // Very weak per-node gravity -- just enough of a safety net to stop a
-    // fully-disconnected node from sailing off to infinity, not strong enough
-    // to compete with cluster separation above (that was the overcorrection:
-    // 0.025 was strong enough to crush every cluster into the same point).
+    // Very weak per-node gravity -- just a safety net so a fully-disconnected
+    // node doesn't sail off to infinity, far too weak to compete with the
+    // collision/cohesion forces above.
     .force('gravityX', d3force.forceX(0).strength(0.004))
     .force('gravityY', d3force.forceY(0).strength(0.004))
+    .velocityDecay(0.45) // dampens oscillation for a more stable settled layout
     .stop()
 
-  // Run synchronously to a settled state (no live animation needed — React Flow
-  // just needs final positions), interleaving our custom cluster force each tick.
+  // Run synchronously to a settled state (no live animation needed — React
+  // Flow just needs final positions). Differential collision runs multiple
+  // passes per tick (mirrors forceCollide's own "iterations" option) since a
+  // single pass per tick is too few to fully resolve overlaps in a dense graph.
   for (let tick = 0; tick < 300; tick++) {
     simulation.tick()
-    clusterForce(simulation.alpha())
+    const alpha = simulation.alpha()
+    clusterCohesion(alpha)
+    for (let pass = 0; pass < 3; pass++) differentialCollide(alpha)
   }
 
   const positionById = new Map(forceNodes.map((fn) => [fn.id, { x: fn.x ?? 0, y: fn.y ?? 0 }]))
