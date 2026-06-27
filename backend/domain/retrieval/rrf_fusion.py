@@ -12,6 +12,13 @@ from haystack.utils.misc import _reciprocal_rank_fusion
 from infrastructure.db.database import get_db
 
 from .bm25_scorer import BM25Scorer
+from .cross_encoder_rerank import (
+    detect_gpu,
+    is_gpu_reranker_enabled,
+    recommended_rerank_batch_size,
+    rerank_fused_entries,
+    release_gpu_cache,
+)
 from .two_stage_retrieval import (
     _CATEGORY_HINT_BONUS,
     _CHUNK_FULL_COLS,
@@ -28,6 +35,7 @@ from .types import FusedRankEntry, RetrievalSection, RrfFusionBundle, SignalRank
 # Prevents many low-confidence (0.15-0.3) ambiguous edges from outranking 2-3 genuinely
 # high-confidence ones via edge-count gaming. See capped-SUM formula in docstring.
 _CAPPED_SUM_CAP = 2.0
+
 
 
 def _symbol_overlap_fallback(
@@ -505,6 +513,56 @@ def fuse_signal_lists(
     return fused_entries
 
 
+# Rerank coverage target: at least 100 candidates when available, but never more
+# than 3/4 of the total fused pool (rerank is meant to refine a top slice, not
+# replace RRF fusion's own judgment over the long tail).
+_RERANK_COVERAGE_MIN = 100
+_RERANK_COVERAGE_MAX_FRACTION = 0.75
+
+
+def _rerank_coverage_target(total_fused: int) -> int:
+    return min(total_fused, max(_RERANK_COVERAGE_MIN, round(total_fused * _RERANK_COVERAGE_MAX_FRACTION)))
+
+
+def _rerank_in_batches(
+    query: str,
+    fused: list[FusedRankEntry],
+    chunk_content_by_id: dict[str, str],
+    batch_size: int,
+) -> tuple[list, str]:
+    """Rerank `fused` in sequential batches of `batch_size` (the model joins all
+    passages in one call into a single shared sequence, so a single oversized call
+    risks CUDA OOM — see cross_encoder_rerank.recommended_rerank_batch_size).
+
+    Scores from different batches are merge-sorted together at the end. This is an
+    approximation, not an exact equivalent of reranking the whole pool in one call —
+    an empirical check found cross-batch score deltas for the same passage were small
+    relative to the relevant/irrelevant score gap, but the model's listwise design
+    does let documents in the same call influence each other's embeddings.
+    """
+    target = _rerank_coverage_target(len(fused))
+    pool = fused[:target]
+
+    all_reranked: list = []
+    last_status = "ok"
+    for start in range(0, len(pool), batch_size):
+        batch = pool[start : start + batch_size]
+        reranked_batch, status = rerank_fused_entries(
+            query, batch, chunk_content_by_id, rank_offset=start
+        )
+        last_status = status
+        if status != "ok":
+            break
+        all_reranked.extend(reranked_batch)
+        release_gpu_cache()  # return this batch's freed VRAM before the next one starts
+
+    if not all_reranked:
+        return [], last_status
+
+    all_reranked.sort(key=lambda e: e.rerank_score, reverse=True)
+    return all_reranked, "ok"
+
+
 async def retrieve_rrf_fusion(
     snapshot_id: str,
     query: str,
@@ -576,6 +634,9 @@ async def retrieve_rrf_fusion(
     # Convert all_rows to dicts once (reuse everywhere)
     all_rows_dicts = [dict(r) for r in all_rows]
 
+    # Build chunk_content_by_id for reranking (CS-254)
+    chunk_content_by_id = {r["id"]: r.get("content", "") for r in all_rows_dicts}
+
     # Precompute best_chunk_per_file once, thread into all 4 builders
     best_chunk_by_file = _best_chunk_per_file(all_rows_dicts, stage1_candidates, symbol_index)
 
@@ -609,6 +670,19 @@ async def retrieve_rrf_fusion(
     # Fuse all 4 signals via RRF
     fused = fuse_signal_lists([bm25_signal, graph_signal, module_signal, category_signal])
 
+    # Call cross-encoder reranking (CS-254) — gated by the global GPU Reranker
+    # toggle (Settings). Off by default; user must explicitly opt in. Runs in
+    # VRAM-sized batches (see recommended_rerank_batch_size) since the model joins
+    # ALL passages in one call into a single shared sequence, not pairwise.
+    if await is_gpu_reranker_enabled():
+        _, vram_gb = detect_gpu()
+        batch_size = recommended_rerank_batch_size(vram_gb)
+        reranked, reranker_status = _rerank_in_batches(
+            query, fused, chunk_content_by_id, batch_size
+        )
+    else:
+        reranked, reranker_status = [], "disabled"
+
     return RrfFusionBundle(
         snapshot_id=snapshot_id,
         query=query,
@@ -618,4 +692,6 @@ async def retrieve_rrf_fusion(
         module_signal=module_signal,
         category_signal=category_signal,
         fused=fused,
+        reranked=reranked,
+        reranker_status=reranker_status,
     )

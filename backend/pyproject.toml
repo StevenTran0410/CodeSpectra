@@ -57,6 +57,11 @@ analysis = [
     "networkx>=3.4.0",
     "scikit-learn>=1.5.0",
 ]
+reranker = [
+    "torch>=2.0.0",
+    "transformers>=4.40.0",
+    "bitsandbytes>=0.42.0",
+]
 
 [build-system]
 requires = ["hatchling"]

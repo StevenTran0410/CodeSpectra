@@ -14,10 +14,14 @@ import pytest
 from haystack import Document
 from haystack.utils.misc import _reciprocal_rank_fusion
 
+from unittest.mock import patch
+
 from domain.retrieval.rrf_fusion import (
     _CAPPED_SUM_CAP,
     _best_chunk_per_file,
     _load_confidence_weighted_edges,
+    _rerank_coverage_target,
+    _rerank_in_batches,
     _symbol_overlap_fallback,
     build_bm25_rank_list,
     build_category_hint_rank_list,
@@ -25,7 +29,7 @@ from domain.retrieval.rrf_fusion import (
     build_module_proximity_rank_list,
     fuse_signal_lists,
 )
-from domain.retrieval.types import RetrievalSection, SignalRankEntry, StageCandidate
+from domain.retrieval.types import FusedRankEntry, RerankedEntry, RetrievalSection, SignalRankEntry, StageCandidate
 from infrastructure.db.database import get_db
 from shared.utils import new_id
 
@@ -1059,3 +1063,90 @@ async def test_load_confidence_weighted_edges_filters_to_seed_files_in_sql():
     # Only seed.py's edge to other.py should be present -- seed2.py's and
     # not_seed.py's edges must not leak in.
     assert result == {"other.py": [0.9]}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Test Class F: Rerank batching (CS-254 follow-up — VRAM-scaled batch loop)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _fused_entry(i: int, score: float) -> FusedRankEntry:
+    return FusedRankEntry(
+        chunk_id=f"chunk_{i}",
+        rel_path=f"file_{i}.py",
+        fused_score=score,
+        per_signal_ranks={"bm25": i},
+        excerpt=f"excerpt {i}",
+        token_estimate=10,
+    )
+
+
+class TestRerankCoverageTarget:
+    def test_small_pool_reranks_everything(self):
+        # 30 < _RERANK_COVERAGE_MIN (100) -> rerank the whole (small) pool.
+        assert _rerank_coverage_target(30) == 30
+
+    def test_large_pool_capped_at_three_quarters(self):
+        # 0.75 * 156 = 117, which is > 100, so the 3/4 cap is the binding constraint.
+        assert _rerank_coverage_target(156) == 117
+
+    def test_never_exceeds_total(self):
+        assert _rerank_coverage_target(100) == 100
+
+
+class TestRerankInBatches:
+    def test_batches_respect_batch_size_and_merge_sorted(self):
+        """25 fused entries, batch_size=10 -> 3 calls (10/10/5), merged + sorted
+        by rerank_score descending regardless of which batch scored highest."""
+        fused = [_fused_entry(i, score=100 - i) for i in range(25)]
+
+        call_batches: list[list[FusedRankEntry]] = []
+
+        def fake_rerank(query, batch, chunk_content_by_id, rank_offset=0):
+            call_batches.append(batch)
+            reranked = [
+                RerankedEntry(
+                    chunk_id=entry.chunk_id,
+                    rel_path=entry.rel_path,
+                    fused_score=entry.fused_score,
+                    # Give the LAST entry of each batch the highest score, to prove
+                    # final ordering comes from the merge-sort, not batch order.
+                    rerank_score=float(idx),
+                    fused_rank=idx + 1 + rank_offset,
+                    excerpt=entry.excerpt,
+                    token_estimate=entry.token_estimate,
+                )
+                for idx, entry in enumerate(batch)
+            ]
+            return reranked, "ok"
+
+        with patch("domain.retrieval.rrf_fusion.rerank_fused_entries", side_effect=fake_rerank):
+            reranked, status = _rerank_in_batches(
+                "query", fused, chunk_content_by_id={}, batch_size=10
+            )
+
+        assert status == "ok"
+        assert len(call_batches) == 3
+        assert [len(b) for b in call_batches] == [10, 10, 5]
+
+        # fused_rank must reflect position in the ORIGINAL list, not restart per batch.
+        seen_ranks = {r.fused_rank for r in reranked}
+        assert seen_ranks == set(range(1, 26)), "every original position must appear exactly once"
+
+        # Output must be sorted by rerank_score descending (merge-sort across batches).
+        scores = [r.rerank_score for r in reranked]
+        assert scores == sorted(scores, reverse=True)
+
+    def test_propagates_non_ok_status_and_stops(self):
+        fused = [_fused_entry(i, score=100 - i) for i in range(15)]
+
+        def fake_rerank(query, batch, chunk_content_by_id, rank_offset=0):
+            return [], "no_gpu"
+
+        with patch("domain.retrieval.rrf_fusion.rerank_fused_entries", side_effect=fake_rerank):
+            reranked, status = _rerank_in_batches(
+                "query", fused, chunk_content_by_id={}, batch_size=10
+            )
+
+        assert status == "no_gpu"
+        assert reranked == []

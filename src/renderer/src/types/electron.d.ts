@@ -370,6 +370,16 @@ export interface FusedRankEntry {
   token_estimate?: number
 }
 
+export interface RerankedEntry {
+  chunk_id: string
+  rel_path: string
+  fused_score: number
+  rerank_score: number
+  fused_rank: number
+  excerpt: string
+  token_estimate?: number
+}
+
 export interface RrfFusionDebugBundle {
   snapshot_id: string
   query: string
@@ -379,6 +389,14 @@ export interface RrfFusionDebugBundle {
   module_signal: SignalRankEntry[]
   category_signal: SignalRankEntry[]
   fused: FusedRankEntry[]
+  reranked?: RerankedEntry[]
+  reranker_status?: 'ok' | 'no_gpu' | 'model_load_failed' | 'disabled'
+}
+
+export interface GpuRerankerStatus {
+  enabled: boolean
+  gpu_available: boolean
+  vram_gb: number | null
 }
 
 export interface TwoStageDebugBundle {
@@ -513,6 +531,10 @@ declare global {
       consent: {
         checkCloud: () => Promise<{ given: boolean }>
         giveCloud: (given: boolean) => Promise<{ given: boolean }>
+      }
+      gpuReranker: {
+        status: () => Promise<GpuRerankerStatus>
+        setEnabled: (enabled: boolean) => Promise<GpuRerankerStatus>
       }
       folder: {
         pick: () => Promise<string | null>

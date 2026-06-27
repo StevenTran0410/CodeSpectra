@@ -242,7 +242,7 @@ async def test_prefetch_pipeline_context_populates_all_fields(
     ) -> str:
         return "doc-content"
 
-    monkeypatch.setattr(cb, "fetch_folder_tree", fake_tree)
+    monkeypatch.setattr(cb, "build_folder_summary", fake_tree)
     monkeypatch.setattr(cb, "_fetch_files_by_pattern", fake_patterns)
 
     ctx = await prefetch_pipeline_context(mock_retrieval, "snap-xyz", mode=RetrievalMode.HYBRID)
@@ -339,7 +339,7 @@ async def test_prefetch_uses_profile_arch_max_results(
     """prefetch_pipeline_context must pass profile.retrieval_arch_max_results to retrieve."""
     from domain.analysis.agents import _context_builders as cb
 
-    monkeypatch.setattr(cb, "fetch_folder_tree", AsyncMock(return_value=""))
+    monkeypatch.setattr(cb, "build_folder_summary", AsyncMock(return_value=""))
     monkeypatch.setattr(cb, "_fetch_files_by_pattern", AsyncMock(return_value=""))
 
     await prefetch_pipeline_context(mock_retrieval, "snap-large", profile=LARGE_PROFILE)
@@ -360,7 +360,7 @@ async def test_prefetch_defaults_to_normal_profile(
     """prefetch_pipeline_context with profile=None must behave like NORMAL_PROFILE."""
     from domain.analysis.agents import _context_builders as cb
 
-    monkeypatch.setattr(cb, "fetch_folder_tree", AsyncMock(return_value=""))
+    monkeypatch.setattr(cb, "build_folder_summary", AsyncMock(return_value=""))
     monkeypatch.setattr(cb, "_fetch_files_by_pattern", AsyncMock(return_value=""))
 
     await prefetch_pipeline_context(mock_retrieval, "snap-default")

@@ -32,6 +32,14 @@ const api = {
     giveCloud: (given: boolean): Promise<{ given: boolean }> =>
       ipcRenderer.invoke('consent:cloud:give', given)
   },
+  gpuReranker: {
+    status: (): Promise<{ enabled: boolean; gpu_available: boolean; vram_gb: number | null }> =>
+      ipcRenderer.invoke('gpuReranker:status'),
+    setEnabled: (
+      enabled: boolean
+    ): Promise<{ enabled: boolean; gpu_available: boolean; vram_gb: number | null }> =>
+      ipcRenderer.invoke('gpuReranker:setEnabled', enabled)
+  },
   folder: {
     pick: (): Promise<string | null> => ipcRenderer.invoke('folder:pick'),
     validate: (path: string) => ipcRenderer.invoke('folder:validate', path),

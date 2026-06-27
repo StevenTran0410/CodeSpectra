@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { FolderOpen, Info, Cpu, BrainCircuit, Plus, Trash2, RefreshCw, CheckCircle, XCircle } from 'lucide-react'
+import type { GpuRerankerStatus } from '../../types/electron'
 
 interface NativeFunction {
   name: string
@@ -123,6 +124,11 @@ export default function SettingsScreen(): React.ReactElement {
   const [diagError, setDiagError] = useState<string | null>(null)
   const [showNativePopup, setShowNativePopup] = useState(false)
 
+  // GPU reranker state (CS-254)
+  const [gpuReranker, setGpuReranker] = useState<GpuRerankerStatus | null>(null)
+  const [gpuRerankerError, setGpuRerankerError] = useState<string | null>(null)
+  const [gpuRerankerToggling, setGpuRerankerToggling] = useState(false)
+
   // Classifier state
   const [classifierStatus, setClassifierStatus] = useState<ClassifierStatus | null>(null)
   const [classifierExamples, setClassifierExamples] = useState<ClassifierExample[]>([])
@@ -141,7 +147,25 @@ export default function SettingsScreen(): React.ReactElement {
       .then(setDiagnostics)
       .catch((e) => setDiagError(String(e)))
     loadClassifier()
+    window.api.gpuReranker
+      .status()
+      .then(setGpuReranker)
+      .catch((e) => setGpuRerankerError(String(e)))
   }, [])
+
+  const handleToggleGpuReranker = async () => {
+    if (!gpuReranker) return
+    setGpuRerankerToggling(true)
+    setGpuRerankerError(null)
+    try {
+      const next = await window.api.gpuReranker.setEnabled(!gpuReranker.enabled)
+      setGpuReranker(next)
+    } catch (e) {
+      setGpuRerankerError(String(e))
+    } finally {
+      setGpuRerankerToggling(false)
+    }
+  }
 
   const loadClassifier = async () => {
     setClassifierLoading(true)
@@ -256,6 +280,61 @@ export default function SettingsScreen(): React.ReactElement {
           <p className="text-xs text-gray-500">
             Cache path, max cache size, and auto-cleanup settings will be configurable here in RPA-011.
           </p>
+        </section>
+
+        {/* ── GPU Reranker (CS-254) ────────────────────────────────────────── */}
+        <section className="card p-4 space-y-3">
+          <h2 className="text-sm font-medium text-gray-300 flex items-center gap-2">
+            <Cpu className="w-4 h-4" />
+            GPU Reranker
+          </h2>
+          {gpuRerankerError && (
+            <p className="text-xs text-red-400">{gpuRerankerError}</p>
+          )}
+          {!gpuReranker ? (
+            <p className="text-xs text-gray-500">Checking GPU availability...</p>
+          ) : !gpuReranker.gpu_available ? (
+            <>
+              <p className="text-xs text-gray-500">
+                No GPU with at least 2GB VRAM was detected. The cross-encoder reranking
+                stage requires a CUDA-capable GPU and is unavailable on this machine.
+              </p>
+              <div className="flex items-center justify-between py-2 border border-surface-border rounded-md px-3 opacity-50">
+                <span className="text-sm text-gray-400">Enable GPU reranker</span>
+                <span className="text-xs text-gray-500 bg-surface-raised border border-surface-border px-2 py-0.5 rounded-full">
+                  Unavailable
+                </span>
+              </div>
+            </>
+          ) : (
+            <>
+              <p className="text-xs text-gray-500">
+                Rescores retrieval results using a local cross-encoder model
+                (jina-reranker-v3, {gpuReranker.vram_gb}GB VRAM detected). When enabled,
+                every query is reranked; when disabled, retrieval stops at RRF fusion.
+              </p>
+              <p className="text-xs text-amber-500/80">
+                This model is licensed CC BY-NC-4.0 (non-commercial). See the model card
+                on Hugging Face (jinaai/jina-reranker-v3) before enabling in a commercial context.
+              </p>
+              <button
+                onClick={handleToggleGpuReranker}
+                disabled={gpuRerankerToggling}
+                className="flex items-center justify-between w-full py-2 border border-surface-border rounded-md px-3 hover:border-gray-600 transition-colors disabled:opacity-50"
+              >
+                <span className="text-sm text-gray-400">Enable GPU reranker</span>
+                <span
+                  className={
+                    gpuReranker.enabled
+                      ? 'text-xs text-green-400 bg-green-950 border border-green-800 px-2 py-0.5 rounded-full'
+                      : 'text-xs text-gray-400 bg-surface-raised border border-surface-border px-2 py-0.5 rounded-full'
+                  }
+                >
+                  {gpuRerankerToggling ? 'Updating...' : gpuReranker.enabled ? 'On' : 'Off'}
+                </span>
+              </button>
+            </>
+          )}
         </section>
 
         {/* ── Deep Research Classifier ─────────────────────────────────────── */}

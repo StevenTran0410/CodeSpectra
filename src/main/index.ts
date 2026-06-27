@@ -18,6 +18,7 @@ import { startPythonServer, stopPythonServer } from './infrastructure/python-ser
 import { registerWorkspaceHandlers } from './api/workspace.api'
 import { registerProviderHandlers } from './api/provider.api'
 import { registerConsentHandlers } from './api/consent.api'
+import { registerGpuRerankerHandlers } from './api/gpuReranker.api'
 import { registerFolderHandlers } from './api/folder.api'
 import { registerJobHandlers } from './api/job.api'
 import { registerAppHandlers } from './api/app.api'
@@ -40,6 +41,7 @@ app.whenReady().then(async () => {
     registerWorkspaceHandlers(client)
     registerProviderHandlers(client)
     registerConsentHandlers(client)
+    registerGpuRerankerHandlers(client)
     registerFolderHandlers(client)
     registerJobHandlers(client)
     registerQAHandlers(client)

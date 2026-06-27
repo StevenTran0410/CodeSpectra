@@ -42,7 +42,7 @@ async def write_graph_json(snapshot_id: str, data_dir: str, payload: dict) -> Pa
     Creates parent directories. Returns path written.
     """
 
-    async def _write_sync() -> Path:
+    def _write_sync() -> Path:
         path = graph_json_path(snapshot_id, data_dir)
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:

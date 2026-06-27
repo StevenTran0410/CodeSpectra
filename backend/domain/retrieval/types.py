@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class RetrievalMode(StrEnum):
@@ -204,6 +205,18 @@ class FusedRankEntry(BaseModel):
     token_estimate: int = 0
 
 
+class RerankedEntry(BaseModel):
+    """Result from cross-encoder reranking of fused entries (CS-254)."""
+
+    chunk_id: str
+    rel_path: str
+    fused_score: float
+    rerank_score: float
+    fused_rank: int
+    excerpt: str
+    token_estimate: int = 0
+
+
 class RrfFusionBundle(BaseModel):
     snapshot_id: str
     query: str
@@ -213,6 +226,8 @@ class RrfFusionBundle(BaseModel):
     module_signal: list[SignalRankEntry]
     category_signal: list[SignalRankEntry]
     fused: list[FusedRankEntry]
+    reranked: list[RerankedEntry] = Field(default_factory=list)
+    reranker_status: Literal["ok", "no_gpu", "model_load_failed", "disabled"] = "ok"
 
 
 class RrfFusionRequest(BaseModel):
