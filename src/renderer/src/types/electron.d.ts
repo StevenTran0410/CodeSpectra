@@ -391,6 +391,7 @@ export interface RrfFusionDebugBundle {
   fused: FusedRankEntry[]
   reranked?: RerankedEntry[]
   reranker_status?: 'ok' | 'no_gpu' | 'model_load_failed' | 'disabled'
+  final?: FusedRankEntry[]
 }
 
 export interface GpuRerankerStatus {

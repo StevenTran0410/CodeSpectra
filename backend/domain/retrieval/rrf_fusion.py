@@ -29,7 +29,18 @@ from .two_stage_retrieval import (
     _stage1_score_rows,
     load_symbol_index,
 )
-from .types import FusedRankEntry, RetrievalSection, RrfFusionBundle, SignalRankEntry
+from .quality import compute_retrieval_quality
+from .types import (
+    FusedRankEntry,
+    RankedChunk,
+    RetrievalBundle,
+    RetrievalEvidence,
+    RetrievalMode,
+    RetrievalSection,
+    RrfFusionBundle,
+    SignalRankEntry,
+)
+from domain.qa.graph_queries import get_callees_of, get_callers_of
 
 # CAP = 2.0: anti-gaming constant derived from "~2-3 high-confidence 0.85-0.95 edges".
 # Prevents many low-confidence (0.15-0.3) ambiguous edges from outranking 2-3 genuinely
@@ -524,6 +535,210 @@ def _rerank_coverage_target(total_fused: int) -> int:
     return min(total_fused, max(_RERANK_COVERAGE_MIN, round(total_fused * _RERANK_COVERAGE_MAX_FRACTION)))
 
 
+def _resolve_symbol_for_chunk(
+    chunk_id: str,
+    all_rows_dicts: list[dict],
+    symbol_index: dict[str, list[tuple[str, int, int]]] | None,
+) -> str | None:
+    """Resolve a chunk to its enclosing symbol name via overlap matching.
+
+    Given a chunk (identified by chunk_id), find its [start_line, end_line] in all_rows_dicts,
+    then look up which symbol's definition range (from symbol_index) overlaps that chunk.
+
+    Args:
+        chunk_id: The chunk's ID to resolve
+        all_rows_dicts: All chunk rows as dicts (must have id, rel_path, start_line, end_line)
+        symbol_index: dict[name_lower, list[(rel_path, start_line, end_line)]] from load_symbol_index
+
+    Returns:
+        The symbol name (as it appears in the call graph, e.g., "ClassName.method_name"),
+        or None if no chunk matches or no symbol overlaps the chunk.
+    """
+    if not symbol_index:
+        return None
+
+    # Find the chunk's line range
+    chunk_row = None
+    for row in all_rows_dicts:
+        if row.get("id") == chunk_id:
+            chunk_row = row
+            break
+
+    if not chunk_row:
+        return None
+
+    chunk_rel_path = chunk_row.get("rel_path")
+    chunk_start = chunk_row.get("start_line", 0)
+    chunk_end = chunk_row.get("end_line", 0)
+
+    if chunk_start == 0 and chunk_end == 0:
+        return None
+
+    # Find the first symbol whose definition range overlaps this chunk
+    # (reusing the exact overlap predicate from _symbol_overlap_fallback: sym_start >= chunk_start and sym_end <= chunk_end)
+    for symbol_name, ranges in symbol_index.items():
+        for rel_path, sym_start, sym_end in ranges:
+            if rel_path == chunk_rel_path and sym_start >= chunk_start and sym_end <= chunk_end:
+                return symbol_name
+    return None
+
+
+def _resolve_chunk_for_symbol(
+    file_path: str,
+    symbol_name: str,
+    all_rows_dicts: list[dict],
+    symbol_index: dict[str, list[tuple[str, int, int]]] | None,
+) -> dict | None:
+    """Resolve a symbol to the chunk containing its definition.
+
+    Given a file and symbol name, look up the symbol's line range in symbol_index,
+    then find the chunk in that file whose [start_line, end_line] overlaps the symbol.
+
+    Args:
+        file_path: The file where the symbol is defined
+        symbol_name: The symbol name (lower-cased or exact as stored in symbol_index)
+        all_rows_dicts: All chunk rows as dicts
+        symbol_index: dict[name_lower, list[(rel_path, start_line, end_line)]]
+
+    Returns:
+        The chunk dict that contains this symbol's definition, or None if no match.
+    """
+    if not symbol_index:
+        return None
+
+    # Find the symbol's definition line range
+    symbol_ranges = symbol_index.get(symbol_name.lower(), [])
+    sym_start, sym_end = None, None
+    for rel_path, start, end in symbol_ranges:
+        if rel_path == file_path:
+            sym_start, sym_end = start, end
+            break
+
+    if sym_start is None:
+        return None
+
+    # Find chunks in this file that overlap the symbol's range
+    chunks_for_file = [r for r in all_rows_dicts if r.get("rel_path") == file_path]
+    for chunk in chunks_for_file:
+        chunk_start = chunk.get("start_line", 0)
+        chunk_end = chunk.get("end_line", 0)
+        if chunk_start == 0 and chunk_end == 0:
+            continue
+        # Use the same overlap predicate: sym_start >= chunk_start and sym_end <= chunk_end
+        if sym_start >= chunk_start and sym_end <= chunk_end:
+            return chunk
+
+    return None
+
+
+async def _expand_function_level_1hop(
+    snapshot_id: str,
+    fused: list[FusedRankEntry],
+    symbol_index: dict[str, list[tuple[str, int, int]]] | None,
+    all_rows_dicts: list[dict],
+    cap: int,
+) -> list[FusedRankEntry]:
+    """Collect function-level 1-hop expansion candidates (callees and callers of top-ranked functions).
+
+    Expands the candidate pool by finding functions that call or are called by the top N fused entries,
+    where N = _rerank_coverage_target(len(fused)). For each seed, fetches callees and callers via
+    symbol graph edges, then resolves each to a specific chunk (not whole file). Synthetic
+    FusedRankEntry placeholders are created for expansion-only candidates (never seen in original `fused`).
+
+    Iteration is in rank order (best-first), so if the cap is hit, expansion priority deterministically
+    favors the query's currently-best candidates.
+
+    Args:
+        snapshot_id: Snapshot to query
+        fused: The original fused rank list
+        symbol_index: Symbol definition index from load_symbol_index
+        all_rows_dicts: All chunk rows as dicts
+        cap: Maximum number of NEW (expansion-only) chunks to add
+
+    Returns:
+        List of synthetic FusedRankEntry for expansion-only chunks (NOT including the original fused entries).
+    """
+    if not fused or not symbol_index:
+        return []
+
+    # Compute N: the set of seed candidates to expand around
+    N = _rerank_coverage_target(len(fused))
+    seed_candidates = fused[:N]
+
+    expansion_entries: list[FusedRankEntry] = []
+    fused_chunk_ids = {e.chunk_id for e in fused}
+    expansion_chunk_ids = set()
+
+    # Iterate in rank order (best-ranked seed first)
+    for seed_entry in seed_candidates:
+        if len(expansion_chunk_ids) >= cap:
+            break
+
+        # Resolve seed chunk to its enclosing symbol
+        seed_symbol = _resolve_symbol_for_chunk(seed_entry.chunk_id, all_rows_dicts, symbol_index)
+        if not seed_symbol:
+            continue
+
+        # Get callees and callers (high_confidence_only=True, matching existing defaults)
+        callees = await get_callees_of(
+            snapshot_id, seed_entry.rel_path, symbol=seed_symbol, high_confidence_only=True
+        )
+        callers = await get_callers_of(
+            snapshot_id, seed_entry.rel_path, symbol=seed_symbol, high_confidence_only=True
+        )
+
+        # Process callees: resolve dst_symbol to a chunk
+        for hop in callees:
+            if len(expansion_chunk_ids) >= cap:
+                break
+            dst_file = hop.dst_symbol.split("::")[0] if "::" in hop.dst_symbol else hop.dst_symbol
+            dst_symbol = hop.dst_symbol.split("::", 1)[1] if "::" in hop.dst_symbol else ""
+
+            if not dst_symbol:
+                continue
+
+            expansion_chunk = _resolve_chunk_for_symbol(dst_file, dst_symbol, all_rows_dicts, symbol_index)
+            if expansion_chunk and expansion_chunk["id"] not in fused_chunk_ids and expansion_chunk["id"] not in expansion_chunk_ids:
+                expansion_chunk_ids.add(expansion_chunk["id"])
+                # Create synthetic FusedRankEntry with fused_score=0.0, per_signal_ranks={}
+                expansion_entries.append(
+                    FusedRankEntry(
+                        chunk_id=expansion_chunk["id"],
+                        rel_path=expansion_chunk.get("rel_path", ""),
+                        fused_score=0.0,
+                        per_signal_ranks={},
+                        excerpt=expansion_chunk.get("content", "")[:200] if expansion_chunk.get("content") else "",
+                        token_estimate=int(expansion_chunk.get("token_estimate") or 0),
+                    )
+                )
+
+        # Process callers: resolve src_symbol to a chunk
+        for hop in callers:
+            if len(expansion_chunk_ids) >= cap:
+                break
+            src_file = hop.src_symbol.split("::")[0] if "::" in hop.src_symbol else hop.src_symbol
+            src_symbol = hop.src_symbol.split("::", 1)[1] if "::" in hop.src_symbol else ""
+
+            if not src_symbol:
+                continue
+
+            expansion_chunk = _resolve_chunk_for_symbol(src_file, src_symbol, all_rows_dicts, symbol_index)
+            if expansion_chunk and expansion_chunk["id"] not in fused_chunk_ids and expansion_chunk["id"] not in expansion_chunk_ids:
+                expansion_chunk_ids.add(expansion_chunk["id"])
+                expansion_entries.append(
+                    FusedRankEntry(
+                        chunk_id=expansion_chunk["id"],
+                        rel_path=expansion_chunk.get("rel_path", ""),
+                        fused_score=0.0,
+                        per_signal_ranks={},
+                        excerpt=expansion_chunk.get("content", "")[:200] if expansion_chunk.get("content") else "",
+                        token_estimate=int(expansion_chunk.get("token_estimate") or 0),
+                    )
+                )
+
+    return expansion_entries
+
+
 def _rerank_in_batches(
     query: str,
     fused: list[FusedRankEntry],
@@ -561,6 +776,159 @@ def _rerank_in_batches(
 
     all_reranked.sort(key=lambda e: e.rerank_score, reverse=True)
     return all_reranked, "ok"
+
+
+def _rerank_pool_in_batches(
+    query: str,
+    pool: list[FusedRankEntry],
+    chunk_content_by_id: dict[str, str],
+    batch_size: int,
+) -> tuple[list, str]:
+    """Rerank a pre-determined pool of candidates in sequential batches.
+
+    This is a sibling to _rerank_in_batches with a critical difference: it does NOT
+    re-compute _rerank_coverage_target(len(pool)). Instead, it batches over the full
+    `pool` argument exactly as received. This avoids the "double-coverage-target footgun"
+    where re-slicing an already-capped expansion pool could silently truncate away
+    expansion-only candidates.
+
+    The caller is responsible for:
+    - Computing target = _rerank_coverage_target(len(fused)) once
+    - Building the pool = fused[:target] + expansion_candidates (already capped)
+    - Passing that explicit pool to this function
+
+    Args:
+        query: Search query
+        pool: Pre-determined pool to rerank (no internal re-derivation or slicing)
+        chunk_content_by_id: dict[chunk_id -> full_content_text]
+        batch_size: Size of each batch (from recommended_rerank_batch_size)
+
+    Returns:
+        Tuple of (reranked_entries, status_code), sorted by rerank_score descending
+    """
+    all_reranked: list = []
+    last_status = "ok"
+    for start in range(0, len(pool), batch_size):
+        batch = pool[start : start + batch_size]
+        reranked_batch, status = rerank_fused_entries(
+            query, batch, chunk_content_by_id, rank_offset=start
+        )
+        last_status = status
+        if status != "ok":
+            break
+        all_reranked.extend(reranked_batch)
+        release_gpu_cache()
+
+    if not all_reranked:
+        return [], last_status
+
+    all_reranked.sort(key=lambda e: e.rerank_score, reverse=True)
+    return all_reranked, "ok"
+
+
+def _fuse_final_ranking(
+    fused: list[FusedRankEntry],
+    reranked: list,
+    weights: tuple[float, float] = (0.6, 0.4),
+) -> list[FusedRankEntry]:
+    """Fuse fused_rank and cross_encoder_rank signals via RRF.
+
+    Builds two rank lists:
+    - fused_rank: from the ORIGINAL `fused` list (its existing order, with list position = rank)
+    - cross_encoder_rank: from the reranked list's POST-SORT position (enumerate(reranked, start=1))
+
+    Expansion-only candidates (in reranked but NOT in fused) only contribute via the
+    cross_encoder_rank signal; they are excluded from the fused_rank list, and haystack's
+    RRF naturally handles the partial-list-membership (no synthetic fallback rank needed).
+
+    Args:
+        fused: The original fused list (used only for rank signal, not mutated)
+        reranked: The reranked list from _rerank_pool_in_batches (already sorted by rerank_score)
+        weights: Tuple of (fused_weight, cross_encoder_weight), default (0.6, 0.4)
+
+    Returns:
+        List of FusedRankEntry sorted by the combined fused_score descending
+    """
+    if not fused or not reranked:
+        return []
+
+    # Build two Document lists (mimicking fuse_signal_lists' pattern at lines 444-467)
+    # List 1: fused-rank signal (built from the original fused list's order)
+    fused_docs = [
+        Document(
+            id=entry.chunk_id,
+            content=entry.excerpt or entry.chunk_id,
+            score=None,
+        )
+        for entry in fused
+    ]
+
+    # List 2: cross_encoder_rank signal (built from reranked's post-sort position)
+    # HARD REQUIREMENT: use enumerate(reranked, start=1), NOT RerankedEntry.fused_rank
+    reranked_docs = [
+        Document(
+            id=entry.chunk_id,
+            content=entry.excerpt or entry.chunk_id,
+            score=None,
+        )
+        for entry in reranked
+    ]
+
+    # Call _reciprocal_rank_fusion with the two lists and weights
+    document_lists = [fused_docs, reranked_docs]
+    fused_result_docs = _reciprocal_rank_fusion(document_lists, weights=list(weights))
+
+    # Build chunk metadata from both lists (same O(total entries) pass as fuse_signal_lists)
+    chunk_meta: dict[str, dict] = {}
+    for rank, entry in enumerate(fused, start=1):
+        meta = chunk_meta.setdefault(
+            entry.chunk_id, {"ranks": {}, "excerpt": "", "rel_path": "", "token_estimate": 0}
+        )
+        if "fused" not in meta["ranks"]:
+            meta["ranks"]["fused"] = rank
+        if not meta["excerpt"] and entry.excerpt:
+            meta["excerpt"] = entry.excerpt
+        if not meta["rel_path"] and entry.rel_path:
+            meta["rel_path"] = entry.rel_path
+        if not meta["token_estimate"] and entry.token_estimate:
+            meta["token_estimate"] = entry.token_estimate
+
+    for rank, entry in enumerate(reranked, start=1):
+        meta = chunk_meta.setdefault(
+            entry.chunk_id, {"ranks": {}, "excerpt": "", "rel_path": "", "token_estimate": 0}
+        )
+        if "cross_encoder" not in meta["ranks"]:
+            meta["ranks"]["cross_encoder"] = rank
+        if not meta["excerpt"] and entry.excerpt:
+            meta["excerpt"] = entry.excerpt
+        if not meta["rel_path"] and entry.rel_path:
+            meta["rel_path"] = entry.rel_path
+        if not meta["token_estimate"] and entry.token_estimate:
+            meta["token_estimate"] = entry.token_estimate
+
+    # Unwrap Document results into FusedRankEntry (same pattern as fuse_signal_lists)
+    final_entries: list[FusedRankEntry] = []
+    for fused_doc in fused_result_docs:
+        chunk_id = fused_doc.id
+        fused_score = float(fused_doc.score or 0.0)
+        meta = chunk_meta.get(
+            chunk_id, {"ranks": {}, "excerpt": "", "rel_path": "", "token_estimate": 0}
+        )
+
+        final_entries.append(
+            FusedRankEntry(
+                chunk_id=chunk_id,
+                rel_path=meta["rel_path"],
+                fused_score=fused_score,
+                per_signal_ranks=meta["ranks"],
+                excerpt=meta["excerpt"],
+                token_estimate=meta["token_estimate"],
+            )
+        )
+
+    # Sort descending by fused_score (same fix as rrf_fusion.py:512)
+    final_entries.sort(key=lambda e: e.fused_score, reverse=True)
+    return final_entries
 
 
 async def retrieve_rrf_fusion(
@@ -670,16 +1038,33 @@ async def retrieve_rrf_fusion(
     # Fuse all 4 signals via RRF
     fused = fuse_signal_lists([bm25_signal, graph_signal, module_signal, category_signal])
 
-    # Call cross-encoder reranking (CS-254) — gated by the global GPU Reranker
+    # Call cross-encoder reranking (CS-254) with 1-hop expansion (CS-256) — gated by the global GPU Reranker
     # toggle (Settings). Off by default; user must explicitly opt in. Runs in
     # VRAM-sized batches (see recommended_rerank_batch_size) since the model joins
     # ALL passages in one call into a single shared sequence, not pairwise.
+    final = []
     if await is_gpu_reranker_enabled():
         _, vram_gb = detect_gpu()
         batch_size = recommended_rerank_batch_size(vram_gb)
-        reranked, reranker_status = _rerank_in_batches(
-            query, fused, chunk_content_by_id, batch_size
+
+        # CS-256: Function-level 1-hop expansion
+        target = _rerank_coverage_target(len(fused))
+        seed_pool = fused[:target]
+        expansion_cap = recommended_rerank_batch_size(vram_gb)  # Reuse VRAM-scaled ceiling for OOM-safety
+        expansion_candidates = await _expand_function_level_1hop(
+            snapshot_id, seed_pool, symbol_index, all_rows_dicts, expansion_cap
         )
+
+        # Build expanded pool = fused[:target] + expansion (no re-truncation via _rerank_coverage_target)
+        expanded_pool = seed_pool + expansion_candidates
+
+        # Rerank the expanded pool (via new _rerank_pool_in_batches, avoiding the double-coverage-target footgun)
+        reranked, reranker_status = _rerank_pool_in_batches(
+            query, expanded_pool, chunk_content_by_id, batch_size
+        )
+
+        # CS-256: Final RRF-fuse of fused_rank (0.6) and cross_encoder_rank (0.4)
+        final = _fuse_final_ranking(fused, reranked, weights=(0.6, 0.4))
     else:
         reranked, reranker_status = [], "disabled"
 
@@ -694,4 +1079,101 @@ async def retrieve_rrf_fusion(
         fused=fused,
         reranked=reranked,
         reranker_status=reranker_status,
+        final=final,
+    )
+
+
+async def retrieve_rrf_fusion_as_bundle(
+    snapshot_id: str,
+    query: str,
+    section: RetrievalSection,
+    budget: int,
+    mode: RetrievalMode = RetrievalMode.HYBRID,
+    min_confidence: float | None = None,
+) -> RetrievalBundle:
+    """Run RRF multi-signal fusion (+ CS-254 cross-encoder + CS-256 1-hop-expand/final-fuse
+    when the GPU reranker is enabled) and adapt it into the agent-compatible
+    RetrievalBundle interface — mirrors retrieve_two_stage_as_bundle's shape exactly
+    so callers (RetrievalService.retrieve) don't need to know which pipeline ran.
+
+    Uses `final` (the post-expansion, post-rerank, RRF-refused ranking) when the
+    cross-encoder ran; falls back to the plain 4-signal `fused` list when it didn't
+    (no GPU / toggle off) — same graceful-degradation shape as the debug bundle.
+
+    Unlike the debug bundle (deliberately unbounded, "no budget cap"), this applies
+    real token-budget cropping, matching two-stage's _rank_and_budget convention,
+    since this path feeds real LLM context windows.
+    """
+    bundle = await retrieve_rrf_fusion(snapshot_id, query, section, min_confidence=min_confidence)
+    ranked_entries = bundle.final if bundle.final else bundle.fused
+
+    # Crop to budget (token_estimate running sum), same simple-loop convention as
+    # two_stage_retrieval._rank_and_budget's non-native fallback path.
+    cropped: list[FusedRankEntry] = []
+    used_tokens = 0
+    for entry in ranked_entries:
+        tok = entry.token_estimate or 1
+        if used_tokens + tok > budget and cropped:
+            continue
+        cropped.append(entry)
+        used_tokens += tok
+
+    # chunk_index isn't carried on FusedRankEntry -- look it up for just the cropped
+    # chunk_ids rather than adding a new field that would ripple through every
+    # debug-panel type/UI consumer.
+    chunk_index_by_id: dict[str, int] = {}
+    if cropped:
+        db = get_db()
+        chunk_ids = [e.chunk_id for e in cropped]
+        placeholders = ",".join("?" for _ in chunk_ids)
+        async with db.execute(
+            f"SELECT id, chunk_index FROM retrieval_chunks WHERE snapshot_id=? AND id IN ({placeholders})",
+            (snapshot_id, *chunk_ids),
+        ) as cur:
+            rows = await cur.fetchall()
+        chunk_index_by_id = {r["id"]: r["chunk_index"] for r in rows}
+
+    evidences = [
+        RetrievalEvidence(
+            chunk_id=e.chunk_id,
+            rel_path=e.rel_path,
+            chunk_index=chunk_index_by_id.get(e.chunk_id, 0),
+            reason_codes=[f"rrf-{name}" for name in e.per_signal_ranks] or ["rrf-fusion"],
+            score=e.fused_score,
+            token_estimate=e.token_estimate,
+            excerpt=e.excerpt,
+        )
+        for e in cropped
+    ]
+
+    quality = None
+    if cropped:
+        terms = _query_terms(query)
+        ranked_chunks = [
+            RankedChunk(
+                chunk_id=e.chunk_id,
+                rel_path=e.rel_path,
+                chunk_index=chunk_index_by_id.get(e.chunk_id, 0),
+                score=e.fused_score,
+                chunk_type="block",
+                bm25_component=0.0,
+                symbol_bonus=0.0,
+                module_bonus=0.0,
+                centrality_bonus=0.0,
+                token_estimate=e.token_estimate,
+                excerpt=e.excerpt,
+            )
+            for e in cropped
+        ]
+        quality = compute_retrieval_quality(terms, ranked_chunks, cropped[0].fused_score)
+
+    return RetrievalBundle(
+        snapshot_id=snapshot_id,
+        mode=mode,
+        section=section,
+        query=query,
+        budget_tokens=budget,
+        used_tokens=used_tokens,
+        evidences=evidences,
+        quality=quality,
     )

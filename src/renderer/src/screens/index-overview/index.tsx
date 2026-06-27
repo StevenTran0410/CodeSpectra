@@ -88,6 +88,23 @@ function buildQueryComparisonCsv(
         )
       })
     }
+
+    if (rrfFusionBundle.final && rrfFusionBundle.final.length > 0) {
+      rrfFusionBundle.final.slice(0, QUERY_CSV_MAX_ROWS).forEach((entry, i) => {
+        const details = Object.entries(entry.per_signal_ranks)
+          .map(([name, rank]) => `${name}=#${rank}`)
+          .join(' ')
+        rows.push(
+          [
+            'final_ranked',
+            String(i + 1),
+            csvEscape(entry.rel_path),
+            entry.fused_score.toFixed(4),
+            csvEscape(details),
+          ].join(',')
+        )
+      })
+    }
   }
 
   return rows.join('\n')
@@ -828,19 +845,16 @@ export default function IndexOverviewScreen(): React.ReactElement {
                     setRetrievalCompare(null)
                     try {
                       await window.api.retrieval.buildIndex(snapshotId, false)
-                      // Wired to RRF fusion instead of the legacy two-stage retrieve()
-                      // for this debug button specifically -- the actual production
-                      // Ask Mode/Deep Research path (RetrievalService.retrieve()) is
-                      // left untouched, since RRF still has a known open weakness
-                      // (magnitude-blindness on dominant-signal queries) pending CS-254's
-                      // reranker. This button is for comparing RRF's shape, not a
-                      // claim that RRF has replaced production retrieval.
+                      // Same call as the "Run RRF fusion" button below -- shares the
+                      // full per-signal breakdown panel (rrfFusionBundle) so both
+                      // buttons show identical detail, not just this summary view.
                       const out = await window.api.retrieval.retrieveRrfFusion({
                         snapshot_id: snapshotId,
                         query: retrievalQuery.trim(),
                         section: retrievalSection,
                       })
                       setPrimaryRrfBundle(out)
+                      setRrfFusionBundle(out)
                     } catch (err) {
                       setError(toErrorMessage(err))
                     } finally {
@@ -1071,6 +1085,13 @@ export default function IndexOverviewScreen(): React.ReactElement {
                       Cross-Encoder Reranked Results — {rrfFusionBundle.reranked?.length ?? 0} entries
                     </summary>
                     <RerankedPanel entries={rrfFusionBundle.reranked ?? []} status={rrfFusionBundle.reranker_status} />
+                  </details>
+                  <details open className="border border-zinc-800 rounded">
+                    <summary className="px-2 py-1 text-[11px] text-zinc-400 cursor-pointer hover:text-zinc-200">
+                      Final Ranked Results — {rrfFusionBundle.final?.length ?? 0} entries
+                      <span className="text-zinc-600"> (CS-256: 1-hop expansion + fused_rank/cross_encoder_rank RRF-fuse, 0.6/0.4)</span>
+                    </summary>
+                    <RrfFusedPanel entries={rrfFusionBundle.final ?? []} />
                   </details>
                 </div>
               )}

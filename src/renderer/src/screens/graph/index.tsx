@@ -8,6 +8,7 @@ import {
   MarkerType,
   type Node,
   type Edge,
+  type NodeChange,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import dagre from '@dagrejs/dagre'
@@ -904,10 +905,38 @@ export default function GraphScreen(): React.ReactElement {
     return buildFlowGraph(cappedData, nodeIndex, selectedNode, neighborSet, cycleNodes, impactState.active ? impactState.result : null)
   }, [graphData, nodeIndex, selectedNode, neighborData, impactState.active, impactState.result])
 
-  const nodes = useMemo(() => {
+  const layoutNodes = useMemo(() => {
     if (rawNodes.length === 0) return []
     return layoutMode === 'cluster' ? applyForceClusterLayout(rawNodes, edges) : applyDagreLayout(rawNodes, edges)
   }, [rawNodes, edges, layoutMode])
+
+  // User-dragged positions override the auto-layout's computed position, keyed by
+  // node id. Cleared whenever layoutMode changes so switching layouts re-lays-out
+  // fresh instead of keeping stale drags from a different algorithm.
+  const [manualPositions, setManualPositions] = useState<Record<string, { x: number; y: number }>>({})
+  useEffect(() => {
+    setManualPositions({})
+  }, [layoutMode])
+
+  const nodes = useMemo(() => {
+    if (Object.keys(manualPositions).length === 0) return layoutNodes
+    return layoutNodes.map((node) =>
+      manualPositions[node.id] ? { ...node, position: manualPositions[node.id] } : node
+    )
+  }, [layoutNodes, manualPositions])
+
+  const onNodesChange = useCallback((changes: NodeChange[]) => {
+    setManualPositions((prev) => {
+      let next = prev
+      for (const change of changes) {
+        if (change.type === 'position' && change.position) {
+          if (next === prev) next = { ...prev }
+          next[change.id] = change.position
+        }
+      }
+      return next
+    })
+  }, [])
 
   const fitViewOptions = { padding: 0.1 }
 
@@ -1032,6 +1061,8 @@ export default function GraphScreen(): React.ReactElement {
             nodes={nodes}
             edges={edges}
             onNodeClick={onNodeClick}
+            onNodesChange={onNodesChange}
+            nodesDraggable
             fitView
             fitViewOptions={fitViewOptions}
             minZoom={0.05}

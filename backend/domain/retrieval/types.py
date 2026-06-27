@@ -228,6 +228,7 @@ class RrfFusionBundle(BaseModel):
     fused: list[FusedRankEntry]
     reranked: list[RerankedEntry] = Field(default_factory=list)
     reranker_status: Literal["ok", "no_gpu", "model_load_failed", "disabled"] = "ok"
+    final: list[FusedRankEntry] = Field(default_factory=list)
 
 
 class RrfFusionRequest(BaseModel):

@@ -595,7 +595,31 @@ class RetrievalService:
 
         budget = _SECTION_BUDGETS[req.section]
 
-        # Delegate to 2-stage pipeline (CS-203); fall back to legacy single-pass on error.
+        # Delegate to RRF fusion (CS-252/253/254/256: 4-signal fuse + cross-encoder
+        # rerank + 1-hop expansion, GPU-gated with graceful degradation to plain
+        # fusion when no GPU) -- promoted to primary production path once CS-256
+        # closed RRF's remaining known weakness (magnitude-blindness on
+        # dominant-signal queries). Fall back to the 2-stage pipeline (CS-203) on
+        # error, then to legacy single-pass below if that also fails.
+        try:
+            from .rrf_fusion import retrieve_rrf_fusion_as_bundle
+
+            return await retrieve_rrf_fusion_as_bundle(
+                snapshot_id=req.snapshot_id,
+                query=req.query,
+                section=req.section,
+                budget=budget,
+                mode=req.mode,
+                min_confidence=req.min_confidence,
+            )
+        except Exception:
+            logger.warning(
+                "[retrieve] RRF fusion pipeline failed for snapshot=%s query=%r — falling back to 2-stage",
+                req.snapshot_id,
+                req.query[:60],
+                exc_info=True,
+            )
+
         try:
             from .two_stage_retrieval import retrieve_two_stage_as_bundle
 
