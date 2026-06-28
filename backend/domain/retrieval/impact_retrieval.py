@@ -14,7 +14,7 @@ from shared.logger import logger
 
 from domain.qa.graph_queries import get_impact_cone, trace_call_chain, ImpactResult, TraceStep
 from domain.retrieval.two_stage_retrieval import _load_graph_context, _rank_and_budget, _get_native
-from domain.retrieval.bm25_scorer import BM25Scorer, _load_native_bm25
+from domain.retrieval.bm25_scorer import BM25Scorer, _load_native_bm25, _query_terms
 from domain.retrieval.types import ImpactRankedChunk, ImpactRetrievalBundle, CommunityImpact
 
 _WORD = re.compile(r"[A-Za-z0-9_]+")
@@ -193,17 +193,6 @@ def _build_affected_communities(
             member_count=member_count,
             hub_paths=hub_paths[:5],
         ))
-    return out
-
-
-def _query_terms(q: str) -> list[str]:
-    terms = [w.lower() for w in _WORD.findall(q) if len(w) > 1]
-    seen: set[str] = set()
-    out: list[str] = []
-    for t in terms:
-        if t not in seen:
-            seen.add(t)
-            out.append(t)
     return out
 
 

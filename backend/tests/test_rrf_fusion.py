@@ -14,21 +14,18 @@ import pytest
 from haystack import Document
 from haystack.utils.misc import _reciprocal_rank_fusion
 
-from unittest.mock import patch
-
-from domain.retrieval.rrf_fusion import (
+from domain.retrieval.signal_builders import (
     _CAPPED_SUM_CAP,
     _best_chunk_per_file,
     _load_confidence_weighted_edges,
-    _rerank_coverage_target,
-    _rerank_in_batches,
     _symbol_overlap_fallback,
     build_bm25_rank_list,
     build_category_hint_rank_list,
     build_graph_confidence_rank_list,
     build_module_proximity_rank_list,
-    fuse_signal_lists,
 )
+from domain.retrieval.graph_signal import _rerank_coverage_target
+from domain.retrieval.rrf_fusion import fuse_signal_lists
 from domain.retrieval.types import FusedRankEntry, RerankedEntry, RetrievalSection, SignalRankEntry, StageCandidate
 from infrastructure.db.database import get_db
 from shared.utils import new_id
@@ -1094,64 +1091,6 @@ class TestRerankCoverageTarget:
         assert _rerank_coverage_target(100) == 100
 
 
-class TestRerankInBatches:
-    def test_batches_respect_batch_size_and_merge_sorted(self):
-        """25 fused entries, batch_size=10 -> 3 calls (10/10/5), merged + sorted
-        by rerank_score descending regardless of which batch scored highest."""
-        fused = [_fused_entry(i, score=100 - i) for i in range(25)]
-
-        call_batches: list[list[FusedRankEntry]] = []
-
-        def fake_rerank(query, batch, chunk_content_by_id, rank_offset=0):
-            call_batches.append(batch)
-            reranked = [
-                RerankedEntry(
-                    chunk_id=entry.chunk_id,
-                    rel_path=entry.rel_path,
-                    fused_score=entry.fused_score,
-                    # Give the LAST entry of each batch the highest score, to prove
-                    # final ordering comes from the merge-sort, not batch order.
-                    rerank_score=float(idx),
-                    fused_rank=idx + 1 + rank_offset,
-                    excerpt=entry.excerpt,
-                    token_estimate=entry.token_estimate,
-                )
-                for idx, entry in enumerate(batch)
-            ]
-            return reranked, "ok"
-
-        with patch("domain.retrieval.rrf_fusion.rerank_fused_entries", side_effect=fake_rerank):
-            reranked, status = _rerank_in_batches(
-                "query", fused, chunk_content_by_id={}, batch_size=10
-            )
-
-        assert status == "ok"
-        assert len(call_batches) == 3
-        assert [len(b) for b in call_batches] == [10, 10, 5]
-
-        # fused_rank must reflect position in the ORIGINAL list, not restart per batch.
-        seen_ranks = {r.fused_rank for r in reranked}
-        assert seen_ranks == set(range(1, 26)), "every original position must appear exactly once"
-
-        # Output must be sorted by rerank_score descending (merge-sort across batches).
-        scores = [r.rerank_score for r in reranked]
-        assert scores == sorted(scores, reverse=True)
-
-    def test_propagates_non_ok_status_and_stops(self):
-        fused = [_fused_entry(i, score=100 - i) for i in range(15)]
-
-        def fake_rerank(query, batch, chunk_content_by_id, rank_offset=0):
-            return [], "no_gpu"
-
-        with patch("domain.retrieval.rrf_fusion.rerank_fused_entries", side_effect=fake_rerank):
-            reranked, status = _rerank_in_batches(
-                "query", fused, chunk_content_by_id={}, batch_size=10
-            )
-
-        assert status == "no_gpu"
-        assert reranked == []
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Test Class G: CS-256 Function-Level 1-Hop Expansion + Final RRF-Fuse
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1162,7 +1101,7 @@ class TestResolveSymbolForChunk:
 
     def test_resolve_symbol_exact_overlap(self):
         """Chunk lines 10-20 contains symbol at lines 12-18 -> return the symbol name."""
-        from domain.retrieval.rrf_fusion import _resolve_symbol_for_chunk
+        from domain.retrieval.graph_signal import _resolve_symbol_for_chunk
 
         all_rows_dicts = [
             {
@@ -1183,7 +1122,7 @@ class TestResolveSymbolForChunk:
 
     def test_resolve_symbol_no_match(self):
         """Chunk at lines 10-20, symbol at lines 30-40 -> no overlap -> None."""
-        from domain.retrieval.rrf_fusion import _resolve_symbol_for_chunk
+        from domain.retrieval.graph_signal import _resolve_symbol_for_chunk
 
         all_rows_dicts = [
             {
@@ -1204,7 +1143,7 @@ class TestResolveSymbolForChunk:
 
     def test_resolve_symbol_chunk_not_found(self):
         """Query chunk_id that doesn't exist -> None."""
-        from domain.retrieval.rrf_fusion import _resolve_symbol_for_chunk
+        from domain.retrieval.graph_signal import _resolve_symbol_for_chunk
 
         all_rows_dicts = [
             {"id": "chunk_1", "rel_path": "file.py", "start_line": 10, "end_line": 20}
@@ -1220,7 +1159,7 @@ class TestResolveChunkForSymbol:
 
     def test_resolve_chunk_exact_overlap(self):
         """Symbol at lines 12-18 in file.py, chunk at lines 10-20 -> return the chunk."""
-        from domain.retrieval.rrf_fusion import _resolve_chunk_for_symbol
+        from domain.retrieval.graph_signal import _resolve_chunk_for_symbol
 
         all_rows_dicts = [
             {
@@ -1242,7 +1181,7 @@ class TestResolveChunkForSymbol:
 
     def test_resolve_chunk_no_match(self):
         """Symbol at lines 30-40, no chunk overlaps -> None."""
-        from domain.retrieval.rrf_fusion import _resolve_chunk_for_symbol
+        from domain.retrieval.graph_signal import _resolve_chunk_for_symbol
 
         all_rows_dicts = [
             {"id": "chunk_1", "rel_path": "file.py", "start_line": 10, "end_line": 20}
@@ -1434,8 +1373,8 @@ class TestExpansionAndFinalFuseRegressionWithFixture:
         """Construct a scenario where the target file ranks lower in fused, but expansion
         pulls in a calling chunk that the cross-encoder ranks highly, allowing RRF to
         boost the target file to #1 in the final combined ranking."""
+        from domain.retrieval.graph_signal import _expand_function_level_1hop
         from domain.retrieval.rrf_fusion import (
-            _expand_function_level_1hop,
             _fuse_final_ranking,
             _rerank_pool_in_batches,
         )

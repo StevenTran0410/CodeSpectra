@@ -60,9 +60,7 @@ def _check_gpu_available() -> bool:
 
 def release_gpu_cache() -> None:
     """Return PyTorch's CUDA caching-allocator pool to the driver. PyTorch holds
-    freed tensors in a pool for fast reuse rather than releasing VRAM immediately
-    — across several sequential batches (see rrf_fusion._rerank_in_batches) this
-    lets the watermark climb monotonically instead of staying flat per-batch.
+    freed tensors in a pool for fast reuse rather than releasing VRAM immediately.
     Call between batches, not within a single rerank call (where reuse is wanted).
     Never raises — a no-op if torch/CUDA aren't available."""
     try:
@@ -76,43 +74,20 @@ def release_gpu_cache() -> None:
 
 # Reserved VRAM (GB) for model weights + CUDA context + typical desktop GPU usage
 # (compositor, browser GPU process, etc.) before any budget is left for reranking.
-# Calibrated against a real measurement: loading jina-reranker-v3 (4-bit) alone used
-# ~5.36GB on an otherwise-idle 12GB card; rounded up slightly for desktop overhead.
+# Conservative estimate for model load overhead.
 _RESERVED_VRAM_GB = 3.5
 
 # Worst case: every passage gets truncated up to _MAX_SEQ_LENGTH chars, ~4 chars/token.
 _TOKENS_PER_CANDIDATE_WORST_CASE = _MAX_SEQ_LENGTH / 4
 
-# Empirical quadratic-attention-memory constant (GB per token^2), derived from a real
-# OOM: reranking ~100 candidates (each up to _MAX_SEQ_LENGTH chars => ~204,800 tokens
-# combined) attempted a 50GB allocation on a 12GB card. This is a single data point,
-# not a calibrated model — treat as a rough, deliberately conservative estimate, and
-# re-derive if real testing shows the recommended top_n still OOMs or is too low.
+# Quadratic-attention-memory constant (GB per token^2)
 _QUADRATIC_MEM_CONSTANT_GB_PER_TOKEN2 = 50.0 / (100 * _TOKENS_PER_CANDIDATE_WORST_CASE) ** 2
 
 _MIN_RERANK_TOP_N = 3
-_MAX_RERANK_TOP_N = 30  # per-batch ceiling regardless of VRAM, until real testing validates higher
-_SAFETY_FACTOR = 0.5  # only budget half of the "free after reserved" VRAM, given the above is approximate
-
+_MAX_RERANK_TOP_N = 30  # per-batch ceiling regardless of VRAM
+_SAFETY_FACTOR = 0.85  
 
 def recommended_rerank_batch_size(vram_gb: float | None) -> int:
-    """How many fused candidates are safe to feed into the cross-encoder reranker
-    in a SINGLE call, scaled to the detected GPU's VRAM. The model joins query +
-    ALL candidate passages into one sequence (not pairwise), so attention memory
-    grows quadratically with the combined token count — doubling VRAM only
-    safely buys ~sqrt(2)x more candidates per call, not 2x.
-
-    This is a per-batch limit, not a total cap — callers reranking more candidates
-    than this should run multiple sequential batches (see retrieve_rrf_fusion).
-    An empirical check (see test_pointwise_vs_listwise.py-style experiment) found
-    cross-batch score deltas for the same passage were small (~0.01-0.04) relative
-    to the relevant/irrelevant score gap (~0.5), so merge-sorting scores across
-    batches is a reasonable approximation of a single full-pool rerank — not an
-    exact equivalent, since the model's listwise design does let documents in the
-    same call influence each other's embeddings.
-
-    Returns _MIN_RERANK_TOP_N if vram_gb is None/non-positive (caller should
-    already have gated on GPU availability before reaching this point)."""
     if not vram_gb or vram_gb <= 0:
         return _MIN_RERANK_TOP_N
 
@@ -158,7 +133,7 @@ def load_reranker() -> bool:
             device_map="cuda",
         )
 
-        logger.info("[reranker] Model loaded: jinaai/jina-reranker-v3 (4-bit quantization)")
+        logger.debug("[reranker] Model loaded: jinaai/jina-reranker-v3 (4-bit quantization)")
         return True
 
     except Exception as e:
@@ -226,7 +201,7 @@ def rerank_fused_entries(
         passages.append(passage)
 
     total_chars = sum(len(p) for p in passages)
-    logger.info(
+    logger.debug(
         "[reranker] Reranking %d candidates (~%d chars, ~%d tokens est.) for query: %r",
         len(passages),
         total_chars,
@@ -246,7 +221,7 @@ def rerank_fused_entries(
         )
         return [], "model_load_failed"
 
-    logger.info("[reranker] Reranked %d candidates in %.1fs", len(passages), time.monotonic() - t0)
+    logger.debug("[reranker] Reranked %d candidates in %.1fs", len(passages), time.monotonic() - t0)
 
     # Build RerankedEntry list, preserving original fused metadata
     reranked = []

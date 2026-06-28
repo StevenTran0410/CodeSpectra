@@ -76,10 +76,8 @@ _AST_LANGS: frozenset[str] = frozenset(
 _ast_chunker = ASTChunker()
 
 _SECTION_BUDGETS: dict[RetrievalSection, int] = {
-    # Increased from ~2K to 6-10K.
-    # Modern LLMs: 128K-200K context; even local 8B models have 8K+.
-    # Cursor sends 8K-20K code tokens per query — our old 2600 was severe
-    # under-use. Budget = tokens reserved for evidence only (system prompt +
+    # Modern LLMs have large context windows (128K-200K tokens), so use larger
+    # evidence budgets. Budget = tokens reserved for evidence only (system prompt +
     # user preamble add ~800 on top).
     RetrievalSection.ARCHITECTURE: 14_000,
     RetrievalSection.CONVENTIONS: 10_000,
@@ -261,7 +259,7 @@ def _maybe_expand_to_boundary(
 
 
 def _compute_content_hash(text: str) -> str:
-    """Compute MD5 hash of first 4KB of content for cheap change detection (CS-229)."""
+    """Compute MD5 hash of first 4KB of content for cheap change detection."""
     prefix = text[:4096]
     return hashlib.md5(prefix.encode("utf-8", errors="replace")).hexdigest()
 
@@ -342,7 +340,7 @@ async def _apply_incremental_idf_update(
         ), prior_index_version + 1
 
     # Incremental IDF: only reuse prior IDF if no chunks changed (rare case)
-    logger.info(
+    logger.debug(
         "[build_index] Incremental path: %.1f%% changed (%d/%d chunks)",
         change_ratio * 100,
         len(changed_chunk_ids),
@@ -352,12 +350,12 @@ async def _apply_incremental_idf_update(
     if not changed_chunk_ids:
         # No changed chunks — reuse prior IDF (optimization for fast re-indexes with zero changes)
         new_idf = prior_idf
-        logger.info("[build_index] No changed chunks; reusing prior IDF")
+        logger.debug("[build_index] No changed chunks; reusing prior IDF")
     else:
         # Some chunks changed — full rebuild is safer than tracking deltas
         # (delta tracking requires matching old→new chunk positions, which is error-prone)
         new_idf = BM25Scorer.build_idf(tokenized_corpus, len(tokenized_corpus))
-        logger.info("[build_index] Chunks changed; rebuilding IDF from corpus")
+        logger.debug("[build_index] Chunks changed; rebuilding IDF from corpus")
 
     return new_idf, prior_index_version + 1
 
@@ -397,7 +395,7 @@ class RetrievalService:
                 ) as cur:
                     bm25_exists = await cur.fetchone()
                 if bm25_exists:
-                    logger.info(
+                    logger.debug(
                         "[retrieval] snapshot %s already indexed (%d chunks), skipping",
                         req.snapshot_id,
                         row["c"],
@@ -409,7 +407,7 @@ class RetrievalService:
                         generated_at="cached",
                     )
                 # BM25 stats missing — rebuild from existing chunks without re-chunking.
-                logger.info(
+                logger.debug(
                     "[retrieval] snapshot %s has %d chunks but no BM25 stats — rebuilding stats only",
                     req.snapshot_id,
                     row["c"],
@@ -595,12 +593,7 @@ class RetrievalService:
 
         budget = _SECTION_BUDGETS[req.section]
 
-        # Delegate to RRF fusion (CS-252/253/254/256: 4-signal fuse + cross-encoder
-        # rerank + 1-hop expansion, GPU-gated with graceful degradation to plain
-        # fusion when no GPU) -- promoted to primary production path once CS-256
-        # closed RRF's remaining known weakness (magnitude-blindness on
-        # dominant-signal queries). Fall back to the 2-stage pipeline (CS-203) on
-        # error, then to legacy single-pass below if that also fails.
+        # Try RRF fusion first, fall back to 2-stage, then legacy single-pass on error.
         try:
             from .rrf_fusion import retrieve_rrf_fusion_as_bundle
 
@@ -639,7 +632,7 @@ class RetrievalService:
                 exc_info=True,
             )
 
-        logger.info("[retrieve] using fallback single-pass for snapshot=%s", req.snapshot_id)
+        logger.debug("[retrieve] using fallback single-pass for snapshot=%s", req.snapshot_id)
         category_hints = _SECTION_CATEGORY_HINTS[req.section]
 
         async with get_db().execute(

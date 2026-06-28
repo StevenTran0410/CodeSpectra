@@ -11,7 +11,7 @@ from shared.logger import logger
 
 from .bm25_scorer import CHUNK_TYPE_WEIGHT, BM25Scorer, _query_terms
 from .quality import compute_retrieval_quality
-from .service import _CHUNK_FULL_COLS
+from .service import _CHUNK_FULL_COLS, _SECTION_CATEGORY_HINTS
 from .types import (
     RankedChunk,
     RetrievalBundle,
@@ -39,10 +39,10 @@ _SYMBOL_OVERLAP_BONUS: float = 1.5
 _MODULE_PROXIMITY_BONUS: float = 1.3
 # Flat binary bonus (not a decay function despite the "MAX" name) -- see _compute_chunk_score's
 # cent_bonus assignment below. rrf_fusion.py's build_graph_confidence_rank_list applies its own
-# separate flat centrality_boost (1.5x); the two are intentionally independent (CS-255): one
+# separate flat centrality_boost (1.5x); the two are intentionally independent: one
 # scores a single chunk's BM25-based candidacy, the other scores a file's confidence-weighted
 # rank-fusion signal -- same underlying "is this file structurally central" concept, applied to
-# two different scoring mechanisms (additive score vs RRF input list), not duplicated logic.
+# two different scoring mechanisms (additive score vs RRF input list).
 _CENTRALITY_BONUS_MAX: float = 2.6
 
 # Hard floor on rerank final score — chunks below this are dropped entirely
@@ -54,18 +54,9 @@ _CENTRALITY_BONUS_MAX: float = 2.6
 # so callers never get an empty bundle when some scoring was possible.
 _RERANK_MIN_SCORE: float = 10.0
 
-# Mirrors service.py _SECTION_CATEGORY_HINTS — keep in sync if sections change.
-_SECTION_CATEGORY_HINTS: dict[RetrievalSection, set[str]] = {
-    RetrievalSection.ARCHITECTURE:    {"source", "config", "infra"},
-    RetrievalSection.CONVENTIONS:     {"source", "test", "config"},
-    RetrievalSection.FEATURE_MAP:     {"source", "docs"},
-    RetrievalSection.IMPORTANT_FILES: {"source", "config", "infra"},
-    RetrievalSection.GLOSSARY:        {"source", "docs"},
-    RetrievalSection.QA:              {"source", "config", "docs"},
-}
 _CATEGORY_HINT_BONUS: float = 1.4
 
-# Section-specific score cutoffs (absolute, relative) — CS-227
+# Section-specific score cutoffs (absolute, relative)
 _SECTION_SCORE_FLOOR: dict[RetrievalSection, tuple[float, float]] = {
     RetrievalSection.QA:              (0.5, 0.35),
     RetrievalSection.ARCHITECTURE:    (0.3, 0.15),
