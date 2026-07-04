@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 from api.app import router as app_router
 from api.analysis import router as analysis_router
 from api.consent import router as consent_router
+from api.external import router as external_router
 from api.gpu_reranker import router as gpu_reranker_router
 from api.impact import router as impact_router
 from api.job import router as job_router
@@ -101,6 +102,7 @@ def create_app() -> FastAPI:
     app.include_router(analysis_router, prefix="/api/analysis")
     app.include_router(qa_router, prefix="/api/qa")
     app.include_router(job_router, prefix="/api/job")
+    app.include_router(external_router, prefix="/api/external")
 
     @app.exception_handler(ProviderError)
     async def provider_error_handler(_req: Request, exc: ProviderError) -> JSONResponse:
