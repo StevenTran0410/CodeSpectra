@@ -119,9 +119,16 @@ async def get_traces_for_run(run_id: str) -> list[dict]:
 
 
 async def get_spans_for_trace(trace_id: str) -> list[dict]:
+    """Ordered by rowid (true insertion order == true execution-completion order,
+    since insert_spans_bulk inserts the tracer's captured list in order), NOT by
+    started_at — fast synchronous runs (e.g. FakeLLMClient-driven tests) routinely
+    produce several spans with an IDENTICAL started_at timestamp (observed on
+    Windows, whose wall-clock resolution can be coarser than the actual execution
+    speed), which would make started_at-based ordering silently wrong/unstable.
+    """
     db = get_db()
     async with db.execute(
-        "SELECT * FROM spans WHERE trace_id = ? ORDER BY started_at", (trace_id,)
+        "SELECT * FROM spans WHERE trace_id = ? ORDER BY rowid", (trace_id,)
     ) as cur:
         rows = await cur.fetchall()
     return [dict(row) for row in rows]
@@ -227,3 +234,61 @@ async def delete_dataset_case(case_id: str) -> None:
     await db.execute("DELETE FROM dataset_cases WHERE id = ?", (case_id,))
     await db.commit()
 
+
+async def insert_evaluation(
+    run_id: str,
+    metric_name: str,
+    metric_class: str,
+    *,
+    span_id: str | None = None,
+    trace_id: str | None = None,
+    component_id: str | None = None,
+    score: float | None = None,
+    passed: bool | None = None,
+    details: dict | None = None,
+    evaluator: str | None = None,
+    cost_tokens: int | None = None,
+) -> str:
+    eval_id = new_id()
+    db = get_db()
+    passed_int = int(passed) if passed is not None else None
+    await db.execute(
+        "INSERT INTO evaluations (id, run_id, span_id, trace_id, component_id, "
+        "metric_name, metric_class, score, passed, details_json, evaluator, cost_tokens) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            eval_id,
+            run_id,
+            span_id,
+            trace_id,
+            component_id,
+            metric_name,
+            metric_class,
+            score,
+            passed_int,
+            json.dumps(details or {}),
+            evaluator,
+            cost_tokens,
+        ),
+    )
+    await db.commit()
+    return eval_id
+
+
+async def get_evaluations_for_run(run_id: str) -> list[dict]:
+    db = get_db()
+    async with db.execute(
+        "SELECT * FROM evaluations WHERE run_id = ? ORDER BY rowid", (run_id,)
+    ) as cur:
+        rows = await cur.fetchall()
+    return [dict(row) for row in rows]
+
+
+async def get_evaluations_for_component(run_id: str, component_id: str) -> list[dict]:
+    db = get_db()
+    async with db.execute(
+        "SELECT * FROM evaluations WHERE run_id = ? AND component_id = ? ORDER BY rowid",
+        (run_id, component_id),
+    ) as cur:
+        rows = await cur.fetchall()
+    return [dict(row) for row in rows]

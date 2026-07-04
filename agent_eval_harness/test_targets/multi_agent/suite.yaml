@@ -1,0 +1,174 @@
+# Evaluation suite for T2 (multi_agent) — CS-263 §7
+#
+# Schema matches CS-265 Evaluation Plan format exactly (forward-compatible).
+# Fields: id, component, metric, metric_class, dataset, params, rationale, provenance
+#
+# Role → metric class mapping (CS-260 §3):
+#   input_guard.rule  → classifier
+#   input_guard.llm   → classifier
+#   orchestrator      → assertion + llm_judge
+#   retrieval_agent   → assertion + llm_judge
+#   validator         → classifier + assertion
+#   writer            → llm_judge (faithfulness — the load-bearing correctness metric)
+
+entries:
+  # --- Guard (rule stage): classifier ---
+  - id: guard_rule.classifier
+    component: guard_rule
+    metric: classifier.guard_rule_accuracy
+    metric_class: classifier
+    dataset:
+      ref: t2_guard_v1
+    params:
+      entry_point: "test_targets.multi_agent.components:GuardComponent"
+    rationale: >
+      role=input_guard.rule ⇒ deterministic rule-based classification; sklearn
+      confusion matrix over t2_guard_v1 cases. No LLM call needed.
+    provenance: rule
+
+  # --- Guard (llm stage): classifier ---
+  - id: guard_llm.classifier
+    component: guard_llm
+    metric: classifier.guard_llm_accuracy
+    metric_class: classifier
+    dataset:
+      ref: t2_guard_v1
+    params:
+      entry_point: "test_targets.multi_agent.components:GuardComponent"
+    rationale: >
+      role=input_guard.llm ⇒ LLM-assisted guard stage; same sklearn scoring approach
+      as rule stage. Both guard stages use classifier, not DeepEval (per CS-260 §3).
+    provenance: rule
+
+  # --- Planner: assertions (from System Map constraints) ---
+  # NOTE: component is "worker", not "planner" — the constraint is declared on
+  # planner (it owns the fan-out rule), but the payload size it produces is only
+  # observable in the SPAN THAT RECEIVES IT: worker's own span records
+  # output_json.intents (see test_targets/multi_agent/components.py's
+  # WorkerComponent.run_async: `span.set_content_tag("aeh.output", {"intents": ...})`).
+  # Planner's own span never carries an `intents` key, so pointing this assertion
+  # at "planner" would silently never find anything to check.
+  - id: planner.max_items_per_call
+    component: worker
+    metric: max_items_per_call
+    metric_class: assertion
+    params:
+      limit: 2
+      queries:
+        - "Can I get a refund and also change my shipping address?"
+    rationale: >
+      role=orchestrator ⇒ max_items_per_call constraint from System Map
+      (value=2), verified against worker's span (the receiving side of the call).
+      DEFECT_PLANNER_OVERPACK should make this fail.
+    provenance: rule
+
+  - id: planner.allowed_downstream
+    component: planner
+    metric: allowed_downstream
+    metric_class: assertion
+    params:
+      queries:
+        - "Can I get a refund and also change my shipping address?"
+    rationale: >
+      role=orchestrator ⇒ planner must only fan out to its declared downstream
+      components. allowed list is auto-derived from System Map downstream edges.
+    provenance: rule
+
+  # --- Planner: LLM judge (decomposition coverage via G-Eval) ---
+  - id: planner.decomposition_coverage
+    component: planner
+    metric: geval.decomposition_coverage
+    metric_class: llm_judge
+    params:
+      rubric_text: >
+        Evaluate whether the planner's decomposed intents collectively cover all
+        aspects of the user's query. A score of 1.0 means all query aspects are
+        addressed; 0.0 means none are.
+      queries:
+        - "Can I get a refund and also change my shipping address?"
+    rationale: >
+      role=orchestrator ⇒ decomposition is this component's core contract.
+      G-Eval rubric lives here, not hardcoded in Python.
+    provenance: rule
+
+  # --- Worker: assertions ---
+  - id: worker.max_retries
+    component: worker
+    metric: max_retries
+    metric_class: assertion
+    params:
+      limit: 1
+      queries:
+        - "Can I get a refund and also change my shipping address?"
+    rationale: >
+      role=retrieval_agent ⇒ worker has a max_retries=1 constraint (from System Map).
+      DEFECT_NO_RETRY is tested via retry_on_reject_required, not this assertion.
+    provenance: rule
+
+  - id: worker.no_unnecessary_calls
+    component: worker
+    metric: no_unnecessary_calls
+    metric_class: assertion
+    params:
+      queries:
+        - "Can I get a refund and also change my shipping address?"
+    rationale: >
+      role=retrieval_agent ⇒ every tool result should appear in a later span's input.
+      DEFECT_WRONG_TOOL causes decoy_lookup results to never be reused downstream.
+    provenance: human_added
+
+  # --- Worker retry loop: behavioral assertion ---
+  - id: worker.retry_on_reject_required
+    component: worker
+    metric: retry_on_reject_required
+    metric_class: assertion
+    params:
+      judge_component_id: judge
+      worker_component_id: worker
+      writer_component_id: writer
+      queries:
+        - "Can I get a refund and also change my shipping address?"
+    rationale: >
+      role=retrieval_agent ⇒ when the judge rejects (sufficient=false), the planner
+      must dispatch a second worker call before reaching the writer. DEFECT_NO_RETRY
+      causes this to fail (only one worker span, no retry after rejection).
+    provenance: rule
+
+  # --- Judge: classifier + decision-cost ---
+  - id: judge.classifier
+    component: judge
+    metric: classifier.judge_accuracy
+    metric_class: classifier
+    dataset:
+      ref: t1_sufficiency_v1
+    params:
+      entry_point: "test_targets.multi_agent.components:JudgeComponent"
+    rationale: >
+      role=validator ⇒ judge's sufficiency classification scored against
+      t1_sufficiency_v1. False-pass and false-reject rates included in details.
+    provenance: rule
+
+  # --- Writer: faithfulness (llm_judge via RAGAS — load-bearing correctness metric) ---
+  - id: writer.faithfulness
+    component: writer
+    metric: ragas.faithfulness
+    metric_class: llm_judge
+    params:
+      queries:
+        - "Can I get a refund and also change my shipping address?"
+    rationale: >
+      role=writer ⇒ faithfulness is the central CS-263 claim: writer must not
+      hallucinate beyond the context it RECEIVED (writer span's input_json), not
+      the full corpus or gold context. DEFECT_WRITER_HALLUCINATE should drop this score.
+    provenance: rule
+
+  - id: writer.answer_relevancy
+    component: writer
+    metric: ragas.answer_relevancy
+    metric_class: llm_judge
+    params:
+      queries:
+        - "Can I get a refund and also change my shipping address?"
+    rationale: >
+      role=writer ⇒ answer should be relevant to the user's original query.
+    provenance: rule

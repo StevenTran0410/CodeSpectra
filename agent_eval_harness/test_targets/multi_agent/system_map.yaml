@@ -37,7 +37,13 @@ components:
         value: 2
         source: "test_targets/multi_agent/components.py:PlannerComponent.MAX_ITEMS_PER_CALL"
     upstream: [guard_llm]
-    downstream: [worker]
+    # Includes judge/writer, not just worker: PlannerComponent is the runtime
+    # "conductor" (see test_targets/multi_agent/README.md's Orchestration
+    # note) — it directly calls worker, judge, AND writer as composed method
+    # calls (Haystack's static DAG can't express the judge-reject -> retry
+    # loop as a graph edge), so all three are genuine runtime children in the
+    # span tree, not just the primary data-flow edge to worker.
+    downstream: [worker, judge, writer]
 
   - id: worker
     role: retrieval_agent

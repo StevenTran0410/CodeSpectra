@@ -6,9 +6,14 @@ already configured there. AEH has no provider/key config of its own.
 """
 from __future__ import annotations
 
+import asyncio
+
 import httpx
 
 from agent_eval_harness.llm.client import LLMMessage, LLMResponse
+
+_MAX_RATE_LIMIT_RETRIES = 3
+_BASE_BACKOFF_SECONDS = 1.0
 
 
 class CodeSpectraProxyClient:
@@ -34,28 +39,45 @@ class CodeSpectraProxyClient:
         temperature: float | None = 0.2,
         json_mode: bool = False,
     ) -> LLMResponse:
-        resp = await self._http.post(
-            f"{self._base_url}/api/external/llm/complete",
-            headers={"Authorization": f"Bearer {self._token}"},
-            json={
-                "provider_id": self._provider_id,
-                "model_id": self._model_id,
-                "messages": [{"role": m.role, "content": m.content} for m in messages],
-                "max_completion_tokens": max_tokens,
-                "temperature": temperature,
-                "json_mode": json_mode,
-            },
-        )
-        resp.raise_for_status()
-        body = resp.json()
-        has_usage = body.get("prompt_tokens") is not None
-        return LLMResponse(
-            content=body["content"],
-            model=body["model_id"],
-            prompt_tokens=body.get("prompt_tokens"),
-            completion_tokens=body.get("completion_tokens"),
-            token_source="measured" if has_usage else "estimated",
-        )
+        """CS-263 §8: modest fan-out needs provider-rate-limit backoff — retries
+        a 429 response up to _MAX_RATE_LIMIT_RETRIES times with exponential
+        backoff before giving up (a non-429 error still fails immediately, and
+        exhausting retries re-raises the last 429 rather than swallowing it)."""
+        last_exc: httpx.HTTPStatusError | None = None
+        for attempt in range(_MAX_RATE_LIMIT_RETRIES + 1):
+            resp = await self._http.post(
+                f"{self._base_url}/api/external/llm/complete",
+                headers={"Authorization": f"Bearer {self._token}"},
+                json={
+                    "provider_id": self._provider_id,
+                    "model_id": self._model_id,
+                    "messages": [{"role": m.role, "content": m.content} for m in messages],
+                    "max_completion_tokens": max_tokens,
+                    "temperature": temperature,
+                    "json_mode": json_mode,
+                },
+            )
+            try:
+                resp.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                if resp.status_code != 429 or attempt == _MAX_RATE_LIMIT_RETRIES:
+                    raise
+                last_exc = exc
+                await asyncio.sleep(_BASE_BACKOFF_SECONDS * (2**attempt))
+                continue
+
+            body = resp.json()
+            has_usage = body.get("prompt_tokens") is not None
+            return LLMResponse(
+                content=body["content"],
+                model=body["model_id"],
+                prompt_tokens=body.get("prompt_tokens"),
+                completion_tokens=body.get("completion_tokens"),
+                token_source="measured" if has_usage else "estimated",
+            )
+
+        # Unreachable (loop either returns or raises), but satisfies type checkers.
+        raise last_exc  # type: ignore[misc]
 
     async def aclose(self) -> None:
         await self._http.aclose()

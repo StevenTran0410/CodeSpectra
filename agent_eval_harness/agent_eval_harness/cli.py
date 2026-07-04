@@ -81,6 +81,29 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     ls_parser = dataset_subparsers.add_parser("ls", help="List all datasets and their summaries")
     ls_parser.add_argument("--data-dir", dest="data_dir", default=None)
 
+    # eval subcommand group
+    eval_parser = subparsers.add_parser("eval", help="Run an evaluation sweep against a target")
+    eval_parser.add_argument(
+        "--target", required=True, help="module:function reference to the target's build_pipeline"
+    )
+    eval_parser.add_argument(
+        "--map", dest="map_path", required=True, help="path to system_map.yaml"
+    )
+    eval_parser.add_argument("--suite", required=True, help="path to suite.yaml")
+    eval_parser.add_argument("--tier", default="auto", choices=["auto", "1", "2"])
+    eval_parser.add_argument("--provider-id", dest="provider_id", default=None)
+    eval_parser.add_argument("--backend-url", dest="backend_url", default=None)
+    eval_parser.add_argument("--backend-token", dest="backend_token", default=None)
+    eval_parser.add_argument("--data-dir", dest="data_dir", default=None)
+    eval_parser.add_argument("--concurrency", type=int, default=4)
+    eval_parser.add_argument("--json", action="store_true")
+
+    # report subcommand group
+    report_parser = subparsers.add_parser("report", help="Print an evaluation report for a run")
+    report_parser.add_argument("--run", dest="run_id", required=True, help="run ID to report on")
+    report_parser.add_argument("--data-dir", dest="data_dir", default=None)
+    report_parser.add_argument("--json", action="store_true")
+
     return parser
 
 
@@ -253,6 +276,77 @@ async def _dataset_command(args: argparse.Namespace) -> int:
         await close_db()
 
 
+async def _eval_command(args: argparse.Namespace) -> int:
+    if args.data_dir:
+        os.environ["AEH_DATA_DIR"] = args.data_dir
+
+    config = AEHConfig.load()
+    provider_id = args.provider_id or config.provider_id
+
+    if provider_id:
+        backend_url = args.backend_url or config.backend_url
+        backend_token = args.backend_token or config.backend_token
+        if not backend_url or not backend_token:
+            raise SystemExit(
+                "--provider-id requires --backend-url/--backend-token (or .aeh/config.yaml)"
+            )
+        llm_client = CodeSpectraProxyClient(
+            backend_url, backend_token, provider_id, config.model_id
+        )
+    else:
+        llm_client = FakeLLMClient(
+            LLMResponse(content="This is a fallback offline demo answer.", model="fake-default")
+        )
+
+    await init_db()
+    try:
+        from agent_eval_harness.metrics.reporting import format_sweep_results, results_to_json
+        from agent_eval_harness.metrics.sweep import run_sweep
+
+        defects = DefectConfig.from_env()
+        active = defects.active_names()
+        print(f"[aeh] eval target={args.target} map={args.map_path} suite={args.suite}")
+        print(f"[aeh] active defects: {', '.join(active) if active else 'none'}")
+
+        sweep_result = await run_sweep(
+            target=args.target,
+            map_path=args.map_path,
+            suite_path=args.suite,
+            llm_client=llm_client,
+            concurrency=args.concurrency,
+            tier=args.tier,
+        )
+
+        if args.json:
+            print(results_to_json(sweep_result.results, sweep_result.run_id))
+        else:
+            print(format_sweep_results(sweep_result.results))
+            if sweep_result.errors:
+                print(f"\n[aeh] {len(sweep_result.errors)} entry error(s):")
+                for err in sweep_result.errors:
+                    print(f"  {err['entry_id']}: {err['error']}")
+
+        print(f"[aeh] eval completed  run_id={sweep_result.run_id}")
+        return 0
+    finally:
+        await close_db()
+
+
+async def _report_command(args: argparse.Namespace) -> int:
+    if args.data_dir:
+        os.environ["AEH_DATA_DIR"] = args.data_dir
+
+    await init_db()
+    try:
+        from agent_eval_harness.metrics.reporting import render_run_report
+
+        report = await render_run_report(args.run_id, as_json=args.json)
+        print(report)
+        return 0
+    finally:
+        await close_db()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_arg_parser()
     args = parser.parse_args(argv)
@@ -260,6 +354,10 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(_run_command(args))
     elif args.command == "dataset":
         return asyncio.run(_dataset_command(args))
+    elif args.command == "eval":
+        return asyncio.run(_eval_command(args))
+    elif args.command == "report":
+        return asyncio.run(_report_command(args))
     parser.error(f"unknown command: {args.command}")
     return 1
 

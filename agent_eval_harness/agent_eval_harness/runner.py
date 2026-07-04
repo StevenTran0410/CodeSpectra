@@ -4,6 +4,7 @@ CS-262/263's job.
 """
 from __future__ import annotations
 
+import asyncio
 import importlib
 from dataclasses import dataclass
 
@@ -17,6 +18,22 @@ from agent_eval_harness.instrumentation.tier2_boundary import BoundaryWrapperAda
 from agent_eval_harness.llm.client import LLMClient
 from agent_eval_harness.mapping.system_map import SystemMap, load_system_map
 from agent_eval_harness.store import repository
+
+# Haystack's tracing.tracer is a process-wide global singleton — HaystackAdapter's
+# attach()/detach() call enable_tracing()/disable_tracing() on it, which mutates
+# that GLOBAL reference, not something scoped per adapter instance. Running two
+# HaystackAdapter-driven execute_run() calls concurrently (e.g. CS-263's sweep
+# runner fanning out multiple suite entries) lets one call's attach() silently
+# steal the global tracer out from under another call still mid-flight, causing
+# spans from unrelated traces to merge into whichever tracer instance happens to
+# be globally active at each await point (confirmed empirically: span counts
+# doubled under concurrency=4 vs concurrency=1 for the same query).
+#
+# Applied to every execute_run() call regardless of tier — Tier-2 doesn't need
+# it (BoundaryWrapperAdapter never touches Haystack's tracer), but serializing
+# it too is a harmless, simple way to avoid a second lock type (asyncio.Lock has
+# no async-compatible no-op counterpart in contextlib — nullcontext is sync-only).
+_EXECUTE_RUN_LOCK = asyncio.Lock()
 
 
 def _resolve_build_pipeline(target: str):
@@ -83,21 +100,22 @@ async def execute_run(
     run_id = await repository.insert_run(target_system_id=system_map.target_system_id)
 
     outcomes: list[RunOutcome] = []
-    adapter.attach()
-    try:
-        for query in queries:
-            trace_id = await repository.insert_trace(run_id, root_input=query)
-            result = await adapter.run(query)
-            await repository.insert_spans_bulk(trace_id, result.spans)
-            await repository.finalize_trace(
-                trace_id, result.final_output, result.total_tokens, result.total_latency_ms
-            )
-            outcomes.append(RunOutcome(run_id=run_id, trace_id=trace_id, trace_result=result))
-    except Exception:
-        await repository.finish_run(run_id, "failed")
-        raise
-    finally:
-        adapter.detach()
+    async with _EXECUTE_RUN_LOCK:
+        adapter.attach()
+        try:
+            for query in queries:
+                trace_id = await repository.insert_trace(run_id, root_input=query)
+                result = await adapter.run(query)
+                await repository.insert_spans_bulk(trace_id, result.spans)
+                await repository.finalize_trace(
+                    trace_id, result.final_output, result.total_tokens, result.total_latency_ms
+                )
+                outcomes.append(RunOutcome(run_id=run_id, trace_id=trace_id, trace_result=result))
+        except Exception:
+            await repository.finish_run(run_id, "failed")
+            raise
+        finally:
+            adapter.detach()
 
     await repository.finish_run(run_id, "completed")
     return outcomes

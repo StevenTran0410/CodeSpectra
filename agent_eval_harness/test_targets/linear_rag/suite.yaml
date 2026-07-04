@@ -1,0 +1,37 @@
+# Evaluation suite for T1 (linear_rag) — CS-263 §7
+#
+# Schema matches CS-265 Evaluation Plan format exactly (forward-compatible).
+# Fields: id, component, metric, metric_class, dataset, params, rationale, provenance
+#
+# Role → metric class mapping (CS-260 §3):
+#   retrieval_agent (retriever) → llm_judge (faithfulness, relevancy from trace)
+#   writer                      → llm_judge (faithfulness/relevancy — T1's primary signal)
+
+entries:
+  # --- Writer: faithfulness & answer relevancy (llm_judge via RAGAS) ---
+  - id: writer.faithfulness
+    component: writer
+    metric: ragas.faithfulness
+    metric_class: llm_judge
+    params:
+      queries:
+        - "What is the company's policy on remote work?"
+        - "How many vacation days do employees get?"
+    rationale: >
+      role=writer ⇒ faithfulness is the core contract: writer must not fabricate
+      facts beyond what its received context contains. retrieved_contexts is built
+      from the writer span's input_json (not the gold), per CS-260's per-component
+      grounding principle.
+    provenance: rule
+
+  - id: writer.answer_relevancy
+    component: writer
+    metric: ragas.answer_relevancy
+    metric_class: llm_judge
+    params:
+      queries:
+        - "What is the company's policy on remote work?"
+    rationale: >
+      role=writer ⇒ answer should be relevant to the query, even under T1's simple
+      retrieval topology.
+    provenance: rule
