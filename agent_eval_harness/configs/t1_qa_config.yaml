@@ -1,0 +1,5 @@
+dataset_name: t1_qa
+corpus_paths:
+  - "test_targets/linear_rag/corpus/*.txt"
+count: 10
+backend: deepeval

@@ -142,3 +142,88 @@ async def count_unmatched_spans(trace_id: str) -> int:
     ) as cur:
         row = await cur.fetchone()
     return row["n"] if row else 0
+
+
+async def insert_dataset_cases_bulk(dataset_id: str, cases: list) -> None:
+    db = get_db()
+    rows = []
+    for case in cases:
+        if hasattr(case, "model_dump"):
+            case_dict = case.model_dump()
+        else:
+            case_dict = case
+
+        cid = case_dict["id"]
+        kind = case_dict["kind"]
+        inp = case_dict["input"]
+        # kind is stored in input_json as {"kind": kind, **input}
+        input_dict = {"kind": kind, **inp}
+        input_json = json.dumps(input_dict)
+
+        expected = case_dict.get("expected")
+        expected_json = json.dumps(expected) if expected is not None else None
+
+        labels = case_dict.get("labels")
+        labels_json = json.dumps(labels) if labels is not None else None
+
+        provenance = case_dict["provenance"]
+        rows.append((cid, dataset_id, input_json, expected_json, labels_json, provenance))
+
+    await db.executemany(
+        "INSERT INTO dataset_cases "
+        "(id, dataset_id, input_json, expected_json, labels_json, provenance) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        rows,
+    )
+    await db.commit()
+
+
+async def get_dataset_cases(dataset_id: str) -> list[dict]:
+    db = get_db()
+    async with db.execute(
+        "SELECT * FROM dataset_cases WHERE dataset_id = ?", (dataset_id,)
+    ) as cur:
+        rows = await cur.fetchall()
+    return [dict(row) for row in rows]
+
+
+async def list_dataset_ids() -> list[dict]:
+    db = get_db()
+    async with db.execute(
+        """
+        SELECT 
+            dataset_id, 
+            COUNT(*) as total_count,
+            SUM(CASE WHEN provenance = 'synthetic' THEN 1 ELSE 0 END) as synthetic_count,
+            SUM(CASE WHEN provenance = 'handwritten' THEN 1 ELSE 0 END) as handwritten_count,
+            SUM(CASE WHEN provenance = 'generated+reviewed' THEN 1 ELSE 0 END) as reviewed_count
+        FROM dataset_cases 
+        GROUP BY dataset_id
+        """
+    ) as cur:
+        rows = await cur.fetchall()
+    return [dict(row) for row in rows]
+
+
+async def update_case_provenance(
+    case_id: str, provenance: str, expected_json: str | None = None
+) -> None:
+    db = get_db()
+    if expected_json is not None:
+        await db.execute(
+            "UPDATE dataset_cases SET provenance = ?, expected_json = ? WHERE id = ?",
+            (provenance, expected_json, case_id),
+        )
+    else:
+        await db.execute(
+            "UPDATE dataset_cases SET provenance = ? WHERE id = ?",
+            (provenance, case_id),
+        )
+    await db.commit()
+
+
+async def delete_dataset_case(case_id: str) -> None:
+    db = get_db()
+    await db.execute("DELETE FROM dataset_cases WHERE id = ?", (case_id,))
+    await db.commit()
+

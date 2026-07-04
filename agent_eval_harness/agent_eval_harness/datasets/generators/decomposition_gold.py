@@ -1,0 +1,163 @@
+import json
+import random
+from typing import Any
+
+from pydantic import BaseModel
+
+from agent_eval_harness.datasets.types import DatasetCase
+from agent_eval_harness.llm.client import LLMClient, LLMMessage
+from agent_eval_harness.mapping.system_map import load_system_map
+from agent_eval_harness.store.repository import new_id
+
+
+class DecompositionGoldConfig(BaseModel):
+    dataset_name: str
+    system_map_path: str
+    component_id: str = "planner"
+    count: int = 15  # Total count. Will be divided among clean, rambling, over_limit.
+
+async def generate(
+    config: dict, llm_client: LLMClient | None, seed: int | None = None
+) -> list[DatasetCase]:
+    parsed_config = DecompositionGoldConfig.model_validate(config)
+
+    if seed is not None:
+        random.seed(seed)
+
+    # 1. Read constraint dynamically from System Map
+    system_map = load_system_map(parsed_config.system_map_path)
+    component = system_map.component_by_id(parsed_config.component_id)
+    if not component:
+        raise ValueError(
+            f"Component '{parsed_config.component_id}' not found in system map: "
+            f"{parsed_config.system_map_path}"
+        )
+
+    limit = None
+    for c in component.constraints:
+        if c.name == "max_items_per_call":
+            limit = c.value
+            break
+
+    if limit is None:
+        raise ValueError(
+            f"Constraint 'max_items_per_call' not found on component "
+            f"'{parsed_config.component_id}'"
+        )
+
+    if not llm_client:
+        raise ValueError("LLM client is required for decomposition_gold generation")
+
+    dataset_name = parsed_config.dataset_name
+    cases: list[DatasetCase] = []
+
+    # Divide count into three categories: clean, rambling, over_limit
+    per_cat = max(1, parsed_config.count // 3)
+    
+    # 2. Clean Multi-Intent Cases (2 to limit intents)
+    # We want them to have intents count between 2 and limit (inclusive), or up to limit
+    # if limit >= 2
+    intents_count_range = (2, max(2, limit))
+    prompt_clean = (
+        f"Generate exactly {per_cat} unique examples of user queries containing multiple "
+        f"distinct intents. Each query must contain between {intents_count_range[0]} and "
+        f"{intents_count_range[1]} distinct intents.\n"
+        f"Respond ONLY with a JSON list of objects, where each object has 'query' (string) "
+        f"and 'intents' (list of strings).\n"
+        f"Example output format:\n"
+        f'[\n  {{\n    "query": "Book a flight to Paris and reserve a hotel",\n'
+        f'    "intents": ["Book a flight to Paris", "Reserve a hotel"]\n  }}\n]\n'
+        f"Do not include any Markdown wrap (like ```json) or explanation."
+    )
+    
+    # 3. Rambling Single-Intent Cases
+    prompt_rambling = (
+        f"Generate exactly {per_cat} unique examples of long, wordy, or rambling user "
+        f"queries that contain EXACTLY ONE core intent.\n"
+        f"Respond ONLY with a JSON list of objects, where each object has 'query' (string) "
+        f"and 'intents' (list of strings containing exactly one item for the condensed intent).\n"
+        f"Example output format:\n"
+        f'[\n  {{\n    "query": "Hello, if it is not too much trouble, can you please book a '
+        f'hotel in Paris?",\n    "intents": ["Book a hotel in Paris"]\n  }}\n]\n'
+        f"Do not include any Markdown wrap (like ```json) or explanation."
+    )
+    
+    # 4. Over-limit Cases (> limit intents)
+    over_limit_count = limit + 1
+    prompt_over_limit = (
+        f"Generate exactly {per_cat} unique examples of user queries containing exactly "
+        f"{over_limit_count} distinct intents.\n"
+        f"Respond ONLY with a JSON list of objects, where each object has 'query' (string) "
+        f"and 'intents' (list of strings).\n"
+        f"Example output format:\n"
+        f'[\n  {{\n    "query": "Do A, B, and C",\n'
+        f'    "intents": ["Do A", "Do B", "Do C"]\n  }}\n]\n'
+        f"Do not include any Markdown wrap (like ```json) or explanation."
+    )
+
+    prompts = [
+        ("clean", prompt_clean),
+        ("rambling", prompt_rambling),
+        ("over_limit", prompt_over_limit)
+    ]
+
+    for category, prompt in prompts:
+        resp = await llm_client.complete(
+            [LLMMessage(role="user", content=prompt)],
+            max_tokens=2048,
+            temperature=0.7,
+            json_mode=True
+        )
+        content = resp.content.strip()
+        if content.startswith("```"):
+            lines = content.splitlines()
+            if lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].startswith("```"):
+                lines = lines[:-1]
+            content = "\n".join(lines).strip()
+
+        try:
+            items = json.loads(content)
+            if not isinstance(items, list):
+                raise ValueError("Response is not a list")
+        except Exception:
+            # Simple fallback if JSON parsing failed
+            items = []
+            for i in range(per_cat):
+                if category == "rambling":
+                    fallback_intents = [f"intent {i}"]
+                else:
+                    fallback_intents = [f"intent {i} A", f"intent {i} B"]
+                items.append({
+                    "query": f"Mock {category} query {i}",
+                    "intents": fallback_intents
+                })
+
+        for item in items[:per_cat]:
+            query = item.get("query", "")
+            intents = item.get("intents", [])
+            if not isinstance(intents, list):
+                intents = [str(intents)]
+            
+            # Ensure intents are strings
+            intents = [str(it) for it in intents]
+
+            expected: dict[str, Any] = {"intents": intents}
+            
+            # If over-limit, compute call split math using plain Python
+            if len(intents) > limit:
+                call_split = [intents[i : i + limit] for i in range(0, len(intents), limit)]
+                expected["call_split"] = call_split
+
+            cases.append(DatasetCase(
+                id=new_id(),
+                dataset=dataset_name,
+                kind="decomposition_gold",
+                input={"query": query},
+                expected=expected,
+                labels={"category": category},
+                provenance="synthetic"
+            ))
+
+    return cases
