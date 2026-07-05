@@ -44,6 +44,10 @@ export interface RunDetailResponse {
   system_map: SystemMap;
   component_aggregates: Record<string, ComponentAggregate>;
   overall_pass_rate: number;
+  target?: string | null;
+  suite_path?: string | null;
+  parent_run_id?: string | null;
+  model_overrides?: Record<string, string>;
 }
 
 export interface EvaluationDetailItem {

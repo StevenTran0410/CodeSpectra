@@ -23,14 +23,19 @@ async def insert_run(
     eval_plan_id: str | None = None,
     map_path: str | None = None,
     active_defects: list[str] | None = None,
+    target: str | None = None,
+    suite_path: str | None = None,
+    parent_run_id: str | None = None,
+    model_overrides: dict[str, str] | None = None,
 ) -> str:
     run_id = new_id()
     db = get_db()
     active_defects_json = json.dumps(active_defects) if active_defects is not None else None
+    model_overrides_json = json.dumps(model_overrides or {})
     await db.execute(
         "INSERT INTO runs (id, target_system_id, eval_plan_id, started_at, status, "
-        "map_path, active_defects) "
-        "VALUES (?, ?, ?, ?, 'running', ?, ?)",
+        "map_path, active_defects, target, suite_path, parent_run_id, model_overrides) "
+        "VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?)",
         (
             run_id,
             target_system_id,
@@ -38,6 +43,10 @@ async def insert_run(
             utc_now_iso(),
             map_path,
             active_defects_json,
+            target,
+            suite_path,
+            parent_run_id,
+            model_overrides_json,
         ),
     )
     await db.commit()

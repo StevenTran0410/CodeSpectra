@@ -102,3 +102,51 @@ async def test_ui_api_endpoints() -> None:
         assert len(trace_detail["spans"]) == 1
         assert trace_detail["spans"][0]["id"] == "span-1"
         assert trace_detail["spans"][0]["component_id"] == "writer"
+
+
+async def test_ui_api_rerun_and_providers() -> None:
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        # Test 1: GET /api/providers
+        res = await client.get("/api/providers")
+        assert res.status_code == 200
+        assert isinstance(res.json(), list)
+
+        # Test 2: Rerun 404
+        res = await client.post("/api/runs/nonexistent-run/rerun", json={"model_overrides": {}})
+        assert res.status_code == 404
+
+        # Test 3: Rerun 409 for legacy run (missing target/suite_path)
+        legacy_run_id = await repository.insert_run("test_target")
+        res = await client.post(f"/api/runs/{legacy_run_id}/rerun", json={"model_overrides": {}})
+        assert res.status_code == 409
+        assert "predates rerun support" in res.json()["detail"]
+
+        # Test 4: Successful rerun trigger
+        valid_run_id = await repository.insert_run(
+            target_system_id="test_target",
+            map_path="test_targets/t3_reranker/system_map.yaml",
+            target="test_targets.t3_reranker.pipeline:build_pipeline",
+            suite_path="configs/qa_testset.yaml"
+        )
+        res = await client.post(
+            f"/api/runs/{valid_run_id}/rerun",
+            json={
+                "model_overrides": {"writer": "fake-provider:gpt-4"},
+                "active_defects": ["no_retry"]
+            }
+        )
+        assert res.status_code == 200
+        new_run_id = res.json()["run_id"]
+        assert new_run_id != valid_run_id
+
+        # Verify the database contains the correct rerun fields
+        new_run = await repository.get_run(new_run_id)
+        assert new_run is not None
+        assert new_run["parent_run_id"] == valid_run_id
+        import json
+        overrides = json.loads(new_run["model_overrides"])
+        assert overrides == {"writer": "fake-provider:gpt-4"}
+        defects = json.loads(new_run["active_defects"])
+        assert defects == ["no_retry"]
+

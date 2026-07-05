@@ -69,6 +69,71 @@ export default function App() {
   const [compareEvalsA, setCompareEvalsA] = useState<EvaluationDetailItem[]>([]);
   const [compareEvalsB, setCompareEvalsB] = useState<EvaluationDetailItem[]>([]);
 
+  // Rerun Modal State
+  const [isRerunModalOpen, setIsRerunModalOpen] = useState<boolean>(false);
+  const [rerunActiveDefects, setRerunActiveDefects] = useState<string[]>([]);
+  const [rerunModelOverrides, setRerunModelOverrides] = useState<Record<string, string>>({});
+  // Tracks which components the user explicitly switched to free-text entry via
+  // "Custom..." — kept separate from rerunModelOverrides so an unfilled custom
+  // field submits as empty (no override), not as the literal sentinel string.
+  const [customOverrideComponents, setCustomOverrideComponents] = useState<Set<string>>(new Set());
+  const [rerunSubmitLoading, setRerunSubmitLoading] = useState<boolean>(false);
+  const [rerunError, setRerunError] = useState<string | null>(null);
+  const [availableProviders, setAvailableProviders] = useState<Array<{ provider_id: string; display_name: string; model_id: string | null }>>([]);
+
+  const openRerunModal = async () => {
+    if (!selectedRun) return;
+    setRerunActiveDefects([...selectedRun.active_defects]);
+    const initialOverrides: Record<string, string> = {};
+    if (selectedRun.model_overrides) {
+      Object.entries(selectedRun.model_overrides).forEach(([compId, modelId]) => {
+        initialOverrides[compId] = modelId;
+      });
+    }
+    setRerunModelOverrides(initialOverrides);
+    setCustomOverrideComponents(new Set());
+    setIsRerunModalOpen(true);
+    setRerunError(null);
+    try {
+      const res = await fetch('/api/providers');
+      if (res.ok) {
+        const data = await res.json();
+        setAvailableProviders(data);
+      }
+    } catch (err) {
+      console.error('Failed to fetch providers:', err);
+    }
+  };
+
+  const handleRerunSubmit = async () => {
+    if (!selectedRun) return;
+    setRerunSubmitLoading(true);
+    setRerunError(null);
+    try {
+      const res = await fetch(`/api/runs/${selectedRun.id}/rerun`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model_overrides: rerunModelOverrides,
+          active_defects: rerunActiveDefects,
+        }),
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.detail || 'Failed to trigger rerun');
+      }
+      setIsRerunModalOpen(false);
+      navigateToRuns();
+      fetchRunsList();
+    } catch (err: any) {
+      setRerunError(err.message || 'An error occurred');
+    } finally {
+      setRerunSubmitLoading(false);
+    }
+  };
+
   // Parser Hash on load and change
   useEffect(() => {
     const handleHashChange = () => {
@@ -540,13 +605,48 @@ export default function App() {
             {/* SCREEN 2: RUN OVERVIEW / TOPOLOGY */}
             {route === 'run' && selectedRun && (
               <div className="space-y-6">
-                {/* Breadcrumbs */}
-                <div className="flex items-center space-x-2 text-xs font-semibold text-slate-400 uppercase tracking-wider">
-                  <span className="hover:text-white cursor-pointer" onClick={navigateToRuns}>
-                    Runs
-                  </span>
-                  <span>/</span>
-                  <span className="text-white">Run Details ({selectedRun.id.slice(0, 8)})</span>
+                {/* Breadcrumbs & Rerun Header */}
+                <div className="flex items-center justify-between">
+                  <div className="flex flex-col space-y-1">
+                    <div className="flex items-center space-x-2 text-xs font-semibold text-slate-400 uppercase tracking-wider">
+                      <span className="hover:text-white cursor-pointer" onClick={navigateToRuns}>
+                        Runs
+                      </span>
+                      <span>/</span>
+                      <span className="text-white">Run Details ({selectedRun.id.slice(0, 8)})</span>
+                    </div>
+                    {selectedRun.parent_run_id && (
+                      <div className="text-xs text-slate-400">
+                        Re-run of{' '}
+                        <button
+                          onClick={() => navigateToRun(selectedRun.parent_run_id!)}
+                          className="text-indigo-400 hover:text-indigo-300 font-mono font-bold hover:underline"
+                        >
+                          {selectedRun.parent_run_id.slice(0, 8)}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                  <div>
+                    {(!selectedRun.target || !selectedRun.suite_path) ? (
+                      <button
+                        disabled
+                        title="This run predates rerun support (missing target or suite_path) and cannot be re-executed."
+                        className="inline-flex items-center space-x-2 bg-slate-800 text-slate-500 px-4 py-2 rounded-xl text-sm font-semibold cursor-not-allowed border border-slate-700/50"
+                      >
+                        <RefreshCw className="h-4 w-4" />
+                        <span>Rerun (Unavailable)</span>
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => openRerunModal()}
+                        className="inline-flex items-center space-x-2 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white px-4 py-2 rounded-xl text-sm font-semibold shadow-lg shadow-indigo-500/20 active:scale-[0.98] transition-all border border-indigo-500/30"
+                      >
+                        <RefreshCw className={`h-4 w-4 ${rerunSubmitLoading ? 'animate-spin' : ''}`} />
+                        <span>Rerun Evaluation</span>
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 {/* Meta details */}
@@ -1137,6 +1237,197 @@ export default function App() {
           </>
         )}
       </main>
+      {/* RERUN MODAL OVERLAY */}
+      {isRerunModalOpen && selectedRun && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4 overflow-y-auto">
+          <div className="glass rounded-2xl w-full max-w-2xl border-slate-800 shadow-2xl flex flex-col max-h-[90vh]">
+            {/* Modal Header */}
+            <div className="px-6 py-4 border-b border-slate-800/80 flex items-center justify-between">
+              <div>
+                <h3 className="text-lg font-bold text-white flex items-center space-x-2">
+                  <RefreshCw className="h-5 w-5 text-indigo-400 animate-spin-slow" />
+                  <span>Configure Rerun: {selectedRun.target_system_id}</span>
+                </h3>
+                <p className="text-xs text-slate-400 mt-1">
+                  Customize LLM stages and plant regression gauntlet defects.
+                </p>
+              </div>
+              <button
+                onClick={() => setIsRerunModalOpen(false)}
+                className="text-slate-400 hover:text-white text-lg font-bold px-2"
+              >
+                &times;
+              </button>
+            </div>
+
+            {/* Modal Content */}
+            <div className="p-6 space-y-6 overflow-y-auto flex-1 text-slate-300">
+              {rerunError && (
+                <div className="p-4 bg-red-950/20 border border-red-900/30 text-red-400 rounded-xl text-xs flex items-center space-x-2 font-semibold">
+                  <AlertTriangle className="h-4 w-4 flex-shrink-0" />
+                  <span>{rerunError}</span>
+                </div>
+              )}
+
+              {/* Model Overrides Section */}
+              <div className="space-y-3">
+                <h4 className="text-xs text-slate-400 font-semibold uppercase tracking-wider">
+                  Component Model Overrides
+                </h4>
+                <div className="border border-slate-800 bg-slate-950/50 rounded-xl overflow-hidden">
+                  <table className="w-full text-left border-collapse text-xs">
+                    <thead>
+                      <tr className="border-b border-slate-800 bg-slate-900/30 text-slate-400 font-semibold">
+                        <th className="py-2.5 px-4">Component</th>
+                        <th className="py-2.5 px-4">Role</th>
+                        <th className="py-2.5 px-4 w-1/2">Override Model</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/60">
+                      {selectedRun.system_map.components.map((comp) => (
+                        <tr key={comp.id} className="text-slate-300">
+                          <td className="py-3 px-4 font-mono font-bold text-white">{comp.id}</td>
+                          <td className="py-3 px-4 uppercase text-[10px] text-slate-500 font-semibold">
+                            {comp.role}
+                          </td>
+                          <td className="py-3 px-4">
+                            {(() => {
+                              const currentVal = rerunModelOverrides[comp.id] || '';
+                              const matchesKnownProvider = availableProviders.some(p => `${p.provider_id}:${p.model_id}` === currentVal);
+                              // Custom mode if the user explicitly chose "Custom..." OR the
+                              // value (e.g. restored from a prior run) doesn't match any known
+                              // provider option — never inferred from a sentinel string.
+                              const isCustomMode = customOverrideComponents.has(comp.id) || (currentVal !== '' && !matchesKnownProvider);
+
+                              if (availableProviders.length === 0) {
+                                return (
+                                  <input
+                                    type="text"
+                                    placeholder="Override model ID (e.g. gpt-4)"
+                                    value={currentVal}
+                                    onChange={(e) => setRerunModelOverrides({ ...rerunModelOverrides, [comp.id]: e.target.value })}
+                                    className="w-full bg-slate-900 border border-slate-700/80 text-xs text-white rounded-lg px-2.5 py-1.5 focus:border-indigo-500 focus:outline-none"
+                                  />
+                                );
+                              }
+
+                              return (
+                                <div className="space-y-1.5">
+                                  <select
+                                    value={isCustomMode ? 'custom' : currentVal}
+                                    onChange={(e) => {
+                                      const val = e.target.value;
+                                      setCustomOverrideComponents((prev) => {
+                                        const next = new Set(prev);
+                                        if (val === 'custom') next.add(comp.id);
+                                        else next.delete(comp.id);
+                                        return next;
+                                      });
+                                      setRerunModelOverrides({ ...rerunModelOverrides, [comp.id]: val === 'custom' ? '' : val });
+                                    }}
+                                    className="w-full bg-slate-900 border border-slate-700/80 text-xs text-white rounded-lg px-2.5 py-1.5 focus:border-indigo-500 focus:outline-none"
+                                  >
+                                    <option value="">Default ({comp.model || 'system default'})</option>
+                                    {availableProviders.map((p) => (
+                                      <option key={`${p.provider_id}:${p.model_id}`} value={`${p.provider_id}:${p.model_id}`}>
+                                        {p.display_name} ({p.model_id})
+                                      </option>
+                                    ))}
+                                    <option value="custom">Custom...</option>
+                                  </select>
+                                  {isCustomMode && (
+                                    <input
+                                      type="text"
+                                      placeholder="Enter custom model ID"
+                                      value={currentVal}
+                                      onChange={(e) => setRerunModelOverrides({ ...rerunModelOverrides, [comp.id]: e.target.value })}
+                                      className="w-full bg-slate-900 border border-slate-700/80 text-xs text-white rounded-lg px-2.5 py-1.5 focus:border-indigo-500 focus:outline-none"
+                                    />
+                                  )}
+                                </div>
+                              );
+                            })()}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Planted Defects Section */}
+              <div className="space-y-3">
+                <h4 className="text-xs text-slate-400 font-semibold uppercase tracking-wider">
+                  Plant Regression Defects
+                </h4>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {[
+                    'planner_overpack',
+                    'guard_leak',
+                    'wrong_tool',
+                    'judge_rubber_stamp',
+                    'writer_hallucinate',
+                    'no_retry',
+                  ].map((def) => {
+                    const isChecked = rerunActiveDefects.includes(def);
+                    return (
+                      <label
+                        key={def}
+                        className={`p-3 rounded-xl border flex items-center justify-between text-xs cursor-pointer select-none transition-all ${
+                          isChecked
+                            ? 'bg-red-950/20 border-red-950 text-red-400 font-bold'
+                            : 'bg-slate-900/40 border-slate-800 text-slate-400 hover:border-slate-700'
+                        }`}
+                      >
+                        <span>{def.toUpperCase()}</span>
+                        <input
+                          type="checkbox"
+                          checked={isChecked}
+                          onChange={() => {
+                            if (isChecked) {
+                              setRerunActiveDefects(rerunActiveDefects.filter((d) => d !== def));
+                            } else {
+                              setRerunActiveDefects([...rerunActiveDefects, def]);
+                            }
+                          }}
+                          className="h-4 w-4 rounded border-slate-700 text-indigo-600 focus:ring-indigo-500"
+                        />
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="px-6 py-4 border-t border-slate-800/80 flex items-center justify-end space-x-3 bg-slate-900/20">
+              <button
+                onClick={() => setIsRerunModalOpen(false)}
+                className="px-4 py-2 border border-slate-800 hover:border-slate-700 text-slate-400 hover:text-white rounded-xl text-xs font-bold transition-all"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleRerunSubmit}
+                disabled={rerunSubmitLoading}
+                className="inline-flex items-center space-x-2 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 disabled:from-indigo-800 disabled:to-purple-800 text-white px-4 py-2 rounded-xl text-xs font-bold shadow-lg shadow-indigo-500/20 disabled:shadow-none transition-all active:scale-[0.98] border border-indigo-500/30"
+              >
+                {rerunSubmitLoading ? (
+                  <>
+                    <RefreshCw className="h-3 w-3 animate-spin" />
+                    <span>Launching Rerun...</span>
+                  </>
+                ) : (
+                  <>
+                    <RefreshCw className="h-3 w-3" />
+                    <span>Run Evaluation</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

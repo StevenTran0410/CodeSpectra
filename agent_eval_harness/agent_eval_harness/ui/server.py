@@ -78,6 +78,10 @@ class RunDetailResponse(BaseModel):
     system_map: dict[str, Any]
     component_aggregates: dict[str, ComponentAggregate]
     overall_pass_rate: float
+    target: str | None = None
+    suite_path: str | None = None
+    parent_run_id: str | None = None
+    model_overrides: dict[str, str] = {}
 
 
 class EvaluationDetailItem(BaseModel):
@@ -196,6 +200,13 @@ async def get_run_detail(run_id: str):
         rate_row = await cur.fetchone()
     overall_pass_rate = rate_row["pass_rate"] if rate_row else 0.0
 
+    model_overrides = {}
+    if run.get("model_overrides"):
+        try:
+            model_overrides = json.loads(run["model_overrides"])
+        except Exception:
+            pass
+
     return RunDetailResponse(
         id=run["id"],
         target_system_id=run["target_system_id"],
@@ -208,6 +219,10 @@ async def get_run_detail(run_id: str):
         system_map=system_map_dict,
         component_aggregates=aggregates,
         overall_pass_rate=overall_pass_rate,
+        target=run.get("target"),
+        suite_path=run.get("suite_path"),
+        parent_run_id=run.get("parent_run_id"),
+        model_overrides=model_overrides,
     )
 
 
@@ -280,6 +295,186 @@ async def get_trace_detail(trace_id: str):
 async def get_dataset_cases(dataset_id: str):
     cases = await repository.get_dataset_cases(dataset_id)
     return cases
+
+
+class ProviderSummary(BaseModel):
+    provider_id: str
+    display_name: str
+    model_id: str | None = None
+
+
+@app.get("/api/providers", response_model=list[ProviderSummary])
+async def get_providers():
+    import httpx
+
+    from agent_eval_harness.config import AEHConfig
+
+    config = AEHConfig.load()
+    if not config.backend_url or not config.backend_token:
+        return []
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                f"{config.backend_url.rstrip('/')}/api/external/llm/providers",
+                headers={"Authorization": f"Bearer {config.backend_token}"},
+            )
+            resp.raise_for_status()
+            return resp.json()
+    except Exception as e:
+        logger.warning(f"Failed to fetch providers from CodeSpectra backend: {e}")
+        return []
+
+
+class RerunRequest(BaseModel):
+    model_overrides: dict[str, str] = {}  # {component_id: model_id}
+    active_defects: list[str] | None = None
+
+
+_rerun_in_flight: set[str] = set()
+
+
+@app.post("/api/runs/{run_id}/rerun")
+async def rerun_run(run_id: str, body: RerunRequest):
+    import asyncio
+
+    from agent_eval_harness.config import AEHConfig
+    from agent_eval_harness.llm.client import LLMResponse
+    from agent_eval_harness.llm.fake_client import FakeLLMClient
+    from agent_eval_harness.llm.proxy_client import CodeSpectraProxyClient
+    from agent_eval_harness.llm.routing_client import RoutingLLMClient
+    from agent_eval_harness.metrics.sweep import run_sweep
+
+    parent = await repository.get_run(run_id)
+    if not parent:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    if not parent.get("target") or not parent.get("suite_path"):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This run predates rerun support (missing target/suite_path) "
+                "— cannot re-execute"
+            ),
+        )
+
+    if run_id in _rerun_in_flight:
+        raise HTTPException(
+            status_code=409,
+            detail="A rerun is already in progress for this run",
+        )
+
+    _rerun_in_flight.add(run_id)
+
+    # 1. Determine active defects (fallback to parent's active defects if not provided)
+    active_defects = body.active_defects
+    if active_defects is None:
+        try:
+            active_defects = (
+                json.loads(parent["active_defects"]) if parent.get("active_defects") else []
+            )
+        except Exception:
+            active_defects = []
+
+    # 2. Insert the new run row in "running" state
+    new_run_id = await repository.insert_run(
+        target_system_id=parent["target_system_id"],
+        eval_plan_id=parent["eval_plan_id"],
+        map_path=parent["map_path"],
+        active_defects=active_defects,
+        target=parent["target"],
+        suite_path=parent["suite_path"],
+        parent_run_id=run_id,
+        model_overrides=body.model_overrides,
+    )
+
+    # 3. Define the background executor
+    async def _execute_rerun_task():
+        try:
+            config = AEHConfig.load()
+
+            # Build the base/default client
+            if config.provider_id and config.backend_url and config.backend_token:
+                default_client = CodeSpectraProxyClient(
+                    config.backend_url,
+                    config.backend_token,
+                    config.provider_id,
+                    config.model_id,
+                )
+            else:
+                default_client = FakeLLMClient(
+                    LLMResponse(
+                        content="This is a fallback offline demo answer.", model="fake-default"
+                    )
+                )
+
+            # Build override clients
+            overrides = {}
+            system_map = None
+            if parent.get("map_path"):
+                try:
+                    system_map = load_system_map(parent["map_path"])
+                except Exception as e:
+                    logger.warning(f"Could not load system map for rerun: {e}")
+
+            for comp_id, override_val in body.model_overrides.items():
+                if not override_val:
+                    continue
+                # Determine provider_id and model_id
+                if ":" in override_val:
+                    p_id, m_id = override_val.split(":", 1)
+                else:
+                    p_id = config.provider_id or "fake-provider"
+                    m_id = override_val
+
+                # Build client for this override
+                if config.backend_url and config.backend_token and p_id != "fake-provider":
+                    client = CodeSpectraProxyClient(
+                        config.backend_url,
+                        config.backend_token,
+                        provider_id=p_id,
+                        model_id=m_id,
+                    )
+                else:
+                    client = FakeLLMClient(
+                        LLMResponse(content=f"Canned override answer for {comp_id}", model=m_id)
+                    )
+
+                # Route BOTH comp_id (for Tier-2 contextvar) and
+                # component_name (for Tier-1 Haystack tags)
+                overrides[comp_id] = client
+                if system_map:
+                    comp = system_map.component_by_id(comp_id)
+                    if comp:
+                        for sm in comp.span_match:
+                            if sm.component_name:
+                                overrides[sm.component_name] = client
+
+            routing_client = RoutingLLMClient(default=default_client, overrides=overrides)
+
+            try:
+                # Run the sweep using the routing client, passing new_run_id to reuse the row
+                await run_sweep(
+                    target=parent["target"],
+                    map_path=parent["map_path"],
+                    suite_path=parent["suite_path"],
+                    llm_client=routing_client,
+                    active_defects=active_defects,
+                    run_id=new_run_id,
+                )
+            finally:
+                await routing_client.aclose()
+        except Exception as e:
+            logger.error(f"Background rerun failed: {e}", exc_info=True)
+            try:
+                await repository.finish_run(new_run_id, "failed")
+            except Exception:
+                pass
+        finally:
+            _rerun_in_flight.discard(run_id)
+
+    asyncio.create_task(_execute_rerun_task())
+    return {"run_id": new_run_id}
 
 
 @app.get("/health")

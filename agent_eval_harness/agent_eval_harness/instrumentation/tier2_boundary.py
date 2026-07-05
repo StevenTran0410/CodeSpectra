@@ -80,7 +80,14 @@ class BoundaryWrapperAdapter(InstrumentationAdapter):
             fn = self._entry_points[component_id]
             started_at = utc_now_iso()
             started = time.monotonic()
-            output = await (fn(query) if prior_output is None else fn(query, prior_output))
+
+            from agent_eval_harness.llm.routing_client import current_component_id_var
+            token = current_component_id_var.set(component_id)
+            try:
+                output = await (fn(query) if prior_output is None else fn(query, prior_output))
+            finally:
+                current_component_id_var.reset(token)
+
             latency_ms = int((time.monotonic() - started) * 1000)
             total_latency_ms += latency_ms
 

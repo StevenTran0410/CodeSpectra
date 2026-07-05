@@ -44,6 +44,7 @@ async def run_sweep(
     concurrency: int = 4,
     tier: str = "auto",
     active_defects: list[str] | None = None,
+    run_id: str | None = None,
 ) -> SweepResult:
     """Run the full evaluation sweep for a given target + suite.
 
@@ -54,12 +55,15 @@ async def run_sweep(
     system_map = load_system_map(map_path)
     suite = load_suite(suite_path)
 
-    run_id = await repository.insert_run(
-        target_system_id=system_map.target_system_id,
-        eval_plan_id=str(Path(suite_path).name),
-        map_path=map_path,
-        active_defects=active_defects,
-    )
+    if run_id is None:
+        run_id = await repository.insert_run(
+            target_system_id=system_map.target_system_id,
+            eval_plan_id=str(Path(suite_path).name),
+            map_path=map_path,
+            active_defects=active_defects,
+            target=target,
+            suite_path=suite_path,
+        )
 
     sweep_result = SweepResult(run_id=run_id)
     semaphore = asyncio.Semaphore(concurrency)

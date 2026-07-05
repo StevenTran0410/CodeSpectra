@@ -75,6 +75,13 @@ def build_adapter(
     system_map = load_system_map(map_path)
 
     if tier == "2":
+        try:
+            module_path, _, _ = target.partition(":")
+            module = importlib.import_module(module_path)
+            if hasattr(module, "set_default_llm_client"):
+                getattr(module, "set_default_llm_client")(llm_client)
+        except Exception:
+            pass
         component_order = _resolve_linear_order(system_map)
         return BoundaryWrapperAdapter(system_map, component_order), system_map
 

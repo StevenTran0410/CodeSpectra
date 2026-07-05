@@ -102,6 +102,16 @@ _MIGRATIONS: list[dict[str, Any]] = [
             ALTER TABLE runs ADD COLUMN active_defects TEXT;
         """,
     },
+    {
+        "version": 2,
+        "description": "Add target/suite_path/parent_run_id/model_overrides for reruns",
+        "sql": """
+            ALTER TABLE runs ADD COLUMN target TEXT;
+            ALTER TABLE runs ADD COLUMN suite_path TEXT;
+            ALTER TABLE runs ADD COLUMN parent_run_id TEXT;
+            ALTER TABLE runs ADD COLUMN model_overrides TEXT NOT NULL DEFAULT '{}';
+        """,
+    },
 ]
 
 TARGET_VERSION = len(_MIGRATIONS) - 1
