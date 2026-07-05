@@ -18,13 +18,27 @@ def new_id() -> str:
     return str(uuid.uuid4())
 
 
-async def insert_run(target_system_id: str, eval_plan_id: str | None = None) -> str:
+async def insert_run(
+    target_system_id: str,
+    eval_plan_id: str | None = None,
+    map_path: str | None = None,
+    active_defects: list[str] | None = None,
+) -> str:
     run_id = new_id()
     db = get_db()
+    active_defects_json = json.dumps(active_defects) if active_defects is not None else None
     await db.execute(
-        "INSERT INTO runs (id, target_system_id, eval_plan_id, started_at, status) "
-        "VALUES (?, ?, ?, ?, 'running')",
-        (run_id, target_system_id, eval_plan_id, utc_now_iso()),
+        "INSERT INTO runs (id, target_system_id, eval_plan_id, started_at, status, "
+        "map_path, active_defects) "
+        "VALUES (?, ?, ?, ?, 'running', ?, ?)",
+        (
+            run_id,
+            target_system_id,
+            eval_plan_id,
+            utc_now_iso(),
+            map_path,
+            active_defects_json,
+        ),
     )
     await db.commit()
     return run_id
@@ -287,4 +301,40 @@ async def get_evaluations_for_component(run_id: str, component_id: str) -> list[
         (run_id, component_id),
     ) as cur:
         rows = await cur.fetchall()
+    return [dict(row) for row in rows]
+
+
+async def list_runs(target_system_id: str | None = None) -> list[dict]:
+    db = get_db()
+    query = """
+        SELECT
+            r.id,
+            r.target_system_id,
+            r.eval_plan_id,
+            r.started_at,
+            r.finished_at,
+            r.status,
+            r.map_path,
+            r.active_defects,
+            COALESCE(
+                CAST(SUM(CASE WHEN e.passed = 1 THEN 1 ELSE 0 END) AS REAL) /
+                NULLIF(COUNT(CASE WHEN e.passed IS NOT NULL THEN 1 END), 0),
+                0.0
+            ) as pass_rate,
+            COALESCE(
+                SUM(CASE WHEN e.metric_class = 'llm_judge' THEN e.cost_tokens ELSE 0 END),
+                0
+            ) as judge_cost
+        FROM runs r
+        LEFT JOIN evaluations e ON r.id = e.run_id
+    """
+    if target_system_id:
+        query += " WHERE r.target_system_id = ?"
+        query += " GROUP BY r.id ORDER BY r.started_at DESC"
+        async with db.execute(query, (target_system_id,)) as cur:
+            rows = await cur.fetchall()
+    else:
+        query += " GROUP BY r.id ORDER BY r.started_at DESC"
+        async with db.execute(query) as cur:
+            rows = await cur.fetchall()
     return [dict(row) for row in rows]

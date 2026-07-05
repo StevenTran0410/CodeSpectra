@@ -96,9 +96,28 @@ async def execute_run(
     llm_client: LLMClient,
     queries: list[str],
     tier: str = "auto",
+    active_defects: list[str] | None = None,
+    run_id: str | None = None,
 ) -> list[RunOutcome]:
+    """Run query/queries through an instrumented target.
+
+    If `run_id` is provided, reuses it instead of creating a new `runs` row and
+    never calls finish_run() on it — the caller (metrics/sweep.py's run_sweep(),
+    which fans this out once per suite entry via asyncio.gather) already owns
+    that row's full lifecycle. Without this, every suite entry independently
+    created and finished its own `runs` row, cluttering the Runs list with one
+    empty "Direct Run (No Plan)" row per entry (no evaluations attached, since
+    those are recorded against the sweep's own run_id) alongside the one real,
+    data-rich row a human actually cares about.
+    """
     adapter, system_map = build_adapter(target, map_path, llm_client, tier)
-    run_id = await repository.insert_run(target_system_id=system_map.target_system_id)
+    owns_run_lifecycle = run_id is None
+    if run_id is None:
+        run_id = await repository.insert_run(
+            target_system_id=system_map.target_system_id,
+            map_path=map_path,
+            active_defects=active_defects,
+        )
 
     outcomes: list[RunOutcome] = []
     async with _EXECUTE_RUN_LOCK:
@@ -113,10 +132,12 @@ async def execute_run(
                 )
                 outcomes.append(RunOutcome(run_id=run_id, trace_id=trace_id, trace_result=result))
         except Exception:
-            await repository.finish_run(run_id, "failed")
+            if owns_run_lifecycle:
+                await repository.finish_run(run_id, "failed")
             raise
         finally:
             adapter.detach()
 
-    await repository.finish_run(run_id, "completed")
+    if owns_run_lifecycle:
+        await repository.finish_run(run_id, "completed")
     return outcomes

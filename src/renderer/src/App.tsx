@@ -16,6 +16,7 @@ const ReportViewerScreen = lazy(() => import('./screens/reports'))
 const AskScreen = lazy(() => import('./screens/ask'))
 const GraphScreen = lazy(() => import('./screens/graph'))
 const SettingsScreen = lazy(() => import('./screens/settings'))
+const AEHScreen = lazy(() => import('./screens/aeh'))
 
 function PageFallback(): React.ReactElement {
   return (
@@ -46,6 +47,7 @@ export default function App(): React.ReactElement {
               <Route path="/ask" element={<AskScreen />} />
               <Route path="/graph" element={<GraphScreen />} />
               <Route path="/settings" element={<SettingsScreen />} />
+              <Route path="/aeh" element={<AEHScreen />} />
             </Routes>
           </Suspense>
         </AppShell>

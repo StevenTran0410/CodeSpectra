@@ -94,6 +94,14 @@ _MIGRATIONS: list[dict[str, Any]] = [
                 VALUES ('first_launched_at', datetime('now'));
         """,
     },
+    {
+        "version": 1,
+        "description": "Add map_path and active_defects columns to runs table",
+        "sql": """
+            ALTER TABLE runs ADD COLUMN map_path TEXT;
+            ALTER TABLE runs ADD COLUMN active_defects TEXT;
+        """,
+    },
 ]
 
 TARGET_VERSION = len(_MIGRATIONS) - 1

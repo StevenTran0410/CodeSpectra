@@ -5,9 +5,17 @@ import pytest
 
 from agent_eval_harness.instrumentation.base import CapturedSpan
 from agent_eval_harness.store import repository
-from agent_eval_harness.store.database import _run_migrations, get_db
+from agent_eval_harness.store.database import _run_migrations, close_db, get_db, init_db
 
 pytestmark = pytest.mark.asyncio
+
+
+@pytest.fixture(autouse=True)
+async def _setup_db(tmp_path, monkeypatch):
+    monkeypatch.setenv("AEH_DATA_DIR", str(tmp_path))
+    await init_db()
+    yield
+    await close_db()
 
 
 async def test_run_trace_span_roundtrip() -> None:

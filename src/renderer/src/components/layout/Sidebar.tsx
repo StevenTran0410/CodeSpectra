@@ -14,7 +14,8 @@ import {
   ChevronRight,
   Plus,
   Sun,
-  Moon
+  Moon,
+  Layers
 } from 'lucide-react'
 import { useWorkspaceStore } from '../../store/workspace.store'
 import { useState } from 'react'
@@ -128,6 +129,21 @@ export function Sidebar(): React.ReactElement {
               {!isCollapsed && <span>{label}</span>}
             </NavLink>
           ))}
+          <div className="border-t border-surface-border my-2 pt-2" />
+          <NavLink
+            to="/aeh"
+            className={({ isActive }) =>
+              `flex items-center gap-2.5 px-2.5 py-2 rounded-md text-sm transition-all duration-300 border ${
+                isActive
+                  ? 'bg-gradient-to-r from-indigo-900/60 to-purple-900/60 border-indigo-500/30 text-white shadow-lg shadow-indigo-500/10'
+                  : 'text-indigo-400 hover:text-indigo-300 hover:bg-indigo-950/20 border-transparent'
+              }`
+            }
+            title={isCollapsed ? 'AEH Dashboard' : undefined}
+          >
+            <Layers className="w-4 h-4 shrink-0 text-indigo-400" />
+            {!isCollapsed && <span className="font-bold bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent">AEH Dashboard</span>}
+          </NavLink>
         </nav>
 
         {/* Settings + theme toggle at bottom */}

@@ -1,0 +1,21 @@
+entries:
+- id: writer.faithfulness
+  component: writer
+  metric: ragas.faithfulness
+  metric_class: llm_judge
+  params:
+    queries:
+    - '<TODO: add a representative query for this target>'
+  rationale: "role=writer \u21D2 faithfulness is the central correctness property.\
+    \ writer must not fabricate facts."
+  provenance: rule
+- id: writer.answer_relevancy
+  component: writer
+  metric: ragas.answer_relevancy
+  metric_class: llm_judge
+  params:
+    queries:
+    - '<TODO: add a representative query for this target>'
+  rationale: "role=writer \u21D2 answer should be relevant to the user's original\
+    \ query."
+  provenance: rule

@@ -43,6 +43,7 @@ async def run_sweep(
     *,
     concurrency: int = 4,
     tier: str = "auto",
+    active_defects: list[str] | None = None,
 ) -> SweepResult:
     """Run the full evaluation sweep for a given target + suite.
 
@@ -56,6 +57,8 @@ async def run_sweep(
     run_id = await repository.insert_run(
         target_system_id=system_map.target_system_id,
         eval_plan_id=str(Path(suite_path).name),
+        map_path=map_path,
+        active_defects=active_defects,
     )
 
     sweep_result = SweepResult(run_id=run_id)
@@ -63,8 +66,17 @@ async def run_sweep(
 
     try:
         tasks = [
-            _run_entry(entry, system_map, target, map_path, llm_client,
-                       run_id, semaphore, tier)
+            _run_entry(
+                entry,
+                system_map,
+                target,
+                map_path,
+                llm_client,
+                run_id,
+                semaphore,
+                tier,
+                active_defects=active_defects,
+            )
             for entry in suite.entries
         ]
         gathered = await asyncio.gather(*tasks, return_exceptions=True)
@@ -107,18 +119,33 @@ async def _run_entry(
     run_id: str,
     semaphore: asyncio.Semaphore,
     tier: str,
+    active_defects: list[str] | None = None,
 ) -> list[MetricResult]:
     """Dispatch one SuiteEntry to the appropriate scorer."""
     async with semaphore:
         if entry.metric_class == "assertion":
             return await _score_assertion_entry(
-                entry, system_map, target, map_path, llm_client, run_id, tier
+                entry,
+                system_map,
+                target,
+                map_path,
+                llm_client,
+                run_id,
+                tier,
+                active_defects=active_defects,
             )
         elif entry.metric_class == "classifier":
             return await _score_classifier_entry(entry, llm_client, entry.component)
         elif entry.metric_class == "llm_judge":
             return await _score_judge_entry(
-                entry, system_map, target, map_path, llm_client, run_id, tier
+                entry,
+                system_map,
+                target,
+                map_path,
+                llm_client,
+                run_id,
+                tier,
+                active_defects=active_defects,
             )
         else:
             raise ValueError(f"Unknown metric_class: {entry.metric_class!r}")
@@ -132,6 +159,7 @@ async def _score_assertion_entry(
     llm_client: LLMClient,
     run_id: str,
     tier: str,
+    active_defects: list[str] | None = None,
 ) -> list[MetricResult]:
     """Run traces for all dataset cases, then apply the assertion to each."""
     assertion_fn = get_assertion(entry.metric)
@@ -150,7 +178,9 @@ async def _score_assertion_entry(
     # so calling it per-query was needlessly rebuilding the target's pipeline/adapter
     # once per query instead of once per suite entry.
     results: list[MetricResult] = []
-    outcomes = await execute_run(target, map_path, llm_client, queries, tier)
+    outcomes = await execute_run(
+        target, map_path, llm_client, queries, tier, active_defects=active_defects, run_id=run_id
+    )
     for outcome in outcomes:
         spans = await repository.get_spans_for_trace(outcome.trace_id)
         result = assertion_fn(spans, entry.component, params)
@@ -194,13 +224,16 @@ async def _score_judge_entry(
     llm_client: LLMClient,
     run_id: str,
     tier: str,
+    active_defects: list[str] | None = None,
 ) -> list[MetricResult]:
     """Run traces and apply LLM-judge scoring."""
     results: list[MetricResult] = []
     queries = _get_queries_for_entry(entry, system_map)
 
     # Batch all queries into one execute_run call — see _score_assertion_entry for why.
-    outcomes = await execute_run(target, map_path, llm_client, queries, tier)
+    outcomes = await execute_run(
+        target, map_path, llm_client, queries, tier, active_defects=active_defects, run_id=run_id
+    )
     for query, outcome in zip(queries, outcomes):
         spans = await repository.get_spans_for_trace(outcome.trace_id)
         mr = await _dispatch_judge(entry, spans, query, llm_client, outcome.trace_id)

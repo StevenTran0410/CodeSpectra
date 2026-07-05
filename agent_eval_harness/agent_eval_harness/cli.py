@@ -135,6 +135,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     map_parser.add_argument("--backend-url", dest="backend_url", default=None)
     map_parser.add_argument("--backend-token", dest="backend_token", default=None)
 
+    # ui subcommand group
+    ui_parser = subparsers.add_parser("ui", help="Start the evaluation dashboard web server")
+    ui_parser.add_argument("--port", type=int, default=8321, help="Port to bind the server to")
+    ui_parser.add_argument("--host", default="127.0.0.1", help="Host address to bind the server to")
+    ui_parser.add_argument("--data-dir", dest="data_dir", default=None)
+
     return parser
 
 
@@ -200,7 +206,14 @@ async def _run_command(args: argparse.Namespace) -> int:
         print(f"[aeh] active defects: {', '.join(active) if active else 'none'}")
 
         queries = _read_queries(args)
-        outcomes = await execute_run(args.target, args.map_path, llm_client, queries, args.tier)
+        outcomes = await execute_run(
+            args.target,
+            args.map_path,
+            llm_client,
+            queries,
+            args.tier,
+            active_defects=active,
+        )
 
         for i, outcome in enumerate(outcomes, start=1):
             print(f'[aeh] trace {i}  query="{outcome.trace_result.root_input}"')
@@ -330,6 +343,7 @@ async def _eval_command(args: argparse.Namespace) -> int:
             llm_client=llm_client,
             concurrency=args.concurrency,
             tier=args.tier,
+            active_defects=active,
         )
 
         if args.json:
@@ -483,8 +497,25 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(_map_command(args))
     elif args.command == "plan":
         return asyncio.run(_plan_command(args))
+    elif args.command == "ui":
+        return _ui_command(args)
     parser.error(f"unknown command: {args.command}")
     return 1
+
+
+def _ui_command(args) -> int:
+    from pathlib import Path
+
+    import uvicorn
+
+    if args.data_dir:
+        os.environ["AEH_DATA_DIR"] = str(Path(args.data_dir).absolute())
+    else:
+        os.environ["AEH_DATA_DIR"] = str(Path(os.getcwd()).absolute())
+
+    print(f"Starting AEH Dashboard server on http://{args.host}:{args.port}")
+    uvicorn.run("agent_eval_harness.ui.server:app", host=args.host, port=args.port)
+    return 0
 
 
 if __name__ == "__main__":

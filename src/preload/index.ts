@@ -279,6 +279,14 @@ const api = {
     getLogsPath: (): Promise<string> => ipcRenderer.invoke('app:get-logs-path'),
     getDiagnostics: () => ipcRenderer.invoke('app:get-diagnostics'),
     retryBackend: (): Promise<void> => ipcRenderer.invoke('app:retry-backend'),
+  },
+  aeh: {
+    start: (): Promise<number> => ipcRenderer.invoke('aeh:start'),
+    showView: (bounds: { x: number; y: number; width: number; height: number }): Promise<void> =>
+      ipcRenderer.invoke('aeh:show-view', bounds),
+    hideView: (): Promise<void> => ipcRenderer.invoke('aeh:hide-view'),
+    resizeView: (bounds: { x: number; y: number; width: number; height: number }): Promise<void> =>
+      ipcRenderer.invoke('aeh:resize-view', bounds)
   }
 }
 

@@ -793,6 +793,12 @@ declare global {
           }>
         }>
       }
+      aeh: {
+        start: () => Promise<number>
+        showView: (bounds: { x: number; y: number; width: number; height: number }) => Promise<void>
+        hideView: () => Promise<void>
+        resizeView: (bounds: { x: number; y: number; width: number; height: number }) => Promise<void>
+      }
     }
   }
 }

@@ -1,0 +1,318 @@
+"""FastAPI UI Server for AEH per-agent drill-down dashboard."""
+from __future__ import annotations
+
+import json
+import logging
+import os
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Any
+
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+
+from agent_eval_harness.mapping.system_map import load_system_map
+from agent_eval_harness.store import repository
+from agent_eval_harness.store.database import close_db, init_db
+
+logger = logging.getLogger("agent_eval_harness.ui.server")
+
+# Life-span manager for db initialization
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Set the data directory if env is not already set
+    if not os.getenv("AEH_DATA_DIR"):
+        os.environ["AEH_DATA_DIR"] = os.getcwd()
+    await init_db()
+    yield
+    await close_db()
+
+
+app = FastAPI(
+    title="AEH Local Evaluation Dashboard",
+    description="Browse, compare, and debug agent evaluation runs.",
+    lifespan=lifespan,
+)
+
+# Enable CORS for local development (e.g. Vite on port 5173 talking to FastAPI on 8321)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# Pydantic models for response serialization
+class RunListItem(BaseModel):
+    id: str
+    target_system_id: str
+    eval_plan_id: str | None
+    started_at: str
+    finished_at: str | None
+    status: str
+    map_path: str | None
+    active_defects: list[str]
+    pass_rate: float
+    judge_cost: int
+
+
+class ComponentAggregate(BaseModel):
+    total: int
+    passed: int
+
+
+class RunDetailResponse(BaseModel):
+    id: str
+    target_system_id: str
+    eval_plan_id: str | None
+    started_at: str
+    finished_at: str | None
+    status: str
+    map_path: str | None
+    active_defects: list[str]
+    system_map: dict[str, Any]
+    component_aggregates: dict[str, ComponentAggregate]
+    overall_pass_rate: float
+
+
+class EvaluationDetailItem(BaseModel):
+    id: str
+    metric_name: str
+    metric_class: str
+    score: float | None
+    passed: bool | None
+    details: dict[str, Any]
+    evaluator: str | None
+    cost_tokens: int | None
+    trace_id: str | None
+    span_id: str | None
+    root_input: str | None
+    final_output: str | None
+    trace_tokens: int | None
+    trace_latency: int | None
+
+
+class TraceDetailResponse(BaseModel):
+    trace: dict[str, Any] | None
+    spans: list[dict[str, Any]]
+
+
+# --- API Routes ---
+
+@app.get("/api/runs", response_model=list[RunListItem])
+async def get_runs(target_system_id: str | None = None):
+    try:
+        db_runs = await repository.list_runs(target_system_id)
+        results = []
+        for r in db_runs:
+            defects = []
+            if r.get("active_defects"):
+                try:
+                    defects = json.loads(r["active_defects"])
+                except Exception:
+                    pass
+            results.append(
+                RunListItem(
+                    id=r["id"],
+                    target_system_id=r["target_system_id"],
+                    eval_plan_id=r["eval_plan_id"],
+                    started_at=r["started_at"],
+                    finished_at=r["finished_at"],
+                    status=r["status"],
+                    map_path=r["map_path"],
+                    active_defects=defects,
+                    pass_rate=r["pass_rate"],
+                    judge_cost=r["judge_cost"],
+                )
+            )
+        return results
+    except Exception as e:
+        logger.error(f"Failed to list runs: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/runs/{run_id}", response_model=RunDetailResponse)
+async def get_run_detail(run_id: str):
+    run = await repository.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    # Load system map from map_path if possible
+    system_map_dict = {
+        "target_system_id": run["target_system_id"],
+        "discrepancies": [],
+        "components": [],
+    }
+    if run.get("map_path"):
+        try:
+            m_path = Path(run["map_path"])
+            if m_path.exists():
+                sys_map = load_system_map(str(m_path))
+                system_map_dict = sys_map.model_dump()
+        except Exception as e:
+            logger.warning(f"Could not load system map from {run['map_path']}: {e}")
+
+    # Fetch component aggregates
+    from agent_eval_harness.store.database import get_db
+
+    db = get_db()
+    async with db.execute(
+        "SELECT component_id, COUNT(*) as total, "
+        "SUM(CASE WHEN passed = 1 THEN 1 ELSE 0 END) as passed "
+        "FROM evaluations WHERE run_id = ? AND component_id IS NOT NULL "
+        "GROUP BY component_id",
+        (run_id,),
+    ) as cur:
+        rows = await cur.fetchall()
+
+    aggregates = {
+        row["component_id"]: ComponentAggregate(
+            total=row["total"], passed=row["passed"]
+        )
+        for row in rows
+    }
+
+    defects = []
+    if run.get("active_defects"):
+        try:
+            defects = json.loads(run["active_defects"])
+        except Exception:
+            pass
+
+    # Fetch overall pass rate from database (Fix 5)
+    async with db.execute(
+        "SELECT COALESCE("
+        "CAST(SUM(CASE WHEN passed = 1 THEN 1 ELSE 0 END) AS REAL) / "
+        "NULLIF(COUNT(CASE WHEN passed IS NOT NULL THEN 1 END), 0), "
+        "0.0) as pass_rate "
+        "FROM evaluations WHERE run_id = ?",
+        (run_id,),
+    ) as cur:
+        rate_row = await cur.fetchone()
+    overall_pass_rate = rate_row["pass_rate"] if rate_row else 0.0
+
+    return RunDetailResponse(
+        id=run["id"],
+        target_system_id=run["target_system_id"],
+        eval_plan_id=run["eval_plan_id"],
+        started_at=run["started_at"],
+        finished_at=run["finished_at"],
+        status=run["status"],
+        map_path=run["map_path"],
+        active_defects=defects,
+        system_map=system_map_dict,
+        component_aggregates=aggregates,
+        overall_pass_rate=overall_pass_rate,
+    )
+
+
+@app.get(
+    "/api/runs/{run_id}/components/{component_id}",
+    response_model=list[EvaluationDetailItem],
+)
+async def get_component_evaluations(run_id: str, component_id: str):
+    from agent_eval_harness.store.database import get_db
+
+    db = get_db()
+    query = """
+        SELECT
+            e.id, e.metric_name, e.metric_class, e.score, e.passed, e.details_json,
+            e.evaluator, e.cost_tokens, e.trace_id, e.span_id,
+            t.root_input, t.final_output,
+            t.total_tokens as trace_tokens,
+            t.total_latency_ms as trace_latency
+        FROM evaluations e
+        LEFT JOIN traces t ON e.trace_id = t.id
+        WHERE e.run_id = ? AND e.component_id = ?
+        ORDER BY e.rowid
+    """
+    async with db.execute(query, (run_id, component_id)) as cur:
+        rows = await cur.fetchall()
+
+    results = []
+    for r in rows:
+        details = {}
+        if r["details_json"]:
+            try:
+                details = json.loads(r["details_json"])
+            except Exception:
+                pass
+        results.append(
+            EvaluationDetailItem(
+                id=r["id"],
+                metric_name=r["metric_name"],
+                metric_class=r["metric_class"],
+                score=r["score"],
+                passed=r["passed"] if r["passed"] is None else bool(r["passed"]),
+                details=details,
+                evaluator=r["evaluator"],
+                cost_tokens=r["cost_tokens"],
+                trace_id=r["trace_id"],
+                span_id=r["span_id"],
+                root_input=r["root_input"],
+                final_output=r["final_output"],
+                trace_tokens=r["trace_tokens"],
+                trace_latency=r["trace_latency"],
+            )
+        )
+    return results
+
+
+@app.get("/api/traces/{trace_id}", response_model=TraceDetailResponse)
+async def get_trace_detail(trace_id: str):
+    from agent_eval_harness.store.database import get_db
+
+    db = get_db()
+    async with db.execute("SELECT * FROM traces WHERE id = ?", (trace_id,)) as cur:
+        row = await cur.fetchone()
+    trace_dict = dict(row) if row else None
+
+    spans = await repository.get_span_tree(trace_id)
+    return TraceDetailResponse(trace=trace_dict, spans=spans)
+
+
+@app.get("/api/datasets/{dataset_id}/cases")
+async def get_dataset_cases(dataset_id: str):
+    cases = await repository.get_dataset_cases(dataset_id)
+    return cases
+
+
+@app.get("/health")
+async def health_check():
+    return {"status": "ok"}
+
+
+# --- Static Files / SPA Fallback ---
+
+current_dir = Path(__file__).parent
+dist_dir = current_dir / "dist"
+
+# If the UI build output directory exists, serve it
+if dist_dir.exists():
+    app.mount(
+        "/assets",
+        StaticFiles(directory=str(dist_dir / "assets")),
+        name="assets",
+    )
+
+
+@app.get("/{catchall:path}")
+async def read_index(catchall: str):
+    # Only serve the index if index.html exists, otherwise return a message
+    index_file = dist_dir / "index.html"
+    if index_file.exists():
+        # Do not serve index.html for API requests that fall through
+        if catchall.startswith("api/"):
+            raise HTTPException(status_code=404, detail="API endpoint not found")
+        return FileResponse(str(index_file))
+    return {
+        "message": (
+            "AEH UI server is running on localhost. "
+            "Please build the frontend (npm run build) to serve the UI."
+        )
+    }
