@@ -112,6 +112,41 @@ _MIGRATIONS: list[dict[str, Any]] = [
             ALTER TABLE runs ADD COLUMN model_overrides TEXT NOT NULL DEFAULT '{}';
         """,
     },
+    {
+        "version": 3,
+        "description": "Add discovery_sessions and discovery_candidates tables",
+        "sql": """
+            CREATE TABLE IF NOT EXISTS discovery_sessions (
+                id           TEXT PRIMARY KEY,
+                repo_ref     TEXT NOT NULL,
+                snapshot_id  TEXT NOT NULL,
+                status       TEXT NOT NULL,
+                error        TEXT,
+                created_at   TEXT NOT NULL,
+                finished_at  TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS discovery_candidates (
+                id                TEXT PRIMARY KEY,
+                session_id        TEXT NOT NULL REFERENCES discovery_sessions(id) ON DELETE CASCADE,
+                name              TEXT NOT NULL,
+                frameworks_json   TEXT NOT NULL,
+                entry_points_json TEXT NOT NULL,
+                evidence_json     TEXT NOT NULL,
+                confidence        TEXT NOT NULL,
+                verdict           TEXT NOT NULL DEFAULT 'proposed'
+            );
+            CREATE INDEX IF NOT EXISTS idx_candidates_session_id ON discovery_candidates(session_id);
+        """,
+    },
+    {
+        "version": 4,
+        "description": "Add needs_human flag to discovery_candidates — distinguishes "
+        "'reviewed, low confidence' from 'not confidently classified' (epic §4e)",
+        "sql": """
+            ALTER TABLE discovery_candidates ADD COLUMN needs_human INTEGER NOT NULL DEFAULT 0;
+        """,
+    },
 ]
 
 TARGET_VERSION = len(_MIGRATIONS) - 1

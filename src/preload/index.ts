@@ -43,8 +43,8 @@ const api = {
   folder: {
     pick: (): Promise<string | null> => ipcRenderer.invoke('folder:pick'),
     validate: (path: string) => ipcRenderer.invoke('folder:validate', path),
-    list: (workspaceId?: string) => ipcRenderer.invoke('folder:list', workspaceId),
-    add: (path: string, workspaceId?: string) => ipcRenderer.invoke('folder:add', path, workspaceId),
+    list: (workspaceId?: string, mode?: string) => ipcRenderer.invoke('folder:list', workspaceId, mode),
+    add: (path: string, workspaceId?: string, mode?: string) => ipcRenderer.invoke('folder:add', path, workspaceId, mode),
     remove: (id: string): Promise<void> => ipcRenderer.invoke('folder:remove', id),
     revalidate: (id: string) => ipcRenderer.invoke('folder:revalidate', id),
     branches: (id: string, refresh = false): Promise<string[]> =>
@@ -63,7 +63,7 @@ const api = {
       }
     ) => ipcRenderer.invoke('folder:updateSettings', id, settings),
     estimateFileCount: (id: string) => ipcRenderer.invoke('folder:estimateFileCount', id),
-    cloneFromUrl: (url: string, workspaceId?: string) => ipcRenderer.invoke('folder:cloneFromUrl', url, workspaceId)
+    cloneFromUrl: (url: string, workspaceId?: string, mode?: string) => ipcRenderer.invoke('folder:cloneFromUrl', url, workspaceId, mode)
   },
   sync: {
     prepare: (body: {
@@ -282,11 +282,20 @@ const api = {
   },
   aeh: {
     start: (): Promise<number> => ipcRenderer.invoke('aeh:start'),
-    showView: (bounds: { x: number; y: number; width: number; height: number }): Promise<void> =>
-      ipcRenderer.invoke('aeh:show-view', bounds),
-    hideView: (): Promise<void> => ipcRenderer.invoke('aeh:hide-view'),
-    resizeView: (bounds: { x: number; y: number; width: number; height: number }): Promise<void> =>
-      ipcRenderer.invoke('aeh:resize-view', bounds)
+    listRuns: () => ipcRenderer.invoke('aeh:listRuns'),
+    runDetail: (runId: string) => ipcRenderer.invoke('aeh:runDetail', runId),
+    componentEvaluations: (runId: string, componentId: string) =>
+      ipcRenderer.invoke('aeh:componentEvaluations', runId, componentId),
+    traceDetail: (traceId: string) => ipcRenderer.invoke('aeh:traceDetail', traceId),
+    datasetCases: (datasetId: string) => ipcRenderer.invoke('aeh:datasetCases', datasetId),
+    providers: () => ipcRenderer.invoke('aeh:providers'),
+    rerun: (runId: string, body: unknown) => ipcRenderer.invoke('aeh:rerun', runId, body),
+    startDiscovery: (body: unknown) => ipcRenderer.invoke('aeh:startDiscovery', body),
+    listDiscoverySessions: (repoRef?: string) => ipcRenderer.invoke('aeh:listDiscoverySessions', repoRef),
+    getDiscoverySession: (sessionId: string) => ipcRenderer.invoke('aeh:getDiscoverySession', sessionId),
+    listDiscoveryCandidates: (sessionId: string) => ipcRenderer.invoke('aeh:listDiscoveryCandidates', sessionId),
+    updateDiscoveryCandidateVerdict: (candidateId: string, verdict: string) =>
+      ipcRenderer.invoke('aeh:updateDiscoveryCandidateVerdict', candidateId, verdict)
   }
 }
 

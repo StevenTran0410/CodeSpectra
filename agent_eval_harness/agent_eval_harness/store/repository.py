@@ -347,3 +347,117 @@ async def list_runs(target_system_id: str | None = None) -> list[dict]:
         async with db.execute(query) as cur:
             rows = await cur.fetchall()
     return [dict(row) for row in rows]
+
+
+async def insert_discovery_session(
+    repo_ref: str,
+    snapshot_id: str,
+) -> str:
+    session_id = new_id()
+    db = get_db()
+    await db.execute(
+        "INSERT INTO discovery_sessions (id, repo_ref, snapshot_id, status, created_at) "
+        "VALUES (?, ?, ?, 'running', ?)",
+        (session_id, repo_ref, snapshot_id, utc_now_iso()),
+    )
+    await db.commit()
+    return session_id
+
+
+async def finish_discovery_session(
+    session_id: str,
+    status: Literal["completed", "failed"],
+    error: str | None = None,
+) -> None:
+    db = get_db()
+    await db.execute(
+        "UPDATE discovery_sessions SET status = ?, error = ?, finished_at = ? WHERE id = ?",
+        (status, error, utc_now_iso(), session_id),
+    )
+    await db.commit()
+
+
+async def insert_discovery_candidates_bulk(
+    session_id: str,
+    candidates: list[dict],
+) -> None:
+    db = get_db()
+    rows = [
+        (
+            new_id(),
+            session_id,
+            c["name"],
+            json.dumps(c.get("frameworks", [])),
+            json.dumps(c.get("entry_points", [])),
+            json.dumps(c.get("evidence", [])),
+            c.get("confidence", "low"),
+            c.get("verdict", "proposed"),
+            int(bool(c.get("needs_human", False))),
+        )
+        for c in candidates
+    ]
+    if rows:
+        await db.executemany(
+            "INSERT INTO discovery_candidates (id, session_id, name, frameworks_json, "
+            "entry_points_json, evidence_json, confidence, verdict, needs_human) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+        await db.commit()
+
+
+async def list_discovery_sessions(repo_ref: str | None = None) -> list[dict]:
+    db = get_db()
+    if repo_ref:
+        async with db.execute(
+            "SELECT * FROM discovery_sessions WHERE repo_ref = ? ORDER BY created_at DESC",
+            (repo_ref,),
+        ) as cur:
+            rows = await cur.fetchall()
+    else:
+        async with db.execute(
+            "SELECT * FROM discovery_sessions ORDER BY created_at DESC"
+        ) as cur:
+            rows = await cur.fetchall()
+    return [dict(r) for r in rows]
+
+
+async def get_discovery_session(session_id: str) -> dict | None:
+    db = get_db()
+    async with db.execute(
+        "SELECT * FROM discovery_sessions WHERE id = ?",
+        (session_id,),
+    ) as cur:
+        row = await cur.fetchone()
+    return dict(row) if row else None
+
+
+async def get_discovery_candidates(session_id: str) -> list[dict]:
+    db = get_db()
+    async with db.execute(
+        "SELECT * FROM discovery_candidates WHERE session_id = ? ORDER BY name ASC",
+        (session_id,),
+    ) as cur:
+        rows = await cur.fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["frameworks"] = json.loads(d["frameworks_json"] or "[]")
+        d["entry_points"] = json.loads(d["entry_points_json"] or "[]")
+        d["evidence"] = json.loads(d["evidence_json"] or "[]")
+        d["needs_human"] = bool(d.get("needs_human", 0))
+        out.append(d)
+    return out
+
+
+async def update_candidate_verdict(
+    candidate_id: str,
+    verdict: Literal["proposed", "confirmed", "rejected"],
+) -> None:
+    db = get_db()
+    await db.execute(
+        "UPDATE discovery_candidates SET verdict = ? WHERE id = ?",
+        (verdict, candidate_id),
+    )
+    await db.commit()
+

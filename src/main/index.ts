@@ -24,7 +24,7 @@ import { registerJobHandlers } from './api/job.api'
 import { registerAppHandlers } from './api/app.api'
 import { registerQAHandlers } from './api/qa.api'
 import { registerImpactHandlers } from './api/impact.api'
-import { registerAEHHandlers, stopAEHView } from './api/aeh.api'
+import { registerAEHHandlers } from './api/aeh.api'
 import { getAEHProcessManager } from './infrastructure/aeh-server/server'
 import { logger } from './shared/logger'
 
@@ -70,12 +70,10 @@ app.whenReady().then(async () => {
 app.on('window-all-closed', () => {
   stopPythonServer()
   getAEHProcessManager().stop()
-  stopAEHView()
   if (process.platform !== 'darwin') app.quit()
 })
 
 app.on('before-quit', () => {
   stopPythonServer()
   getAEHProcessManager().stop()
-  stopAEHView()
 })

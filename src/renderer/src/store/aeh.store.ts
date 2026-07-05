@@ -8,9 +8,6 @@ interface AEHState {
 
   startAEH: () => Promise<number>
   setActive: (active: boolean) => void
-  showView: (bounds: { x: number; y: number; width: number; height: number }) => Promise<void>
-  hideView: () => Promise<void>
-  resizeView: (bounds: { x: number; y: number; width: number; height: number }) => Promise<void>
 }
 
 export const useAEHStore = create<AEHState>((set, get) => ({
@@ -34,17 +31,5 @@ export const useAEHStore = create<AEHState>((set, get) => ({
     }
   },
 
-  setActive: (active) => set({ isActive: active }),
-
-  showView: async (bounds) => {
-    await window.api.aeh.showView(bounds)
-  },
-
-  hideView: async () => {
-    await window.api.aeh.hideView()
-  },
-
-  resizeView: async (bounds) => {
-    await window.api.aeh.resizeView(bounds)
-  }
+  setActive: (active) => set({ isActive: active })
 }))

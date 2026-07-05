@@ -62,6 +62,7 @@ export interface LocalRepo {
   ignore_overrides: string[]
   detect_submodules: boolean
   include_tests: boolean
+  mode: 'code_analysis' | 'aeh'
   added_at: string
   last_validated_at: string
 }
@@ -540,8 +541,8 @@ declare global {
       folder: {
         pick: () => Promise<string | null>
         validate: (path: string) => Promise<ValidateFolderResponse>
-        list: () => Promise<LocalRepo[]>
-        add: (path: string) => Promise<LocalRepo>
+        list: (workspaceId?: string, mode?: string) => Promise<LocalRepo[]>
+        add: (path: string, workspaceId?: string, mode?: string) => Promise<LocalRepo>
         remove: (id: string) => Promise<void>
         revalidate: (id: string) => Promise<LocalRepo>
         branches: (id: string, refresh?: boolean) => Promise<string[]>
@@ -558,7 +559,7 @@ declare global {
           }
         ) => Promise<LocalRepo>
         estimateFileCount: (id: string) => Promise<EstimateFileCountResponse>
-        cloneFromUrl: (url: string, workspaceId?: string) => Promise<LocalRepo>
+        cloneFromUrl: (url: string, workspaceId?: string, mode?: string) => Promise<LocalRepo>
       }
       sync: {
         prepare: (body: {
@@ -795,10 +796,151 @@ declare global {
       }
       aeh: {
         start: () => Promise<number>
-        showView: (bounds: { x: number; y: number; width: number; height: number }) => Promise<void>
-        hideView: () => Promise<void>
-        resizeView: (bounds: { x: number; y: number; width: number; height: number }) => Promise<void>
+        listRuns: () => Promise<AEHRunListItem[]>
+        runDetail: (runId: string) => Promise<AEHRunDetailResponse>
+        componentEvaluations: (runId: string, componentId: string) => Promise<AEHEvaluationDetailItem[]>
+        traceDetail: (traceId: string) => Promise<AEHTraceDetailResponse>
+        datasetCases: (datasetId: string) => Promise<unknown[]>
+        providers: () => Promise<AEHProviderSummary[]>
+        rerun: (runId: string, body: { model_overrides: Record<string, string>; active_defects: string[] }) => Promise<{ run_id: string }>
+        startDiscovery: (body: {
+          repo_ref: string
+          snapshot_id: string
+          provider_id?: string | null
+          backend_url?: string | null
+          backend_token?: string | null
+        }) => Promise<{ session_id: string }>
+        listDiscoverySessions: (repoRef?: string) => Promise<AEHDiscoverySession[]>
+        getDiscoverySession: (sessionId: string) => Promise<AEHDiscoverySession>
+        listDiscoveryCandidates: (sessionId: string) => Promise<AEHDiscoveryCandidate[]>
+        updateDiscoveryCandidateVerdict: (candidateId: string, verdict: 'proposed' | 'confirmed' | 'rejected') => Promise<{ success: boolean }>
       }
     }
+  }
+
+  export interface AEHRunListItem {
+    id: string
+    target_system_id: string
+    eval_plan_id: string | null
+    started_at: string
+    finished_at: string | null
+    status: string
+    map_path: string | null
+    active_defects: string[]
+    pass_rate: number
+    judge_cost: number
+  }
+
+  export interface AEHComponentAggregate {
+    total: number
+    passed: number
+  }
+
+  export interface AEHSystemMapComponent {
+    id: string
+    role: string
+    model: string | null
+    entry_point: string | null
+    constraints: Array<{ name: string; value: any; source: string }>
+    upstream: string[]
+    downstream: string[]
+  }
+
+  export interface AEHSystemMap {
+    target_system_id: string
+    discrepancies: string[]
+    components: AEHSystemMapComponent[]
+  }
+
+  export interface AEHRunDetailResponse {
+    id: string
+    target_system_id: string
+    eval_plan_id: string | null
+    started_at: string
+    finished_at: string | null
+    status: string
+    map_path: string | null
+    active_defects: string[]
+    system_map: AEHSystemMap
+    component_aggregates: Record<string, AEHComponentAggregate>
+    overall_pass_rate: number
+    target?: string | null
+    suite_path?: string | null
+    parent_run_id?: string | null
+    model_overrides?: Record<string, string>
+  }
+
+  export interface AEHEvaluationDetailItem {
+    id: string
+    metric_name: string
+    metric_class: string
+    score: number | null
+    passed: boolean | null
+    details: Record<string, any>
+    evaluator: string | null
+    cost_tokens: number | null
+    trace_id: string | null
+    span_id: string | null
+    root_input: string | null
+    final_output: string | null
+    trace_tokens: number | null
+    trace_latency: number | null
+  }
+
+  export interface AEHTraceSpan {
+    id: string
+    trace_id: string
+    parent_span_id: string | null
+    component_id: string | null
+    span_type: string
+    input_json: string | null
+    output_json: string | null
+    model: string | null
+    tokens_in: number | null
+    tokens_out: number | null
+    latency_ms: number | null
+    started_at: string
+    details_json: string
+  }
+
+  export interface AEHTraceDetailResponse {
+    trace: {
+      id: string
+      run_id: string
+      dataset_case_id: string | null
+      root_input: string
+      final_output: string | null
+      total_tokens: number
+      total_latency_ms: number
+    } | null
+    spans: AEHTraceSpan[]
+  }
+
+  export interface AEHProviderSummary {
+    provider_id: string
+    display_name: string
+    model_id: string | null
+  }
+
+  export interface AEHDiscoverySession {
+    id: string
+    repo_ref: string
+    snapshot_id: string
+    status: 'running' | 'completed' | 'failed'
+    error: string | null
+    created_at: string
+    finished_at: string | null
+  }
+
+  export interface AEHDiscoveryCandidate {
+    id: string
+    session_id: string
+    name: string
+    frameworks: string[]
+    entry_points: string[]
+    evidence: any[]
+    confidence: 'high' | 'medium' | 'low'
+    needs_human: boolean
+    verdict: 'proposed' | 'confirmed' | 'rejected'
   }
 }

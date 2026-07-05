@@ -1,6 +1,7 @@
 """Types for local folder repositories."""
 from enum import Enum
 
+from typing import Literal
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -35,6 +36,7 @@ class LocalRepo(BaseModel):
     ignore_overrides: list[str] = Field(default_factory=list)
     detect_submodules: bool = True
     include_tests: bool = False
+    mode: Literal["code_analysis", "aeh"] = "code_analysis"
     added_at: str
     last_validated_at: str
 
@@ -114,6 +116,7 @@ class ValidateFolderResponse(BaseModel):
 class AddLocalRepoRequest(BaseModel):
     path: str
     workspace_id: str | None = None
+    mode: Literal["code_analysis", "aeh"] = "code_analysis"
 
     @field_validator("path")
     @classmethod
@@ -128,6 +131,7 @@ class CloneFromUrlRequest(BaseModel):
     url: str
     dest_path: str  # absolute path where the repo should be cloned
     workspace_id: str | None = None
+    mode: Literal["code_analysis", "aeh"] = "code_analysis"
 
     @field_validator("url")
     @classmethod

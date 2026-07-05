@@ -14,6 +14,13 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+import asyncio
+from agent_eval_harness.config import AEHConfig
+from agent_eval_harness.llm.client import LLMResponse
+from agent_eval_harness.llm.fake_client import FakeLLMClient
+from agent_eval_harness.llm.proxy_client import CodeSpectraProxyClient
+from agent_eval_harness.discovery.client import CodeSpectraClient
+from agent_eval_harness.discovery.engine import run_discovery_background
 from agent_eval_harness.mapping.system_map import load_system_map
 from agent_eval_harness.store import repository
 from agent_eval_harness.store.database import close_db, init_db
@@ -475,6 +482,157 @@ async def rerun_run(run_id: str, body: RerunRequest):
 
     asyncio.create_task(_execute_rerun_task())
     return {"run_id": new_run_id}
+
+
+# --- Discovery Models & Endpoints ---
+
+class StartDiscoveryRequest(BaseModel):
+    repo_ref: str
+    snapshot_id: str
+    provider_id: str | None = None
+    backend_url: str | None = None
+    backend_token: str | None = None
+
+
+class DiscoverySessionResponse(BaseModel):
+    id: str
+    repo_ref: str
+    snapshot_id: str
+    status: str
+    error: str | None
+    created_at: str
+    finished_at: str | None
+
+
+class DiscoveryCandidateResponse(BaseModel):
+    id: str
+    session_id: str
+    name: str
+    frameworks: list[str]
+    entry_points: list[str]
+    evidence: list[dict]
+    confidence: str
+    needs_human: bool = False
+    verdict: str
+
+
+class UpdateVerdictRequest(BaseModel):
+    verdict: str
+
+
+@app.post("/api/discovery/sessions")
+async def start_discovery(body: StartDiscoveryRequest):
+    try:
+        config = AEHConfig.load()
+        provider_id = body.provider_id or config.provider_id
+        backend_url = body.backend_url or config.backend_url
+        backend_token = body.backend_token or config.backend_token
+
+        if not backend_url or not backend_token:
+            raise HTTPException(
+                status_code=400,
+                detail="Missing CodeSpectra backend connection config (url/token)."
+            )
+
+        # Build LLM client
+        if provider_id:
+            llm_client = CodeSpectraProxyClient(backend_url, backend_token, provider_id, config.model_id)
+        else:
+            llm_client = FakeLLMClient(
+                LLMResponse(
+                    content='{"is_agentic_system": true, "name": "Fake Agent", "frameworks": ["haystack"], "entry_points": [], "confidence": "high"}',
+                    model="fake"
+                )
+            )
+
+        client = CodeSpectraClient(backend_url, backend_token)
+
+        # Start session
+        session_id = await repository.insert_discovery_session(body.repo_ref, body.snapshot_id)
+
+        # Execute background scan
+        asyncio.create_task(
+            run_discovery_background(session_id, body.snapshot_id, body.repo_ref, client, llm_client)
+        )
+
+        return {"session_id": session_id}
+    except Exception as e:
+        logger.error(f"Failed to start discovery session: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/discovery/sessions", response_model=list[DiscoverySessionResponse])
+async def list_discovery_sessions(repo_ref: str | None = None):
+    try:
+        sessions = await repository.list_discovery_sessions(repo_ref)
+        return [
+            DiscoverySessionResponse(
+                id=s["id"],
+                repo_ref=s["repo_ref"],
+                snapshot_id=s["snapshot_id"],
+                status=s["status"],
+                error=s["error"],
+                created_at=s["created_at"],
+                finished_at=s["finished_at"],
+            )
+            for s in sessions
+        ]
+    except Exception as e:
+        logger.error(f"Failed to list discovery sessions: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/discovery/sessions/{session_id}", response_model=DiscoverySessionResponse)
+async def get_discovery_session(session_id: str):
+    session = await repository.get_discovery_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Discovery session not found")
+    return DiscoverySessionResponse(
+        id=session["id"],
+        repo_ref=session["repo_ref"],
+        snapshot_id=session["snapshot_id"],
+        status=session["status"],
+        error=session["error"],
+        created_at=session["created_at"],
+        finished_at=session["finished_at"],
+    )
+
+
+@app.get("/api/discovery/sessions/{session_id}/candidates", response_model=list[DiscoveryCandidateResponse])
+async def list_discovery_candidates(session_id: str):
+    try:
+        candidates = await repository.get_discovery_candidates(session_id)
+        return [
+            DiscoveryCandidateResponse(
+                id=c["id"],
+                session_id=c["session_id"],
+                name=c["name"],
+                frameworks=c["frameworks"],
+                entry_points=c["entry_points"],
+                evidence=c["evidence"],
+                confidence=c["confidence"],
+                needs_human=c.get("needs_human", False),
+                verdict=c["verdict"],
+            )
+            for c in candidates
+        ]
+    except Exception as e:
+        logger.error(f"Failed to list discovery candidates: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/discovery/candidates/{candidate_id}/verdict")
+async def update_candidate_verdict(candidate_id: str, body: UpdateVerdictRequest):
+    try:
+        if body.verdict not in ["proposed", "confirmed", "rejected"]:
+            raise HTTPException(status_code=400, detail="Invalid verdict")
+        await repository.update_candidate_verdict(candidate_id, body.verdict)
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to update candidate verdict: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/health")

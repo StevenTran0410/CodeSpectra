@@ -149,7 +149,7 @@ const [starting, setStarting] = useState(false)
   } | null>(null)
 
   useEffect(() => {
-    loadRepos(activeWorkspaceId ?? undefined)
+    loadRepos(activeWorkspaceId ?? undefined, 'code_analysis')
     loadProviders()
     window.api.consent.checkCloud().then((v) => setCloudConsentGiven(v.given)).catch(() => null)
     loadHistory()

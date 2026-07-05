@@ -1,0 +1,104 @@
+# Framework and Primitive Fingerprints for Stage 1 Candidate Agentic-System Enumeration
+# Weights reflect the confidence of the fingerprint being part of an agentic system.
+
+# Framework-import fingerprints are "retrieval" (content search), never "symbol"
+# (name/path search) — a real target's symbol names and file paths (e.g. T1's
+# WriterComponent/build_pipeline in pipeline.py) almost never contain the
+# framework's own name even when the file genuinely does `from haystack import
+# ...`. Confirmed directly: T1's actual Haystack-based pipeline has zero
+# symbols/paths containing "haystack" anywhere, so a `type: symbol` fingerprint
+# for it would never fire on the exact fixture this ticket's golden test requires
+# to work. Only use `type: symbol` for fingerprints that are genuinely about a
+# declared name (e.g. a class actually named `...Agent`), never for import/module
+# detection.
+fingerprints:
+  - id: haystack_import
+    type: retrieval
+    query: "import haystack pipeline component"
+    pattern: "\\bimport\\s+haystack\\b|\\bfrom\\s+haystack\\b"
+    framework: "haystack"
+    weight: 1.0
+
+  - id: langgraph_import
+    type: retrieval
+    query: "import langgraph state graph"
+    pattern: "\\bimport\\s+langgraph\\b|\\bfrom\\s+langgraph\\b"
+    framework: "langgraph"
+    weight: 1.0
+
+  - id: langchain_import
+    type: retrieval
+    query: "import langchain chain agent"
+    pattern: "\\bimport\\s+langchain\\b|\\bfrom\\s+langchain\\b"
+    framework: "langchain"
+    weight: 0.9
+
+  - id: crewai_import
+    type: retrieval
+    query: "import crewai crew agent task"
+    pattern: "\\bimport\\s+crewai\\b|\\bfrom\\s+crewai\\b"
+    framework: "crewai"
+    weight: 1.0
+
+  - id: autogen_import
+    type: retrieval
+    query: "import autogen agent conversation"
+    pattern: "\\bimport\\s+autogen\\b|\\bfrom\\s+autogen\\b"
+    framework: "autogen"
+    weight: 1.0
+
+  - id: semantic_kernel_import
+    type: retrieval
+    query: "import semantic_kernel plugin planner"
+    pattern: "\\bimport\\s+semantic_kernel\\b|\\bfrom\\s+semantic_kernel\\b"
+    framework: "semantic_kernel"
+    weight: 1.0
+
+  - id: openai_sdk
+    type: retrieval
+    query: "import openai chat completions client"
+    pattern: "\\bimport\\s+openai\\b|\\bfrom\\s+openai\\b"
+    framework: "openai"
+    weight: 0.7
+
+  - id: anthropic_sdk
+    type: retrieval
+    query: "import anthropic messages client"
+    pattern: "\\bimport\\s+anthropic\\b|\\bfrom\\s+anthropic\\b"
+    framework: "anthropic"
+    weight: 0.7
+
+  - id: component_decorator
+    type: retrieval
+    query: "@component"
+    pattern: "@component"
+    framework: "haystack"
+    weight: 0.9
+
+  - id: tool_decorator
+    type: retrieval
+    query: "@tool"
+    pattern: "@tool"
+    framework: "unknown"
+    weight: 0.9
+
+  - id: agent_class
+    type: symbol
+    query: "Agent"
+    pattern: "Agent"
+    framework: "unknown"
+    weight: 0.7
+
+  - id: chat_loop
+    type: retrieval
+    query: "chat.completions.create"
+    pattern: "chat\\.completions\\.create|client\\.chat"
+    framework: "unknown"
+    weight: 0.7
+
+  - id: system_prompt
+    type: retrieval
+    query: "system prompt"
+    pattern: "system_prompt|system prompt"
+    framework: "unknown"
+    weight: 0.6

@@ -10,6 +10,7 @@ Covers:
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -389,15 +390,21 @@ class TestRerankerPreservesMetadata:
                 assert reranked[0].token_estimate == token_est
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="Requires GPU (CUDA)")
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or os.getenv("RUN_GPU_SMOKE_TEST") != "1",
+    reason="Requires GPU (CUDA) AND explicit opt-in via RUN_GPU_SMOKE_TEST=1 — "
+    "CUDA availability alone isn't consent to download/load a real model "
+    "every time the suite runs; a dev machine having a GPU shouldn't make "
+    "this fire unattended.",
+)
 class TestRerankerGPUEndToEnd:
-    """Real GPU end-to-end smoke test (requires CUDA available)."""
+    """Real GPU end-to-end smoke test (requires CUDA + RUN_GPU_SMOKE_TEST=1)."""
 
     def test_real_model_inference_smoke_test(self):
         """Smoke test: load the real model and run inference on 2-3 docs.
 
-        This test is skipped on CI (no GPU), but runs locally to validate the
-        full pipeline works end-to-end.
+        Opt-in only (RUN_GPU_SMOKE_TEST=1) — never fires in a routine `pytest`
+        run even on a machine with CUDA, since it downloads/loads a real model.
         """
         from domain.retrieval.cross_encoder_rerank import load_reranker
 

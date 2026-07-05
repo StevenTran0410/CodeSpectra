@@ -1,8 +1,14 @@
-import { ipcMain, WebContentsView, BrowserWindow } from 'electron'
+import { ipcMain } from 'electron'
 import { getAEHProcessManager } from '../infrastructure/aeh-server/server'
+import { BackendClient } from '../infrastructure/python-server/client'
 
-let aehView: WebContentsView | null = null
-let lastLoadedPort: number | null = null
+function aehClient(): BackendClient {
+  const port = getAEHProcessManager().getPort()
+  if (port === null) {
+    throw new Error('AEH server is not running')
+  }
+  return new BackendClient(port)
+}
 
 export function registerAEHHandlers(): void {
   ipcMain.handle('aeh:start', async () => {
@@ -11,61 +17,50 @@ export function registerAEHHandlers(): void {
     return port
   })
 
-  ipcMain.handle(
-    'aeh:show-view',
-    async (_event, bounds: { x: number; y: number; width: number; height: number }) => {
-      const manager = getAEHProcessManager()
-      const port = manager.getPort()
-      if (port === null) {
-        throw new Error('AEH server is not running')
-      }
+  ipcMain.handle('aeh:listRuns', () => aehClient().get('/api/runs'))
 
-      const win = BrowserWindow.getAllWindows()[0]
-      if (!win) return
-
-      if (!aehView) {
-        aehView = new WebContentsView({
-          webPreferences: {
-            webSecurity: true,
-            sandbox: false
-          }
-        })
-        aehView.webContents.loadURL(`http://127.0.0.1:${port}/`)
-        lastLoadedPort = port
-      } else if (lastLoadedPort !== port) {
-        aehView.webContents.loadURL(`http://127.0.0.1:${port}/`)
-        lastLoadedPort = port
-      }
-
-      // Attach it if not already attached
-      const children = win.contentView.children
-      if (!children.includes(aehView)) {
-        win.contentView.addChildView(aehView)
-      }
-
-      aehView.setBounds(bounds)
-    }
+  ipcMain.handle('aeh:runDetail', (_e, runId: string) =>
+    aehClient().get(`/api/runs/${runId}`)
   )
 
-  ipcMain.handle('aeh:hide-view', async () => {
-    const win = BrowserWindow.getAllWindows()[0]
-    if (win && aehView) {
-      win.contentView.removeChildView(aehView)
-    }
+  ipcMain.handle('aeh:componentEvaluations', (_e, runId: string, componentId: string) =>
+    aehClient().get(`/api/runs/${runId}/components/${componentId}`)
+  )
+
+  ipcMain.handle('aeh:traceDetail', (_e, traceId: string) =>
+    aehClient().get(`/api/traces/${traceId}`)
+  )
+
+  ipcMain.handle('aeh:datasetCases', (_e, datasetId: string) =>
+    aehClient().get(`/api/datasets/${datasetId}/cases`)
+  )
+
+  ipcMain.handle('aeh:providers', () =>
+    aehClient().get('/api/providers')
+  )
+
+  ipcMain.handle('aeh:rerun', (_e, runId: string, body: unknown) =>
+    aehClient().post(`/api/runs/${runId}/rerun`, body)
+  )
+
+  ipcMain.handle('aeh:startDiscovery', (_e, body: unknown) =>
+    aehClient().post('/api/discovery/sessions', body)
+  )
+
+  ipcMain.handle('aeh:listDiscoverySessions', (_e, repoRef?: string) => {
+    const url = repoRef ? `/api/discovery/sessions?repo_ref=${encodeURIComponent(repoRef)}` : '/api/discovery/sessions'
+    return aehClient().get(url)
   })
 
-  ipcMain.handle(
-    'aeh:resize-view',
-    async (_event, bounds: { x: number; y: number; width: number; height: number }) => {
-      if (aehView) {
-        aehView.setBounds(bounds)
-      }
-    }
+  ipcMain.handle('aeh:getDiscoverySession', (_e, sessionId: string) =>
+    aehClient().get(`/api/discovery/sessions/${sessionId}`)
   )
-}
 
-export function stopAEHView(): void {
-  if (aehView) {
-    aehView = null
-  }
+  ipcMain.handle('aeh:listDiscoveryCandidates', (_e, sessionId: string) =>
+    aehClient().get(`/api/discovery/sessions/${sessionId}/candidates`)
+  )
+
+  ipcMain.handle('aeh:updateDiscoveryCandidateVerdict', (_e, candidateId: string, verdict: string) =>
+    aehClient().post(`/api/discovery/candidates/${candidateId}/verdict`, { verdict })
+  )
 }

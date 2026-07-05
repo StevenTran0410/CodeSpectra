@@ -88,3 +88,8 @@ running backend + a real provider):
 - `test_targets/` — AEH's own unit-test fixtures (T1 `linear_rag`, T2
   `multi_agent`), never the thing being evaluated — see CS-260 §6.
 - `tests/` — the offline test suite.
+
+## Web Dashboard (Vite App)
+
+The standalone web dashboard inside `ui/` remains fully supported for CLI/standalone users who run `aeh ui`. However, please note that this standalone app is in maintenance-only mode. The primary reporting dashboard is now fully integrated as native React views inside the CodeSpectra Electron desktop application. New features should be built in the native Electron views.
+

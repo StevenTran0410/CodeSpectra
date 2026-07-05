@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState, useRef } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams, useLocation } from 'react-router-dom'
 import { AlertTriangle, CheckCircle2, FolderOpen, GitBranch, Loader2, RefreshCw, Trash2 } from 'lucide-react'
 import { EmptyState } from '../../components/ui/EmptyState'
 import { ErrorBanner } from '../../components/ui/ErrorBanner'
@@ -47,7 +47,10 @@ export default function RepositoriesScreen(): React.ReactElement {
     [repos, selectedRepoId],
   )
 
-  useEffect(() => { load(activeWorkspaceId ?? undefined) }, [load, activeWorkspaceId])
+  const location = useLocation()
+  const mode = location.pathname.startsWith('/aeh') ? 'aeh' : 'code_analysis'
+
+  useEffect(() => { load(activeWorkspaceId ?? undefined, mode) }, [load, activeWorkspaceId, mode])
 
   useEffect(() => {
     if (!selectedRepoId && repos.length > 0) setSelectedRepoId(repos[0].id)
@@ -282,7 +285,7 @@ export default function RepositoriesScreen(): React.ReactElement {
                               detect_submodules: detectSubmodules,
                               include_tests: includeTests,
                             })
-                            await load()
+                            await load(activeWorkspaceId ?? undefined, mode)
                           } catch (err) {
                             setScreenError(toErrorMessage(err))
                           } finally {
@@ -464,7 +467,7 @@ export default function RepositoriesScreen(): React.ReactElement {
             const rows = await window.api.sync.listForRepo(selectedRepo.id)
             setSnapshots(rows)
             setSelectedSnapshotId(rows[0]?.id ?? null)
-            await load()
+            await load(activeWorkspaceId ?? undefined, mode)
             setConfirmDeleteSnapshotId(null)
           } catch (err) {
             setScreenError(toErrorMessage(err))

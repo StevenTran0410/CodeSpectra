@@ -141,6 +141,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     ui_parser.add_argument("--host", default="127.0.0.1", help="Host address to bind the server to")
     ui_parser.add_argument("--data-dir", dest="data_dir", default=None)
 
+    # discover subcommand group
+    discover_parser = subparsers.add_parser("discover", help="Discover candidate agentic systems")
+    discover_parser.add_argument("--snapshot", required=True, help="Snapshot ID to scan")
+    discover_parser.add_argument("--repo-ref", help="Optional reference repository path/identifier")
+    discover_parser.add_argument("--provider-id", dest="provider_id", default=None)
+    discover_parser.add_argument("--backend-url", dest="backend_url", default=None)
+    discover_parser.add_argument("--backend-token", dest="backend_token", default=None)
+    discover_parser.add_argument("--data-dir", dest="data_dir", default=None)
+    discover_parser.add_argument("--json", action="store_true")
+
     return parser
 
 
@@ -482,11 +492,74 @@ async def _plan_command(args: argparse.Namespace) -> int:
         return 0
 
 
+async def _discover_command(args: argparse.Namespace) -> int:
+    import json
+    _apply_data_dir(args)
+    config = AEHConfig.load()
+
+    backend_url = args.backend_url or config.backend_url
+    backend_token = args.backend_token or config.backend_token
+    if not backend_url or not backend_token:
+        raise SystemExit(
+            "discover command requires --backend-url/--backend-token (or .aeh/config.yaml)"
+        )
+
+    llm_client = _build_llm_client(args, config)
+
+    from agent_eval_harness.discovery.client import CodeSpectraClient
+    from agent_eval_harness.discovery.engine import discover_agentic_systems
+    from agent_eval_harness.store import repository
+
+    async with _db_session():
+        client = CodeSpectraClient(backend_url, backend_token)
+        try:
+            repo_ref = args.repo_ref or args.snapshot
+            print(f"[aeh] discover starting  snapshot={args.snapshot} repo_ref={repo_ref}")
+
+            session_id = await repository.insert_discovery_session(repo_ref, args.snapshot)
+
+            try:
+                candidates = await discover_agentic_systems(args.snapshot, repo_ref, client, llm_client)
+                await repository.insert_discovery_candidates_bulk(session_id, candidates)
+                await repository.finish_discovery_session(session_id, "completed")
+                print(f"[aeh] discover completed  session_id={session_id} candidates={len(candidates)}")
+            except Exception as e:
+                import traceback
+                err_msg = "".join(traceback.format_exception(None, e, e.__traceback__))
+                await repository.finish_discovery_session(session_id, "failed", err_msg[:2000])
+                print(f"[aeh] discover failed  session_id={session_id} error={e}")
+                raise
+
+            # Print output
+            if args.json:
+                out = {
+                    "session_id": session_id,
+                    "status": "completed",
+                    "candidates": candidates
+                }
+                print(json.dumps(out, indent=2))
+            else:
+                print("\nDiscovered Candidate Agentic Systems:")
+                print(f"{'Name':<25} | {'Frameworks':<20} | {'Confidence':<10} | {'Entry Point'}")
+                print("-" * 80)
+                for cand in candidates:
+                    frameworks = ", ".join(cand.get("frameworks", []))
+                    entry = ", ".join(cand.get("entry_points", []))
+                    print(f"{cand['name'][:25]:<25} | {frameworks[:20]:<20} | {cand['confidence']:<10} | {entry}")
+                print()
+        finally:
+            await client.aclose()
+
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_arg_parser()
     args = parser.parse_args(argv)
     if args.command == "run":
         return asyncio.run(_run_command(args))
+    elif args.command == "discover":
+        return asyncio.run(_discover_command(args))
     elif args.command == "dataset":
         return asyncio.run(_dataset_command(args))
     elif args.command == "eval":

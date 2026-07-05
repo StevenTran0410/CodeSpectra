@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react'
-import { useSearchParams, useNavigate } from 'react-router-dom'
+import { useSearchParams, useNavigate, useLocation } from 'react-router-dom'
 import { Send, Loader2, X, Microscope, Pencil, Copy, Check } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -164,10 +164,13 @@ export default function AskScreen(): React.ReactElement {
   // Tracks the currently-registered IPC stream listener so it can be removed on unmount
   const activeStreamHandlerRef = useRef<((ev: unknown, raw: unknown) => void) | null>(null)
 
+  const location = useLocation()
+  const mode = location.pathname.startsWith('/aeh') ? 'aeh' : 'code_analysis'
+
   // Load repos on mount
   useEffect(() => {
-    loadRepos(activeWorkspaceId ?? undefined)
-  }, [loadRepos, activeWorkspaceId])
+    loadRepos(activeWorkspaceId ?? undefined, mode)
+  }, [loadRepos, activeWorkspaceId, mode])
 
   // Sync selectors from active conversation on mount or when activeId changes
   useEffect(() => {
