@@ -90,7 +90,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     eval_parser.add_argument(
         "--map", dest="map_path", required=True, help="path to system_map.yaml"
     )
-    eval_parser.add_argument("--suite", required=True, help="path to suite.yaml")
+    eval_parser.add_argument("--suite", help="path to suite.yaml")
+    eval_parser.add_argument("--plan", help="path to eval_plan.yaml (alias for --suite)")
     eval_parser.add_argument("--tier", default="auto", choices=["auto", "1", "2"])
     eval_parser.add_argument("--provider-id", dest="provider_id", default=None)
     eval_parser.add_argument("--backend-url", dest="backend_url", default=None)
@@ -98,6 +99,23 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     eval_parser.add_argument("--data-dir", dest="data_dir", default=None)
     eval_parser.add_argument("--concurrency", type=int, default=4)
     eval_parser.add_argument("--json", action="store_true")
+
+    # plan subcommand group
+    plan_parser = subparsers.add_parser("plan", help="Evaluation plan commands")
+    plan_subparsers = plan_parser.add_subparsers(dest="plan_command", required=False)
+
+    # validate subcommand: aeh plan validate --plan <path>
+    validate_parser = plan_subparsers.add_parser("validate", help="Validate an evaluation plan")
+    validate_parser.add_argument("--plan", required=True, help="path to eval_plan.yaml")
+    validate_parser.add_argument("--data-dir", dest="data_dir", default=None)
+
+    # plan generator command (when plan_command is not validate)
+    plan_parser.add_argument("--map", dest="map_path", help="path to system_map.yaml")
+    plan_parser.add_argument("--output", dest="output_path", help="path to output eval_plan.yaml")
+    plan_parser.add_argument("--provider-id", dest="provider_id", default=None)
+    plan_parser.add_argument("--backend-url", dest="backend_url", default=None)
+    plan_parser.add_argument("--backend-token", dest="backend_token", default=None)
+    plan_parser.add_argument("--data-dir", dest="data_dir", default=None)
 
     # report subcommand group
     report_parser = subparsers.add_parser("report", help="Print an evaluation report for a run")
@@ -292,19 +310,23 @@ async def _eval_command(args: argparse.Namespace) -> int:
     config = AEHConfig.load()
     llm_client = _build_llm_client(args, config)
 
+    suite_path = args.suite or args.plan
+    if not suite_path:
+        raise SystemExit("--suite or --plan is required for eval sweep")
+
     async with _db_session():
         from agent_eval_harness.metrics.reporting import format_sweep_results, results_to_json
         from agent_eval_harness.metrics.sweep import run_sweep
 
         defects = DefectConfig.from_env()
         active = defects.active_names()
-        print(f"[aeh] eval target={args.target} map={args.map_path} suite={args.suite}")
+        print(f"[aeh] eval target={args.target} map={args.map_path} plan={suite_path}")
         print(f"[aeh] active defects: {', '.join(active) if active else 'none'}")
 
         sweep_result = await run_sweep(
             target=args.target,
             map_path=args.map_path,
-            suite_path=args.suite,
+            suite_path=suite_path,
             llm_client=llm_client,
             concurrency=args.concurrency,
             tier=args.tier,
@@ -365,6 +387,87 @@ async def _map_command(args: argparse.Namespace) -> int:
     return 0
 
 
+async def _plan_command(args: argparse.Namespace) -> int:
+    _apply_data_dir(args)
+
+    from pathlib import Path
+
+    import yaml
+
+    from agent_eval_harness.planning.planner import generate_plan
+    from agent_eval_harness.planning.validation import validate_plan
+
+    config = AEHConfig.load()
+    llm_client = _build_llm_client(args, config)
+
+    if args.plan_command == "validate":
+        async with _db_session():
+            errors = await validate_plan(args.plan)
+            if errors:
+                print("[aeh] Validation failed:")
+                for err in errors:
+                    print(f"  - {err}")
+                return 1
+            print(f"[aeh] Plan {args.plan} is VALID.")
+            return 0
+
+    # Plan generation
+    if not args.map_path:
+        print("[aeh] Error: --map is required for plan generation.")
+        return 1
+
+    async with _db_session():
+        plan = await generate_plan(args.map_path, llm_client)
+
+        output_path = (
+            Path(args.output_path)
+            if args.output_path
+            else Path(args.map_path).parent / "eval_plan.yaml"
+        )
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        plan_dict = plan.model_dump(exclude_none=True)
+        output_path.write_text(
+            yaml.dump(plan_dict, default_flow_style=False, sort_keys=False),
+            encoding="utf-8",
+        )
+
+        print("\n=== Evaluation Plan Summary ===")
+        comp_entries = {}
+        for entry in plan.entries:
+            comp_entries.setdefault(entry.component, []).append(entry)
+
+        for comp_id, entries in sorted(comp_entries.items()):
+            print(f"Component: {comp_id}")
+            for entry in entries:
+                ds_str = ""
+                if entry.dataset:
+                    if entry.dataset.ref:
+                        ds_str = f" (dataset ref: {entry.dataset.ref})"
+                    elif entry.dataset.required:
+                        ds_str = f" (dataset required: {entry.dataset.required.get('kind')})"
+                    elif entry.dataset.waived:
+                        ds_str = f" (dataset waived: {entry.dataset.waived})"
+                status_str = f" [status: {entry.status}]" if entry.status else ""
+                print(f"  - Metric: {entry.metric} ({entry.metric_class}){ds_str}{status_str}")
+
+        needs_human_entries = [
+            e for e in plan.entries if e.status == "needs_human" or e.metric == "unknown"
+        ]
+        if needs_human_entries:
+            print("\nNeeds Human Review:")
+            for entry in needs_human_entries:
+                print(
+                    f"  - Component: {entry.component}, Metric: {entry.metric} "
+                    f"({entry.rationale})"
+                )
+        else:
+            print("\nNeeds Human Review: None")
+
+        print(f"\n[aeh] eval_plan written to {output_path}")
+        return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_arg_parser()
     args = parser.parse_args(argv)
@@ -378,6 +481,8 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(_report_command(args))
     elif args.command == "map":
         return asyncio.run(_map_command(args))
+    elif args.command == "plan":
+        return asyncio.run(_plan_command(args))
     parser.error(f"unknown command: {args.command}")
     return 1
 

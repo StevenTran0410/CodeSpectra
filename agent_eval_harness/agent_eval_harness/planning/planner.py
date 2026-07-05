@@ -1,0 +1,520 @@
+"""planner.py — Evaluation Plan Generator (CS-265 §3).
+
+Given a system_map.yaml, generates an eval_plan.yaml (Suite) by applying:
+1. Role→suite rules (deterministic taxonomy-to-metric data rules).
+2. Constraints→assertions (mines constraints from map and maps to assertions).
+3. LLM-assisted rubric tailoring and unknown role recommendations.
+4. Dataset resolution (matches database datasets by kind/component).
+"""
+from __future__ import annotations
+
+import json
+import logging
+from pathlib import Path
+from typing import Any
+
+from agent_eval_harness.llm.client import LLMClient, LLMMessage
+from agent_eval_harness.mapping.system_map import Component, SystemMap, load_system_map
+from agent_eval_harness.metrics.suite import DatasetRef, Suite, SuiteEntry
+from agent_eval_harness.store import repository
+
+logger = logging.getLogger("agent_eval_harness.planning.planner")
+
+# System prompts for LLM assistant
+TAILOR_RUBRIC_SYSTEM = (
+    "You are an AI evaluation planner. Given a component's docstring and source "
+    "code snippet, write a clear, concise G-Eval evaluation rubric (rubric_text) "
+    "for evaluating its output quality. The rubric should specifically target the "
+    "component's goal (e.g. intent decomposition coverage, query rewriting "
+    "quality, formatting, etc.) as described in the source. "
+    'Return JSON only: {"rubric_text": "<detailed G-Eval rubric instructions>"}'
+)
+
+SUITE_SUGGESTION_SYSTEM = (
+    "You are an AI evaluation planner. Given a component's entry point, role "
+    "(which is unknown), docstring, and source code, suggest one or more "
+    "evaluation suite entries for it.\n"
+    "Available metrics:\n"
+    "- assertions: allowed_downstream, arg_schema, max_items_per_call, "
+    "max_retries, no_unnecessary_calls, retry_on_reject_required\n"
+    "- llm_judges: ragas.faithfulness, ragas.answer_relevancy, "
+    "ragas.context_precision, geval.<rubric_name>, tool_correctness\n"
+    "- classifier: classifier.<component_id>_accuracy\n\n"
+    'Return JSON only: {"entries": [{"metric": "<metric_name>", "metric_class": '
+    '"assertion|llm_judge|classifier", "dataset_kind": "<optional_dataset_kind>", '
+    '"rationale": "<explanation>", "params": {}}]}'
+)
+
+
+def get_component_info(entry_point: str) -> dict[str, str]:
+    """Helper to extract docstring and source snippet from component's entry_point."""
+    info = {"docstring": "", "source_snippet": ""}
+    if not entry_point or entry_point.startswith(("http://", "https://")):
+        return info
+
+    try:
+        module_path, _, class_name = entry_point.partition(":")
+        import importlib
+        import inspect
+
+        module = importlib.import_module(module_path)
+        cls = getattr(module, class_name)
+        
+        info["docstring"] = inspect.getdoc(cls) or ""
+        try:
+            source = inspect.getsource(cls) or ""
+            info["source_snippet"] = "\n".join(source.splitlines()[:50])
+        except Exception:
+            pass
+    except Exception as e:
+        logger.debug(f"Could not load entry point {entry_point}: {e}")
+
+    return info
+
+
+def get_tool_name_from_component(tc: Component) -> str:
+    """Extract tool name from tool component's span_match tags, falling back to id."""
+    for sm in tc.span_match:
+        if sm.tags and "aeh.tool.name" in sm.tags:
+            return sm.tags["aeh.tool.name"]
+    # Fallback to class name or stripped ID
+    base = tc.id
+    if base.endswith("_tool"):
+        base = base[:-5]
+    return base
+
+
+async def _resolve_dataset_ref(
+    dataset_kind: str,
+    component: Component,
+    system_map: SystemMap,
+    db_datasets: list[dict],
+) -> DatasetRef | None:
+    """Match a dataset kind to an existing dataset ID in the DB, or return a required block."""
+    if not dataset_kind:
+        return None
+
+    # Step 1: Query DB to find matching datasets of this kind
+    candidates = []
+    for ds in db_datasets:
+        dataset_id = ds["dataset_id"]
+        # Fetch cases to check the kind
+        cases = await repository.get_dataset_cases(dataset_id)
+        if not cases:
+            continue
+        try:
+            first_case_input = json.loads(cases[0].get("input_json") or "{}")
+            case_kind = first_case_input.get("kind")
+            if case_kind == dataset_kind:
+                candidates.append(dataset_id)
+        except Exception:
+            continue
+
+    if not candidates:
+        min_cases = 40 if dataset_kind == "guard_classification" else 20
+        return DatasetRef(required={"kind": dataset_kind, "min_cases": min_cases})
+
+    # Step 2: Score matching datasets by component/target substring matching
+    scored_candidates = []
+    target_id = system_map.target_system_id.lower()
+    comp_id = component.id.lower()
+
+    for ds_id in candidates:
+        ds_id_lower = ds_id.lower()
+        score = 0
+        if target_id in ds_id_lower:
+            score += 2
+        if comp_id in ds_id_lower:
+            score += 1
+        elif "guard" in comp_id and "guard" in ds_id_lower:
+            score += 1
+        elif "judge" in comp_id and "sufficiency" in ds_id_lower:
+            score += 1
+        elif "planner" in comp_id and "decomp" in ds_id_lower:
+            score += 1
+        scored_candidates.append((score, ds_id))
+
+    # Pick the highest scoring candidate, tie break by sorting alphabetically
+    scored_candidates.sort(key=lambda x: (-x[0], x[1]))
+    best_ds_id = scored_candidates[0][1]
+
+    return DatasetRef(ref=best_ds_id)
+
+
+async def generate_plan(
+    system_map_path: str | Path,
+    llm_client: LLMClient,
+) -> Suite:
+    """Generate an evaluation plan from a system map."""
+    system_map = load_system_map(system_map_path)
+    entries: list[SuiteEntry] = []
+
+    # Cache DB datasets to avoid repeatedly querying list_dataset_ids()
+    try:
+        db_datasets = await repository.list_dataset_ids()
+    except Exception:
+        db_datasets = []
+
+    # Map for quick component lookup
+    components_by_id = {c.id: c for c in system_map.components}
+
+    # Find the validator component (if any) and components in retry loops
+    validator_comp = None
+    for c in system_map.components:
+        if c.role == "validator":
+            validator_comp = c
+            break
+
+    for component in system_map.components:
+        role = component.role
+
+        # Handle unknown components via LLM Suggestion
+        if role == "unknown":
+            info = get_component_info(component.entry_point)
+            suggested_entries = await _suggest_unknown_component_suite(
+                component, info, llm_client, db_datasets, system_map
+            )
+            entries.extend(suggested_entries)
+            continue
+
+        # Handle tools (tools have no explicit suite entries by default)
+        if role == "tool":
+            continue
+
+        # 1. Role→suite rules (deterministic)
+        role_rules = []
+        if role in ("input_guard.rule", "input_guard.llm"):
+            role_rules.append({
+                "metric": f"classifier.{component.id}_accuracy",
+                "metric_class": "classifier",
+                "dataset_kind": "guard_classification",
+                "rationale": (
+                    f"role={role} ⇒ classification accuracy over labeled "
+                    "guard dataset. scored via sklearn."
+                ),
+            })
+        elif role == "validator":
+            role_rules.append({
+                "metric": f"classifier.{component.id}_accuracy",
+                "metric_class": "classifier",
+                "dataset_kind": "sufficiency_labeled",
+                "rationale": (
+                    f"role={role} ⇒ sufficiency classification accuracy. "
+                    "scored via sklearn."
+                ),
+            })
+        elif role == "orchestrator":
+            role_rules.append({
+                "metric": "geval.decomposition_coverage",
+                "metric_class": "llm_judge",
+                "dataset_kind": "decomposition_gold",
+                "rationale": (
+                    f"role={role} ⇒ decomposition coverage. evaluates "
+                    "if decomposed intents cover query."
+                ),
+            })
+            role_rules.append({
+                "metric": "allowed_downstream",
+                "metric_class": "assertion",
+                "rationale": (
+                    f"role={role} ⇒ orchestrator must only fan out to "
+                    "its declared downstream components."
+                ),
+            })
+        elif role == "retrieval_agent":
+            # Add no_unnecessary_calls if it invokes any tools downstream
+            has_downstream_tools = any(
+                components_by_id[d].role == "tool"
+                for d in component.downstream
+                if d in components_by_id
+            ) or any(
+                tc.role == "tool" and component.id in tc.upstream
+                for tc in system_map.components
+            )
+            if has_downstream_tools:
+                role_rules.append({
+                    "metric": "no_unnecessary_calls",
+                    "metric_class": "assertion",
+                    "rationale": (
+                        f"role={role} ⇒ checks that every tool result "
+                        "is used by some downstream component."
+                    ),
+                })
+                # Add tool_correctness (llm_judge)
+                role_rules.append({
+                    "metric": "tool_correctness",
+                    "metric_class": "llm_judge",
+                    "rationale": (
+                        f"role={role} ⇒ evaluates if the correct tools "
+                        "were selected."
+                    ),
+                })
+
+            # Check if this retrieval agent is part of a retry loop
+            # Path: orchestrator -> retrieval_agent -> validator -> orchestrator
+            is_in_retry_loop = False
+            if validator_comp:
+                # check if retrieval_agent goes to validator, and validator goes to planner
+                has_downstream_validator = any(d == validator_comp.id for d in component.downstream)
+                has_validator_to_orchestrator = any(
+                    components_by_id[d].role == "orchestrator"
+                    for d in validator_comp.downstream
+                    if d in components_by_id
+                )
+                if has_downstream_validator and has_validator_to_orchestrator:
+                    is_in_retry_loop = True
+
+            if is_in_retry_loop:
+                role_rules.append({
+                    "metric": "retry_on_reject_required",
+                    "metric_class": "assertion",
+                    "rationale": (
+                        f"role={role} ⇒ verifies orchestrator dispatches "
+                        "a retry when validator rejects."
+                    ),
+                })
+        elif role == "writer":
+            role_rules.append({
+                "metric": "ragas.faithfulness",
+                "metric_class": "llm_judge",
+                "rationale": (
+                    f"role={role} ⇒ faithfulness is the central correctness "
+                    "property. writer must not fabricate facts."
+                ),
+            })
+            role_rules.append({
+                "metric": "ragas.answer_relevancy",
+                "metric_class": "llm_judge",
+                "rationale": (
+                    f"role={role} ⇒ answer should be relevant to the "
+                    "user's original query."
+                ),
+            })
+
+        # Process role rules
+        for rule in role_rules:
+            dataset_ref = None
+            if "dataset_kind" in rule:
+                dataset_ref = await _resolve_dataset_ref(
+                    rule["dataset_kind"], component, system_map, db_datasets
+                )
+
+            params: dict[str, Any] = {}
+            # Fetch queries from dataset cases if we have resolved a reference
+            if dataset_ref and dataset_ref.ref:
+                try:
+                    cases = await repository.get_dataset_cases(dataset_ref.ref)
+                    if cases:
+                        sample_queries = []
+                        for case in cases[:2]:
+                            inp = json.loads(case.get("input_json") or "{}")
+                            q = inp.get("query", inp.get("text"))
+                            if q:
+                                sample_queries.append(q)
+                        if sample_queries:
+                            params["queries"] = sample_queries
+                except Exception:
+                    pass
+
+            if "queries" not in params:
+                params["queries"] = [
+                    "<TODO: add a representative query for this target>"
+                ]
+
+            if rule["metric"] == "allowed_downstream":
+                params["allowed"] = component.downstream
+            elif rule["metric"] == "tool_correctness":
+                # Find all downstream tools or tools having this component
+                # as upstream, map to span tag name
+                expected_tool_comps = []
+                for d in component.downstream:
+                    if d in components_by_id and components_by_id[d].role == "tool":
+                        expected_tool_comps.append(components_by_id[d])
+                for tc in system_map.components:
+                    if tc.role == "tool" and component.id in tc.upstream:
+                        if tc not in expected_tool_comps:
+                            expected_tool_comps.append(tc)
+                params["expected_tools"] = [
+                    get_tool_name_from_component(tc) for tc in expected_tool_comps
+                ]
+
+            if rule["metric"] == "geval.decomposition_coverage":
+                # Tailor rubric wording via LLM
+                info = get_component_info(component.entry_point)
+                params["rubric_text"] = await _tailor_geval_rubric(
+                    component, info, llm_client
+                )
+
+            if rule["metric_class"] == "classifier":
+                params["entry_point"] = component.entry_point
+
+            metric_suffix = (
+                rule["metric"]
+                .replace("classifier.", "")
+                .replace("geval.", "")
+                .replace("ragas.", "")
+            )
+            if rule["metric_class"] == "classifier":
+                metric_suffix = "classifier"
+
+            entries.append(
+                SuiteEntry(
+                    id=f"{component.id}.{metric_suffix}",
+                    component=component.id,
+                    metric=rule["metric"],
+                    metric_class=rule["metric_class"],
+                    dataset=dataset_ref,
+                    params=params,
+                    rationale=rule["rationale"],
+                    provenance="rule",
+                )
+            )
+
+        # 2. Constraints→assertions (deterministic)
+        for constraint in component.constraints:
+            # Check if this constraint name is a registered assertion
+            try:
+                from agent_eval_harness.metrics.assertions.registry import get_assertion
+                get_assertion(constraint.name)
+            except KeyError:
+                continue
+
+            # Handle max_items_per_call gotcha: observable in downstream retrieval_agent (worker)
+            target_comp_id = component.id
+            if constraint.name == "max_items_per_call":
+                # find a downstream retrieval_agent
+                downstream_retrievers = [
+                    d for d in component.downstream
+                    if d in components_by_id and components_by_id[d].role == "retrieval_agent"
+                ]
+                if downstream_retrievers:
+                    target_comp_id = downstream_retrievers[0]
+
+            params = {
+                "limit": constraint.value,
+                "source": f"system_map constraint ({constraint.source})",
+            }
+            params["queries"] = [
+                "<TODO: add a representative query for this target>"
+            ]
+
+            entries.append(
+                SuiteEntry(
+                    id=f"{component.id}.{constraint.name}",
+                    component=target_comp_id,
+                    metric=constraint.name,
+                    metric_class="assertion",
+                    params=params,
+                    rationale=f"constraint mined from code: {constraint.name}={constraint.value}",
+                    provenance="rule",
+                )
+            )
+
+    return Suite(entries=entries)
+
+
+async def _tailor_geval_rubric(
+    component: Component,
+    info: dict[str, str],
+    llm_client: LLMClient,
+) -> str:
+    """Tailor the G-Eval rubric text to the component's actual prompt/purpose."""
+    doc = info.get("docstring") or ""
+    src = info.get("source_snippet") or ""
+
+    user_prompt = f"Component ID: {component.id}\nDocstring: {doc}\nSource:\n{src}"
+    response = await llm_client.complete(
+        [
+            LLMMessage(role="system", content=TAILOR_RUBRIC_SYSTEM),
+            LLMMessage(role="user", content=user_prompt),
+        ],
+        json_mode=True,
+    )
+
+    fallback_rubric = (
+        "Evaluate whether the planner's decomposed intents collectively cover all "
+        "aspects of the user's query. A score of 1.0 means all query aspects are "
+        "addressed; 0.0 means none are."
+    )
+
+    if response.content == "This is a fallback offline demo answer.":
+        return fallback_rubric
+
+    try:
+        parsed = json.loads(response.content)
+        return parsed.get("rubric_text", fallback_rubric)
+    except Exception:
+        return fallback_rubric
+
+
+async def _suggest_unknown_component_suite(
+    component: Component,
+    info: dict[str, str],
+    llm_client: LLMClient,
+    db_datasets: list[dict],
+    system_map: SystemMap,
+) -> list[SuiteEntry]:
+    """Ask LLM to suggest one or more suite entries for an unknown-role component."""
+    doc = info.get("docstring") or ""
+    src = info.get("source_snippet") or ""
+
+    user_prompt = f"Component ID: {component.id}\nDocstring: {doc}\nSource:\n{src}"
+    response = await llm_client.complete(
+        [
+            LLMMessage(role="system", content=SUITE_SUGGESTION_SYSTEM),
+            LLMMessage(role="user", content=user_prompt),
+        ],
+        json_mode=True,
+    )
+
+    fallback_entries = [
+        SuiteEntry(
+            id=f"{component.id}.unknown",
+            component=component.id,
+            metric="unknown",
+            metric_class="assertion",
+            rationale="Component role is unknown. Human must define metrics.",
+            provenance="llm_suggested",
+            status="needs_human",
+        )
+    ]
+
+    if response.content == "This is a fallback offline demo answer.":
+        return fallback_entries
+
+    try:
+        parsed = json.loads(response.content)
+        suggested = parsed.get("entries", [])
+        if not suggested:
+            return fallback_entries
+
+        results = []
+        for i, item in enumerate(suggested):
+            dataset_ref = None
+            if "dataset_kind" in item:
+                dataset_ref = await _resolve_dataset_ref(
+                    item["dataset_kind"], component, system_map, db_datasets
+                )
+
+            metric_suffix = (
+                item["metric"]
+                .replace("classifier.", "")
+                .replace("geval.", "")
+                .replace("ragas.", "")
+            )
+            results.append(
+                SuiteEntry(
+                    id=f"{component.id}.{metric_suffix}",
+                    component=component.id,
+                    metric=item["metric"],
+                    metric_class=item["metric_class"],
+                    dataset=dataset_ref,
+                    params=item.get("params", {}),
+                    rationale=item.get("rationale", "LLM suggested check."),
+                    provenance="llm_suggested",
+                    status="needs_human",
+                )
+            )
+        return results
+    except Exception:
+        return fallback_entries

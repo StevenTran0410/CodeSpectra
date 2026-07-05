@@ -18,6 +18,7 @@ class DatasetRef(BaseModel):
 
     ref: str | None = None
     required: dict[str, Any] | None = None
+    waived: str | None = None
 
 
 class SuiteEntry(BaseModel):
@@ -31,6 +32,7 @@ class SuiteEntry(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
     rationale: str = ""
     provenance: Literal["rule", "human_added", "llm_suggested"] = "rule"
+    status: str | None = None
 
 
 class Suite(BaseModel):
