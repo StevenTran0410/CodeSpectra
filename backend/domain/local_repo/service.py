@@ -466,13 +466,26 @@ class LocalRepoService:
                 if remote and remote.rstrip("/") == req.url.rstrip("/"):
                     logger.info(f"Destination already contains same repo, reusing: {normalized_dest_path}")
                     try:
-                        return await self.add(AddLocalRepoRequest(path=normalized_dest_path, workspace_id=req.workspace_id))
+                        # CS-272: mode must be threaded through here too — this is
+                        # exactly the path that fires when the SAME URL is cloned
+                        # again under a different mode (e.g. CA already cloned it,
+                        # user now wants it for AEH). Without mode=req.mode this
+                        # always registered as 'code_analysis' regardless of what
+                        # was actually requested, and the on-disk clone is
+                        # correctly reused either way — no second `git clone` runs.
+                        return await self.add(
+                            AddLocalRepoRequest(
+                                path=normalized_dest_path,
+                                workspace_id=req.workspace_id,
+                                mode=req.mode,
+                            )
+                        )
                     except ConflictError:
-                        # Already registered in DB for this workspace, return existing row
+                        # Already registered in DB for this exact (path, workspace, mode) — return existing row
                         db = get_db()
                         async with db.execute(
-                            "SELECT id FROM local_repos WHERE path = ? AND workspace_id IS ?",
-                            (normalized_dest_path, req.workspace_id),
+                            "SELECT id FROM local_repos WHERE path = ? AND workspace_id IS ? AND mode = ?",
+                            (normalized_dest_path, req.workspace_id, req.mode),
                         ) as cur:
                             row = await cur.fetchone()
                         if row:
