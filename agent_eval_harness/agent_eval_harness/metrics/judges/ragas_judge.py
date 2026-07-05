@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 
 from agent_eval_harness.llm.client import LLMClient
-from agent_eval_harness.metrics.types import MetricResult
+from agent_eval_harness.metrics.types import MetricResult, extract_cost_tokens
 
 
 def _extract_writer_contexts(spans: list[dict], writer_component_id: str = "writer") -> list[str]:
@@ -90,13 +90,6 @@ async def run_ragas_faithfulness(
         # Fallback for versions that use a different API
         score = None
 
-    # Cost tracking
-    cost_tokens: int | None = None
-    if hasattr(llm_adapter, "_last_prompt_tokens") and llm_adapter._last_prompt_tokens is not None:
-        pt = llm_adapter._last_prompt_tokens or 0
-        ct = llm_adapter._last_completion_tokens or 0
-        cost_tokens = pt + ct
-
     return MetricResult(
         metric_name="llm_judge.ragas.faithfulness",
         metric_class="llm_judge",
@@ -110,7 +103,7 @@ async def run_ragas_faithfulness(
         component_id=component_id,
         trace_id=trace_id,
         evaluator="ragas.Faithfulness",
-        cost_tokens=cost_tokens,
+        cost_tokens=extract_cost_tokens(llm_adapter),
     )
 
 
@@ -154,12 +147,6 @@ async def run_ragas_answer_relevancy(
     except Exception:  # noqa: BLE001
         score = None
 
-    cost_tokens: int | None = None
-    if hasattr(llm_adapter, "_last_prompt_tokens") and llm_adapter._last_prompt_tokens is not None:
-        pt = llm_adapter._last_prompt_tokens or 0
-        ct = llm_adapter._last_completion_tokens or 0
-        cost_tokens = pt + ct
-
     return MetricResult(
         metric_name="llm_judge.ragas.answer_relevancy",
         metric_class="llm_judge",
@@ -169,7 +156,7 @@ async def run_ragas_answer_relevancy(
         component_id=component_id,
         trace_id=trace_id,
         evaluator="ragas.AnswerRelevancy",
-        cost_tokens=cost_tokens,
+        cost_tokens=extract_cost_tokens(llm_adapter),
     )
 
 
@@ -212,12 +199,6 @@ async def run_ragas_context_precision(
     except Exception:  # noqa: BLE001
         score = None
 
-    cost_tokens: int | None = None
-    if hasattr(llm_adapter, "_last_prompt_tokens") and llm_adapter._last_prompt_tokens is not None:
-        pt = llm_adapter._last_prompt_tokens or 0
-        ct = llm_adapter._last_completion_tokens or 0
-        cost_tokens = pt + ct
-
     return MetricResult(
         metric_name="llm_judge.ragas.context_precision",
         metric_class="llm_judge",
@@ -227,5 +208,5 @@ async def run_ragas_context_precision(
         component_id=component_id,
         trace_id=trace_id,
         evaluator="ragas.ContextPrecision",
-        cost_tokens=cost_tokens,
+        cost_tokens=extract_cost_tokens(llm_adapter),
     )

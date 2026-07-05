@@ -91,6 +91,9 @@ async def mine_constraints_llm_phase(
     # Pre-filter keywords
     KEYWORDS = ("max", "retry", "retries", "at most", "fan-out", "limit")
 
+    # Cache ASTs by file to avoid re-parsing the same file for each candidate
+    ast_cache: dict[Path, ast.Module | None] = {}
+
     for candidate in candidates:
         # Skip tool candidates
         if candidate.is_tool:
@@ -99,11 +102,17 @@ async def mine_constraints_llm_phase(
         # Collect string literals from methods
         literals = []
         for hint in candidate.manual_span_hints:
-            # We don't have easy access to the source here, so we'll extract from file
-            try:
-                source = candidate.file.read_text(encoding="utf-8")
-                tree = ast.parse(source, filename=str(candidate.file))
-            except SyntaxError:
+            # Get or parse the candidate's file, using cache to avoid re-parsing
+            if candidate.file not in ast_cache:
+                try:
+                    source = candidate.file.read_text(encoding="utf-8")
+                    ast_cache[candidate.file] = ast.parse(source, filename=str(candidate.file))
+                except SyntaxError:
+                    ast_cache[candidate.file] = None
+                    continue
+
+            tree = ast_cache[candidate.file]
+            if tree is None:
                 continue
 
             for node in tree.body:

@@ -32,19 +32,24 @@ class HaystackScanner:
         """Scan source files and return deduplicated, sorted component candidates."""
         candidates = []
 
-        # First pass: build known_classes and add_component_names
+        # Cache ASTs upfront to avoid quadratic re-parsing in the second pass
+        asts: dict[Path, ast.Module] = {}
         known_classes: set[str] = set()
         add_component_names: dict[str, str] = {}  # {haystack_name: class_name}
         module_level_async_functions: dict[str, ast.AsyncFunctionDef] = {}
 
+        # Parse all files once upfront
         for file in source_files:
             try:
                 source = file.read_text(encoding="utf-8")
                 tree = ast.parse(source, filename=str(file))
+                asts[file] = tree
             except SyntaxError as exc:
                 print(f"[aeh map] skipping {file}: {exc}", file=sys.stderr)
                 continue
 
+        # First pass: build known_classes and add_component_names
+        for file, tree in asts.items():
             # Collect top-level async functions for tool discovery
             for node in tree.body:
                 if isinstance(node, ast.AsyncFunctionDef):
@@ -75,14 +80,8 @@ class HaystackScanner:
                                     class_name = child.args[1].func.id
                                     add_component_names[haystack_name] = class_name
 
-        # Second pass: grow known_classes with composed components and extract candidates
-        for file in source_files:
-            try:
-                source = file.read_text(encoding="utf-8")
-                tree = ast.parse(source, filename=str(file))
-            except SyntaxError:
-                continue
-
+        # Second pass: grow known_classes with composed components using cached ASTs
+        for file, tree in asts.items():
             # Grow known_classes with composed components
             for node in tree.body:
                 if isinstance(node, ast.ClassDef) and node.name in known_classes:
@@ -92,26 +91,20 @@ class HaystackScanner:
                                 if arg.annotation:
                                     for name_node in ast.walk(arg.annotation):
                                         if isinstance(name_node, ast.Name):
-                                            # Check if this name is an actual class in files
-                                            for check_file in source_files:
-                                                try:
-                                                    check_source = check_file.read_text(
-                                                        encoding="utf-8"
-                                                    )
-                                                    check_tree = ast.parse(
-                                                        check_source, filename=str(check_file)
-                                                    )
-                                                    for check_node in check_tree.body:
-                                                        if (
-                                                            isinstance(check_node, ast.ClassDef)
-                                                            and check_node.name
-                                                            == name_node.id
-                                                        ):
-                                                            known_classes.add(name_node.id)
-                                                except SyntaxError:
-                                                    pass
+                                            # Check if this name is an actual class in asts
+                                            for check_tree in asts.values():
+                                                for check_node in check_tree.body:
+                                                    if (
+                                                        isinstance(check_node, ast.ClassDef)
+                                                        and check_node.name
+                                                        == name_node.id
+                                                    ):
+                                                        known_classes.add(name_node.id)
 
             # Now extract candidates
+            source = file.read_text(encoding="utf-8")
+            source_lines = source.splitlines()
+
             for node in tree.body:
                 if isinstance(node, ast.ClassDef) and node.name in known_classes:
                     # Check if it has @component decorator
@@ -130,7 +123,7 @@ class HaystackScanner:
 
                     docstring = ast.get_docstring(node) or ""
                     source_snippet = self._extract_source_snippet(
-                        file, node.lineno, source.splitlines()
+                        file, node.lineno, source_lines
                     )
                     manual_span_hints = self._extract_manual_spans(node, file)
 
@@ -150,13 +143,6 @@ class HaystackScanner:
                     )
                     candidates.append(candidate)
 
-                # Tool functions
-                if isinstance(node, ast.AsyncFunctionDef) and node.name in (
-                    module_level_async_functions.keys()
-                ):
-                    # Tools are discovered via dict literals, not here
-                    pass
-
             # Tool discovery: find dict literals with async function values
             for node in ast.walk(tree):
                 if isinstance(node, ast.Call):
@@ -173,6 +159,7 @@ class HaystackScanner:
                                 module_level_async_functions,
                                 candidates,
                                 owner_class_name,
+                                source_lines,
                             )
                     for keyword in node.keywords:
                         if isinstance(keyword.value, ast.Dict):
@@ -182,6 +169,7 @@ class HaystackScanner:
                                 module_level_async_functions,
                                 candidates,
                                 owner_class_name,
+                                source_lines,
                             )
 
         # Sub-span split and dedup/sort
@@ -284,6 +272,7 @@ class HaystackScanner:
         module_level_async_functions: dict[str, ast.AsyncFunctionDef],
         candidates: list[CandidateComponent],
         owner_class_name: str | None = None,
+        source_lines: list[str] | None = None,
     ) -> None:
         """Extract tool candidates from a dict literal with async function values."""
         # Check if ALL values are Name nodes referencing async functions
@@ -315,7 +304,9 @@ class HaystackScanner:
 
             func_node = module_level_async_functions[func_name]
             docstring = ast.get_docstring(func_node) or ""
-            source_lines = file.read_text(encoding="utf-8").splitlines()
+            # Use pre-parsed source_lines if available, else read from file
+            if source_lines is None:
+                source_lines = file.read_text(encoding="utf-8").splitlines()
             source_snippet = self._extract_source_snippet(file, func_node.lineno, source_lines)
 
             candidate = CandidateComponent(

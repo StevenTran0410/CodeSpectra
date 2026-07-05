@@ -1,6 +1,7 @@
-"""Orchestrates one CLI `run` invocation end-to-end: load map, build/attach the
-right adapter, run query(ies), persist to the store. No metrics/datasets yet —
-CS-262/263's job.
+"""Orchestrates one `execute_run()` invocation end-to-end: load map, build/attach
+the right adapter, run query(ies), persist to the store. Shared by the `aeh run`
+CLI command and CS-263's sweep runner (agent_eval_harness.metrics.sweep), which
+calls this once per query to score against the resulting spans.
 """
 from __future__ import annotations
 

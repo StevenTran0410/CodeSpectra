@@ -1,3 +1,5 @@
+import json
+
 from pydantic import BaseModel
 
 from agent_eval_harness.datasets.types import DatasetCase
@@ -27,7 +29,6 @@ async def generate(
     
     for db_case in source_db_cases:
         # Load input_json, labels_json
-        import json
         input_data = json.loads(db_case["input_json"])
         
         labels_data = {}

@@ -8,6 +8,25 @@ from __future__ import annotations
 from agent_eval_harness.llm.client import LLMClient, LLMMessage
 
 
+def _run_async_blocking(coro_fn, *args, **kwargs):
+    """Run an async function from a blocking context.
+
+    Tries asyncio.run() first, but falls back to nest_asyncio if a RuntimeError
+    occurs (e.g., called from within an already-running event loop). Both
+    ragas_adapter and deepeval_adapter need this to support being called from
+    sync frameworks (Haystack, metric runners) while also handling nested loops.
+    """
+    import asyncio
+
+    try:
+        return asyncio.run(coro_fn(*args, **kwargs))
+    except RuntimeError:
+        import nest_asyncio
+
+        nest_asyncio.apply()
+        return asyncio.get_event_loop().run_until_complete(coro_fn(*args, **kwargs))
+
+
 def stub_missing_langchain_community_vertexai() -> None:
     """Ragas's internal imports (ragas.llms.base) reference an optional
     langchain_community submodule (chat_models.vertexai) that doesn't exist in
@@ -59,17 +78,7 @@ def make_ragas_llm_adapter(llm_client: LLMClient):
             run_manager=None,
             **kwargs,
         ) -> ChatResult:
-            import asyncio
-
-            try:
-                return asyncio.run(self._agenerate(messages, stop, run_manager, **kwargs))
-            except RuntimeError:
-                import nest_asyncio
-
-                nest_asyncio.apply()
-                return asyncio.get_event_loop().run_until_complete(
-                    self._agenerate(messages, stop, run_manager, **kwargs)
-                )
+            return _run_async_blocking(self._agenerate, messages, stop, run_manager, **kwargs)
 
         async def _agenerate(
             self,

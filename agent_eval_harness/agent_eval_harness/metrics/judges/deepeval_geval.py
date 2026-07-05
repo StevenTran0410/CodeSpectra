@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 
 from agent_eval_harness.llm.client import LLMClient
-from agent_eval_harness.metrics.types import MetricResult
+from agent_eval_harness.metrics.types import MetricResult, extract_cost_tokens
 
 
 async def run_geval(
@@ -76,13 +76,6 @@ async def run_geval(
     score: float | None = getattr(metric, "score", None)
     reason: str | None = getattr(metric, "reason", None)
 
-    # Cost tracking
-    cost_tokens: int | None = None
-    if hasattr(adapter, "_last_prompt_tokens") and adapter._last_prompt_tokens is not None:
-        pt = adapter._last_prompt_tokens or 0
-        ct = adapter._last_completion_tokens or 0
-        cost_tokens = pt + ct
-
     return MetricResult(
         metric_name=f"llm_judge.geval.{metric_name}",
         metric_class="llm_judge",
@@ -96,7 +89,7 @@ async def run_geval(
         component_id=component_id,
         trace_id=trace_id,
         evaluator="deepeval.GEval",
-        cost_tokens=cost_tokens,
+        cost_tokens=extract_cost_tokens(adapter),
     )
 
 

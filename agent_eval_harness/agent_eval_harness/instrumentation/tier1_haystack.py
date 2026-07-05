@@ -14,14 +14,17 @@ import contextvars
 import time
 import uuid
 from collections.abc import Iterator
-from datetime import UTC, datetime
 from typing import Any
 
 from haystack.tracing import Span as HaystackSpan
 from haystack.tracing import Tracer as HaystackTracer
 from haystack.tracing import disable_tracing, enable_tracing
 
-from agent_eval_harness.instrumentation._extract import extract_model_and_tokens, safe_json
+from agent_eval_harness.instrumentation._extract import (
+    extract_model_and_tokens,
+    safe_json,
+    utc_now_iso,
+)
 from agent_eval_harness.instrumentation.base import (
     CapturedSpan,
     InstrumentationAdapter,
@@ -47,17 +50,13 @@ _MANUAL_OP_SPAN_TYPES: dict[str, SpanType] = {
 _PIPELINE_ROOT_OPS = {"haystack.pipeline.run", "haystack.async_pipeline.run"}
 
 
-def _utc_now_iso() -> str:
-    return datetime.now(UTC).isoformat()
-
-
 class HarnessSpan(HaystackSpan):
     def __init__(self, span_id: str, parent_span_id: str | None, operation_name: str) -> None:
         self.span_id = span_id
         self.parent_span_id = parent_span_id
         self.operation_name = operation_name
         self.tags: dict[str, Any] = {}
-        self.started_at = _utc_now_iso()
+        self.started_at = utc_now_iso()
         self.latency_ms: int | None = None
         self._start_monotonic = time.monotonic()
 

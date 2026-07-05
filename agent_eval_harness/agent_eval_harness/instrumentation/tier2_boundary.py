@@ -15,20 +15,19 @@ import importlib
 import time
 import uuid
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
 from typing import Any
 
-from agent_eval_harness.instrumentation._extract import extract_model_and_tokens, safe_json
+from agent_eval_harness.instrumentation._extract import (
+    extract_model_and_tokens,
+    safe_json,
+    utc_now_iso,
+)
 from agent_eval_harness.instrumentation.base import (
     CapturedSpan,
     InstrumentationAdapter,
     TraceResult,
 )
 from agent_eval_harness.mapping.system_map import SystemMap
-
-
-def _utc_now_iso() -> str:
-    return datetime.now(UTC).isoformat()
 
 
 def _resolve_entry_point(entry_point: str) -> Callable[..., Awaitable[Any]]:
@@ -79,7 +78,7 @@ class BoundaryWrapperAdapter(InstrumentationAdapter):
 
         for component_id in self._component_order:
             fn = self._entry_points[component_id]
-            started_at = _utc_now_iso()
+            started_at = utc_now_iso()
             started = time.monotonic()
             output = await (fn(query) if prior_output is None else fn(query, prior_output))
             latency_ms = int((time.monotonic() - started) * 1000)

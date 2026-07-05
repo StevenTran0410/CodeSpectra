@@ -26,17 +26,20 @@ def extract_topology(
             class_to_candidate_ids[candidate.class_name] = []
         class_to_candidate_ids[candidate.class_name].append(candidate.candidate_id)
 
+    # Cache ASTs to avoid re-parsing files multiple times across three passes
+    asts: dict[Path, ast.Module] = {}
+    for file in source_files:
+        try:
+            source = file.read_text(encoding="utf-8")
+            asts[file] = ast.parse(source, filename=str(file))
+        except SyntaxError:
+            continue
+
     # Phase A: Extract connect() edges
     # First pass: collect add_component_names mapping
     add_component_names: dict[str, str] = {}  # {haystack_name: class_name}
 
-    for file in source_files:
-        try:
-            source = file.read_text(encoding="utf-8")
-            tree = ast.parse(source, filename=str(file))
-        except SyntaxError:
-            continue
-
+    for file, tree in asts.items():
         for node in ast.walk(tree):
             if isinstance(node, ast.Call):
                 if isinstance(node.func, ast.Attribute) and node.func.attr == "add_component":
@@ -52,13 +55,7 @@ def extract_topology(
                         add_component_names[haystack_name] = class_name
 
     # Second pass: extract connect() calls
-    for file in source_files:
-        try:
-            source = file.read_text(encoding="utf-8")
-            tree = ast.parse(source, filename=str(file))
-        except SyntaxError:
-            continue
-
+    for file, tree in asts.items():
         for node in ast.walk(tree):
             if isinstance(node, ast.Call):
                 if isinstance(node.func, ast.Attribute) and node.func.attr == "connect":
@@ -100,13 +97,7 @@ def extract_topology(
                                             connect_edges[src_id].add(dest_id)
 
     # Phase B: Extract constructor injection edges
-    for file in source_files:
-        try:
-            source = file.read_text(encoding="utf-8")
-            tree = ast.parse(source, filename=str(file))
-        except SyntaxError:
-            continue
-
+    for file, tree in asts.items():
         for node in tree.body:
             if isinstance(node, ast.ClassDef):
                 # Find all candidate_ids for this class

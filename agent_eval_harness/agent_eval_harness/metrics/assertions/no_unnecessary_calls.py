@@ -60,11 +60,10 @@ def no_unnecessary_calls(spans: list[dict], component_id: str, params: dict) -> 
     # spans is assumed to already be in true execution order (see
     # retry_on_reject_required's docstring for why we don't re-sort by
     # started_at — fast synchronous runs can tie on timestamp resolution).
-    sorted_spans = spans
 
     flagged: list[dict] = []
 
-    for i, span in enumerate(sorted_spans):
+    for i, span in enumerate(spans):
         if span.get("span_type") != "tool_call":
             continue
 
@@ -74,7 +73,7 @@ def no_unnecessary_calls(spans: list[dict], component_id: str, params: dict) -> 
             continue
 
         # Check if result string appears in any LATER span's input_json
-        later_spans = sorted_spans[i + 1:]
+        later_spans = spans[i + 1:]
         result_used = any(
             result in (s.get("input_json") or "") for s in later_spans
         )

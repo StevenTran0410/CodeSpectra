@@ -7,19 +7,15 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import UTC, datetime
 from typing import Literal
 
+from agent_eval_harness.instrumentation._extract import utc_now_iso
 from agent_eval_harness.instrumentation.base import CapturedSpan
 from agent_eval_harness.store.database import get_db
 
 
 def new_id() -> str:
     return str(uuid.uuid4())
-
-
-def utc_now_iso() -> str:
-    return datetime.now(UTC).isoformat()
 
 
 async def insert_run(target_system_id: str, eval_plan_id: str | None = None) -> str:
@@ -198,13 +194,13 @@ async def list_dataset_ids() -> list[dict]:
     db = get_db()
     async with db.execute(
         """
-        SELECT 
-            dataset_id, 
+        SELECT
+            dataset_id,
             COUNT(*) as total_count,
             SUM(CASE WHEN provenance = 'synthetic' THEN 1 ELSE 0 END) as synthetic_count,
             SUM(CASE WHEN provenance = 'handwritten' THEN 1 ELSE 0 END) as handwritten_count,
             SUM(CASE WHEN provenance = 'generated+reviewed' THEN 1 ELSE 0 END) as reviewed_count
-        FROM dataset_cases 
+        FROM dataset_cases
         GROUP BY dataset_id
         """
     ) as cur:

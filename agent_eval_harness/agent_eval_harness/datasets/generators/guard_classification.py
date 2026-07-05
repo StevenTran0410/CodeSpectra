@@ -1,8 +1,11 @@
-import json
 import random
 
 from pydantic import BaseModel
 
+from agent_eval_harness.datasets.generator_utils import (
+    parse_json_with_fallback,
+    strip_markdown_code_block,
+)
 from agent_eval_harness.datasets.types import DatasetCase
 from agent_eval_harness.llm.client import LLMClient, LLMMessage
 from agent_eval_harness.store.repository import new_id
@@ -88,13 +91,13 @@ async def generate(
             
             is_reject = cat.name in ("too_short", "gibberish", "wrong_language")
             verdict = "reject" if is_reject else "pass"
-            
+            expected_verdict = (
+                {"verdict": verdict, "category": cat.name}
+                if verdict == "reject"
+                else {"verdict": "pass"}
+            )
+
             for text in generated_texts:
-                expected_verdict = (
-                    {"verdict": verdict, "category": cat.name}
-                    if verdict == "reject"
-                    else {"verdict": "pass"}
-                )
                 cases.append(DatasetCase(
                     id=new_id(),
                     dataset=dataset_name,
@@ -136,42 +139,27 @@ async def generate(
             )
             
             content = response.content.strip()
-            # Clean content if the model ignored our rule and output ```json ... ```
-            if content.startswith("```"):
-                lines = content.splitlines()
-                if lines[0].startswith("```"):
-                    lines = lines[1:]
-                if lines and lines[-1].startswith("```"):
-                    lines = lines[:-1]
-                content = "\n".join(lines).strip()
-            
-            try:
-                queries = json.loads(content)
-                if not isinstance(queries, list):
-                    raise ValueError("LLM did not return a list")
-            except Exception:
-                # fallback parsing or retry logic
-                # Let's try splitting by newlines or list bullets if JSON fails
-                queries = []
-                for line in content.splitlines():
-                    cleaned = line.strip().strip('"').strip("'").strip(",").strip("[]").strip()
-                    if cleaned and len(cleaned) > 2:
-                        queries.append(cleaned)
-                
-            # If still not enough, pad with basic prompts
+            content = strip_markdown_code_block(content)
+
+            def fallback_query(i: int) -> str:
+                return f"Adversarial query for {cat.name} number {i + 1}"
+
+            queries = parse_json_with_fallback(content, cat.count, fallback_query)
+
+            # If still not enough, pad with fallback queries
             while len(queries) < cat.count:
-                queries.append(f"Adversarial query for {cat.name} number {len(queries) + 1}")
-            
+                queries.append(fallback_query(len(queries)))
+
             queries = queries[:cat.count]
-            
+
             verdict = "pass" if cat.name in ("borderline_valid", "valid") else "reject"
-            
+            expected_verdict = (
+                {"verdict": verdict, "category": cat.name}
+                if verdict == "reject"
+                else {"verdict": "pass"}
+            )
+
             for text in queries:
-                expected_verdict = (
-                    {"verdict": verdict, "category": cat.name}
-                    if verdict == "reject"
-                    else {"verdict": "pass"}
-                )
                 cases.append(DatasetCase(
                     id=new_id(),
                     dataset=dataset_name,

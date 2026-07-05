@@ -145,14 +145,17 @@ async def _score_assertion_entry(
         if component:
             params["allowed"] = component.downstream
 
+    # Batch all queries into one execute_run call rather than one call per query —
+    # execute_run already builds the adapter once and loops over queries internally,
+    # so calling it per-query was needlessly rebuilding the target's pipeline/adapter
+    # once per query instead of once per suite entry.
     results: list[MetricResult] = []
-    for query in queries:
-        outcomes = await execute_run(target, map_path, llm_client, [query], tier)
-        for outcome in outcomes:
-            spans = await repository.get_spans_for_trace(outcome.trace_id)
-            result = assertion_fn(spans, entry.component, params)
-            result.trace_id = outcome.trace_id
-            results.append(result)
+    outcomes = await execute_run(target, map_path, llm_client, queries, tier)
+    for outcome in outcomes:
+        spans = await repository.get_spans_for_trace(outcome.trace_id)
+        result = assertion_fn(spans, entry.component, params)
+        result.trace_id = outcome.trace_id
+        results.append(result)
 
     return results or [_empty_assertion_result(entry)]
 
@@ -196,13 +199,13 @@ async def _score_judge_entry(
     results: list[MetricResult] = []
     queries = _get_queries_for_entry(entry, system_map)
 
-    for query in queries:
-        outcomes = await execute_run(target, map_path, llm_client, [query], tier)
-        for outcome in outcomes:
-            spans = await repository.get_spans_for_trace(outcome.trace_id)
-            mr = await _dispatch_judge(entry, spans, query, llm_client, outcome.trace_id)
-            if mr:
-                results.append(mr)
+    # Batch all queries into one execute_run call — see _score_assertion_entry for why.
+    outcomes = await execute_run(target, map_path, llm_client, queries, tier)
+    for query, outcome in zip(queries, outcomes):
+        spans = await repository.get_spans_for_trace(outcome.trace_id)
+        mr = await _dispatch_judge(entry, spans, query, llm_client, outcome.trace_id)
+        if mr:
+            results.append(mr)
 
     return results
 

@@ -27,12 +27,14 @@ def arg_schema(spans: list[dict], component_id: str, params: dict) -> MetricResu
 
     schema = params.get("schema", {})
     violations: list[dict] = []
+    checked_span_count = 0
 
     for span in spans:
         if span.get("component_id") != component_id:
             continue
         if span.get("span_type") != "tool_call":
             continue
+        checked_span_count += 1
         # Use output_json first, fall back to input_json
         raw = span.get("output_json") or span.get("input_json") or "{}"
         try:
@@ -51,6 +53,6 @@ def arg_schema(spans: list[dict], component_id: str, params: dict) -> MetricResu
         metric_class="assertion",
         score=None,
         passed=passed,
-        details={"violations": violations, "checked_spans": len(violations) + (1 if passed else 0)},
+        details={"violations": violations, "checked_spans": checked_span_count},
         component_id=component_id,
     )

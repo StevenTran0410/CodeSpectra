@@ -8,6 +8,7 @@ from __future__ import annotations
 import typing
 
 from agent_eval_harness.llm.client import LLMClient, LLMMessage
+from agent_eval_harness.llm.ragas_adapter import _run_async_blocking
 
 
 def make_deepeval_llm_adapter(llm_client: LLMClient):
@@ -42,15 +43,7 @@ def make_deepeval_llm_adapter(llm_client: LLMClient):
                 if result is not None:
                     return result
 
-            import asyncio
-
-            try:
-                return asyncio.run(self.a_generate(prompt))
-            except RuntimeError:
-                import nest_asyncio
-
-                nest_asyncio.apply()
-                return asyncio.get_event_loop().run_until_complete(self.a_generate(prompt))
+            return _run_async_blocking(self.a_generate, prompt)
 
         async def a_generate(self, prompt: str, schema: typing.Any = None) -> typing.Any:
             if schema is not None:

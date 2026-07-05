@@ -5,9 +5,9 @@ from typing import Protocol, runtime_checkable
 
 from pydantic import BaseModel
 
+from agent_eval_harness.datasets.generator_utils import build_qa_testset_case
 from agent_eval_harness.datasets.types import DatasetCase
 from agent_eval_harness.llm.client import LLMClient
-from agent_eval_harness.store.repository import new_id
 
 
 class QATestsetConfig(BaseModel):
@@ -63,14 +63,11 @@ class DeepEvalQATestsetBackend:
         # If deepeval returned fewer or more goldens, we select/pad them
         cases = []
         for g in goldens[:count]:
-            cases.append(DatasetCase(
-                id=new_id(),
-                dataset=dataset_name,
-                kind="qa_testset",
-                input={"query": g.input},
-                expected={"answer": g.expected_output},
-                labels={"contexts": g.context},
-                provenance="synthetic"
+            cases.append(build_qa_testset_case(
+                dataset_name=dataset_name,
+                query=g.input,
+                answer=g.expected_output,
+                contexts=g.context
             ))
 
         return cases
@@ -120,14 +117,11 @@ class RagasQATestsetBackend:
             query = row.get("user_input") or row.get("question") or ""
             answer = row.get("reference") or row.get("ground_truth") or ""
             contexts = row.get("reference_contexts") or row.get("contexts") or []
-            cases.append(DatasetCase(
-                id=new_id(),
-                dataset=dataset_name,
-                kind="qa_testset",
-                input={"query": query},
-                expected={"answer": answer},
-                labels={"contexts": list(contexts)},
-                provenance="synthetic"
+            cases.append(build_qa_testset_case(
+                dataset_name=dataset_name,
+                query=query,
+                answer=answer,
+                contexts=list(contexts)
             ))
         return cases
 
@@ -138,24 +132,18 @@ class MockQATestsetBackend:
         cases = []
         for path in corpus_paths[:count]:
             name = path.stem.replace("_", " ").title()
-            cases.append(DatasetCase(
-                id=new_id(),
-                dataset=dataset_name,
-                kind="qa_testset",
-                input={"query": f"What is the policy for {name}?"},
-                expected={"answer": f"This is a placeholder answer for {name} policy."},
-                labels={"contexts": [f"Context snippet from {path.name}."]},
-                provenance="synthetic"
+            cases.append(build_qa_testset_case(
+                dataset_name=dataset_name,
+                query=f"What is the policy for {name}?",
+                answer=f"This is a placeholder answer for {name} policy.",
+                contexts=[f"Context snippet from {path.name}."]
             ))
         while len(cases) < count:
-            cases.append(DatasetCase(
-                id=new_id(),
-                dataset=dataset_name,
-                kind="qa_testset",
-                input={"query": f"Query placeholder {len(cases)}"},
-                expected={"answer": "Expected placeholder answer"},
-                labels={"contexts": ["Context placeholder"]},
-                provenance="synthetic"
+            cases.append(build_qa_testset_case(
+                dataset_name=dataset_name,
+                query=f"Query placeholder {len(cases)}",
+                answer="Expected placeholder answer",
+                contexts=["Context placeholder"]
             ))
         return cases
 

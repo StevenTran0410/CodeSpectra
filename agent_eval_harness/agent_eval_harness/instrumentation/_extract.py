@@ -1,12 +1,18 @@
-"""Shared, tier-agnostic helpers: JSON-safe serialization + duck-typed
-model/token extraction. Used by both tier1_haystack.py and tier2_boundary.py so
-tier-2 spans get token data "only if the boundary happens to expose it, never
-invented" (same extraction code, not tier-specific).
+"""Shared, tier-agnostic helpers: JSON-safe serialization, UTC timestamps,
+and duck-typed model/token extraction. Used by both tier1_haystack.py and
+tier2_boundary.py so tier-2 spans get token data "only if the boundary happens
+to expose it, never invented" (same extraction code, not tier-specific).
 """
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from typing import Any
+
+
+def utc_now_iso() -> str:
+    """Return current UTC time in ISO 8601 format."""
+    return datetime.now(UTC).isoformat()
 
 
 def safe_json(value: Any) -> str | None:

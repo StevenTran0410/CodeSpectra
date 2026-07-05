@@ -1,9 +1,12 @@
-import json
 import random
 from typing import Any
 
 from pydantic import BaseModel
 
+from agent_eval_harness.datasets.generator_utils import (
+    parse_json_with_fallback,
+    strip_markdown_code_block,
+)
 from agent_eval_harness.datasets.types import DatasetCase
 from agent_eval_harness.llm.client import LLMClient, LLMMessage
 from agent_eval_harness.mapping.system_map import load_system_map
@@ -109,30 +112,19 @@ async def generate(
             json_mode=True
         )
         content = resp.content.strip()
-        if content.startswith("```"):
-            lines = content.splitlines()
-            if lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines and lines[-1].startswith("```"):
-                lines = lines[:-1]
-            content = "\n".join(lines).strip()
+        content = strip_markdown_code_block(content)
 
-        try:
-            items = json.loads(content)
-            if not isinstance(items, list):
-                raise ValueError("Response is not a list")
-        except Exception:
-            # Simple fallback if JSON parsing failed
-            items = []
-            for i in range(per_cat):
-                if category == "rambling":
-                    fallback_intents = [f"intent {i}"]
-                else:
-                    fallback_intents = [f"intent {i} A", f"intent {i} B"]
-                items.append({
-                    "query": f"Mock {category} query {i}",
-                    "intents": fallback_intents
-                })
+        def fallback_item(i: int) -> dict[str, Any]:
+            if category == "rambling":
+                fallback_intents = [f"intent {i}"]
+            else:
+                fallback_intents = [f"intent {i} A", f"intent {i} B"]
+            return {
+                "query": f"Mock {category} query {i}",
+                "intents": fallback_intents
+            }
+
+        items = parse_json_with_fallback(content, per_cat, fallback_item)
 
         for item in items[:per_cat]:
             query = item.get("query", "")

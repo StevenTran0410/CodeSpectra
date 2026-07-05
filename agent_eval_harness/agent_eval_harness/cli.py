@@ -14,9 +14,10 @@ os.environ.setdefault("HAYSTACK_AUTO_TRACE_ENABLED", "false")
 import argparse  # noqa: E402
 import asyncio  # noqa: E402
 import sys  # noqa: E402
+from contextlib import asynccontextmanager  # noqa: E402
 
 from agent_eval_harness.config import AEHConfig  # noqa: E402
-from agent_eval_harness.llm.client import LLMResponse  # noqa: E402
+from agent_eval_harness.llm.client import LLMClient, LLMResponse  # noqa: E402
 from agent_eval_harness.llm.fake_client import FakeLLMClient  # noqa: E402
 from agent_eval_harness.llm.proxy_client import CodeSpectraProxyClient  # noqa: E402
 from agent_eval_harness.mapping.system_map import load_system_map  # noqa: E402
@@ -128,11 +129,18 @@ def _read_queries(args: argparse.Namespace) -> list[str]:
     raise SystemExit("aeh run requires --query or --input-file")
 
 
-async def _run_command(args: argparse.Namespace) -> int:
+def _apply_data_dir(args: argparse.Namespace) -> None:
+    """Point the store at a custom data directory before init_db() reads
+    AEH_DATA_DIR. Every subcommand except `map` (which never touches the DB)
+    accepts --data-dir, so this one-liner is shared across them."""
     if args.data_dir:
         os.environ["AEH_DATA_DIR"] = args.data_dir
 
-    config = AEHConfig.load()
+
+def _build_llm_client(args: argparse.Namespace, config: AEHConfig) -> LLMClient:
+    """Resolve the LLM client every command needs: a live CodeSpectraProxyClient
+    if --provider-id (or .aeh/config.yaml) names a provider, else the
+    deterministic offline FakeLLMClient fallback used by every automated test."""
     provider_id = args.provider_id or config.provider_id
 
     if provider_id:
@@ -142,16 +150,31 @@ async def _run_command(args: argparse.Namespace) -> int:
             raise SystemExit(
                 "--provider-id requires --backend-url/--backend-token (or .aeh/config.yaml)"
             )
-        llm_client = CodeSpectraProxyClient(
-            backend_url, backend_token, provider_id, config.model_id
-        )
-    else:
-        llm_client = FakeLLMClient(
-            LLMResponse(content="This is a fallback offline demo answer.", model="fake-default")
-        )
+        return CodeSpectraProxyClient(backend_url, backend_token, provider_id, config.model_id)
 
+    return FakeLLMClient(
+        LLMResponse(content="This is a fallback offline demo answer.", model="fake-default")
+    )
+
+
+@asynccontextmanager
+async def _db_session():
+    """Open the store DB for a command's lifetime and always close it after,
+    even if the command body raises. Not used by `map`, which never touches
+    the DB (SystemMapBuilder writes system_map.yaml straight to disk)."""
     await init_db()
     try:
+        yield
+    finally:
+        await close_db()
+
+
+async def _run_command(args: argparse.Namespace) -> int:
+    _apply_data_dir(args)
+    config = AEHConfig.load()
+    llm_client = _build_llm_client(args, config)
+
+    async with _db_session():
         system_map = load_system_map(args.map_path)
         defects = DefectConfig.from_env()
         active = defects.active_names()
@@ -168,16 +191,12 @@ async def _run_command(args: argparse.Namespace) -> int:
         run_id = outcomes[0].run_id if outcomes else "n/a"
         print(f"[aeh] run completed  status=completed  run_id={run_id}")
         return 0
-    finally:
-        await close_db()
 
 
 async def _dataset_command(args: argparse.Namespace) -> int:
-    if args.data_dir:
-        os.environ["AEH_DATA_DIR"] = args.data_dir
+    _apply_data_dir(args)
 
-    await init_db()
-    try:
+    async with _db_session():
         from agent_eval_harness.store import repository
 
         if args.dataset_command == "generate":
@@ -190,25 +209,7 @@ async def _dataset_command(args: argparse.Namespace) -> int:
             from agent_eval_harness.datasets.versioning import next_version
 
             config = AEHConfig.load()
-            provider_id = args.provider_id or config.provider_id
-
-            if provider_id:
-                backend_url = args.backend_url or config.backend_url
-                backend_token = args.backend_token or config.backend_token
-                if not backend_url or not backend_token:
-                    raise SystemExit(
-                        "--provider-id requires --backend-url/--backend-token (or .aeh/config.yaml)"
-                    )
-                llm_client = CodeSpectraProxyClient(
-                    backend_url, backend_token, provider_id, config.model_id
-                )
-            else:
-                llm_client = FakeLLMClient(
-                    LLMResponse(
-                        content="This is a fallback offline demo answer.",
-                        model="fake-default",
-                    )
-                )
+            llm_client = _build_llm_client(args, config)
 
             with open(args.config, encoding="utf-8") as f:
                 gen_config = yaml.safe_load(f)
@@ -284,34 +285,14 @@ async def _dataset_command(args: argparse.Namespace) -> int:
                     print(f"  Categories:  {cats_str}")
                 print()
             return 0
-    finally:
-        await close_db()
 
 
 async def _eval_command(args: argparse.Namespace) -> int:
-    if args.data_dir:
-        os.environ["AEH_DATA_DIR"] = args.data_dir
-
+    _apply_data_dir(args)
     config = AEHConfig.load()
-    provider_id = args.provider_id or config.provider_id
+    llm_client = _build_llm_client(args, config)
 
-    if provider_id:
-        backend_url = args.backend_url or config.backend_url
-        backend_token = args.backend_token or config.backend_token
-        if not backend_url or not backend_token:
-            raise SystemExit(
-                "--provider-id requires --backend-url/--backend-token (or .aeh/config.yaml)"
-            )
-        llm_client = CodeSpectraProxyClient(
-            backend_url, backend_token, provider_id, config.model_id
-        )
-    else:
-        llm_client = FakeLLMClient(
-            LLMResponse(content="This is a fallback offline demo answer.", model="fake-default")
-        )
-
-    await init_db()
-    try:
+    async with _db_session():
         from agent_eval_harness.metrics.reporting import format_sweep_results, results_to_json
         from agent_eval_harness.metrics.sweep import run_sweep
 
@@ -340,23 +321,17 @@ async def _eval_command(args: argparse.Namespace) -> int:
 
         print(f"[aeh] eval completed  run_id={sweep_result.run_id}")
         return 0
-    finally:
-        await close_db()
 
 
 async def _report_command(args: argparse.Namespace) -> int:
-    if args.data_dir:
-        os.environ["AEH_DATA_DIR"] = args.data_dir
+    _apply_data_dir(args)
 
-    await init_db()
-    try:
+    async with _db_session():
         from agent_eval_harness.metrics.reporting import render_run_report
 
         report = await render_run_report(args.run_id, as_json=args.json)
         print(report)
         return 0
-    finally:
-        await close_db()
 
 
 async def _map_command(args: argparse.Namespace) -> int:
@@ -368,22 +343,7 @@ async def _map_command(args: argparse.Namespace) -> int:
     from agent_eval_harness.mapping.builder.pipeline import SystemMapBuilder
 
     config = AEHConfig.load()
-    provider_id = args.provider_id or config.provider_id
-
-    if provider_id:
-        backend_url = args.backend_url or config.backend_url
-        backend_token = args.backend_token or config.backend_token
-        if not backend_url or not backend_token:
-            raise SystemExit(
-                "--provider-id requires --backend-url/--backend-token (or .aeh/config.yaml)"
-            )
-        llm_client = CodeSpectraProxyClient(
-            backend_url, backend_token, provider_id, config.model_id
-        )
-    else:
-        llm_client = FakeLLMClient(
-            LLMResponse(content="This is a fallback offline demo answer.", model="fake-default")
-        )
+    llm_client = _build_llm_client(args, config)
 
     target_path = Path(args.target)
     docs_path = Path(args.docs_path) if args.docs_path else None

@@ -19,3 +19,16 @@ class MetricResult:
     trace_id: str | None = None
     evaluator: str | None = None
     cost_tokens: int | None = None
+
+
+def extract_cost_tokens(adapter: Any) -> int | None:
+    """Extract total cost tokens from an LLM adapter with token tracking.
+
+    Used by DeepEval and RAGAS judge adapters to accumulate prompt + completion
+    tokens from LLM calls. Returns None if adapter lacks token tracking attributes.
+    """
+    if not (hasattr(adapter, "_last_prompt_tokens") and adapter._last_prompt_tokens is not None):
+        return None
+    pt = adapter._last_prompt_tokens or 0
+    ct = adapter._last_completion_tokens or 0
+    return pt + ct
