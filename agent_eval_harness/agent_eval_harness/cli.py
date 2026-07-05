@@ -104,6 +104,18 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     report_parser.add_argument("--data-dir", dest="data_dir", default=None)
     report_parser.add_argument("--json", action="store_true")
 
+    # map subcommand group
+    map_parser = subparsers.add_parser("map", help="Build a system_map.yaml from target source")
+    map_parser.add_argument("--target", required=True, help="directory of Python source to scan")
+    map_parser.add_argument("--docs", dest="docs_path", default=None)
+    map_parser.add_argument("--output", dest="output_path", default=None)
+    map_parser.add_argument(
+        "--confidence-threshold", dest="confidence_threshold", type=float, default=0.7
+    )
+    map_parser.add_argument("--provider-id", dest="provider_id", default=None)
+    map_parser.add_argument("--backend-url", dest="backend_url", default=None)
+    map_parser.add_argument("--backend-token", dest="backend_token", default=None)
+
     return parser
 
 
@@ -347,6 +359,52 @@ async def _report_command(args: argparse.Namespace) -> int:
         await close_db()
 
 
+async def _map_command(args: argparse.Namespace) -> int:
+    """Build a system_map.yaml from target source code."""
+    from pathlib import Path
+
+    import yaml
+
+    from agent_eval_harness.mapping.builder.pipeline import SystemMapBuilder
+
+    config = AEHConfig.load()
+    provider_id = args.provider_id or config.provider_id
+
+    if provider_id:
+        backend_url = args.backend_url or config.backend_url
+        backend_token = args.backend_token or config.backend_token
+        if not backend_url or not backend_token:
+            raise SystemExit(
+                "--provider-id requires --backend-url/--backend-token (or .aeh/config.yaml)"
+            )
+        llm_client = CodeSpectraProxyClient(
+            backend_url, backend_token, provider_id, config.model_id
+        )
+    else:
+        llm_client = FakeLLMClient(
+            LLMResponse(content="This is a fallback offline demo answer.", model="fake-default")
+        )
+
+    target_path = Path(args.target)
+    docs_path = Path(args.docs_path) if args.docs_path else None
+
+    builder = SystemMapBuilder(llm_client, confidence_threshold=args.confidence_threshold)
+    system_map, summary = await builder.build(target_path, docs_path)
+
+    # Write output
+    output_path = Path(args.output_path) if args.output_path else target_path / "system_map.yaml"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        yaml.dump(system_map.model_dump(), default_flow_style=False, sort_keys=False),
+        encoding="utf-8",
+    )
+
+    print(summary)
+    print(f"[aeh] system_map written to {output_path}")
+
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_arg_parser()
     args = parser.parse_args(argv)
@@ -358,6 +416,8 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(_eval_command(args))
     elif args.command == "report":
         return asyncio.run(_report_command(args))
+    elif args.command == "map":
+        return asyncio.run(_map_command(args))
     parser.error(f"unknown command: {args.command}")
     return 1
 
