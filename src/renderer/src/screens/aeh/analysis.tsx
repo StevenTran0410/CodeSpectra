@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useWorkspaceStore } from '../../store/workspace.store'
 import { useLocalRepoStore } from '../../store/local-repo.store'
+import { useAEHStore } from '../../store/aeh.store'
 import {
   Button,
   FormGroup,
@@ -32,6 +33,13 @@ export default function AEHAnalysisScreen(): React.ReactElement {
   const navigate = useNavigate()
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId)
   const { repos, load: loadRepos } = useLocalRepoStore()
+  // AEH's backend process is lazy-started (CS-260) — unlike AEHReportsScreen,
+  // which blocks its whole render behind startAEH(), this screen's repo/index
+  // status doesn't need the AEH backend at all (that's all CodeSpectra's own
+  // backend). Only the discovery-session calls below need it, so each of them
+  // awaits startAEH() individually right before calling — startAEH() itself
+  // is a no-op once already running, and de-dupes concurrent in-flight starts.
+  const { startAEH } = useAEHStore()
 
   const [persistedConfig, setPersistedConfig] = useState<any>(() => {
     try {
@@ -224,9 +232,16 @@ export default function AEHAnalysisScreen(): React.ReactElement {
       setCandidates([])
       return
     }
+    let cancelled = false
     const repoRef = selectedRepo?.path ?? snapshotId
-    window.api.aeh.listDiscoverySessions(repoRef)
+    // The AEH backend is lazy-started — ensure it's up before the very first
+    // discovery-related call this screen makes (fixes "AEH server is not
+    // running" when a user lands on /aeh/analysis without visiting
+    // /aeh/reports first, which is what actually starts it there).
+    startAEH()
+      .then(() => window.api.aeh.listDiscoverySessions(repoRef))
       .then((sessions) => {
+        if (cancelled) return []
         // Find latest session for this snapshot
         const matching = sessions.filter((s) => s.snapshot_id === snapshotId)
         if (matching.length > 0) {
@@ -238,9 +253,10 @@ export default function AEHAnalysisScreen(): React.ReactElement {
         }
         return []
       })
-      .then((cands) => setCandidates(cands))
+      .then((cands) => { if (!cancelled) setCandidates(cands) })
       .catch(() => {})
-  }, [snapshotId, selectedRepo?.path])
+    return () => { cancelled = true }
+  }, [snapshotId, selectedRepo?.path, startAEH])
 
   // Poll discovery session when running
   const startPolling = useCallback((sessionId: string) => {
@@ -335,6 +351,7 @@ export default function AEHAnalysisScreen(): React.ReactElement {
     setDiscoverySession(null)
 
     try {
+      await startAEH()
       const repoRef = selectedRepo?.path ?? snapshotId
       const result = await window.api.aeh.startDiscovery({
         repo_ref: repoRef,

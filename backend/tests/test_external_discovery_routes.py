@@ -19,15 +19,19 @@ import api.external as external
 
 @pytest.mark.asyncio
 async def test_search_retrieval_delegates_to_retrieval_service() -> None:
-    from domain.retrieval.types import RetrieveRequest, RetrievalSection
+    """Wraps retrieve_rrf_fusion (unbounded, BM25-weighted), not the plain
+    budget-capped retrieve() — a budget cap can silently drop a chunk with an
+    exact fingerprint match below an unrelated higher-scoring chunk, confirmed
+    empirically against this repo's own real haystack import."""
+    from domain.retrieval.types import RrfFusionRequest, RetrievalSection
 
     sentinel = object()
     with patch.object(external, "_retrieval_service") as mock_service:
-        mock_service.retrieve = AsyncMock(return_value=sentinel)
-        body = RetrieveRequest(snapshot_id="snap-1", query="q", section=RetrievalSection.QA)
+        mock_service.retrieve_rrf_fusion = AsyncMock(return_value=sentinel)
+        body = RrfFusionRequest(snapshot_id="snap-1", query="q", section=RetrievalSection.QA)
         result = await external.search_retrieval(body)
 
-    mock_service.retrieve.assert_awaited_once_with(body)
+    mock_service.retrieve_rrf_fusion.assert_awaited_once_with(body)
     assert result is sentinel
 
 

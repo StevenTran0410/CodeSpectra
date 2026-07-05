@@ -13,7 +13,7 @@ from domain.model_connector.types import ChatMessage, ChatRequest, ChatResponse
 from infrastructure.db.database import get_db
 
 from domain.retrieval.service import RetrievalService
-from domain.retrieval.types import RetrieveRequest, RetrievalBundle
+from domain.retrieval.types import RrfFusionRequest, RrfFusionBundle
 from domain.structural_graph.service import StructuralGraphService
 from domain.structural_graph.types import GraphNeighborsResponse, GraphCommunitiesResponse, FileSymbolEdgesResponse
 from domain.repo_map.service import RepoMapService
@@ -113,11 +113,19 @@ async def list_llm_providers() -> list[ProviderSummary]:
 
 @router.post(
     "/retrieval/search",
-    response_model=RetrievalBundle,
+    response_model=RrfFusionBundle,
     dependencies=[Depends(require_external_token)],
 )
-async def search_retrieval(body: RetrieveRequest) -> RetrievalBundle:
-    return await _retrieval_service.retrieve(body)
+async def search_retrieval(body: RrfFusionRequest) -> RrfFusionBundle:
+    """Wraps retrieve_rrf_fusion (CS-252/253's debug/comparison path), not the
+    plain budget-capped retrieve() — deliberately, for AEH's discovery
+    fingerprinting (CS-270), which needs "does this term appear anywhere in
+    the repo" over a bare keyword query. retrieve()'s section-budget cap can
+    silently drop a chunk containing an exact match below a differently-scored
+    chunk for the same query (confirmed empirically against this repo's own
+    agent_pipeline.py — a real haystack import). retrieve_rrf_fusion's fused
+    list is unbounded and BM25-weighted, reliably surfacing exact-term hits."""
+    return await _retrieval_service.retrieve_rrf_fusion(body)
 
 
 @router.get(

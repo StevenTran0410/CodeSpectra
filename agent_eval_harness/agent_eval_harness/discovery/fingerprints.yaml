@@ -11,59 +11,67 @@
 # to work. Only use `type: symbol` for fingerprints that are genuinely about a
 # declared name (e.g. a class actually named `...Agent`), never for import/module
 # detection.
+#
+# `query` for every "retrieval" fingerprint is a BARE keyword, not a verbose
+# natural-language phrase — confirmed empirically against this repo's own
+# codebase (a real `from haystack import ...` in backend/domain/analysis/
+# agent_pipeline.py): querying "import haystack pipeline component" diluted
+# BM25's exact-term signal against unrelated chunks sharing "pipeline"/
+# "component", while querying bare "haystack" correctly ranked the real file
+# top via retrieve_rrf_fusion's unbounded, BM25-weighted "fused" results.
 fingerprints:
   - id: haystack_import
     type: retrieval
-    query: "import haystack pipeline component"
+    query: "haystack"
     pattern: "\\bimport\\s+haystack\\b|\\bfrom\\s+haystack\\b"
     framework: "haystack"
     weight: 1.0
 
   - id: langgraph_import
     type: retrieval
-    query: "import langgraph state graph"
+    query: "langgraph"
     pattern: "\\bimport\\s+langgraph\\b|\\bfrom\\s+langgraph\\b"
     framework: "langgraph"
     weight: 1.0
 
   - id: langchain_import
     type: retrieval
-    query: "import langchain chain agent"
+    query: "langchain"
     pattern: "\\bimport\\s+langchain\\b|\\bfrom\\s+langchain\\b"
     framework: "langchain"
     weight: 0.9
 
   - id: crewai_import
     type: retrieval
-    query: "import crewai crew agent task"
+    query: "crewai"
     pattern: "\\bimport\\s+crewai\\b|\\bfrom\\s+crewai\\b"
     framework: "crewai"
     weight: 1.0
 
   - id: autogen_import
     type: retrieval
-    query: "import autogen agent conversation"
+    query: "autogen"
     pattern: "\\bimport\\s+autogen\\b|\\bfrom\\s+autogen\\b"
     framework: "autogen"
     weight: 1.0
 
   - id: semantic_kernel_import
     type: retrieval
-    query: "import semantic_kernel plugin planner"
+    query: "semantic_kernel"
     pattern: "\\bimport\\s+semantic_kernel\\b|\\bfrom\\s+semantic_kernel\\b"
     framework: "semantic_kernel"
     weight: 1.0
 
   - id: openai_sdk
     type: retrieval
-    query: "import openai chat completions client"
+    query: "openai"
     pattern: "\\bimport\\s+openai\\b|\\bfrom\\s+openai\\b"
     framework: "openai"
     weight: 0.7
 
   - id: anthropic_sdk
     type: retrieval
-    query: "import anthropic messages client"
+    query: "anthropic"
     pattern: "\\bimport\\s+anthropic\\b|\\bfrom\\s+anthropic\\b"
     framework: "anthropic"
     weight: 0.7

@@ -71,14 +71,21 @@ async def discover_agentic_systems(
                             "weight": weight,
                         })
             elif fp_type == "retrieval":
+                # "fused" (retrieve_rrf_fusion's unbounded, BM25-weighted output),
+                # NOT "evidences" (the plain, section-budget-capped retrieve()) —
+                # the budget cap can silently drop a chunk containing the exact
+                # match below an unrelated chunk that scores higher for the same
+                # query (confirmed empirically: real haystack usage in this
+                # repo's own agent_pipeline.py was missed via evidences/retrieve()
+                # but found via fused/retrieve_rrf_fusion()).
                 res = await client.search_retrieval(snapshot_id, query)
-                for evidence in res.get("evidences", []):
-                    if re.search(pattern, evidence["excerpt"], re.IGNORECASE):
+                for entry in res.get("fused", []):
+                    if re.search(pattern, entry["excerpt"], re.IGNORECASE):
                         hits.append({
-                            "file": evidence["rel_path"],
+                            "file": entry["rel_path"],
                             "symbol": None,
                             "fingerprint_id": fp_id,
-                            "snippet": evidence["excerpt"],
+                            "snippet": entry["excerpt"],
                             "framework": framework,
                             "weight": weight,
                         })

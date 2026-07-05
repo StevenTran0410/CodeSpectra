@@ -50,7 +50,9 @@ class _StubClient:
         return {"symbols": []}
 
     async def search_retrieval(self, snapshot_id: str, query: str, section: str = "qa") -> dict:
-        return {"evidences": self._evidences}
+        # "fused" — matches retrieve_rrf_fusion's response shape, not the
+        # budget-capped retrieve()'s "evidences" (see engine.py's Pass A note).
+        return {"fused": self._evidences}
 
     async def get_communities(self, snapshot_id: str) -> dict:
         return {"node_index": self._node_index, "communities": self._communities}

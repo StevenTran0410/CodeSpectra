@@ -33,6 +33,11 @@ class CodeSpectraClient:
         return resp.json()
 
     async def search_retrieval(self, snapshot_id: str, query: str, section: str = "qa") -> dict:
+        """Backed by retrieve_rrf_fusion (unbounded, BM25-weighted fused results
+        under the "fused" key) — not the budget-capped retrieve(). Pass a bare
+        keyword (e.g. "haystack"), not a natural-language phrase: a verbose
+        query dilutes BM25's exact-term signal against unrelated chunks that
+        happen to share other words."""
         return await self._request(
             "POST",
             "/retrieval/search",
