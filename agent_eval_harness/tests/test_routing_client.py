@@ -65,10 +65,7 @@ def _patched_current_span(mock_span):
 
 @pytest.mark.asyncio
 async def test_routing_llm_client_haystack_automatic_component_span() -> None:
-    """Haystack's OWN automatic per-component spans (base.py's
-    _create_component_span) tag "haystack.component.name" — covers a component
-    that uses HarnessChatGenerator as a directly-scheduled pipeline node rather
-    than composing it internally."""
+    """Haystack's OWN automatic per-component spans (base.py's"""
     default_client = FakeLLMClient(LLMResponse(content="default", model="default-model"))
     override_client = FakeLLMClient(LLMResponse(content="override", model="override-model"))
     routing_client = RoutingLLMClient(default=default_client, overrides={"writer": override_client})
@@ -82,13 +79,7 @@ async def test_routing_llm_client_haystack_automatic_component_span() -> None:
 
 @pytest.mark.asyncio
 async def test_routing_llm_client_manual_span_tag() -> None:
-    """Every real T1/T2 test-target component wraps its LLM call in
-    test_targets._shared.tracing_helpers.manual_span(), which tags the span
-    "component_name" (no "haystack." prefix) — NOT "haystack.component.name".
-    A routing client that only checks the latter silently never matches a real
-    target's LLM call and always falls through to the default client (this
-    regression was caught live: a rerun's writer span kept the default model
-    despite an override being configured)."""
+    """Every real T1/T2 test-target component wraps its LLM call in"""
     default_client = FakeLLMClient(LLMResponse(content="default", model="default-model"))
     override_client = FakeLLMClient(LLMResponse(content="override", model="override-model"))
     routing_client = RoutingLLMClient(default=default_client, overrides={"writer": override_client})
@@ -102,12 +93,7 @@ async def test_routing_llm_client_manual_span_tag() -> None:
 
 @pytest.mark.asyncio
 async def test_routing_llm_client_real_target_tier1_e2e(tmp_path, monkeypatch) -> None:
-    """End-to-end regression guard: run T1's REAL Haystack pipeline (not a mock
-    span) through run_sweep with a component override and assert the resulting
-    writer span in the store actually recorded the overridden model — the exact
-    scenario the mocked unit tests above cannot catch on their own, since they
-    assert against a hand-built tag shape rather than what real target code
-    (via manual_span()) actually produces."""
+    """End-to-end regression guard: run T1's REAL Haystack pipeline (not a mock"""
     import os
 
     from agent_eval_harness.metrics.sweep import run_sweep

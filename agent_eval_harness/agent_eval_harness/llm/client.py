@@ -1,9 +1,4 @@
-"""LLMClient seam — the one interface every LLM-calling component depends on.
-
-Exactly two implementations exist (FakeLLMClient, CodeSpectraProxyClient) so every
-component's LLM calls are swappable between deterministic-offline and live-proxied
-without the component code ever knowing which.
-"""
+"""LLMClient seam — the one interface every LLM-calling component depends on."""
 from __future__ import annotations
 
 from dataclasses import dataclass

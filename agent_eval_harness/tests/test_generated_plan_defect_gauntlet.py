@@ -1,9 +1,4 @@
-"""Defect Gauntlet Driven by Generated Plan (CS-265 §5).
-
-Generates the plan for multi_agent, validates it, and uses the generated entries
-to run the exact defect tests, proving correctness and equivalence of the
-generated plan to the hand-written suite.
-"""
+"""Defect Gauntlet Driven by Generated Plan (CS-265 §5)."""
 from __future__ import annotations
 
 import json

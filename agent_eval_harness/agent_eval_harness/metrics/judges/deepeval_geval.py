@@ -1,17 +1,4 @@
-"""DeepEval G-Eval and Tool Correctness judges (CS-263 §6.1).
-
-Metrics:
-- decomposition_coverage: compares planner's intents against decomposition_gold cases.
-- query_rewrite_quality: scores planner/worker query rewrite quality.
-- tool_correctness: deterministic tool-name comparison from trace tool_call spans
-  (despite living in the llm_judge family per the ticket, this one is deterministic).
-
-Rubric text always comes from suite_entry.params["rubric_text"] — never hardcoded
-in Python (CS-263 §3 requirement).
-
-Cost tracking: cost_tokens is accumulated from the adapter's token bookkeeping and
-written into every MetricResult.
-"""
+"""DeepEval G-Eval and Tool Correctness judges (CS-263 §6.1)."""
 from __future__ import annotations
 
 import json
@@ -32,14 +19,7 @@ async def run_geval(
     trace_id: str | None = None,
     additional_metadata: dict | None = None,
 ) -> MetricResult:
-    """Run a G-Eval metric via DeepEval.
-
-    Args:
-        rubric_text: Human-readable criteria for the G-Eval judge.
-        input_text: The input query / context.
-        actual_output: The component's produced output.
-        expected_output: Optional gold standard output.
-    """
+    """Run a G-Eval metric via DeepEval."""
     try:
         from deepeval.metrics import GEval
         from deepeval.test_case import LLMTestCase, LLMTestCaseParams
@@ -100,13 +80,7 @@ async def run_tool_correctness(
     *,
     trace_id: str | None = None,
 ) -> MetricResult:
-    """Tool Correctness metric — deterministic tool-name comparison.
-
-    Despite living in the llm_judge family per the ticket classification,
-    this metric is purely deterministic: no LLM call is made. It compares
-    the actual tool names from trace ``tool_call`` spans against
-    ``expected_tool_names``.
-    """
+    """Tool Correctness metric — deterministic tool-name comparison."""
     actual_tools: list[str] = []
     for span in spans:
         if span.get("span_type") != "tool_call":

@@ -38,10 +38,6 @@ async def test_dataset_review_cli_loop(monkeypatch):
     await repository.insert_dataset_cases_bulk("t2_review_v1", [case1, case2, case3])
 
     # 2. Mock input() responses for review loop:
-    # First case: accept -> "a"
-    # Second case: edit -> "e", then enters corrected expected JSON:
-    # '{"verdict": "reject", "category": "jailbreak_custom"}'
-    # Third case: reject -> "r"
     inputs = [
         "a",  # Accept first case
         "e",  # Edit second case

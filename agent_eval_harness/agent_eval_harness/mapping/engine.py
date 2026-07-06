@@ -1,7 +1,4 @@
-"""Span -> component mapping engine. Entirely data-driven from the map's span_match
-rules — zero hardcoded component knowledge, since CS-264 will generate maps for
-arbitrary targets this engine has never seen.
-"""
+"""Span -> component mapping engine. Entirely data-driven from the map's span_match"""
 from __future__ import annotations
 
 import re
@@ -39,12 +36,7 @@ def _component_matches(span: CapturedSpan, component: Component) -> bool:
 
 
 def map_spans_to_components(spans: list[CapturedSpan], system_map: SystemMap) -> MappingResult:
-    """Components are evaluated in system_map.components (YAML list) order.
-    First match wins; a span matching more than one component is still assigned
-    the first match but also recorded as ambiguous (never silently dropped).
-    Spans that already carry a component_id (tier-2, pre-assigned) are skipped —
-    trivially "matched" already.
-    """
+    """Components are evaluated in system_map.components (YAML list) order."""
     result = MappingResult()
     for span in spans:
         if span.component_id is not None:

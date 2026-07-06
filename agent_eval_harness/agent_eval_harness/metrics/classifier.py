@@ -1,15 +1,4 @@
-"""Classifier scorer — sklearn-based evaluation over CS-262 labeled datasets (CS-263 §5).
-
-Works identically for guard (rule stage, llm stage) and validator (judge) roles.
-Both stages of the 2-stage guardrail question use this function — never DeepEval.
-
-Usage:
-    result = await score_classifier(
-        dataset_id="t2_guard_v1",
-        component_entry_point="test_targets.multi_agent.components:GuardComponent",
-        llm_client=fake_or_proxy_client,
-    )
-"""
+"""Classifier scorer — sklearn-based evaluation over CS-262 labeled datasets (CS-263 §5)."""
 from __future__ import annotations
 
 import json
@@ -30,17 +19,7 @@ async def score_classifier(
     component_id: str | None = None,
     metric_name: str = "classifier.accuracy",
 ) -> MetricResult:
-    """Run every case in ``dataset_id`` through the resolved component function,
-    compare verdicts against expected labels, and score via sklearn.
-
-    The ``component_entry_point`` resolves a ``"module.path:ClassName"`` string
-    to a class — an instance is instantiated with ``(llm_client,)`` and its
-    ``run_async(query)`` method is awaited per case.
-
-    Validator decision-cost extras (CS-263 §5):
-    - false-pass rate: judge said sufficient=True but label says False
-    - false-reject rate: judge said sufficient=False but label says True
-    """
+    """Run every case in ``dataset_id`` through the resolved component function,"""
     try:
         from sklearn.metrics import classification_report, confusion_matrix
     except ImportError as exc:

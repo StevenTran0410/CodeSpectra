@@ -1,12 +1,4 @@
-"""Assertion: max_retries — verifies a component does not exceed its retry budget.
-
-Counts the number of spans with `component_id == component_id` in one trace.
-`passed = count <= limit + 1` (initial attempt + `limit` retries).
-
-params:
-    limit (int): maximum number of retries (not counting the first attempt).
-                 Default: 1.
-"""
+"""Assertion: max_retries — verifies a component does not exceed its retry budget."""
 from __future__ import annotations
 
 from agent_eval_harness.metrics.assertions.registry import register

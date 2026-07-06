@@ -1,9 +1,4 @@
-"""Manual inner-span helper for test-target component code.
-
-Mirrors the exact pattern haystack.components.agents.agent.py uses internally
-(tracer.trace(op, tags, parent_span=tracer.current_span())) — this is how ANY
-Haystack component achieves nested spans, built-in or ours.
-"""
+"""Manual inner-span helper for test-target component code."""
 from __future__ import annotations
 
 from collections.abc import Iterator

@@ -1,9 +1,4 @@
-"""AEH config — data dir + optional .aeh/config.yaml for live-run backend/provider settings.
-
-AEH has no provider/key config of its own (owner decision 2026-07-04) — this
-just names which of CodeSpectra's already-configured providers to use, plus
-where CodeSpectra's backend is reachable.
-"""
+"""AEH config — data dir + optional .aeh/config.yaml for live-run backend/provider settings."""
 from __future__ import annotations
 
 from dataclasses import dataclass

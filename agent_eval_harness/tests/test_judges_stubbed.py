@@ -1,12 +1,4 @@
-"""Smoke tests for DeepEval/RAGAS judge adapters with FakeLLMClient.
-
-Mirrors CS-262's precedent: smoke-test the real adapters end-to-end with a fake
-client rather than only testing interface shape. Asserts:
-- They run without crashing.
-- They produce a MetricResult.
-- cost_tokens is populated (may be None for FakeLLMClient which returns None tokens,
-  so we accept None here — live clients will populate it).
-"""
+"""Smoke tests for DeepEval/RAGAS judge adapters with FakeLLMClient."""
 from __future__ import annotations
 
 import json
@@ -16,7 +8,6 @@ import pytest
 from agent_eval_harness.llm.ragas_adapter import stub_missing_langchain_community_vertexai
 
 # Must run before any `pytest.importorskip("ragas")`/`import ragas` below — see
-# stub_missing_langchain_community_vertexai's own docstring for why.
 stub_missing_langchain_community_vertexai()
 
 pytestmark = pytest.mark.asyncio

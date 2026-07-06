@@ -1,8 +1,4 @@
-"""Shared, tier-agnostic helpers: JSON-safe serialization, UTC timestamps,
-and duck-typed model/token extraction. Used by both tier1_haystack.py and
-tier2_boundary.py so tier-2 spans get token data "only if the boundary happens
-to expose it, never invented" (same extraction code, not tier-specific).
-"""
+"""Shared, tier-agnostic helpers: JSON-safe serialization, UTC timestamps,"""
 from __future__ import annotations
 
 import json
@@ -27,11 +23,7 @@ def safe_json(value: Any) -> str | None:
 def extract_model_and_tokens(
     payload: Any,
 ) -> tuple[str | None, int | None, int | None, str | None]:
-    """Two duck-typed shapes recognized, opportunistically:
-    1. Haystack-style: {"replies": [ChatMessage(meta={"model", "usage": {...}})]}
-    2. Plain dict: {"model": ..., "tokens_in": ..., "tokens_out": ..., "token_source": ...}
-    Anything else -> all None (never invented).
-    """
+    """Two duck-typed shapes recognized, opportunistically:"""
     if not isinstance(payload, dict):
         return None, None, None, None
 

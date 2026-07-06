@@ -14,9 +14,6 @@ async def test_guard_classification_mechanical():
             {"name": "too_short", "kind": "mechanical", "count": 25},
             {"name": "gibberish", "kind": "mechanical", "count": 25},
             # We must make sure valid cases make up >= 40% of the total
-            # Wait, too_short (reject) + gibberish (reject) = 50 rejects.
-            # To have >=40% valid, we need at least 34 valid cases (out of 84).
-            # Let's add a mechanical/valid category if possible, or just valid:
             {"name": "valid", "kind": "mechanical", "count": 35}
         ]
     }
@@ -88,12 +85,10 @@ async def test_guard_classification_semantic():
     
     cases = await generate(config, llm_client=fake_client)
     # We requested 30 + 25 = 55 cases.
-    # Wait, valid ratio: borderline_valid count is 25. Total is 55. 25/55 = 45.4% >= 40%
     assert len(cases) == 55
     
     off_topic_cases = [c for c in cases if c.labels.get("category") == "off_topic"]
     # If the response list was smaller than count (which our mock lists of size 2 are),
-    # the generator pads it, so we expect exactly 30 cases.
     assert len(off_topic_cases) == 30
     for c in off_topic_cases:
         assert c.expected == {"verdict": "reject", "category": "off_topic"}

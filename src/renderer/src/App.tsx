@@ -54,7 +54,7 @@ export default function App(): React.ReactElement {
 
               {/* AEH mode */}
               <Route path="/aeh/repositories" element={<RepositoriesScreen />} />
-              <Route path="/aeh/analysis" element={<AEHAnalysisScreen />} />
+              <Route path="/aeh/analysis/*" element={<AEHAnalysisScreen />} />
               <Route path="/aeh/reports/*" element={<AEHReportsScreen />} />
               <Route path="/aeh/ask" element={<AskScreen />} />
 

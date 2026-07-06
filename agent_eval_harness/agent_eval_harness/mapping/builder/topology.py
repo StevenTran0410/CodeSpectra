@@ -11,11 +11,7 @@ def extract_topology(
     source_files: list[Path],
     candidates: list[CandidateComponent],
 ) -> dict[str, TopologyEdges]:
-    """Extract topology edges from source code.
-
-    Returns dict[candidate_id, TopologyEdges] for all candidates (including splits,
-    which inherit the class's topology).
-    """
+    """Extract topology edges from source code."""
     connect_edges: dict[str, set[str]] = {}
     constructor_edges: dict[str, set[str]] = {}
 
@@ -35,66 +31,36 @@ def extract_topology(
         except SyntaxError:
             continue
 
-    # Phase A: Extract connect() edges
-    # First pass: collect add_component_names mapping
-    add_component_names: dict[str, str] = {}  # {haystack_name: class_name}
+    # Phase A: Extract connect() edges using unified wiring detector
+    file_contents = {}
+    for file in source_files:
+        try:
+            file_contents[str(file)] = file.read_text(encoding="utf-8")
+        except Exception:
+            continue
 
-    for file, tree in asts.items():
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Call):
-                if isinstance(node.func, ast.Attribute) and node.func.attr == "add_component":
-                    if (
-                        len(node.args) >= 2
-                        and isinstance(node.args[0], ast.Constant)
-                        and isinstance(node.args[0].value, str)
-                        and isinstance(node.args[1], ast.Call)
-                        and isinstance(node.args[1].func, ast.Name)
-                    ):
-                        haystack_name = node.args[0].value
-                        class_name = node.args[1].func.id
-                        add_component_names[haystack_name] = class_name
+    from agent_eval_harness.discovery.wiring import detect_wiring_block_static
+    wiring_block = detect_wiring_block_static(file_contents)
 
-    # Second pass: extract connect() calls
-    for file, tree in asts.items():
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Call):
-                if isinstance(node.func, ast.Attribute) and node.func.attr == "connect":
-                    if len(node.args) >= 2:
-                        if (
-                            isinstance(node.args[0], ast.Constant)
-                            and isinstance(node.args[0].value, str)
-                            and isinstance(node.args[1], ast.Constant)
-                            and isinstance(node.args[1].value, str)
-                        ):
-                            source_str = node.args[0].value
-                            dest_str = node.args[1].value
+    add_component_names: dict[str, str] = {}
+    if wiring_block:
+        for w_node in wiring_block.nodes:
+            add_component_names[w_node.alias] = w_node.class_name
 
-                            # Split on first '.'
-                            source_parts = source_str.split(".", 1)
-                            dest_parts = dest_str.split(".", 1)
+        for w_edge in wiring_block.edges:
+            source_class_name = add_component_names.get(w_edge.src)
+            dest_class_name = add_component_names.get(w_edge.dst)
 
-                            if source_parts and dest_parts:
-                                source_node_name = source_parts[0]
-                                dest_node_name = dest_parts[0]
+            if source_class_name and dest_class_name:
+                source_ids = class_to_candidate_ids.get(source_class_name, [])
+                dest_ids = class_to_candidate_ids.get(dest_class_name, [])
 
-                                # Map through add_component_names
-                                source_class_name = add_component_names.get(source_node_name)
-                                dest_class_name = add_component_names.get(dest_node_name)
-
-                                if source_class_name and dest_class_name:
-                                    source_ids = class_to_candidate_ids.get(
-                                        source_class_name, []
-                                    )
-                                    dest_ids = class_to_candidate_ids.get(
-                                        dest_class_name, []
-                                    )
-
-                                    # Apply edge to all variants of the class
-                                    for src_id in source_ids:
-                                        for dest_id in dest_ids:
-                                            if src_id not in connect_edges:
-                                                connect_edges[src_id] = set()
-                                            connect_edges[src_id].add(dest_id)
+                # Apply edge to all variants of the class
+                for src_id in source_ids:
+                    for dest_id in dest_ids:
+                        if src_id not in connect_edges:
+                            connect_edges[src_id] = set()
+                        connect_edges[src_id].add(dest_id)
 
     # Phase B: Extract constructor injection edges
     for file, tree in asts.items():

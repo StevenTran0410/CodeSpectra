@@ -1,10 +1,4 @@
-"""Deterministic canned LLM client for offline tests.
-
-Pattern matches backend/tests/conftest.py's own chat_response_sequence helper
-(queue.pop(0), repeats last response once exhausted) — no existing "real class
-implementing the interface" fake precedent to copy, so this introduces that
-convention fresh, as CS-261 §6 requires ("stub-able client seam").
-"""
+"""Deterministic canned LLM client for offline tests."""
 from __future__ import annotations
 
 from agent_eval_harness.llm.client import LLMMessage, LLMResponse

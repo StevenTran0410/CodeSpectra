@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import React, { useEffect, useMemo, useState } from 'react'
+import { useNavigate, Routes, Route } from 'react-router-dom'
 import { useWorkspaceStore } from '../../store/workspace.store'
 import { useLocalRepoStore } from '../../store/local-repo.store'
 import { useAEHStore } from '../../store/aeh.store'
@@ -12,33 +12,22 @@ import {
 import {
   AlertCircle,
   CheckCircle2,
-  Play,
   FolderOpen,
   FileText,
   Search,
   Network,
   Info,
   ArrowRight,
-  Loader2,
-  ThumbsUp,
-  ThumbsDown,
-  ChevronDown,
-  ChevronRight,
-  Cpu,
-  Zap,
 } from 'lucide-react'
-import type { RepoSnapshot, LocalRepo, AEHDiscoverySession, AEHDiscoveryCandidate } from '../../types/electron'
+import type { RepoSnapshot, LocalRepo } from '../../types/electron'
+// AEHDiscoverySession/AEHDiscoveryCandidate are global ambient types.
+import Stage1GraphScreen from './Stage1GraphScreen'
+import Stage2Screen from './Stage2Screen'
 
-export default function AEHAnalysisScreen(): React.ReactElement {
+function AnalysisOverview(): React.ReactElement {
   const navigate = useNavigate()
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId)
   const { repos, load: loadRepos } = useLocalRepoStore()
-  // AEH's backend process is lazy-started (CS-260) — unlike AEHReportsScreen,
-  // which blocks its whole render behind startAEH(), this screen's repo/index
-  // status doesn't need the AEH backend at all (that's all CodeSpectra's own
-  // backend). Only the discovery-session calls below need it, so each of them
-  // awaits startAEH() individually right before calling — startAEH() itself
-  // is a no-op once already running, and de-dupes concurrent in-flight starts.
   const { startAEH } = useAEHStore()
 
   const [persistedConfig, setPersistedConfig] = useState<any>(() => {
@@ -50,7 +39,7 @@ export default function AEHAnalysisScreen(): React.ReactElement {
   })
 
   const [repoId, setRepoId] = useState(persistedConfig.repoId ?? '')
-  const [snapshotId, setSnapshotId] = useState(persistedConfig.snapshotId ?? '')
+  const [snapshotId, setSnapshotId] = useState<string>(persistedConfig.snapshotId ?? '')
   const [snapshots, setSnapshots] = useState<RepoSnapshot[]>([])
   const [loadingSnapshots, setLoadingSnapshots] = useState(false)
   const [reports, setReports] = useState<any[]>([])
@@ -64,13 +53,8 @@ export default function AEHAnalysisScreen(): React.ReactElement {
   const [repomapSummary, setRepomapSummary] = useState<any | null>(null)
   const [graphSummary, setGraphSummary] = useState<any | null>(null)
 
-  // Discovery state
   const [discoverySession, setDiscoverySession] = useState<AEHDiscoverySession | null>(null)
   const [candidates, setCandidates] = useState<AEHDiscoveryCandidate[]>([])
-  const [runningDiscovery, setRunningDiscovery] = useState(false)
-  const [discoveryError, setDiscoveryError] = useState<string | null>(null)
-  const [expandedEvidence, setExpandedEvidence] = useState<Set<string>>(new Set())
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // Load repos on mount or workspace change
   useEffect(() => {
@@ -185,7 +169,6 @@ export default function AEHAnalysisScreen(): React.ReactElement {
       setGraphStatus('loading')
       setRetrievalStatus('loading')
 
-      // 1. Manifest status: if snapshot is ready, manifest is built
       const selectedSnap = snapshots.find((s) => s.id === snapshotId)
       if (selectedSnap && selectedSnap.status === 'ready') {
         setManifestStatus('built')
@@ -193,7 +176,6 @@ export default function AEHAnalysisScreen(): React.ReactElement {
         setManifestStatus('missing')
       }
 
-      // 2. Repomap & Retrieval index status
       try {
         const rSummary = await window.api.repomap.summary(snapshotId)
         setRepomapSummary(rSummary)
@@ -207,7 +189,6 @@ export default function AEHAnalysisScreen(): React.ReactElement {
         setRetrievalStatus('missing')
       }
 
-      // 3. Graph status
       try {
         const gSummary = await window.api.graph.summary(snapshotId)
         setGraphSummary(gSummary)
@@ -234,15 +215,10 @@ export default function AEHAnalysisScreen(): React.ReactElement {
     }
     let cancelled = false
     const repoRef = selectedRepo?.path ?? snapshotId
-    // The AEH backend is lazy-started — ensure it's up before the very first
-    // discovery-related call this screen makes (fixes "AEH server is not
-    // running" when a user lands on /aeh/analysis without visiting
-    // /aeh/reports first, which is what actually starts it there).
     startAEH()
-      .then(() => window.api.aeh.listDiscoverySessions(repoRef))
+      .then(() => window.api.aeh.listDiscoverySessions(repoRef, snapshotId))
       .then((sessions) => {
         if (cancelled) return []
-        // Find latest session for this snapshot
         const matching = sessions.filter((s) => s.snapshot_id === snapshotId)
         if (matching.length > 0) {
           const latest = matching[0]
@@ -258,65 +234,24 @@ export default function AEHAnalysisScreen(): React.ReactElement {
     return () => { cancelled = true }
   }, [snapshotId, selectedRepo?.path, startAEH])
 
-  // Poll discovery session when running
-  const startPolling = useCallback((sessionId: string) => {
-    if (pollRef.current) clearInterval(pollRef.current)
-    pollRef.current = setInterval(async () => {
-      try {
-        const session = await window.api.aeh.getDiscoverySession(sessionId)
-        setDiscoverySession(session)
-        if (session.status !== 'running') {
-          if (pollRef.current) clearInterval(pollRef.current)
-          setRunningDiscovery(false)
-          if (session.status === 'completed') {
-            const cands = await window.api.aeh.listDiscoveryCandidates(sessionId)
-            setCandidates(cands)
-          } else if (session.status === 'failed') {
-            setDiscoveryError(session.error ?? 'Discovery failed')
-          }
-        }
-      } catch (err) {
-        if (pollRef.current) clearInterval(pollRef.current)
-        setRunningDiscovery(false)
-      }
-    }, 2500)
-  }, [])
-
-  useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current) }, [])
-
   const updatePersistedConfig = (updates: Partial<typeof persistedConfig>) => {
     const nextConfig = { ...persistedConfig, ...updates }
     setPersistedConfig(nextConfig)
     localStorage.setItem('analysis.runConfig.v1', JSON.stringify(nextConfig))
   }
 
-  // Switching repo/snapshot mid-discovery must stop the in-flight poll — otherwise
-  // it keeps firing for the OLD session and overwrites whatever the newly-selected
-  // repo/snapshot's own state loads next (a real, confusing UI bug, not just stale data).
-  const stopPolling = () => {
-    if (pollRef.current) {
-      clearInterval(pollRef.current)
-      pollRef.current = null
-    }
-    setRunningDiscovery(false)
-  }
-
   const handleRepoChange = (newRepoId: string) => {
-    stopPolling()
     setRepoId(newRepoId)
-    setSnapshotId('') // let effect select default
+    setSnapshotId('')
     setDiscoverySession(null)
     setCandidates([])
-    setDiscoveryError(null)
   }
 
   const handleSnapshotChange = (newSnapshotId: string) => {
-    stopPolling()
     setSnapshotId(newSnapshotId)
     updatePersistedConfig({ snapshotId: newSnapshotId })
     setDiscoverySession(null)
     setCandidates([])
-    setDiscoveryError(null)
   }
 
   const matchingCASnapshot = useMemo(() => {
@@ -336,54 +271,17 @@ export default function AEHAnalysisScreen(): React.ReactElement {
     return caSnapshots.find((s) => s.status === 'ready') ?? null
   }, [selectedSnapshot, caSnapshots, siblingCARepo])
 
-  const reportExists = useMemo(() => {
-    if (!matchingCASnapshot) return false
-    return reports.some((r) => r.snapshot_id === matchingCASnapshot.id)
+  const matchingCAReport = useMemo(() => {
+    if (!matchingCASnapshot) return null
+    return reports.find((r) => r.snapshot_id === matchingCASnapshot.id) ?? null
   }, [reports, matchingCASnapshot])
 
-  const indexesReady = manifestStatus === 'built' && graphStatus === 'built' && retrievalStatus === 'built'
+  const reportExists = matchingCAReport !== null
 
-  const handleRunDiscovery = async () => {
-    if (!snapshotId || runningDiscovery) return
-    setRunningDiscovery(true)
-    setDiscoveryError(null)
-    setCandidates([])
-    setDiscoverySession(null)
-
-    try {
-      await startAEH()
-      const repoRef = selectedRepo?.path ?? snapshotId
-      const result = await window.api.aeh.startDiscovery({
-        repo_ref: repoRef,
-        snapshot_id: snapshotId,
-      })
-      const session = await window.api.aeh.getDiscoverySession(result.session_id)
-      setDiscoverySession(session)
-      startPolling(result.session_id)
-    } catch (err: any) {
-      setRunningDiscovery(false)
-      setDiscoveryError(err?.message ?? 'Failed to start discovery')
+  const handleStage1Click = () => {
+    if (repoId && snapshotId) {
+      navigate(`stage1?repoId=${repoId}&snapshotId=${snapshotId}`)
     }
-  }
-
-  const handleVerdict = async (candidateId: string, verdict: 'confirmed' | 'rejected') => {
-    try {
-      await window.api.aeh.updateDiscoveryCandidateVerdict(candidateId, verdict)
-      setCandidates((prev) =>
-        prev.map((c) => c.id === candidateId ? { ...c, verdict } : c)
-      )
-    } catch (err) {
-      console.error('Failed to update verdict', err)
-    }
-  }
-
-  const toggleEvidence = (candidateId: string) => {
-    setExpandedEvidence((prev) => {
-      const next = new Set(prev)
-      if (next.has(candidateId)) next.delete(candidateId)
-      else next.add(candidateId)
-      return next
-    })
   }
 
   const renderStatusBadge = (status: 'loading' | 'built' | 'missing') => {
@@ -409,18 +307,6 @@ export default function AEHAnalysisScreen(): React.ReactElement {
           </Badge>
         )
     }
-  }
-
-  const confidenceColor = (confidence: string) => {
-    if (confidence === 'high') return 'text-emerald-400 bg-emerald-950/40 border-emerald-800/60'
-    if (confidence === 'medium') return 'text-amber-400 bg-amber-950/40 border-amber-800/60'
-    return 'text-slate-400 bg-slate-900/40 border-slate-700/60'
-  }
-
-  const verdictColor = (verdict: string) => {
-    if (verdict === 'confirmed') return 'text-emerald-400'
-    if (verdict === 'rejected') return 'text-red-400 line-through opacity-60'
-    return 'text-slate-300'
   }
 
   return (
@@ -497,17 +383,17 @@ export default function AEHAnalysisScreen(): React.ReactElement {
               <Button
                 variant="ghost"
                 className="text-[10px] px-2 py-1 shrink-0 flex items-center gap-1"
-                onClick={() => navigate('/analysis')}
+                onClick={() => navigate('/ca/analysis')}
               >
                 <span>{matchingCASnapshot ? 'Run CA Report' : 'Import in CA'}</span>
                 <ArrowRight className="w-3.5 h-3.5" />
               </Button>
             )}
-            {reportExists && (
+            {reportExists && matchingCAReport && (
               <Button
                 variant="ghost"
                 className="text-[10px] px-2 py-1 shrink-0 flex items-center gap-1"
-                onClick={() => navigate('/analysis')}
+                onClick={() => navigate(`/ca/reports?reportId=${encodeURIComponent(matchingCAReport.id)}`)}
               >
                 <span>View Report</span>
                 <ArrowRight className="w-3.5 h-3.5" />
@@ -523,7 +409,7 @@ export default function AEHAnalysisScreen(): React.ReactElement {
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {/* Manifest Status Card */}
+            {/* Code Manifest Card */}
             <div className="bg-slate-900/40 border border-slate-800 rounded-lg p-4 space-y-3 flex flex-col justify-between">
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
@@ -539,7 +425,7 @@ export default function AEHAnalysisScreen(): React.ReactElement {
               </div>
             </div>
 
-            {/* Graph Status Card */}
+            {/* Structural Graph Card */}
             <div className="bg-slate-900/40 border border-slate-800 rounded-lg p-4 space-y-3 flex flex-col justify-between">
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
@@ -560,7 +446,7 @@ export default function AEHAnalysisScreen(): React.ReactElement {
               )}
             </div>
 
-            {/* Retrieval Status Card */}
+            {/* Retrieval Index Card */}
             <div className="bg-slate-900/40 border border-slate-800 rounded-lg p-4 space-y-3 flex flex-col justify-between">
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
@@ -583,217 +469,78 @@ export default function AEHAnalysisScreen(): React.ReactElement {
           </div>
         </div>
 
-        {/* Discovery Action Card */}
-        <div className="bg-[#0f172a]/60 border border-slate-800/80 rounded-xl p-5 space-y-4 backdrop-blur-sm shadow-xl">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="w-9 h-9 rounded-full bg-indigo-950/40 border border-indigo-500/30 flex items-center justify-center text-indigo-400">
-                <Cpu className="w-4 h-4" />
-              </div>
-              <div>
-                <h3 className="text-sm font-semibold text-slate-200">Run Discovery Agent</h3>
-                <p className="text-xs text-slate-400 mt-0.5">
-                  Scan for agent frameworks, cluster by graph communities, and synthesize candidates via LLM.
-                </p>
-              </div>
-            </div>
-            <Button
-              variant="primary"
-              disabled={!snapshotId || !indexesReady || runningDiscovery}
-              className="text-xs px-5 py-2 flex items-center gap-2 shrink-0"
-              onClick={handleRunDiscovery}
-            >
-              {runningDiscovery ? (
-                <>
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  <span>Discovering...</span>
-                </>
-              ) : (
-                <>
-                  <Play className="w-3.5 h-3.5 ml-0.5" />
-                  <span>Run Discovery</span>
-                </>
-              )}
-            </Button>
-          </div>
-
-          {!indexesReady && snapshotId && !runningDiscovery && (
-            <div className="flex items-center gap-2 bg-amber-950/20 border border-amber-800/40 rounded-lg px-3 py-2 text-xs text-amber-300">
-              <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-              Build all three indexes above before running discovery.
-            </div>
-          )}
-
-          {/* Progress indicator while running */}
-          {runningDiscovery && (
-            <div className="space-y-2">
-              {['Pass A — Framework Fingerprinting', 'Pass B — Graph Community Clustering', 'Pass C — LLM Candidate Synthesis'].map((step, i) => (
-                <div key={i} className="flex items-center gap-3 text-xs text-slate-400">
-                  <Loader2 className="w-3 h-3 animate-spin text-indigo-400 shrink-0" />
-                  <span>{step}</span>
+        {/* Pipeline Stage Strip */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div
+            className={`border rounded-xl p-4 flex items-center justify-between gap-3 transition-colors ${
+              repoId && snapshotId
+                ? 'bg-[#0f172a]/60 border-indigo-500/40 hover:border-indigo-400 cursor-pointer shadow-lg'
+                : 'bg-[#0f172a]/20 border-slate-900 text-slate-500 cursor-not-allowed opacity-55'
+            }`}
+            onClick={handleStage1Click}
+          >
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="w-7 h-7 rounded-full bg-indigo-950/50 border border-indigo-500/40 flex items-center justify-center text-indigo-300 text-xs font-bold shrink-0">1</div>
+              <div className="min-w-0">
+                <div className="text-xs font-semibold text-slate-200">Stage 1: Discovery</div>
+                <div className="text-[10px] text-slate-400 truncate">
+                  {discoverySession?.status === 'completed'
+                    ? `${candidates.length} candidate${candidates.length !== 1 ? 's' : ''} found`
+                    : discoverySession?.status === 'running'
+                    ? 'Running…'
+                    : 'Fingerprint scan + graph clustering'}
                 </div>
-              ))}
-              <p className="text-[10px] text-slate-500 italic pt-1">
-                This may take 30–120 seconds depending on repository size…
-              </p>
+              </div>
             </div>
-          )}
-
-          {/* Discovery error */}
-          {discoveryError && (
-            <div className="flex items-start gap-2 bg-red-950/20 border border-red-800/40 rounded-lg px-3 py-2.5 text-xs text-red-300">
-              <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-              <span>{discoveryError}</span>
+            {repoId && snapshotId && <ArrowRight className="w-4 h-4 text-indigo-400 shrink-0" />}
+          </div>
+          <div
+            className={`border rounded-xl p-4 flex items-center justify-between gap-3 transition-colors ${
+              repoId && snapshotId && candidates.some((c) => c.verdict === 'confirmed')
+                ? 'bg-[#0f172a]/60 border-indigo-500/40 hover:border-indigo-400 cursor-pointer shadow-lg'
+                : 'bg-[#0f172a]/20 border-slate-900 text-slate-500 cursor-not-allowed opacity-55'
+            }`}
+            onClick={() => {
+              if (repoId && snapshotId && candidates.some((c) => c.verdict === 'confirmed')) {
+                navigate(`stage2?repoId=${repoId}&snapshotId=${snapshotId}`)
+              }
+            }}
+          >
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="w-7 h-7 rounded-full bg-indigo-950/50 border border-indigo-500/40 flex items-center justify-center text-indigo-300 text-xs font-bold shrink-0">2</div>
+              <div className="min-w-0">
+                <div className="text-xs font-semibold text-slate-200">Stage 2: Expand to System Map</div>
+                <div className="text-[10px] text-slate-400 truncate">
+                  {candidates.some((c) => c.verdict === 'confirmed')
+                    ? 'Ready to expand confirmed component(s)'
+                    : 'Requires at least one confirmed candidate'}
+                </div>
+              </div>
             </div>
-          )}
-
-          {/* Session status pill (completed/failed) */}
-          {discoverySession && !runningDiscovery && (
-            <div className="flex items-center gap-2 text-xs">
-              {discoverySession.status === 'completed' ? (
-                <span className="flex items-center gap-1.5 text-emerald-400">
-                  <CheckCircle2 className="w-3.5 h-3.5" />
-                  Discovery completed · {candidates.length} candidate{candidates.length !== 1 ? 's' : ''} found
-                </span>
-              ) : discoverySession.status === 'failed' ? (
-                <span className="flex items-center gap-1.5 text-red-400">
-                  <AlertCircle className="w-3.5 h-3.5" />
-                  Discovery failed
-                </span>
-              ) : null}
-              <span className="text-slate-600">·</span>
-              <span className="text-slate-500 font-mono">{discoverySession.id.slice(0, 8)}</span>
+            {repoId && snapshotId && candidates.some((c) => c.verdict === 'confirmed') && <ArrowRight className="w-4 h-4 text-indigo-400 shrink-0" />}
+          </div>
+          <div
+            className="bg-[#0f172a]/40 border border-slate-800/60 rounded-xl p-4 flex items-center gap-3 opacity-60 cursor-not-allowed"
+            title="Coming soon (CS-273) — proposes a metric suite per component for review"
+          >
+            <div className="w-7 h-7 rounded-full bg-slate-900 border border-slate-700 flex items-center justify-center text-slate-500 text-xs font-bold shrink-0">3</div>
+            <div className="min-w-0">
+              <div className="text-xs font-semibold text-slate-400">Stage 3: Build Evaluation</div>
+              <div className="text-[10px] text-slate-600 truncate">Not yet implemented — CS-273</div>
             </div>
-          )}
+          </div>
         </div>
-
-        {/* Candidate Cards */}
-        {candidates.length > 0 && (
-          <div className="space-y-3">
-            <div className="text-sm font-semibold text-slate-200 px-1 flex items-center gap-2">
-              <Zap className="w-4 h-4 text-indigo-400" />
-              <span>Discovered Candidates</span>
-              <Badge variant="neutral" size="sm">{candidates.length}</Badge>
-            </div>
-
-            {candidates.map((cand) => (
-              <div
-                key={cand.id}
-                className={`bg-[#0f172a]/60 border rounded-xl p-5 backdrop-blur-sm shadow-lg transition-all ${
-                  cand.verdict === 'rejected'
-                    ? 'border-slate-800/40 opacity-50'
-                    : cand.verdict === 'confirmed'
-                    ? 'border-emerald-700/40'
-                    : 'border-slate-800/80'
-                }`}
-              >
-                <div className="flex items-start justify-between gap-4">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <h4 className={`text-sm font-semibold ${verdictColor(cand.verdict)}`}>
-                        {cand.name}
-                      </h4>
-                      <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded border ${confidenceColor(cand.confidence)}`}>
-                        {cand.confidence} confidence
-                      </span>
-                      {cand.verdict !== 'proposed' && (
-                        <span className={`text-[10px] px-1.5 py-0.5 rounded ${
-                          cand.verdict === 'confirmed'
-                            ? 'bg-emerald-950/40 text-emerald-400 border border-emerald-800/40'
-                            : 'bg-red-950/40 text-red-400 border border-red-800/40'
-                        }`}>
-                          {cand.verdict}
-                        </span>
-                      )}
-                    </div>
-
-                    {cand.frameworks.length > 0 && (
-                      <div className="flex flex-wrap gap-1.5 mt-2">
-                        {cand.frameworks.map((fw) => (
-                          <span key={fw} className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-950/40 border border-indigo-800/30 text-indigo-300 font-mono">
-                            {fw}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-
-                    {cand.entry_points.length > 0 && (
-                      <div className="mt-2 text-[11px] text-slate-400">
-                        <span className="text-slate-500">Entry points: </span>
-                        {cand.entry_points.join(', ')}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Confirm / Reject buttons */}
-                  <div className="flex items-center gap-2 shrink-0">
-                    <button
-                      title="Confirm candidate"
-                      onClick={() => handleVerdict(cand.id, 'confirmed')}
-                      className={`p-1.5 rounded-lg border transition-colors ${
-                        cand.verdict === 'confirmed'
-                          ? 'bg-emerald-900/40 border-emerald-700/60 text-emerald-400'
-                          : 'border-slate-700/60 text-slate-500 hover:border-emerald-700/60 hover:text-emerald-400'
-                      }`}
-                    >
-                      <ThumbsUp className="w-3.5 h-3.5" />
-                    </button>
-                    <button
-                      title="Reject candidate"
-                      onClick={() => handleVerdict(cand.id, 'rejected')}
-                      className={`p-1.5 rounded-lg border transition-colors ${
-                        cand.verdict === 'rejected'
-                          ? 'bg-red-900/40 border-red-700/60 text-red-400'
-                          : 'border-slate-700/60 text-slate-500 hover:border-red-700/60 hover:text-red-400'
-                      }`}
-                    >
-                      <ThumbsDown className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                </div>
-
-                {/* Evidence drill-down */}
-                {cand.evidence.length > 0 && (
-                  <div className="mt-3 pt-3 border-t border-slate-800">
-                    <button
-                      onClick={() => toggleEvidence(cand.id)}
-                      className="flex items-center gap-1.5 text-[11px] text-slate-400 hover:text-slate-200 transition-colors"
-                    >
-                      {expandedEvidence.has(cand.id)
-                        ? <ChevronDown className="w-3 h-3" />
-                        : <ChevronRight className="w-3 h-3" />}
-                      {cand.evidence.length} evidence snippet{cand.evidence.length !== 1 ? 's' : ''}
-                    </button>
-
-                    {expandedEvidence.has(cand.id) && (
-                      <div className="mt-2 space-y-2 max-h-56 overflow-y-auto pr-1">
-                        {cand.evidence.slice(0, 10).map((ev: any, i: number) => (
-                          <div key={i} className="bg-slate-950/60 border border-slate-800 rounded-lg p-3 text-[10px] font-mono space-y-1">
-                            <div className="text-indigo-400 truncate">{ev.file}</div>
-                            {ev.symbol && <div className="text-slate-400">symbol: {ev.symbol}</div>}
-                            <div className="text-slate-300 whitespace-pre-wrap break-all line-clamp-3">{ev.snippet}</div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* Empty state when discovery completes with no candidates */}
-        {discoverySession?.status === 'completed' && candidates.length === 0 && !runningDiscovery && (
-          <div className="bg-[#0f172a]/60 border border-slate-800/80 rounded-xl p-8 text-center text-slate-400 text-sm">
-            <Search className="w-8 h-8 mx-auto mb-3 text-slate-600" />
-            <p className="font-medium text-slate-300 mb-1">No candidates found</p>
-            <p className="text-xs text-slate-500">
-              No agentic system fingerprints were detected in this snapshot. Check that the codebase uses a supported framework.
-            </p>
-          </div>
-        )}
       </div>
     </div>
+  )
+}
+
+export default function AEHAnalysisScreen(): React.ReactElement {
+  return (
+    <Routes>
+      <Route path="/" element={<AnalysisOverview />} />
+      <Route path="stage1" element={<Stage1GraphScreen />} />
+      <Route path="stage2" element={<Stage2Screen />} />
+    </Routes>
   )
 }

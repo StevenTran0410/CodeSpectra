@@ -1,9 +1,4 @@
-"""Suite config schema — designed to match the CS-265 Evaluation Plan format exactly.
-
-CS-263 §7: CS-265's ticket explicitly specifies the future schema; CS-263 must
-adopt it now so CS-265 only needs to write a *generator*, not change the consuming
-code (the sweep runner). All fields from the CS-265 example are present here.
-"""
+"""Suite config schema — designed to match the CS-265 Evaluation Plan format exactly."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -42,12 +37,7 @@ class Suite(BaseModel):
 
 
 def load_suite(path: str | Path) -> Suite:
-    """Load and validate a suite YAML file.
-
-    Accepts either a top-level list (shorthand) or ``{entries: [...]}`` dict.
-    Raises ``pydantic.ValidationError`` on invalid schema — hard gate per epic
-    convention.
-    """
+    """Load and validate a suite YAML file."""
     data = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
     if isinstance(data, list):
         data = {"entries": data}

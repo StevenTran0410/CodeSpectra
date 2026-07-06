@@ -807,13 +807,26 @@ declare global {
           repo_ref: string
           snapshot_id: string
           provider_id?: string | null
+          model_id?: string | null
           backend_url?: string | null
           backend_token?: string | null
         }) => Promise<{ session_id: string }>
-        listDiscoverySessions: (repoRef?: string) => Promise<AEHDiscoverySession[]>
+        listDiscoverySessions: (repoRef?: string, snapshotId?: string) => Promise<AEHDiscoverySession[]>
         getDiscoverySession: (sessionId: string) => Promise<AEHDiscoverySession>
         listDiscoveryCandidates: (sessionId: string) => Promise<AEHDiscoveryCandidate[]>
         updateDiscoveryCandidateVerdict: (candidateId: string, verdict: 'proposed' | 'confirmed' | 'rejected') => Promise<{ success: boolean }>
+        startExpansion: (
+          candidateId: string,
+          body: {
+            provider_id?: string | null
+            model_id?: string | null
+            node_budget?: number
+            hop_cap?: number
+          }
+        ) => Promise<{ session_id: string }>
+        getExpansionSession: (sessionId: string) => Promise<AEHExpansionSession>
+        getExpansionMap: (sessionId: string) => Promise<AEHSystemMap>
+        updateExpansionMap: (sessionId: string, map: AEHSystemMap) => Promise<{ success: boolean }>
       }
     }
   }
@@ -942,5 +955,28 @@ declare global {
     confidence: 'high' | 'medium' | 'low'
     needs_human: boolean
     verdict: 'proposed' | 'confirmed' | 'rejected'
+    community_id: string | null
+    cluster_files: string[]
+    hub_paths: string[]
+    wiring_block: {
+      nodes: Array<{ alias: string; class_name: string; source_hint_file: string }>
+      edges: Array<{ src: string; dst: string }>
+      framework: string
+      source: 'static' | 'llm_fallback'
+    } | null
+  }
+
+  export interface AEHExpansionSession {
+    id: string
+    candidate_id: string
+    snapshot_id: string
+    status: 'running' | 'completed' | 'failed'
+    error: string | null
+    map_path: string | null
+    accepted: string[]
+    boundary: string[]
+    stop_reason: string | null
+    created_at: string
+    finished_at: string | null
   }
 }

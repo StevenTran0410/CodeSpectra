@@ -1,11 +1,4 @@
-"""Defect Gauntlet — Phase 0 exit gate (CS-263 §10).
-
-For each defect, run the suite twice (off/on) with FakeLLMClient scripted
-identically to test_e2e_multi_agent.py, assert the specific metric moves in the
-expected direction and unrelated metrics are unchanged.
-
-Uses a minimal in-process sweep (no DB persistence) for speed.
-"""
+"""Defect Gauntlet — Phase 0 exit gate (CS-263 §10)."""
 from __future__ import annotations
 
 import json
@@ -93,8 +86,6 @@ async def test_defect_planner_overpack_moves_max_items_assertion() -> None:
     spans_defect = await _collect_spans(responses_defect, DefectConfig(planner_overpack=True))
 
     # NOTE: The assertion checks the WORKER component's output_json.intents —
-    # that's where the batch of intents is stored per the WorkerComponent span.
-    # The planner span only emits usage tags, not the intents themselves.
     result_clean = max_items_per_call(spans_clean, "worker", {"limit": 2})
     result_defect = max_items_per_call(spans_defect, "worker", {"limit": 2})
 
@@ -165,15 +156,7 @@ async def test_defect_no_retry_does_not_move_max_retries() -> None:
 # ────────────────────────────────────────────────────────────────────────────
 
 async def test_defect_wrong_tool_flags_no_unnecessary_calls() -> None:
-    """T2's WorkerComponent always calls BOTH tools unconditionally (only the
-    CALL ORDER changes with the defect) and only case_law_search's result is
-    ever reused downstream in either case — so decoy_lookup is flagged as
-    unused by `no_unnecessary_calls` in EVERY run, not just the defect run.
-    That assertion is exercised here for consistency/no-crash coverage, but the
-    actual DEFECT_WRONG_TOOL differentiator is which tool gets called FIRST
-    (already covered directly in test_e2e_multi_agent.py::test_defect_wrong_tool
-    at the CS-261 layer) — reproduced here as the metric-level signal.
-    """
+    """T2's WorkerComponent always calls BOTH tools unconditionally (only the"""
     from agent_eval_harness.metrics.assertions.no_unnecessary_calls import no_unnecessary_calls
 
     responses = [
@@ -198,8 +181,6 @@ async def test_defect_wrong_tool_flags_no_unnecessary_calls() -> None:
     assert _first_tool_name(spans_defect) == "decoy_lookup"
 
     # no_unnecessary_calls itself: consistently flags the unused decoy result in
-    # BOTH states (it is not the differentiator — see docstring above) — verify
-    # it still runs without crashing and reports the known-unused call each time.
     result_clean = no_unnecessary_calls(spans_clean, "worker", {})
     result_defect = no_unnecessary_calls(spans_defect, "worker", {})
     assert len(result_clean.details.get("flagged_tool_calls", [])) >= 1
@@ -277,7 +258,6 @@ async def test_defect_writer_hallucinate_moves_output_not_upstream() -> None:
     )
 
     # Upstream assertion (fan-out limit, checked against worker's span — see
-    # suite.yaml's note on why "worker" not "planner") must not change.
     from agent_eval_harness.metrics.assertions.max_items_per_call import max_items_per_call
 
     spans = [

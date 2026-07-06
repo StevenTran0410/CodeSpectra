@@ -469,7 +469,7 @@ const [starting, setStarting] = useState(false)
               <Button
                 variant="secondary"
                 size="sm"
-                onClick={() => navigate(`/reports?reportId=${encodeURIComponent(latestReportId)}`)}
+                onClick={() => navigate(`/ca/reports?reportId=${encodeURIComponent(latestReportId)}`)}
               >
                 View report
               </Button>

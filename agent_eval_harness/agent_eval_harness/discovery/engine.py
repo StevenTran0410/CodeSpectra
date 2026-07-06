@@ -1,10 +1,4 @@
-"""AEH Discovery Engine.
-
-Three-Pass algorithm over external read APIs:
-- Pass A: scan symbols + text retrieval hits using fingerprints.yaml.
-- Pass B: group files using Louvain communities node index, ranking by density + cohesion.
-- Pass C: synthesize with LLM per cluster, utilizing sibling CA report sections if present.
-"""
+"""AEH Discovery Engine implementing Three-Pass agentic pipeline auto-discovery."""
 from __future__ import annotations
 
 import json
@@ -21,11 +15,7 @@ from agent_eval_harness.store import repository
 
 logger = logging.getLogger("agent_eval_harness.discovery.engine")
 
-# Pass C is the only LLM-metered stage — cap how many clusters get a real LLM
-# call so a repo with many communities can't blow an unbounded token budget.
-# Clusters beyond this rank (by density, already sorted) are still emitted as
-# candidates (never silently dropped, per epic §4e) but marked unknown/
-# needs_human without spending an LLM call on them.
+# LLM budget limit: cap how many clusters get a real LLM call to save tokens.
 MAX_LLM_SYNTHESIZED_CLUSTERS = 12
 
 
@@ -37,6 +27,19 @@ def load_fingerprints() -> list[dict[str, Any]]:
     with open(p, encoding="utf-8") as f:
         data = yaml.safe_load(f)
     return data.get("fingerprints", [])
+
+
+def _encode_hits_toon(hits: list[dict[str, Any]]) -> str:
+    lines = [f"hits[{len(hits)}]{{file,symbol,framework,weight,token_estimate,snippet}}:"]
+    for h in hits:
+        symbol = h["symbol"] or ""
+        # escape embedded newlines/commas in snippet so each hit stays one row
+        snippet = h["snippet"].replace("\n", "\\n").replace(",", "\\,")
+        lines.append(
+            f"  {h['file']},{symbol},{h['framework']},{h['weight']},"
+            f"{h.get('token_estimate', 0)},{snippet}"
+        )
+    return "\n".join(lines)
 
 
 async def discover_agentic_systems(
@@ -69,15 +72,10 @@ async def discover_agentic_systems(
                             "snippet": sym.get("signature") or sym["name"],
                             "framework": framework,
                             "weight": weight,
+                            "token_estimate": len(sym.get("signature") or sym["name"]) // 4,
                         })
             elif fp_type == "retrieval":
-                # "fused" (retrieve_rrf_fusion's unbounded, BM25-weighted output),
-                # NOT "evidences" (the plain, section-budget-capped retrieve()) —
-                # the budget cap can silently drop a chunk containing the exact
-                # match below an unrelated chunk that scores higher for the same
-                # query (confirmed empirically: real haystack usage in this
-                # repo's own agent_pipeline.py was missed via evidences/retrieve()
-                # but found via fused/retrieve_rrf_fusion()).
+                # Retrieve RRF fusion is used here to avoid budget-caps missing matches.
                 res = await client.search_retrieval(snapshot_id, query)
                 for entry in res.get("fused", []):
                     if re.search(pattern, entry["excerpt"], re.IGNORECASE):
@@ -88,6 +86,7 @@ async def discover_agentic_systems(
                             "snippet": entry["excerpt"],
                             "framework": framework,
                             "weight": weight,
+                            "token_estimate": len(entry["excerpt"]) // 4,
                         })
         except Exception as exc:
             logger.warning(f"Query failed for fingerprint {fp_id}: {exc}")
@@ -194,9 +193,7 @@ async def discover_agentic_systems(
         top_hits = sorted_hits[:15]
 
         if rank >= MAX_LLM_SYNTHESIZED_CLUSTERS:
-            # Budget exhausted — never silently drop the cluster (epic §4e), just
-            # skip the LLM call and surface it as needing human triage instead of
-            # confidently guessing or pretending it doesn't exist.
+            # LLM budget limit exceeded: mark cluster as unknown/needs_human without LLM call.
             candidates.append({
                 "name": "unknown",
                 "frameworks": cluster["frameworks"] or ["unknown"],
@@ -206,23 +203,18 @@ async def discover_agentic_systems(
                 "needs_human": True,
                 "evidence": top_hits,
                 "skip_reason": "llm_synthesis_budget_exceeded",
+                "community_id": str(cluster["community_id"]),
+                "cluster_files": cluster["files"],
+                "hub_paths": cluster["hub_paths"],
             })
             continue
 
-        evidence_summary = []
-        for h in top_hits:
-            evidence_summary.append(
-                f"File: {h['file']}\n"
-                f"Symbol: {h['symbol'] or 'None'}\n"
-                f"Framework: {h['framework']}\n"
-                f"Snippet:\n{h['snippet']}\n"
-                f"----------------------------------------"
-            )
-        evidence_bundle_str = "\n".join(evidence_summary)
+        evidence_bundle_str = _encode_hits_toon(top_hits)
 
         system_prompt = (
             "You are an expert AI software architect. Analyze the provided codebase evidence cluster "
             "and determine if it represents a candidate agentic system in the codebase.\n"
+            "Evidence is given in a compact tabular format: a header line declares the column names once, then one row per hit.\n"
             "An agentic system typically includes elements like an agent loop, tools, prompt templates, "
             "or orchestrators using frameworks like Haystack, LangChain, LangGraph, CrewAI, AutoGen, "
             "Semantic Kernel, or custom LLM API integrations.\n"
@@ -255,6 +247,9 @@ async def discover_agentic_systems(
             "confidence": "low",
             "verdict": "proposed",
             "evidence": top_hits,
+            "community_id": str(cluster["community_id"]),
+            "cluster_files": cluster["files"],
+            "hub_paths": cluster["hub_paths"],
         }
 
         try:
@@ -285,13 +280,24 @@ async def discover_agentic_systems(
         except Exception as exc:
             logger.warning(f"LLM synthesis failed for cluster {cid}: {exc}. Using fallback.")
 
-        # Below-threshold or unnamed clusters surface as needs_human rather than
-        # being silently promoted with a low-confidence guess (epic §4e) — the UI
-        # must be able to tell "reviewed, low confidence" apart from "not
-        # reviewed yet" candidates.
+        # Low confidence or unknown name candidates are flagged for human review.
         candidate_profile["needs_human"] = (
             candidate_profile["name"] == "unknown" or candidate_profile["confidence"] == "low"
         )
+
+        # Pass D: Detect wiring block
+        file_contents = {}
+        for path in candidate_profile.get("cluster_files", []):
+            try:
+                file_resp = await client.read_file(snapshot_id, path)
+                file_contents[path] = file_resp.get("content", "")
+            except Exception as e:
+                logger.warning(f"Failed to read {path} for wiring detection: {e}")
+
+        from agent_eval_harness.discovery.wiring import detect_wiring_block
+        wiring_block = await detect_wiring_block(file_contents, llm_client)
+        candidate_profile["wiring_block"] = wiring_block.to_dict() if wiring_block else None
+
         candidates.append(candidate_profile)
 
     return candidates
@@ -316,9 +322,7 @@ async def run_discovery_background(
             logger.error(f"Discovery session {session_id} failed: {e}\n{err_msg}")
             await repository.finish_discovery_session(session_id, "failed", err_msg[:2000])
     finally:
-        # Every call site builds a fresh CodeSpectraClient/LLM client per session —
-        # without closing them here, each discovery run leaks an httpx.AsyncClient
-        # connection pool for the lifetime of the (long-running) AEH backend process.
+        # Close connection pools to prevent leaking client resources.
         await client.aclose()
         if hasattr(llm_client, "aclose"):
             await llm_client.aclose()

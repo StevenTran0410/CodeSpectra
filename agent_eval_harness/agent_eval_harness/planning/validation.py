@@ -1,11 +1,4 @@
-"""validation.py — Evaluation Plan Validation Engine (CS-265 §4).
-
-Validates:
-1. Schema-validity (using load_suite).
-2. Metric name existence in assertions, judges, or classifiers.
-3. Dataset reference resolution (exists in DB OR is required/waived).
-4. Zero needs_human markers or unknown metric entries.
-"""
+"""validation.py — Evaluation Plan Validation Engine (CS-265 §4)."""
 from __future__ import annotations
 
 import logging
@@ -19,10 +12,7 @@ logger = logging.getLogger("agent_eval_harness.planning.validation")
 
 
 async def validate_plan(plan_path: str | Path) -> list[str]:
-    """Validate an evaluation plan and return a list of error messages.
-
-    If the list is empty, validation has passed.
-    """
+    """Validate an evaluation plan and return a list of error messages."""
     errors: list[str] = []
 
     # 1. Schema validation

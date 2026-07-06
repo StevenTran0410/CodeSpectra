@@ -1,10 +1,4 @@
-"""HarnessChatGenerator — a Haystack @component wrapping an injected LLMClient.
-
-Returns a ChatMessage with meta={"model", "usage": {...}} populated regardless of
-whether the underlying call was FakeLLMClient or CodeSpectraProxyClient, so the
-tracer's nested-extraction logic (reading haystack.component.output -> ChatMessage
-.meta.model/.usage) works identically either way.
-"""
+"""HarnessChatGenerator — a Haystack @component wrapping an injected LLMClient."""
 from __future__ import annotations
 
 from haystack import component

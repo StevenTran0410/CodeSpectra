@@ -1,7 +1,4 @@
-"""Tests for all 6 assertion types — synthetic span fixtures, no DB, no pipeline runs.
-
-Each assertion type gets both a PASS and FAIL case (CS-263 §11).
-"""
+"""Tests for all 6 assertion types — synthetic span fixtures, no DB, no pipeline runs."""
 from __future__ import annotations
 
 import json

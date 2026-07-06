@@ -1,9 +1,4 @@
-"""6 planted-defect switches shared by T1/T2 (CS-261 §6).
-
-Env-var driven, read once at build_pipeline() construction — never left to
-nondeterministic LLM behavior, so every defect behaves identically under
-FakeLLMClient and reproduces exactly in the offline test suite.
-"""
+"""6 planted-defect switches shared by T1/T2 (CS-261 §6)."""
 from __future__ import annotations
 
 import os

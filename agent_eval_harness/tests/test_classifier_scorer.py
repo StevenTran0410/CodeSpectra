@@ -1,7 +1,4 @@
-"""Tests for the classifier scorer — fixed small dataset + stub component function.
-
-Uses an in-memory DB so no external DB is required.
-"""
+"""Tests for the classifier scorer — fixed small dataset + stub component function."""
 from __future__ import annotations
 
 import json
@@ -98,8 +95,6 @@ async def test_classifier_scorer_known_confusion_matrix() -> None:
     assert result.metric_class == "classifier"
     assert result.score is not None
     # Stub is deterministic: "hello world" (11 chars >= 5) → pass ✓
-    #                         "hi" (2 chars < 5) → reject ✓
-    # All 4 cases correct → accuracy = 1.0
     assert result.score == pytest.approx(1.0)
     assert result.passed is True
     assert result.details["evaluated"] == 4

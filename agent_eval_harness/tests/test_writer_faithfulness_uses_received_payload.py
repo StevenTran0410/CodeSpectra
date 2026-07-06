@@ -1,10 +1,4 @@
-"""Explicit test for the load-bearing correctness property (CS-263 §6.2, §11).
-
-Asserts that the RAGAS faithfulness call's `retrieved_contexts` argument equals
-the writer span's `input_json`, NOT the qa_testset gold context NOR the full corpus.
-
-This is literally what CS-260 calls "the point of AEH" (per-component grounding).
-"""
+"""Explicit test for the load-bearing correctness property (CS-263 §6.2, §11)."""
 from __future__ import annotations
 
 import json
@@ -15,7 +9,6 @@ import pytest
 from agent_eval_harness.llm.ragas_adapter import stub_missing_langchain_community_vertexai
 
 # Must run before any `pytest.importorskip("ragas")`/`import ragas` below — see
-# stub_missing_langchain_community_vertexai's own docstring for why.
 stub_missing_langchain_community_vertexai()
 
 pytestmark = pytest.mark.asyncio

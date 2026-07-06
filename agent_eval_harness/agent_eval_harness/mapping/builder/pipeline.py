@@ -40,15 +40,7 @@ class SystemMapBuilder:
         # Pass 1: Scan
         all_candidates = self._scanner.scan(files)
 
-        # Filter candidates: keep everything defined inside the target dir itself,
-        # plus classes imported from elsewhere ONLY if they were actually referenced
-        # via constructor injection from within the target's own files (composed_import_names).
-        # NOTE: filtering by c.is_composed here is wrong — is_composed/is_haystack_component
-        # reflect whether the class has an @component decorator globally, not whether THIS
-        # target uses it compositionally. WriterComponent has @component (it's a real T1
-        # pipeline node) yet is used compositionally by T2 — is_composed is False for it,
-        # so filtering on that flag silently drops it. composed_import_names is the correct,
-        # target-relative signal instead.
+        # Filter candidates: keep defined inside target dir or referenced compositionally.
         candidates = [
             c for c in all_candidates
             if c.file in original_target_files or c.class_name in composed_import_names
@@ -88,16 +80,32 @@ class SystemMapBuilder:
 
         return system_map, summary
 
-    def _discover_source_files(self, target_path: Path) -> tuple[list[Path], set[str]]:
-        """Find all .py files in target directory, following only composed imports.
+    async def build_from_files(
+        self, files: list[Path], package_root: Path, target_system_id: str, docs_path: Path | None = None
+    ) -> tuple[SystemMap, str]:
+        """Same as build(), but the caller supplies the exact file set directly instead of a directory glob."""
+        all_candidates = self._scanner.scan(files)
 
-        Returns (files, composed_import_names) — composed_import_names is the set of
-        class names imported from outside the target dir that are actually referenced
-        via a constructor-injection type annotation somewhere inside the target's own
-        files. build() uses this set (not the imported class's own is_composed flag,
-        which reflects global decorator status, not target-relative usage) to decide
-        which cross-file candidates belong in this target's map.
-        """
+        role_classifications = await classify_roles(all_candidates, self._llm_client, self._threshold)
+        topology_map = extract_topology(files, all_candidates)
+        constraint_map = mine_constraints(files, all_candidates, package_root)
+        constraint_map = await mine_constraints_llm_phase(
+            all_candidates, self._llm_client, constraint_map
+        )
+        components = self._assemble_components(
+            all_candidates, role_classifications, topology_map, constraint_map, package_root
+        )
+        discrepancies = await self._reconcile_docs(docs_path, components) if docs_path else []
+        system_map = SystemMap.model_validate({
+            "target_system_id": target_system_id,
+            "components": [c.model_dump() for c in components],
+            "discrepancies": discrepancies,
+        })
+        summary = self._build_summary(system_map, role_classifications)
+        return system_map, summary
+
+    def _discover_source_files(self, target_path: Path) -> tuple[list[Path], set[str]]:
+        """Find all .py files in target directory, following only composed imports."""
         target = Path(target_path)
         if not target.is_dir():
             target = target.parent
@@ -107,15 +115,7 @@ class SystemMapBuilder:
         package_root = self._find_package_root(target)
         resolved_files = set(files)
 
-        # First pass: collect imports and check if they're used in constructor annotations.
-        # imported_names maps name -> set of module paths (NOT a single str) — a name can be
-        # re-exported (imported in file A from module X, then re-imported by file B from
-        # module A itself), and a plain last-write-wins dict over set-iteration order would
-        # non-deterministically pick the wrong module path depending on process hash seed.
-        # Confirmed empirically: WriterComponent is imported both directly from
-        # test_targets.linear_rag.components AND re-exported via
-        # test_targets.multi_agent.components, causing components_found to flip between 7
-        # and 8 across repeated runs before this fix.
+        # Collect imports and constructor annotations, mapping re-exported module paths deterministically.
         imported_names: dict[str, set[str]] = {}  # {name: {module_path, ...}}
         imported_in_composed_context: set[str] = set()
 
@@ -226,9 +226,7 @@ class SystemMapBuilder:
                         break
 
             if owns_tools:
-                # Use span_name_pattern for the custom op_name. ast.unparse() renders string
-                # constants with single quotes (e.g. "'aeh.worker_step'"), not the original
-                # source's double quotes — check for either quote character, not just '"'.
+                # Check for either single or double quote characters on string literals.
                 for hint in candidate.manual_span_hints:
                     is_string_literal = (
                         hint.op_name.startswith("'") and hint.op_name.endswith("'")

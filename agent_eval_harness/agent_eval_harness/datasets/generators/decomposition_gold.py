@@ -58,8 +58,6 @@ async def generate(
     per_cat = max(1, parsed_config.count // 3)
     
     # 2. Clean Multi-Intent Cases (2 to limit intents)
-    # We want them to have intents count between 2 and limit (inclusive), or up to limit
-    # if limit >= 2
     intents_count_range = (2, max(2, limit))
     prompt_clean = (
         f"Generate exactly {per_cat} unique examples of user queries containing multiple "

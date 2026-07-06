@@ -1,8 +1,4 @@
-"""LLM system prompts for the map builder.
-
-Centralized so a prompt change is one diff, one file, one thing to audit when the
-role taxonomy (CS-260 §3) evolves.
-"""
+"""LLM system prompts for the map builder."""
 from __future__ import annotations
 
 # v1 — role taxonomy per CS-260 §3 (7 concrete roles + unknown)

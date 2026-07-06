@@ -116,8 +116,6 @@ class TestRobustness:
             # No component should have role != "unknown" with low confidence
             for component in system_map.components:
                 # If below threshold, should be unknown
-                # We can't directly check confidence here, but we can verify
-                # that the system handles low-confidence responses correctly
                 pass
 
         asyncio.run(run_test())

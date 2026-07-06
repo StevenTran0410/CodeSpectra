@@ -1,9 +1,4 @@
-"""CodeSpectraProxyClient — the ONLY way AEH ever calls a real LLM.
-
-Never touches a provider API key. Forwards to CodeSpectra's backend, which
-dispatches through domain/model_connector using whatever provider the user
-already configured there. AEH has no provider/key config of its own.
-"""
+"""CodeSpectraProxyClient — the ONLY way AEH ever calls a real LLM."""
 from __future__ import annotations
 
 import asyncio
@@ -39,10 +34,7 @@ class CodeSpectraProxyClient:
         temperature: float | None = 0.2,
         json_mode: bool = False,
     ) -> LLMResponse:
-        """CS-263 §8: modest fan-out needs provider-rate-limit backoff — retries
-        a 429 response up to _MAX_RATE_LIMIT_RETRIES times with exponential
-        backoff before giving up (a non-429 error still fails immediately, and
-        exhausting retries re-raises the last 429 rather than swallowing it)."""
+        """CS-263 §8: modest fan-out needs provider-rate-limit backoff — retries"""
         last_exc: httpx.HTTPStatusError | None = None
         for attempt in range(_MAX_RATE_LIMIT_RETRIES + 1):
             resp = await self._http.post(

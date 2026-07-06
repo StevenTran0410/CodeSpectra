@@ -1,12 +1,4 @@
-"""Tier-1 instrumentation: a custom, lightweight Haystack Tracer.
-
-Deliberately NOT a real OpenTelemetry SDK TracerProvider/exporter — we control
-both the tracer and the target components, so a ~80-line Tracer/Span
-implementation capturing spans via Haystack's own explicit `parent_span`
-argument is simpler and avoids the opentelemetry-sdk optional dependency plus
-its ambient-context/import-order coupling. See
-repo_atlas_plan/aeh_prior_art_and_toolchain.md for the full rationale.
-"""
+"""Tier-1 instrumentation: a custom, lightweight Haystack Tracer."""
 from __future__ import annotations
 
 import contextlib
@@ -36,8 +28,6 @@ from agent_eval_harness.mapping.engine import map_spans_to_components
 from agent_eval_harness.mapping.system_map import SystemMap
 
 # Operation-name vocabulary AEH's own component code uses to emit manual inner
-# spans — mirrors the exact pattern haystack.components.agents.agent.py uses
-# internally (tracer.trace(op, tags, parent_span=tracer.current_span())).
 OP_LLM_CALL = "aeh.llm_call"
 OP_TOOL_CALL = "aeh.tool_call"
 OP_VALIDATOR_DECISION = "aeh.validator_decision"
@@ -65,13 +55,7 @@ class HarnessSpan(HaystackSpan):
 
 
 class HarnessTracer(HaystackTracer):
-    """Captures every span flowing through haystack.tracing.tracer — both
-    Haystack's own automatic component/pipeline spans AND any manual spans AEH
-    component code creates. Uses a ContextVar (not a plain attribute) for the
-    current-span pointer: AsyncPipeline schedules components via
-    asyncio.create_task, and each task must see its own current-span state
-    without leaking across concurrently-running siblings.
-    """
+    """Captures every span flowing through haystack.tracing.tracer — both"""
 
     def __init__(self) -> None:
         self.captured: list[HarnessSpan] = []
@@ -114,12 +98,7 @@ def _classify_span_type(span: HarnessSpan) -> SpanType:
 
 
 def _normalize(span: HarnessSpan) -> CapturedSpan:
-    """Manual spans (aeh.llm_call/tool_call/validator_decision) that need to record
-    model/token info should set their 'aeh.output' content tag to a dict shaped
-    like {"model", "tokens_in", "tokens_out", "token_source", ...} — the same
-    extract_model_and_tokens() helper recognizes both that shape and Haystack's
-    own {"replies": [ChatMessage]} shape, so this is one code path, not two.
-    """
+    """Manual spans (aeh.llm_call/tool_call/validator_decision) that need to record"""
     span_type = _classify_span_type(span)
 
     haystack_output = span.tags.get("haystack.component.output")
@@ -151,10 +130,7 @@ def _normalize(span: HarnessSpan) -> CapturedSpan:
 
 
 def _extract_final_output(result: dict[str, dict[str, Any]], exit_node: str) -> str:
-    """Duck-typed: exit_node's output may be Haystack-ChatMessage-shaped
-    ({"replies": [...]})  or a plain custom component's {"answer": str}
-    (e.g. WriterComponent) — check both, never guess beyond that.
-    """
+    """Duck-typed: exit_node's output may be Haystack-ChatMessage-shaped"""
     node_output = result.get(exit_node, {})
     replies = node_output.get("replies")
     if isinstance(replies, list) and replies:
@@ -168,9 +144,7 @@ def _extract_final_output(result: dict[str, dict[str, Any]], exit_node: str) -> 
 
 
 class HaystackAdapter(InstrumentationAdapter):
-    """Tier-1: attaches a HarnessTracer to Haystack's global tracing hook, runs
-    the target's AsyncPipeline, and maps captured spans to System Map components.
-    """
+    """Tier-1: attaches a HarnessTracer to Haystack's global tracing hook, runs"""
 
     def __init__(self, handle: PipelineHandle, system_map: SystemMap) -> None:
         self._handle = handle
@@ -202,10 +176,6 @@ class HaystackAdapter(InstrumentationAdapter):
         captured = [_normalize(s) for s in raw_spans]
 
         # Pipeline-root spans are dropped above, so any span whose parent WAS the
-        # root now dangles (points at a span_id absent from `captured`). Null it
-        # out here so the store's parent_span_id is always either a real sibling
-        # row or NULL — never a dangling reference — and reporting/tree-building
-        # code downstream never needs to special-case it.
         captured_ids = {c.span_id for c in captured}
         for c in captured:
             if c.parent_span_id is not None and c.parent_span_id not in captured_ids:

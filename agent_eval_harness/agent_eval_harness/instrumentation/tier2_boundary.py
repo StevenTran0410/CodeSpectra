@@ -1,14 +1,4 @@
-"""Tier-2 boundary-wrapper adapter — fallback for targets with no native tracing.
-
-Wraps each component's declared `entry_point` (CS-260 §4c field, already in the
-map schema — no new field needed). One span per entry-point call, component_id
-pre-assigned (the wrapper IS the component, so the mapping engine is skipped
-entirely). Coarser: no inner LLM/tool spans.
-
-Only supports a LINEAR chain of components (`component_order`) — CS-261's own
-acceptance only requires this for T1's tier-2 demo; arbitrary-topology chaining
-is out of scope here (that's what Tier-1 is for).
-"""
+"""Tier-2 boundary-wrapper adapter — fallback for targets with no native tracing."""
 from __future__ import annotations
 
 import importlib
@@ -31,9 +21,7 @@ from agent_eval_harness.mapping.system_map import SystemMap
 
 
 def _resolve_entry_point(entry_point: str) -> Callable[..., Awaitable[Any]]:
-    """entry_point is "module.path:function_name" (the Python-callable form;
-    an "http(s)://" form is reserved for future HTTP entry points but unused/
-    untested by CS-261's own test targets)."""
+    """entry_point is "module.path:function_name" (the Python-callable form;"""
     if entry_point.startswith(("http://", "https://")):
         raise NotImplementedError(
             f"HTTP entry_point '{entry_point}' is reserved for a future adapter — "

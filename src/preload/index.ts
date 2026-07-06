@@ -291,11 +291,20 @@ const api = {
     providers: () => ipcRenderer.invoke('aeh:providers'),
     rerun: (runId: string, body: unknown) => ipcRenderer.invoke('aeh:rerun', runId, body),
     startDiscovery: (body: unknown) => ipcRenderer.invoke('aeh:startDiscovery', body),
-    listDiscoverySessions: (repoRef?: string) => ipcRenderer.invoke('aeh:listDiscoverySessions', repoRef),
+    listDiscoverySessions: (repoRef?: string, snapshotId?: string) => ipcRenderer.invoke('aeh:listDiscoverySessions', repoRef, snapshotId),
     getDiscoverySession: (sessionId: string) => ipcRenderer.invoke('aeh:getDiscoverySession', sessionId),
-    listDiscoveryCandidates: (sessionId: string) => ipcRenderer.invoke('aeh:listDiscoveryCandidates', sessionId),
+    listDiscoveryCandidates: (sessionId: string) =>
+      ipcRenderer.invoke('aeh:listDiscoveryCandidates', sessionId),
     updateDiscoveryCandidateVerdict: (candidateId: string, verdict: string) =>
-      ipcRenderer.invoke('aeh:updateDiscoveryCandidateVerdict', candidateId, verdict)
+      ipcRenderer.invoke('aeh:updateDiscoveryCandidateVerdict', candidateId, verdict),
+    startExpansion: (candidateId: string, body: unknown) =>
+      ipcRenderer.invoke('aeh:startExpansion', candidateId, body),
+    getExpansionSession: (sessionId: string) =>
+      ipcRenderer.invoke('aeh:getExpansionSession', sessionId),
+    getExpansionMap: (sessionId: string) =>
+      ipcRenderer.invoke('aeh:getExpansionMap', sessionId),
+    updateExpansionMap: (sessionId: string, map: unknown) =>
+      ipcRenderer.invoke('aeh:updateExpansionMap', sessionId, map)
   }
 }
 

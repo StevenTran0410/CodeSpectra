@@ -1,21 +1,11 @@
-"""Shared Ragas / Langchain LLM adapter — wraps AEH's LLMClient as a BaseChatModel.
-
-Extracted from datasets/generators/qa_testset.py (CS-262) so that CS-263's
-metric judges can reuse the exact same adapters without duplication.
-"""
+"""Shared Ragas / Langchain LLM adapter — wraps AEH's LLMClient as a BaseChatModel."""
 from __future__ import annotations
 
 from agent_eval_harness.llm.client import LLMClient, LLMMessage
 
 
 def _run_async_blocking(coro_fn, *args, **kwargs):
-    """Run an async function from a blocking context.
-
-    Tries asyncio.run() first, but falls back to nest_asyncio if a RuntimeError
-    occurs (e.g., called from within an already-running event loop). Both
-    ragas_adapter and deepeval_adapter need this to support being called from
-    sync frameworks (Haystack, metric runners) while also handling nested loops.
-    """
+    """Run an async function from a blocking context."""
     import asyncio
 
     try:
@@ -28,16 +18,7 @@ def _run_async_blocking(coro_fn, *args, **kwargs):
 
 
 def stub_missing_langchain_community_vertexai() -> None:
-    """Ragas's internal imports (ragas.llms.base) reference an optional
-    langchain_community submodule (chat_models.vertexai) that doesn't exist in
-    every installed langchain_community version — pre-register a no-op stub so
-    `import ragas` (and anything importing from it) succeeds regardless.
-
-    MUST be called before the FIRST `import ragas` / `from ragas import ...`
-    anywhere in the process — including in callers of this module (e.g.
-    agent_eval_harness/metrics/judges/ragas_judge.py), since importing THIS
-    module alone does not run this function (it must be called explicitly).
-    """
+    """Ragas's internal imports (ragas.llms.base) reference an optional"""
     import sys
     import types
 
@@ -48,10 +29,7 @@ def stub_missing_langchain_community_vertexai() -> None:
 
 
 def make_ragas_llm_adapter(llm_client: LLMClient):
-    """Returns a Langchain BaseChatModel instance wrapping the given LLMClient.
-
-    Import is deferred so this module can be imported without langchain_core installed.
-    """
+    """Returns a Langchain BaseChatModel instance wrapping the given LLMClient."""
     try:
         stub_missing_langchain_community_vertexai()
 

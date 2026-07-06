@@ -147,6 +147,47 @@ _MIGRATIONS: list[dict[str, Any]] = [
             ALTER TABLE discovery_candidates ADD COLUMN needs_human INTEGER NOT NULL DEFAULT 0;
         """,
     },
+    {
+        "version": 5,
+        "description": "Add community_id/cluster_files/hub_paths to discovery_candidates — "
+        "Pass B already computes these per cluster (engine.py), this just stops discarding "
+        "them so the UI can show the full community a candidate came from, not just its "
+        "fingerprint-hit subset",
+        "sql": """
+            ALTER TABLE discovery_candidates ADD COLUMN community_id TEXT;
+            ALTER TABLE discovery_candidates ADD COLUMN cluster_files_json TEXT NOT NULL DEFAULT '[]';
+            ALTER TABLE discovery_candidates ADD COLUMN hub_paths_json TEXT NOT NULL DEFAULT '[]';
+        """,
+    },
+    {
+        "version": 6,
+        "description": "Add expansion_sessions table (CS-271) for Stage 2 iterative expansion",
+        "sql": """
+            CREATE TABLE IF NOT EXISTS expansion_sessions (
+                id            TEXT PRIMARY KEY,
+                candidate_id  TEXT NOT NULL,
+                snapshot_id   TEXT NOT NULL,
+                status        TEXT NOT NULL,
+                error         TEXT,
+                map_path      TEXT,
+                accepted_json TEXT NOT NULL DEFAULT '[]',
+                boundary_json TEXT NOT NULL DEFAULT '[]',
+                stop_reason   TEXT,
+                created_at    TEXT NOT NULL,
+                finished_at   TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_expansion_sessions_candidate ON expansion_sessions(candidate_id);
+        """,
+    },
+    {
+        "version": 7,
+        "description": "Add wiring_block_json to discovery_candidates — Pass D's detected "
+        "framework wiring block (Haystack connect()/LangGraph add_edge()/LangChain LCEL), "
+        "or null if none found",
+        "sql": """
+            ALTER TABLE discovery_candidates ADD COLUMN wiring_block_json TEXT;
+        """,
+    },
 ]
 
 TARGET_VERSION = len(_MIGRATIONS) - 1

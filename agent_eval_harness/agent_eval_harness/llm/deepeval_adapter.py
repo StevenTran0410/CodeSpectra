@@ -1,8 +1,4 @@
-"""Shared DeepEval LLM adapter — wraps AEH's LLMClient as a DeepEvalBaseLLM.
-
-Extracted from datasets/generators/qa_testset.py (CS-262) so that CS-263's
-metric judges can reuse the exact same adapters without duplication.
-"""
+"""Shared DeepEval LLM adapter — wraps AEH's LLMClient as a DeepEvalBaseLLM."""
 from __future__ import annotations
 
 import typing
@@ -12,12 +8,7 @@ from agent_eval_harness.llm.ragas_adapter import _run_async_blocking
 
 
 def make_deepeval_llm_adapter(llm_client: LLMClient):
-    """Returns a DeepEvalBaseLLM instance wrapping the given LLMClient.
-
-    Import is deferred so this module can be imported without deepeval installed
-    (deepeval is a [datasets] optional dependency). Callers that hit an
-    ImportError should re-raise with a user-friendly message.
-    """
+    """Returns a DeepEvalBaseLLM instance wrapping the given LLMClient."""
     try:
         from deepeval.models.base_model import DeepEvalBaseLLM
     except ImportError as exc:
@@ -94,11 +85,7 @@ def make_deepeval_embedding_model():
 
 
 def _try_mock_schema(schema: typing.Any) -> typing.Any:
-    """Return a valid schema instance for known DeepEval Pydantic schema types.
-
-    This is needed when using FakeLLMClient / mock providers that cannot produce
-    valid JSON conforming to deepeval's internal Pydantic schemas.
-    """
+    """Return a valid schema instance for known DeepEval Pydantic schema types."""
     try:
         name = schema.__name__
         if name == "SyntheticDataList":

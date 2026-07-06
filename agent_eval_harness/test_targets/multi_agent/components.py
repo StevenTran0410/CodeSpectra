@@ -1,13 +1,4 @@
-"""T2 multi_agent components: guard(rule+llm) -> planner -> worker(+2 tools) ->
-judge -> writer.
-
-PlannerComponent is the only top-level Haystack-scheduled orchestration node
-besides guard — it internally composes worker/judge/writer (plain method calls,
-each wrapped in its own manual span), since Haystack's static DAG model doesn't
-cleanly express the judge-reject -> retry loop. This matches the epic's own
-role-taxonomy semantics: "orchestrator: decomposes intent, routes to sub-agents,
-manages retries" (CS-260 §3) — retry ownership belongs to the orchestrator.
-"""
+"""T2 multi_agent components: guard(rule+llm) -> planner -> worker(+2 tools) ->"""
 from __future__ import annotations
 
 import json
@@ -45,10 +36,7 @@ def _usage_tags(response) -> dict:
 
 @component
 class GuardComponent:
-    """rule stage (deterministic, no LLM) + llm stage — two nested manual spans
-    sharing one Haystack pipeline node (component_name='guard'), disambiguated by
-    the aeh.check.kind tag, matching CS-261's 'guard (2 sub-spans)' requirement.
-    """
+    """rule stage (deterministic, no LLM) + llm stage — two nested manual spans"""
 
     __haystack_supports_async__ = True
     MIN_QUERY_LENGTH = 5
@@ -80,11 +68,7 @@ class GuardComponent:
 
 
 class WorkerComponent:
-    """Composed (called from planner), not a scheduled Haystack pipeline node —
-    Haystack cannot statically express "worker runs 1-2 times depending on
-    intent count", so this is a plain class whose run_async wraps itself in a
-    manual span each call, giving "worker span(s)" plurality for free.
-    """
+    """Composed (called from planner), not a scheduled Haystack pipeline node —"""
 
     def __init__(
         self,
@@ -135,7 +119,6 @@ class JudgeComponent:
                 )
                 content_lower = response.content.lower()
                 # "insufficient" contains "sufficient" as a substring — check the
-                # negative form first so a rejection is never misread as a pass.
                 sufficient = (
                     "insufficient" not in content_lower and "sufficient" in content_lower
                 )

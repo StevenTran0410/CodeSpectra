@@ -292,7 +292,7 @@ export default function SnapshotViewerScreen(): React.ReactElement {
               Select for index
             </button>
             <button
-              onClick={() => navigate('/repositories')}
+              onClick={() => navigate(-1)}
               className="px-2.5 py-1.5 text-xs border border-zinc-700 rounded-md text-zinc-300 hover:border-zinc-600 inline-flex items-center gap-1"
             >
               <ArrowLeft size={12} />

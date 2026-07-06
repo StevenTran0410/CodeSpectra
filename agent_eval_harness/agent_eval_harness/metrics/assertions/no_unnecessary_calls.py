@@ -1,34 +1,4 @@
-"""Assertion: no_unnecessary_calls — flags tool_call spans whose result was never used.
-
-For every `tool_call` span in the trace, extracts the result string from
-`output_json` and checks whether that string appears as a substring in any LATER
-span's `input_json` within the same trace.
-
-**Checks ALL tool_call spans, not just ones tagged with `component_id`**: the
-mapping engine assigns each tool_call span's `component_id` to the SPECIFIC tool
-component it matched (e.g. "case_law_search_tool", "decoy_tool" — see
-test_targets/multi_agent/system_map.yaml's per-tool span_match rules), never to
-the calling agent ("worker"). Filtering by `component_id == "worker"` would
-therefore skip every tool_call span and always report zero flags, regardless of
-target behavior. `component_id` here only labels which component this check's
-*result* is reported under (the caller/orchestrating agent) — it does not
-restrict which spans are inspected.
-
-**Known limitation (documented per ticket instruction)**: this heuristic will
-false-negative if the target paraphrases or reformats tool output before passing
-it to downstream spans. A more robust approach (embedding similarity or semantic
-diffing) is out of scope for Phase 0 — use this as a signal, not a hard gate in
-production.
-
-`DEFECT_WRONG_TOOL` causes the worker to call `decoy_lookup` before
-`case_law_search`. In T2's implementation both tools are always called
-(unconditionally) and only case_law_search's result is ever reused downstream —
-so decoy_lookup's result is flagged as unused in EVERY run, defect or not. This
-assertion is therefore not itself the defect/no-defect differentiator for
-DEFECT_WRONG_TOOL (span tool-call ORDER is — see test_e2e_multi_agent.py's
-existing coverage); it still correctly and consistently reports the one
-genuinely-unused call in both cases, which is exercised in the gauntlet test.
-"""
+"""Assertion: no_unnecessary_calls — flags tool_call spans whose result was never used."""
 from __future__ import annotations
 
 import json
@@ -58,8 +28,6 @@ def _extract_result_string(output_json: str | None) -> str | None:
 @register("no_unnecessary_calls")
 def no_unnecessary_calls(spans: list[dict], component_id: str, params: dict) -> MetricResult:
     # spans is assumed to already be in true execution order (see
-    # retry_on_reject_required's docstring for why we don't re-sort by
-    # started_at — fast synchronous runs can tie on timestamp resolution).
 
     flagged: list[dict] = []
 

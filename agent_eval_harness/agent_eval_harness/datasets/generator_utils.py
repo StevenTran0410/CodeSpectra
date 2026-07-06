@@ -7,11 +7,7 @@ from agent_eval_harness.store.repository import new_id
 
 
 def strip_markdown_code_block(content: str) -> str:
-    """Strip markdown code block markers (```json, ```, etc) from content.
-
-    If the content starts with ```, removes the first line and last line if they
-    are code block markers, preserving the JSON/content inside.
-    """
+    """Strip markdown code block markers (```json, ```, etc) from content."""
     if content.startswith("```"):
         lines = content.splitlines()
         if lines and lines[0].startswith("```"):
@@ -25,16 +21,7 @@ def strip_markdown_code_block(content: str) -> str:
 def parse_json_with_fallback(
     content: str, fallback_count: int, fallback_fn: callable
 ) -> list[Any]:
-    """Parse JSON content with a fallback generator for parse failures.
-
-    Args:
-        content: JSON string to parse
-        fallback_count: Number of fallback items to generate if parsing fails
-        fallback_fn: Callable(i: int) -> Any that generates fallback item for index i
-
-    Returns:
-        List of parsed or fallback items
-    """
+    """Parse JSON content with a fallback generator for parse failures."""
     try:
         items = json.loads(content)
         if not isinstance(items, list):
@@ -48,17 +35,7 @@ def parse_json_with_fallback(
 def build_qa_testset_case(
     dataset_name: str, query: str, answer: str, contexts: Any
 ) -> DatasetCase:
-    """Build a QA testset DatasetCase with standard structure.
-
-    Args:
-        dataset_name: Name of the dataset
-        query: The question/query string
-        answer: The expected answer
-        contexts: List of contexts or context snippets
-
-    Returns:
-        Constructed DatasetCase for qa_testset kind
-    """
+    """Build a QA testset DatasetCase with standard structure."""
     # Ensure contexts is a list
     if not isinstance(contexts, list):
         contexts = [contexts] if contexts else []

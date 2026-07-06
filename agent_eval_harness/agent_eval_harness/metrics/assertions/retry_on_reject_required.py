@@ -1,26 +1,4 @@
-"""Assertion: retry_on_reject_required — verifies the orchestrator retries after rejection.
-
-For each judge span (validator role component) whose `output_json.sufficient == false`,
-checks that a LATER worker span exists in the same trace (by execution order) before
-the trace's final writer span.
-
-`DEFECT_NO_RETRY` breaks this: with the defect on, there is only one worker span
-total — no second one after the rejection — so this assertion fails.
-
-Ordering is by LIST POSITION, not by comparing `started_at` strings: fast
-synchronous runs (FakeLLMClient, no real I/O) routinely produce several spans
-with an IDENTICAL started_at timestamp (Windows wall-clock resolution can be
-coarser than actual execution speed), so `a.started_at > b.started_at` is not a
-reliable "happened after" signal even when `a` truly ran after `b`. The `spans`
-list itself is already in true execution order (repository.get_spans_for_trace
-orders by rowid == insertion order == completion order), so position in that
-list is the correct ordering signal to use instead.
-
-params:
-    judge_component_id (str): component ID of the validator (default: "judge").
-    worker_component_id (str): component ID of the retrieval agent (default: "worker").
-    writer_component_id (str): component ID of the writer (default: "writer").
-"""
+"""Assertion: retry_on_reject_required — verifies the orchestrator retries after rejection."""
 from __future__ import annotations
 
 import json

@@ -1,10 +1,4 @@
-"""Framework scanner protocol and Haystack implementation.
-
-HaystackScanner is intentionally narrow (Haystack/CS-261-idiom-specific) — it reads
-@component-decorated classes, add_component() calls, and manual_span() hints to
-auto-discover components. This narrowness is documented here so a future second
-scanner can extend without trying to generalize this one speculatively.
-"""
+"""Framework scanner protocol and Haystack implementation."""
 from __future__ import annotations
 
 import ast
@@ -365,7 +359,6 @@ class HaystackScanner:
                 result.append(candidate)
             else:
                 # Create split candidates
-                # Find the first multi-valued tag key and value
                 for tag_key, value_dict in split_info.items():
                     for tag_value, hints_for_value in value_dict.items():
                         split_candidate = CandidateComponent(

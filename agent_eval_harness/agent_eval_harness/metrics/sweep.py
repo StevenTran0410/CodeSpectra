@@ -1,14 +1,4 @@
-"""Sweep runner — orchestrates `aeh eval` (CS-263 §8).
-
-Flow:
-1. Load suite + system_map.
-2. For assertion entries: run each relevant dataset case's query through
-   execute_run (reuses CS-261 machinery verbatim), then score against spans.
-3. For classifier entries: call the resolved component entry_point directly.
-4. For llm_judge entries: run traces + score with DeepEval/RAGAS judges.
-5. Score every entry, write evaluations rows via repository.insert_evaluation.
-6. Modest async fan-out with asyncio.Semaphore(concurrency_limit).
-"""
+"""Sweep runner — orchestrates `aeh eval` (CS-263 §8)."""
 from __future__ import annotations
 
 import asyncio
@@ -46,12 +36,7 @@ async def run_sweep(
     active_defects: list[str] | None = None,
     run_id: str | None = None,
 ) -> SweepResult:
-    """Run the full evaluation sweep for a given target + suite.
-
-    Returns a SweepResult containing all MetricResult items and any per-entry
-    errors. Does NOT abort the whole sweep if one entry fails — that entry is
-    recorded in SweepResult.errors and the sweep continues.
-    """
+    """Run the full evaluation sweep for a given target + suite."""
     system_map = load_system_map(map_path)
     suite = load_suite(suite_path)
 
@@ -178,9 +163,6 @@ async def _score_assertion_entry(
             params["allowed"] = component.downstream
 
     # Batch all queries into one execute_run call rather than one call per query —
-    # execute_run already builds the adapter once and loops over queries internally,
-    # so calling it per-query was needlessly rebuilding the target's pipeline/adapter
-    # once per query instead of once per suite entry.
     results: list[MetricResult] = []
     outcomes = await execute_run(
         target, map_path, llm_client, queries, tier, active_defects=active_defects, run_id=run_id

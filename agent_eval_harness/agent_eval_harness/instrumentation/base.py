@@ -1,8 +1,4 @@
-"""InstrumentationAdapter interface + captured-span data shapes.
-
-Both tiers (Haystack-native, boundary-wrapper) produce the SAME `CapturedSpan`/
-`TraceResult` shapes so the mapping engine, store, and CLI never branch on tier.
-"""
+"""InstrumentationAdapter interface + captured-span data shapes."""
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -54,16 +50,7 @@ class _HaystackPipelineLike(Protocol):
 
 @dataclass
 class PipelineHandle:
-    """What a test target's build_pipeline() hands back to the runner/adapter —
-    a built Haystack AsyncPipeline plus just enough wiring info to feed a raw text
-    query in and pull the final text answer out, without HaystackAdapter having to
-    guess at arbitrary pipeline shapes (that guesswork is CS-264's job, not CS-261's).
-
-    entry_inputs maps {component_name: input_key} for every component that should
-    directly receive the raw query (e.g. T1 feeds "query" to both "retriever" and
-    "writer"; T2 feeds it only to "guard" — everything downstream is wired via
-    pipeline.connect()).
-    """
+    """What a test target's build_pipeline() hands back to the runner/adapter —"""
 
     pipeline: _HaystackPipelineLike
     entry_inputs: dict[str, str]
@@ -71,11 +58,7 @@ class PipelineHandle:
 
 
 class InstrumentationAdapter(ABC):
-    """Lifecycle: attach() once, run(query) once per query, detach() once.
-
-    Identical contract for both tiers — the runner never branches on which
-    adapter it holds.
-    """
+    """Lifecycle: attach() once, run(query) once per query, detach() once."""
 
     @abstractmethod
     def attach(self) -> None: ...

@@ -1,10 +1,4 @@
-"""`aeh` CLI entry point.
-
-CRITICAL: HAYSTACK_CONTENT_TRACING_ENABLED must be set before `haystack` is
-imported anywhere in this process — it's read exactly once, at haystack.tracing's
-first import. These two lines MUST stay above every other import in this file,
-including this package's own modules (several transitively import haystack).
-"""
+"""`aeh` CLI entry point. CRITICAL: HAYSTACK_CONTENT_TRACING_ENABLED must be set before haystack is imported."""
 import os
 
 os.environ.setdefault("HAYSTACK_CONTENT_TRACING_ENABLED", "true")
@@ -164,17 +158,13 @@ def _read_queries(args: argparse.Namespace) -> list[str]:
 
 
 def _apply_data_dir(args: argparse.Namespace) -> None:
-    """Point the store at a custom data directory before init_db() reads
-    AEH_DATA_DIR. Every subcommand except `map` (which never touches the DB)
-    accepts --data-dir, so this one-liner is shared across them."""
+    """Point the store at a custom data directory before init_db() reads AEH_DATA_DIR."""
     if args.data_dir:
         os.environ["AEH_DATA_DIR"] = args.data_dir
 
 
 def _build_llm_client(args: argparse.Namespace, config: AEHConfig) -> LLMClient:
-    """Resolve the LLM client every command needs: a live CodeSpectraProxyClient
-    if --provider-id (or .aeh/config.yaml) names a provider, else the
-    deterministic offline FakeLLMClient fallback used by every automated test."""
+    """Resolve the LLM client: live CodeSpectraProxyClient if provider set, else FakeLLMClient."""
     provider_id = args.provider_id or config.provider_id
 
     if provider_id:
@@ -193,9 +183,7 @@ def _build_llm_client(args: argparse.Namespace, config: AEHConfig) -> LLMClient:
 
 @asynccontextmanager
 async def _db_session():
-    """Open the store DB for a command's lifetime and always close it after,
-    even if the command body raises. Not used by `map`, which never touches
-    the DB (SystemMapBuilder writes system_map.yaml straight to disk)."""
+    """Open the store DB for a command's lifetime and close it after."""
     await init_db()
     try:
         yield

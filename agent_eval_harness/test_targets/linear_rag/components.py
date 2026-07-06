@@ -45,10 +45,7 @@ class RetrieverComponent:
 
 @component
 class WriterComponent:
-    """Answers strictly from the retrieved context. Holds a HarnessChatGenerator
-    internally (composition, not a scheduled pipeline node) and wraps its call in
-    a manual aeh.llm_call span, so DEFECT_WRITER_HALLUCINATE can post-process the
-    reply after the LLM call completes."""
+    """Answers strictly from the retrieved context. Holds a HarnessChatGenerator"""
 
     __haystack_supports_async__ = True
 

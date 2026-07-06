@@ -8,10 +8,7 @@ from agent_eval_harness.mapping.builder.pipeline import SystemMapBuilder
 
 
 class KeyedFakeLLMClient:
-    """Maps the first line of the user prompt (candidate_id-derived class_name)
-    to a canned LLMResponse. Avoids fake_client.FakeLLMClient's positional-queue
-    fragility for golden tests.
-    """
+    """Maps the first line of the user prompt (candidate_id-derived class_name)"""
 
     def __init__(self, by_key: dict[str, LLMResponse], default: LLMResponse | None = None) -> None:
         self._map = by_key
@@ -193,7 +190,6 @@ class TestMapBuilderGolden:
             system_map, summary = await builder.build(t2_dir)
 
             # 8 components: guard_rule, guard_llm, planner, worker, judge, writer
-            # (imported from linear_rag via constructor injection), + 2 tools
             assert len(system_map.components) == 8
 
             # Check that core roles are present

@@ -24,7 +24,6 @@ async def test_insert_run_defect_leak_prevention(monkeypatch) -> None:
     monkeypatch.setenv("AEH_DEFECT_GUARD_LEAK", "1")
 
     # 1. Insert a run targeting a generic system, passing no active_defects.
-    # It should not have active defects populated (active_defects should be None).
     run_id = await repository.insert_run("my_real_target")
     run = await repository.get_run(run_id)
     assert run is not None

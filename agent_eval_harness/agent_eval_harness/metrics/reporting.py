@@ -1,9 +1,4 @@
-"""Metric reporting for `aeh report` — NOT the same as agent_eval_harness/reporting.py.
-
-That file (CS-261's span-tree printer) formats raw span trees for `aeh run`.
-This module formats evaluation results from the `evaluations` table for `aeh report`.
-Both are imported explicitly by cli.py to avoid ambiguity.
-"""
+"""Metric reporting for `aeh report` — NOT the same as agent_eval_harness/reporting.py."""
 from __future__ import annotations
 
 import json

@@ -50,3 +50,12 @@ def load_system_map(path: str | Path) -> SystemMap:
     """Schema validation is a hard gate — invalid shape fails loudly (CS-264 §epic convention)."""
     data = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
     return SystemMap.model_validate(data)
+
+
+def save_system_map(system_map: SystemMap, path: str | Path) -> None:
+    """Serialize system map to yaml."""
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with open(p, "w", encoding="utf-8") as f:
+        yaml.dump(system_map.model_dump(), f, default_flow_style=False, sort_keys=False)
+

@@ -16,12 +16,12 @@ from pydantic import BaseModel
 
 import asyncio
 from agent_eval_harness.config import AEHConfig
-from agent_eval_harness.llm.client import LLMResponse
-from agent_eval_harness.llm.fake_client import FakeLLMClient
 from agent_eval_harness.llm.proxy_client import CodeSpectraProxyClient
 from agent_eval_harness.discovery.client import CodeSpectraClient
 from agent_eval_harness.discovery.engine import run_discovery_background
-from agent_eval_harness.mapping.system_map import load_system_map
+from agent_eval_harness.discovery.expansion import expand_candidate
+from agent_eval_harness.mapping.builder.pipeline import SystemMapBuilder
+from agent_eval_harness.mapping.system_map import load_system_map, save_system_map, SystemMap
 from agent_eval_harness.store import repository
 from agent_eval_harness.store.database import close_db, init_db
 
@@ -311,20 +311,22 @@ class ProviderSummary(BaseModel):
 
 
 @app.get("/api/providers", response_model=list[ProviderSummary])
-async def get_providers():
+async def get_providers(backend_url: str | None = None, backend_token: str | None = None):
     import httpx
 
     from agent_eval_harness.config import AEHConfig
 
     config = AEHConfig.load()
-    if not config.backend_url or not config.backend_token:
+    backend_url = backend_url or config.backend_url
+    backend_token = backend_token or config.backend_token
+    if not backend_url or not backend_token:
         return []
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(
-                f"{config.backend_url.rstrip('/')}/api/external/llm/providers",
-                headers={"Authorization": f"Bearer {config.backend_token}"},
+                f"{backend_url.rstrip('/')}/api/external/llm/providers",
+                headers={"Authorization": f"Bearer {backend_token}"},
             )
             resp.raise_for_status()
             return resp.json()
@@ -447,8 +449,7 @@ async def rerun_run(run_id: str, body: RerunRequest):
                         LLMResponse(content=f"Canned override answer for {comp_id}", model=m_id)
                     )
 
-                # Route BOTH comp_id (for Tier-2 contextvar) and
-                # component_name (for Tier-1 Haystack tags)
+                # Route BOTH comp_id (for Tier-2 contextvar) and component_name (for Tier-1 Haystack tags)
                 overrides[comp_id] = client
                 if system_map:
                     comp = system_map.component_by_id(comp_id)
@@ -490,6 +491,7 @@ class StartDiscoveryRequest(BaseModel):
     repo_ref: str
     snapshot_id: str
     provider_id: str | None = None
+    model_id: str | None = None
     backend_url: str | None = None
     backend_token: str | None = None
 
@@ -514,6 +516,10 @@ class DiscoveryCandidateResponse(BaseModel):
     confidence: str
     needs_human: bool = False
     verdict: str
+    community_id: str | None = None
+    cluster_files: list[str] = []
+    hub_paths: list[str] = []
+    wiring_block: dict | None = None
 
 
 class UpdateVerdictRequest(BaseModel):
@@ -535,15 +541,14 @@ async def start_discovery(body: StartDiscoveryRequest):
             )
 
         # Build LLM client
-        if provider_id:
-            llm_client = CodeSpectraProxyClient(backend_url, backend_token, provider_id, config.model_id)
-        else:
-            llm_client = FakeLLMClient(
-                LLMResponse(
-                    content='{"is_agentic_system": true, "name": "Fake Agent", "frameworks": ["haystack"], "entry_points": [], "confidence": "high"}',
-                    model="fake"
-                )
+        if not provider_id:
+            raise HTTPException(
+                status_code=400,
+                detail="No LLM provider configured for Pass C synthesis. Set up a provider in "
+                "Settings, then select it before running Discovery.",
             )
+        model_id = body.model_id or config.model_id
+        llm_client = CodeSpectraProxyClient(backend_url, backend_token, provider_id, model_id)
 
         client = CodeSpectraClient(backend_url, backend_token)
 
@@ -562,9 +567,9 @@ async def start_discovery(body: StartDiscoveryRequest):
 
 
 @app.get("/api/discovery/sessions", response_model=list[DiscoverySessionResponse])
-async def list_discovery_sessions(repo_ref: str | None = None):
+async def list_discovery_sessions(repo_ref: str | None = None, snapshot_id: str | None = None):
     try:
-        sessions = await repository.list_discovery_sessions(repo_ref)
+        sessions = await repository.list_discovery_sessions(repo_ref, snapshot_id)
         return [
             DiscoverySessionResponse(
                 id=s["id"],
@@ -613,6 +618,10 @@ async def list_discovery_candidates(session_id: str):
                 confidence=c["confidence"],
                 needs_human=c.get("needs_human", False),
                 verdict=c["verdict"],
+                community_id=c.get("community_id"),
+                cluster_files=c.get("cluster_files", []),
+                hub_paths=c.get("hub_paths", []),
+                wiring_block=c.get("wiring_block"),
             )
             for c in candidates
         ]
@@ -641,6 +650,171 @@ async def health_check():
 
 
 # --- Static Files / SPA Fallback ---
+
+class ExpandCandidateRequest(BaseModel):
+    provider_id: str | None = None
+    model_id: str | None = None
+    backend_url: str | None = None
+    backend_token: str | None = None
+    node_budget: int = 40
+    hop_cap: int = 3
+
+
+async def run_expansion_background(
+    session_id: str,
+    snapshot_id: str,
+    candidate: dict,
+    client: CodeSpectraClient,
+    llm_client: CodeSpectraProxyClient,
+    node_budget: int,
+    hop_cap: int,
+):
+    try:
+        res = await expand_candidate(
+            snapshot_id,
+            candidate,
+            client,
+            llm_client,
+            node_budget=node_budget,
+            hop_cap=hop_cap,
+        )
+
+        snapshot = await client.get_snapshot(snapshot_id)
+        local_path_str = snapshot.get("local_path")
+        if not local_path_str:
+            raise RuntimeError(f"Snapshot {snapshot_id} is missing local_path context.")
+
+        local_path = Path(local_path_str)
+        abs_files = [local_path / p for p in res["accepted"]]
+
+        builder = SystemMapBuilder(llm_client)
+        system_map, summary = await builder.build_from_files(
+            abs_files,
+            package_root=local_path,
+            target_system_id=candidate["name"],
+        )
+
+        data_dir = os.getenv("AEH_DATA_DIR", ".")
+        map_dir = Path(data_dir) / "maps"
+        map_dir.mkdir(parents=True, exist_ok=True)
+        map_path = map_dir / f"{session_id}.yaml"
+        save_system_map(system_map, map_path)
+
+        await repository.finish_expansion_session(
+            session_id,
+            "completed",
+            map_path=str(map_path),
+            accepted=res["accepted"],
+            boundary=res["boundary"],
+            stop_reason=res["stop_reason"],
+        )
+    except Exception as e:
+        logger.error(f"Expansion runner failed: {e}", exc_info=True)
+        await repository.finish_expansion_session(session_id, "failed", error=str(e))
+    finally:
+        # both must be closed or this leaks a connection pool per run
+        await client.aclose()
+        if hasattr(llm_client, "aclose"):
+            await llm_client.aclose()
+
+
+@app.post("/api/discovery/candidates/{candidate_id}/expand")
+async def start_expansion(candidate_id: str, body: ExpandCandidateRequest):
+    try:
+        candidate = await repository.get_discovery_candidate(candidate_id)
+        if not candidate:
+            raise HTTPException(status_code=404, detail="Candidate component not found.")
+
+        # discovery_candidates has no snapshot_id column — resolve it via the parent session
+        session = await repository.get_discovery_session(candidate["session_id"])
+        if not session:
+            raise HTTPException(status_code=404, detail="Parent discovery session not found.")
+        snapshot_id = session["snapshot_id"]
+
+        config = AEHConfig.load()
+        provider_id = body.provider_id or config.provider_id
+        backend_url = body.backend_url or config.backend_url
+        backend_token = body.backend_token or config.backend_token
+
+        if not backend_url or not backend_token:
+            raise HTTPException(
+                status_code=400,
+                detail="Missing CodeSpectra backend connection config (url/token)."
+            )
+
+        if not provider_id:
+            raise HTTPException(
+                status_code=400,
+                detail="No LLM provider configured for Pass C synthesis. Set up a provider in "
+                "Settings, then select it before running Discovery.",
+            )
+
+        model_id = body.model_id or config.model_id
+        llm_client = CodeSpectraProxyClient(backend_url, backend_token, provider_id, model_id)
+        client = CodeSpectraClient(backend_url, backend_token)
+
+        session_id = repository.new_id()
+        await repository.insert_expansion_session(session_id, candidate_id, snapshot_id)
+
+        asyncio.create_task(
+            run_expansion_background(
+                session_id,
+                snapshot_id,
+                candidate,
+                client,
+                llm_client,
+                body.node_budget,
+                body.hop_cap,
+            )
+        )
+
+        return {"session_id": session_id}
+    except Exception as e:
+        if isinstance(e, HTTPException):
+            raise e
+        logger.error(f"Failed to start expansion session: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/discovery/expansion-sessions/{session_id}")
+async def get_expansion_session(session_id: str):
+    sess = await repository.get_expansion_session(session_id)
+    if not sess:
+        raise HTTPException(status_code=404, detail="Expansion session not found.")
+    return sess
+
+
+@app.get("/api/discovery/expansion-sessions/{session_id}/map")
+async def get_expansion_map(session_id: str):
+    sess = await repository.get_expansion_session(session_id)
+    if not sess:
+        raise HTTPException(status_code=404, detail="Expansion session not found.")
+    if sess["status"] != "completed":
+        raise HTTPException(status_code=400, detail="Expansion session has not completed.")
+    if not sess["map_path"]:
+        raise HTTPException(status_code=400, detail="Expansion session does not have map output.")
+
+    try:
+        system_map = load_system_map(sess["map_path"])
+        return system_map.model_dump()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load map file: {e}")
+
+
+@app.put("/api/discovery/expansion-sessions/{session_id}/map")
+async def update_expansion_map(session_id: str, body: SystemMap):
+    sess = await repository.get_expansion_session(session_id)
+    if not sess:
+        raise HTTPException(status_code=404, detail="Expansion session not found.")
+    if not sess["map_path"]:
+        raise HTTPException(status_code=400, detail="Expansion session does not have map output.")
+
+    try:
+        save_system_map(body, sess["map_path"])
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update map file: {e}")
+
 
 current_dir = Path(__file__).parent
 dist_dir = current_dir / "dist"

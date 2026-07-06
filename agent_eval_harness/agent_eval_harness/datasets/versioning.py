@@ -4,10 +4,7 @@ from agent_eval_harness.store.repository import list_dataset_ids
 
 
 async def next_version(base_name: str) -> str:
-    """Find the next version string for base_name.
-    Queries existing dataset_ids via list_dataset_ids(), finds the highest
-    existing '_vN' suffix for that base, and returns 'base_name_v{N+1}' (or '_v1' if none exist).
-    """
+    """Find the next version string for base_name."""
     dataset_summaries = await list_dataset_ids()
     existing_ids = [d["dataset_id"] for d in dataset_summaries]
 

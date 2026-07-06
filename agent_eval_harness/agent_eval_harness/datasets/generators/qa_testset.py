@@ -84,7 +84,6 @@ class RagasQATestsetBackend:
 
         try:
             # Must run before the `from ragas.testset import ...` below — see
-            # stub_missing_langchain_community_vertexai's own docstring for why.
             stub_missing_langchain_community_vertexai()
 
             from langchain_core.documents import Document

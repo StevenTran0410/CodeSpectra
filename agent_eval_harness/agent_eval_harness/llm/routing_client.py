@@ -11,10 +11,7 @@ current_component_id_var: contextvars.ContextVar[str | None] = contextvars.Conte
 
 
 class RoutingLLMClient:
-    """LLMClient implementation that routes calls dynamically to component-specific overrides.
-
-    If no component-specific override matches, it falls back to the default client.
-    """
+    """LLMClient implementation that routes calls dynamically to component-specific overrides."""
 
     def __init__(self, default: LLMClient, overrides: dict[str, LLMClient]) -> None:
         self._default = default
@@ -42,13 +39,6 @@ class RoutingLLMClient:
             span = haystack_global_tracer.current_span()
             if span:
                 # Haystack's own automatic component spans tag "haystack.component.name";
-                # AEH's manual inner spans (test_targets._shared.tracing_helpers.manual_span,
-                # the convention every real component uses to wrap its own LLM call) tag the
-                # bare "component_name" instead — the same fallback tier1_haystack.py's own
-                # _normalize() already uses. Checking only the first key means every real
-                # target's LLM call falls through to the default client, silently ignoring
-                # the override (confirmed empirically: writer span kept the default model
-                # until this fallback was added).
                 comp_name = span.tags.get("haystack.component.name") or span.tags.get(
                     "component_name"
                 )

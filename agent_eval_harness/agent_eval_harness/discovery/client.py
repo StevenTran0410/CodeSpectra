@@ -1,7 +1,4 @@
-"""CodeSpectra API external client for AEH.
-
-Enables query of CodeSpectra's backend services over the gated /api/external endpoints.
-"""
+"""CodeSpectra API external client for AEH."""
 from __future__ import annotations
 
 from typing import Any
@@ -33,11 +30,7 @@ class CodeSpectraClient:
         return resp.json()
 
     async def search_retrieval(self, snapshot_id: str, query: str, section: str = "qa") -> dict:
-        """Backed by retrieve_rrf_fusion (unbounded, BM25-weighted fused results
-        under the "fused" key) — not the budget-capped retrieve(). Pass a bare
-        keyword (e.g. "haystack"), not a natural-language phrase: a verbose
-        query dilutes BM25's exact-term signal against unrelated chunks that
-        happen to share other words."""
+        """Perform BM25 fused search using retrieve_rrf_fusion."""
         return await self._request(
             "POST",
             "/retrieval/search",

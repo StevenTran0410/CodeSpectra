@@ -1,11 +1,4 @@
-"""planner.py — Evaluation Plan Generator (CS-265 §3).
-
-Given a system_map.yaml, generates an eval_plan.yaml (Suite) by applying:
-1. Role→suite rules (deterministic taxonomy-to-metric data rules).
-2. Constraints→assertions (mines constraints from map and maps to assertions).
-3. LLM-assisted rubric tailoring and unknown role recommendations.
-4. Dataset resolution (matches database datasets by kind/component).
-"""
+"""planner.py — Evaluation Plan Generator (CS-265 §3)."""
 from __future__ import annotations
 
 import json
@@ -251,7 +244,6 @@ async def generate_plan(
                 })
 
             # Check if this retrieval agent is part of a retry loop
-            # Path: orchestrator -> retrieval_agent -> validator -> orchestrator
             is_in_retry_loop = False
             if validator_comp:
                 # check if retrieval_agent goes to validator, and validator goes to planner
@@ -325,7 +317,6 @@ async def generate_plan(
                 params["allowed"] = component.downstream
             elif rule["metric"] == "tool_correctness":
                 # Find all downstream tools or tools having this component
-                # as upstream, map to span tag name
                 expected_tool_comps = []
                 for d in component.downstream:
                     if d in components_by_id and components_by_id[d].role == "tool":

@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'child_process'
+import crypto from 'crypto'
 import path from 'path'
 import { app, BrowserWindow } from 'electron'
 import { is } from '@electron-toolkit/utils'
@@ -8,6 +9,13 @@ import { BackendClient } from './client'
 const STARTUP_TIMEOUT_MS = 60_000  // Bumped from 20s for slower machines (CS-229)
 const HEALTH_POLL_INTERVAL_MS = 300
 const READY_SIGNAL = 'BACKEND_READY:'
+
+// Shared secret so AEH's subprocess can authenticate to require_external_token.
+const externalApiToken = crypto.randomBytes(32).toString('hex')
+
+export function getExternalApiToken(): string {
+  return externalApiToken
+}
 
 // ────────────────────────────────────────────────────────────────────────────
 // PythonProcessManager: encapsulates process lifecycle with crash recovery (CS-229)
@@ -46,7 +54,8 @@ class PythonProcessManager {
       env: {
         ...process.env,
         CODESPECTRA_DATA_DIR: dataDir,
-        CODESPECTRA_ENV: is.dev ? 'development' : 'production'
+        CODESPECTRA_ENV: is.dev ? 'development' : 'production',
+        CODESPECTRA_EXTERNAL_TOKEN: externalApiToken
       },
       stdio: ['ignore', 'pipe', 'pipe']
     })

@@ -1,6 +1,4 @@
-"""Full stubbed end-to-end tests for T2 multi_agent — one test per defect
-switch (CS-261 §7), asserting the SPECIFIC visible trace change from §6's table.
-"""
+"""Full stubbed end-to-end tests for T2 multi_agent — one test per defect"""
 from __future__ import annotations
 
 import json
@@ -53,7 +51,6 @@ async def test_happy_path_no_defects() -> None:
     assert len(_spans_for(result, "case_law_search_tool")) == 1
     assert len(_spans_for(result, "decoy_tool")) == 1
     # guard's own top-level wrapper span legitimately has no span_match rule of
-    # its own (split into guard_rule/guard_llm sub-spans) — by design, not a bug.
     assert len(result.unmatched) == 1
 
 

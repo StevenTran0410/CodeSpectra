@@ -1,13 +1,4 @@
-"""Assertion: arg_schema — validates tool_call span arguments against a JSON Schema.
-
-For each tool_call span belonging to `component_id`, validates its `output_json`
-(or `input_json` if `output_json` is absent) against the provided JSON Schema.
-
-params:
-    schema (dict): a JSON Schema object (Draft-7 compatible) to validate against.
-
-Dependency: `jsonschema>=4.0.0` (added to base AEH dependencies in pyproject.toml).
-"""
+"""Assertion: arg_schema — validates tool_call span arguments against a JSON Schema."""
 from __future__ import annotations
 
 import json

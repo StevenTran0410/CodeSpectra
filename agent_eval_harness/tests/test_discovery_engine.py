@@ -1,16 +1,4 @@
-"""CS-270 — Discovery engine golden + negative-control tests.
-
-Golden: a fixture "repo" with two real (Haystack, CrewAI) agentic pipelines
-plus a deliberately non-agentic utility module must yield exactly two
-candidates, correctly localized to their own files/communities.
-
-Negative control: a repo with only non-agentic content must yield zero
-candidates — hallucinating an agent where none exists is the failing mode
-that matters most (CS-264 §3's honesty bar, inherited by this ticket).
-
-The CodeSpectraClient is stubbed (no real backend/HTTP) so these tests run
-fully offline, matching every other AEH test in this suite.
-"""
+"""CS-270 — Discovery engine golden + negative-control tests."""
 from __future__ import annotations
 
 import pytest
@@ -22,8 +10,9 @@ from agent_eval_harness.llm.fake_client import FakeLLMClient
 HAYSTACK_EXCERPT = (
     "from haystack import Pipeline\n"
     "from haystack.components.builders import PromptBuilder\n\n"
-    "class WriterComponent:\n"
-    "    def run(self): pass"
+    "pipeline = Pipeline()\n"
+    "pipeline.add_component('prompt_builder', PromptBuilder())\n"
+    "pipeline.connect('prompt_builder.prompt', 'llm.prompt')"
 )
 CREWAI_EXCERPT = (
     "from crewai import Agent, Task, Crew\n\n"
@@ -50,8 +39,7 @@ class _StubClient:
         return {"symbols": []}
 
     async def search_retrieval(self, snapshot_id: str, query: str, section: str = "qa") -> dict:
-        # "fused" — matches retrieve_rrf_fusion's response shape, not the
-        # budget-capped retrieve()'s "evidences" (see engine.py's Pass A note).
+        # "fused" matches retrieve_rrf_fusion's response shape (not the plain-retrieve one)
         return {"fused": self._evidences}
 
     async def get_communities(self, snapshot_id: str) -> dict:
@@ -59,8 +47,13 @@ class _StubClient:
 
     async def get_snapshot(self, snapshot_id: str) -> dict:
         # No CA-mode sibling in these tests — engine must degrade gracefully
-        # (caught by discover_agentic_systems' own try/except), not crash.
         raise RuntimeError("no sibling snapshot in test fixture")
+
+    async def read_file(self, snapshot_id: str, path: str) -> dict:
+        for ev in self._evidences:
+            if ev["rel_path"] == path:
+                return {"content": ev["excerpt"]}
+        return {"content": ""}
 
     async def aclose(self) -> None:
         pass
@@ -112,8 +105,7 @@ async def test_golden_two_real_agentic_clusters_plus_non_agentic_package() -> No
     names = {c["name"] for c in candidates}
     assert names == {"Haystack Pipeline", "Crew Setup"}
 
-    # Correctly localized — the non-agentic file must not appear as an entry
-    # point/evidence file for either real candidate.
+    # Correctly localized — the non-agentic file must not appear as evidence for either candidate
     all_evidence_files = {
         ev["file"] for c in candidates for ev in c["evidence"]
     }
@@ -121,19 +113,40 @@ async def test_golden_two_real_agentic_clusters_plus_non_agentic_package() -> No
     assert "agents/haystack_pipeline.py" in all_evidence_files
     assert "agents/crew_setup.py" in all_evidence_files
 
+    # Assert community_id, cluster_files, and hub_paths are present and correct
+    by_name = {c["name"]: c for c in candidates}
+
+    haystack_cand = by_name["Haystack Pipeline"]
+    assert haystack_cand["community_id"] == "1"
+    assert haystack_cand["cluster_files"] == ["agents/haystack_pipeline.py"]
+    assert haystack_cand["hub_paths"] == ["agents/haystack_pipeline.py"]
+    for ev in haystack_cand["evidence"]:
+        assert "token_estimate" in ev
+        assert ev["token_estimate"] > 0
+    assert haystack_cand["wiring_block"] is not None
+    assert haystack_cand["wiring_block"]["framework"] == "haystack"
+    assert len(haystack_cand["wiring_block"]["nodes"]) == 1
+    assert haystack_cand["wiring_block"]["nodes"][0]["alias"] == "prompt_builder"
+
+    crew_cand = by_name["Crew Setup"]
+    assert crew_cand["wiring_block"] is None
+    assert crew_cand["community_id"] == "2"
+    assert crew_cand["cluster_files"] == ["agents/crew_setup.py"]
+    assert crew_cand["hub_paths"] == ["agents/crew_setup.py"]
+    for ev in crew_cand["evidence"]:
+        assert "token_estimate" in ev
+        assert ev["token_estimate"] > 0
+
 
 @pytest.mark.asyncio
 async def test_negative_control_non_agentic_only_yields_zero_candidates() -> None:
-    """A repo with no framework/import fingerprint hits at all must never
-    hallucinate a candidate — this is the failing mode that matters most."""
+    """A repo with no framework/import fingerprint hits at all must never hallucinate a candidate."""
     client = _StubClient(
         evidences=[{"rel_path": "utils/math_helpers.py", "excerpt": NON_AGENTIC_EXCERPT}],
         node_index={"utils/math_helpers.py": 1},
         communities=[{"community_id": 1, "hub_paths": ["utils/math_helpers.py"]}],
     )
-    # No LLM calls should even happen (Pass A finds zero hits, discovery ends
-    # before Pass C) — a FakeLLMClient with a response that would fail to
-    # parse as JSON proves Pass C was never actually invoked.
+    # No LLM calls should even happen (Pass A finds zero hits, discovery ends before Pass C)
     llm_client = FakeLLMClient(LLMResponse(content="not json — should never be called", model="fake"))
 
     candidates = await discover_agentic_systems("snap-negative", "repo-negative", client, llm_client)
@@ -144,9 +157,7 @@ async def test_negative_control_non_agentic_only_yields_zero_candidates() -> Non
 
 @pytest.mark.asyncio
 async def test_llm_synthesis_budget_cap_marks_overflow_needs_human() -> None:
-    """More clusters than MAX_LLM_SYNTHESIZED_CLUSTERS must still all be
-    surfaced (never silently dropped, epic §4e) — overflow clusters get
-    needs_human=True without spending an LLM call."""
+    """More clusters than MAX_LLM_SYNTHESIZED_CLUSTERS must still all be surfaced, never dropped."""
     from agent_eval_harness.discovery import engine as engine_module
 
     n_clusters = engine_module.MAX_LLM_SYNTHESIZED_CLUSTERS + 3

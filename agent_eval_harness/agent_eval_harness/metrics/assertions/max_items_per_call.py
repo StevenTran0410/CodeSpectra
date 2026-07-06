@@ -1,11 +1,4 @@
-"""Assertion: max_items_per_call — checks planner does not exceed the fanout limit.
-
-Reads `output_json.intents` from every span belonging to `component_id` within
-one trace. Each call's intent list must have length <= `params["limit"]`.
-
-Triggered automatically by the sweep runner for every System Map constraint
-named `max_items_per_call` (§4.3, source 1).
-"""
+"""Assertion: max_items_per_call — checks planner does not exceed the fanout limit."""
 from __future__ import annotations
 
 import json

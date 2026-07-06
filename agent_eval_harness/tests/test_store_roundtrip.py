@@ -95,3 +95,64 @@ async def test_migration_is_idempotent() -> None:
     async with db.execute("PRAGMA index_list('spans')") as cur:
         indexes = await cur.fetchall()
     assert len(indexes) >= 1
+
+
+async def test_discovery_candidates_persistence() -> None:
+    session_id = await repository.insert_discovery_session("repo-test", "snap-test")
+    candidates = [
+        {
+            "name": "Test Candidate",
+            "frameworks": ["haystack"],
+            "entry_points": ["app.py"],
+            "evidence": [{"file": "app.py", "snippet": "import haystack", "token_estimate": 4}],
+            "confidence": "high",
+            "verdict": "proposed",
+            "needs_human": False,
+            "community_id": "42",
+            "cluster_files": ["app.py", "utils.py"],
+            "hub_paths": ["app.py"],
+            "wiring_block": {
+                "nodes": [{"alias": "n1", "class_name": "C1", "source_hint_file": "app.py"}],
+                "edges": [{"src": "n1", "dst": "n1"}],
+                "framework": "haystack",
+                "source": "static",
+            },
+        }
+    ]
+    await repository.insert_discovery_candidates_bulk(session_id, candidates)
+    res = await repository.get_discovery_candidates(session_id)
+    assert len(res) == 1
+    c = res[0]
+    assert c["name"] == "Test Candidate"
+    assert c["frameworks"] == ["haystack"]
+    assert c["entry_points"] == ["app.py"]
+    assert c["evidence"] == [{"file": "app.py", "snippet": "import haystack", "token_estimate": 4}]
+    assert c["confidence"] == "high"
+    assert c["verdict"] == "proposed"
+    assert c["needs_human"] is False
+    assert c["community_id"] == "42"
+    assert c["cluster_files"] == ["app.py", "utils.py"]
+    assert c["hub_paths"] == ["app.py"]
+    assert c["wiring_block"] == {
+        "nodes": [{"alias": "n1", "class_name": "C1", "source_hint_file": "app.py"}],
+        "edges": [{"src": "n1", "dst": "n1"}],
+        "framework": "haystack",
+        "source": "static",
+    }
+
+
+async def test_list_discovery_sessions_finds_session_by_snapshot_id_even_when_repo_ref_mismatches() -> None:
+    """Verify session lookup works by snapshot_id even when repo_ref doesn't match."""
+    session_id = await repository.insert_discovery_session(
+        repo_ref="C:\\Users\\PC\\CodeSpectra\\repos\\CodeSpectra",
+        snapshot_id="snap-mismatch-test",
+    )
+
+    # repo_ref filtering with the "other" value a caller might reasonably use
+    by_wrong_repo_ref = await repository.list_discovery_sessions(repo_ref="snap-mismatch-test")
+    assert session_id not in [s["id"] for s in by_wrong_repo_ref]
+
+    # snapshot_id filtering must find it regardless.
+    by_snapshot_id = await repository.list_discovery_sessions(snapshot_id="snap-mismatch-test")
+    assert session_id in [s["id"] for s in by_snapshot_id]
+

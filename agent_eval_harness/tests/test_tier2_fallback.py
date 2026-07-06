@@ -1,7 +1,4 @@
-"""Tier-2 boundary-wrapper fallback demo — T1 only (CS-261 §7 acceptance:
-"Tier-2 boundary wrapper demonstrated by running T1 through it, pretending
-it's uninstrumentable").
-"""
+"""Tier-2 boundary-wrapper fallback demo — T1 only (CS-261 §7 acceptance:"""
 from __future__ import annotations
 
 from pathlib import Path
