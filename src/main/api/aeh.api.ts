@@ -118,4 +118,20 @@ export function registerAEHHandlers(): void {
   ipcMain.handle('aeh:updateExpansionMap', (_e, sessionId: string, map: unknown) =>
     aehClient().put(`/api/discovery/expansion-sessions/${sessionId}/map`, map)
   )
+
+  ipcMain.handle('aeh:generatePlan', (_e, sessionId: string, body: unknown) =>
+    aehClient().post(`/api/discovery/expansion-sessions/${sessionId}/plan`, withBackendConnection(body))
+  )
+
+  ipcMain.handle('aeh:getPlan', (_e, sessionId: string) =>
+    aehClient().get(`/api/discovery/expansion-sessions/${sessionId}/plan`)
+  )
+
+  ipcMain.handle('aeh:updatePlan', (_e, sessionId: string, body: unknown) =>
+    aehClient().put(`/api/discovery/expansion-sessions/${sessionId}/plan`, body)
+  )
+
+  ipcMain.handle('aeh:advanceSession', (_e, sessionId: string, body: unknown) =>
+    aehClient().post(`/api/discovery/sessions/${sessionId}/advance`, withBackendConnection(body))
+  )
 }

@@ -65,26 +65,41 @@ def extract_symbol_snippet(content: str, symbol_identifier: str) -> str:
     return "\n".join(snippet_lines)
 
 
-async def _classify_node(path: str, content: str, llm_client: LLMClient, candidate: dict) -> str:
-    """Classify node as 'accept' | 'boundary' | 'expand' using the LLM."""
+MAX_CLASSIFY_BATCH_SIZE = 6
+
+async def _classify_nodes_batch(
+    items: list[tuple[str, str, str | None]],
+    llm_client: LLMClient,
+    candidate: dict,
+) -> dict[str, str]:
+    """Classify a batch of Python code chunks separately using a single LLM call."""
     name = candidate.get("name", "unknown")
     frameworks = ", ".join(candidate.get("frameworks", []))
 
     system_prompt = (
-        "You are an expert AI software architect. Classify the provided Python source code chunk from a target codebase.\n"
-        f"The candidate agentic system we are expanding is named \"{name}\" and uses frameworks: [{frameworks}].\n"
-        "Determine if this code chunk is:\n"
-        "1. \"accept\" - represents a core agentic component (agent loops, tool orchestrators, custom agents, prompt templates, main entry points).\n"
-        "2. \"boundary\" - represents pure non-agentic infrastructure, library utility, database helper, logging, test files, third-party libraries, or configuration. We should not expand its neighbors.\n"
-        "3. \"expand\" - represents an intermediary connector module that bridges or imports agentic systems (e.g. API routers, connector files, shared models). We should accept it and continue expanding to its neighbors.\n\n"
-        "Respond ONLY in raw JSON format matching this schema:\n"
-        "{\n"
-        "  \"verdict\": \"accept\" | \"boundary\" | \"expand\",\n"
-        "  \"reason\": \"brief explanation\"\n"
-        "}"
+        "You are an expert AI software architect. You will be given several independent Python "
+        "source code chunks from a target codebase, each from a different file. Classify EACH ONE "
+        "separately and carefully — a verdict on one chunk must never be influenced by the content "
+        "of another chunk in this batch. Judge every chunk purely on its own content.\n"
+        f"The candidate agentic system we are expanding is named \"{name}\" and uses frameworks: "
+        f"[{frameworks}].\n"
+        "For each chunk, determine if it is:\n"
+        "1. \"accept\" - a core agentic component (agent loops, tool orchestrators, custom agents, "
+        "prompt templates, main entry points).\n"
+        "2. \"boundary\" - pure non-agentic infrastructure, library utility, database helper, "
+        "logging, test files, third-party libraries, or configuration. Do not expand its neighbors.\n"
+        "3. \"expand\" - an intermediary connector module that bridges or imports agentic systems "
+        "(e.g. API routers, connector files, shared models). Accept it and continue expanding.\n\n"
+        "Respond ONLY in raw JSON, one entry per chunk, in this exact schema:\n"
+        "{\"verdicts\": [{\"id\": \"<unique chunk id, copied exactly from the input>\", "
+        "\"verdict\": \"accept\"|\"boundary\"|\"expand\", \"reason\": \"brief\"}]}"
     )
-    user_prompt = f"File path: {path}\nCode chunk:\n{content}\n\nClassify this chunk."
 
+    user_prompt = "\n\n".join(
+        f"=== ID: {path}::{chunk_id} ===\n{content}" for path, content, chunk_id in items
+    )
+
+    result: dict[str, str] = {f"{path}::{chunk_id}": "boundary" for path, _, chunk_id in items}
     try:
         response = await llm_client.complete(
             [
@@ -94,13 +109,14 @@ async def _classify_node(path: str, content: str, llm_client: LLMClient, candida
             json_mode=True,
         )
         data = json.loads(response.content)
-        verdict = data.get("verdict", "boundary")
-        if verdict not in ("accept", "boundary", "expand"):
-            verdict = "boundary"
-        return verdict
+        for entry in data.get("verdicts", []):
+            unique_id = entry.get("id")
+            verdict = entry.get("verdict")
+            if unique_id in result and verdict in ("accept", "boundary", "expand"):
+                result[unique_id] = verdict
     except Exception as e:
-        logger.warning(f"Failed to classify node {path}: {e}")
-        return "boundary"
+        logger.warning(f"Batch classification failed: {e}. Defaulting batch to 'boundary'.")
+    return result
 
 
 async def expand_candidate(
@@ -109,7 +125,7 @@ async def expand_candidate(
     client: CodeSpectraClient,
     llm_client: LLMClient,
     *,
-    node_budget: int = 40,
+    node_budget: int = 100,
     hop_cap: int = 3,
 ) -> dict:
     # 1. Chunks Extraction for Seeds
@@ -142,6 +158,7 @@ async def expand_candidate(
     accepted_files = set()
     boundary_files = set()
     visited_chunks = set()
+    raw_file_edges: set[tuple[str, str]] = set()
     
     # hops_from_seed tracks distance at (file_path, chunk_id) granularity
     hops_from_seed = {}
@@ -150,90 +167,117 @@ async def expand_candidate(
 
     while frontier:
         if len(accepted_chunks) >= node_budget:
+            accepted_edges = sorted(
+                {(s, d) for s, d in raw_file_edges if s in accepted_files and d in accepted_files}
+            )
+            edges_out = [{"src": s, "dst": d} for s, d in accepted_edges]
             return {
                 "accepted": sorted(list(accepted_files)),
                 "boundary": sorted(list(boundary_files - accepted_files)),
-                "stop_reason": "node_budget"
+                "stop_reason": "node_budget",
+                "accepted_edges": edges_out
             }
             
-        file_path, chunk_id, snippet = frontier.pop(0)
-        chunk_key = (file_path, chunk_id)
-        if chunk_key in visited_chunks:
+        level = []
+        while frontier and len(level) < MAX_CLASSIFY_BATCH_SIZE:
+            item = frontier.pop(0)
+            if (item[0], item[1]) in visited_chunks:
+                continue
+            visited_chunks.add((item[0], item[1]))
+            level.append(item)
+
+        if not level:
             continue
-        visited_chunks.add(chunk_key)
 
-        # Get content snippet
-        if snippet is not None:
-            content = snippet
-        else:
-            try:
-                file_resp = await client.read_file(snapshot_id, file_path)
-                full_content = file_resp.get("content", "")
-            except Exception as e:
-                logger.warning(f"Failed to read file {file_path}: {e}")
-                full_content = ""
-
-            if chunk_id is not None:
-                content = extract_symbol_snippet(full_content, chunk_id)
-                if not content:
-                    content = full_content
+        to_classify = []
+        resolved = {}
+        for file_path, chunk_id, snippet in level:
+            if snippet is not None:
+                content = snippet
             else:
-                content = full_content
+                try:
+                    file_resp = await client.read_file(snapshot_id, file_path)
+                    full_content = file_resp.get("content", "")
+                except Exception as e:
+                    logger.warning(f"Failed to read file {file_path}: {e}")
+                    full_content = ""
 
-        # Check wiring_block hint skip
-        wb = candidate.get("wiring_block")
-        skip_classify = False
-        if wb and isinstance(wb, dict):
-            nodes = wb.get("nodes") or []
-            for n in nodes:
-                if n.get("source_hint_file") == file_path:
-                    skip_classify = True
-                    break
+                if chunk_id is not None:
+                    content = extract_symbol_snippet(full_content, chunk_id)
+                    if not content:
+                        content = full_content
+                else:
+                    content = full_content
 
-        if skip_classify:
-            verdict = "expand"
-        else:
-            verdict = await _classify_node(file_path, content, llm_client, candidate)
+            wb = candidate.get("wiring_block")
+            skip_classify = False
+            if wb and isinstance(wb, dict):
+                nodes = wb.get("nodes") or []
+                for n in nodes:
+                    if n.get("source_hint_file") == file_path:
+                        skip_classify = True
+                        break
 
-        if verdict == "boundary":
-            boundary_files.add(file_path)
-            continue
+            resolved[(file_path, chunk_id)] = (content, skip_classify)
+            if not skip_classify:
+                to_classify.append((file_path, content, chunk_id))
 
-        accepted_chunks.add(chunk_key)
-        accepted_files.add(file_path)
+        verdicts = await _classify_nodes_batch(to_classify, llm_client, candidate) if to_classify else {}
 
-        if verdict == "expand" and hops_from_seed.get(chunk_key, 0) < hop_cap:
-            try:
-                edges_resp = await client.get_symbol_edges(snapshot_id, file_path)
-                
-                for edge in edges_resp.get("outgoing", []):
-                    src_sym = edge.get("src_symbol")
-                    dst_sym = edge.get("dst_symbol")
-                    if src_sym and dst_sym and "::" in src_sym and "::" in dst_sym:
-                        sf, src_id = src_sym.split("::", 1)
-                        df, dst_id = dst_sym.split("::", 1)
-                        if chunk_id is None or src_id == chunk_id:
-                            neighbor = (df, dst_id)
-                            if neighbor not in visited_chunks:
-                                frontier.append((df, dst_id, None))
-                                hops_from_seed[neighbor] = hops_from_seed.get(chunk_key, 0) + 1
+        for file_path, chunk_id, snippet in level:
+            content, skip_classify = resolved[(file_path, chunk_id)]
+            verdict = "expand" if skip_classify else verdicts.get(f"{file_path}::{chunk_id}", "boundary")
 
-                for edge in edges_resp.get("incoming", []):
-                    src_sym = edge.get("src_symbol")
-                    dst_sym = edge.get("dst_symbol")
-                    if src_sym and dst_sym and "::" in src_sym and "::" in dst_sym:
-                        sf, src_id = src_sym.split("::", 1)
-                        df, dst_id = dst_sym.split("::", 1)
-                        if chunk_id is None or dst_id == chunk_id:
-                            neighbor = (sf, src_id)
-                            if neighbor not in visited_chunks:
-                                frontier.append((sf, src_id, None))
-                                hops_from_seed[neighbor] = hops_from_seed.get(chunk_key, 0) + 1
-            except Exception as e:
-                logger.warning(f"Failed to get symbol edges for {file_path}: {e}")
+            chunk_key = (file_path, chunk_id)
 
+            if verdict == "boundary":
+                boundary_files.add(file_path)
+                continue
+
+            accepted_chunks.add(chunk_key)
+            accepted_files.add(file_path)
+
+            if verdict == "expand" and hops_from_seed.get(chunk_key, 0) < hop_cap:
+                try:
+                    edges_resp = await client.get_symbol_edges(snapshot_id, file_path)
+                    
+                    for edge in edges_resp.get("outgoing", []):
+                        src_sym = edge.get("src_symbol")
+                        dst_sym = edge.get("dst_symbol")
+                        if src_sym and dst_sym and "::" in src_sym and "::" in dst_sym:
+                            sf, src_id = src_sym.split("::", 1)
+                            df, dst_id = dst_sym.split("::", 1)
+                            if chunk_id is None or src_id == chunk_id:
+                                if df != file_path:
+                                    raw_file_edges.add((file_path, df))
+                                neighbor = (df, dst_id)
+                                if neighbor not in visited_chunks:
+                                    frontier.append((df, dst_id, None))
+                                    hops_from_seed[neighbor] = hops_from_seed.get(chunk_key, 0) + 1
+
+                    for edge in edges_resp.get("incoming", []):
+                        src_sym = edge.get("src_symbol")
+                        dst_sym = edge.get("dst_symbol")
+                        if src_sym and dst_sym and "::" in src_sym and "::" in dst_sym:
+                            sf, src_id = src_sym.split("::", 1)
+                            df, dst_id = dst_sym.split("::", 1)
+                            if chunk_id is None or dst_id == chunk_id:
+                                if sf != file_path:
+                                    raw_file_edges.add((sf, file_path))
+                                neighbor = (sf, src_id)
+                                if neighbor not in visited_chunks:
+                                    frontier.append((sf, src_id, None))
+                                    hops_from_seed[neighbor] = hops_from_seed.get(chunk_key, 0) + 1
+                except Exception as e:
+                    logger.warning(f"Failed to get symbol edges for {file_path}: {e}")
+
+    accepted_edges = sorted(
+        {(s, d) for s, d in raw_file_edges if s in accepted_files and d in accepted_files}
+    )
+    edges_out = [{"src": s, "dst": d} for s, d in accepted_edges]
     return {
         "accepted": sorted(list(accepted_files)),
         "boundary": sorted(list(boundary_files - accepted_files)),
-        "stop_reason": "frontier_exhausted"
+        "stop_reason": "frontier_exhausted",
+        "accepted_edges": edges_out
     }

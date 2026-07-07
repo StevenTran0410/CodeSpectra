@@ -190,3 +190,30 @@ async def test_discovery_session_pause_resume_roundtrip() -> None:
     assert resumed["status"] == "running"
     assert resumed["pause_info"] is None
 
+
+async def test_expansion_session_roundtrip_includes_accepted_edges() -> None:
+    session_id = "sess-roundtrip-123"
+    await repository.insert_expansion_session(session_id, "cand-123", "snap-123")
+    
+    edges = [{"src": "a.py", "dst": "b.py"}]
+    await repository.finish_expansion_session(
+        session_id,
+        "completed",
+        map_path="/tmp/map.yaml",
+        accepted=["a.py", "b.py"],
+        boundary=["c.py"],
+        stop_reason="frontier_exhausted",
+        accepted_edges=edges
+    )
+    
+    sess = await repository.get_expansion_session(session_id)
+    assert sess is not None
+    assert sess["status"] == "completed"
+    assert sess["accepted"] == ["a.py", "b.py"]
+    assert sess["boundary"] == ["c.py"]
+    assert sess["accepted_edges"] == edges
+
+    list_sessions = await repository.list_expansion_sessions_for_candidate("cand-123")
+    assert len(list_sessions) == 1
+    assert list_sessions[0]["accepted_edges"] == edges
+

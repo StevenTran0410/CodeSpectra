@@ -106,6 +106,41 @@ async def test_consolidation_tied_and_unresolved() -> None:
 
 
 @pytest.mark.anyio
+async def test_consolidation_lone_candidate_does_not_claim_unrelated_file_by_repo_root_alone() -> None:
+    """Regression: with only ONE candidate in the whole run (nothing to disambiguate
+    against), a file sharing no real symbol-edge signal must NOT be attached just
+    because it happens to live somewhere under the same top-level directory as the
+    candidate's core seed (e.g. both under "backend/") — that's true of nearly
+    every file in a real repo and provides zero actual discriminating signal.
+    Real-world case this caught: a hand-rolled QA agent under
+    backend/domain/qa/agent.py got silently folded into a Haystack pipeline whose
+    core seed lives under backend/domain/analysis/agents/, purely because both
+    paths start with "backend/"."""
+    candidates = [
+        {
+            "community_id": 1,
+            "name": "Analysis Pipeline",
+            "cluster_files": ["backend/domain/analysis/agents/agent_conventions.py", "backend/domain/qa/agent.py"],
+            "hub_paths": ["backend/domain/analysis/agents/agent_conventions.py"],
+            "wiring_block": {
+                "nodes": [
+                    {"source_hint_file": "backend/domain/analysis/agents/agent_conventions.py"},
+                    {"source_hint_file": "backend/domain/analysis/agents/agent_risk.py"},
+                ],
+                "edges": [],
+            },
+        }
+    ]
+
+    client = _StubClient()  # no symbol edges at all
+    llm_client = AsyncMock()
+
+    res = await consolidate_candidates(candidates, client, "snap", llm_client)
+    llm_client.complete.assert_not_called()
+    assert "backend/domain/qa/agent.py" not in res[0]["matched_files"]
+
+
+@pytest.mark.anyio
 async def test_consolidation_llm_judge_resolves_tie() -> None:
     candidates = [
         {

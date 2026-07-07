@@ -34,6 +34,114 @@ pipeline.connect("prompt_builder.prompt", "llm.prompt")
     assert wiring.edges[0].dst == "llm"
 
 
+def test_detect_haystack_resolves_wrapped_component_to_its_real_file():
+    """Factory/wrapper pattern: every component is registered from one orchestrator
+    file via one shared wrapper class (`_SectionAgentComponent`), with the real
+    per-section agent passed as a nested constructor call. Naively using the
+    wrapper's own file/class name makes every node identical — must instead resolve
+    the nested class (`ConventionsAgent`/`RiskAgent`) by searching the OTHER cluster
+    files for where that class is actually defined, so distinct components don't
+    collapse into one indistinguishable node."""
+    orchestrator_code = """
+from .agents.agent_conventions import ConventionsAgent
+from .agents.agent_risk import RiskAgent
+
+pipeline = Pipeline()
+pipeline.add_component("conventions", _SectionAgentComponent(agent=ConventionsAgent()))
+pipeline.add_component("risk", _SectionAgentComponent(agent=RiskAgent()))
+pipeline.connect("conventions.output", "risk.input")
+"""
+    file_contents = {
+        "backend/domain/analysis/agent_pipeline.py": orchestrator_code,
+        "backend/domain/analysis/agents/agent_conventions.py": "class ConventionsAgent:\n    pass\n",
+        "backend/domain/analysis/agents/agent_risk.py": "class RiskAgent:\n    pass\n",
+    }
+    wiring = _detect_haystack(file_contents)
+    assert wiring is not None
+
+    by_alias = {n.alias: n for n in wiring.nodes}
+    assert by_alias["conventions"].class_name == "ConventionsAgent"
+    assert by_alias["conventions"].source_hint_file == "backend/domain/analysis/agents/agent_conventions.py"
+    assert by_alias["risk"].class_name == "RiskAgent"
+    assert by_alias["risk"].source_hint_file == "backend/domain/analysis/agents/agent_risk.py"
+
+    # The two components must resolve to DIFFERENT files — this is the actual bug:
+    # both used to collapse onto the orchestrator file itself.
+    assert by_alias["conventions"].source_hint_file != by_alias["risk"].source_hint_file
+
+
+def test_detect_haystack_resolves_self_attr_closure_to_its_real_file():
+    """The actual real-world pattern found in production: the real agent is
+    constructed once (e.g. in __init__) and assigned to self.<attr>, then merely
+    REFERENCED later via a closure/lambda inside add_component()'s arguments —
+    there is no nested constructor call at the add_component() site at all."""
+    orchestrator_code = """
+class Pipeline:
+    def __init__(self):
+        self._conventions = ConventionsAgent(provider, retrieval)
+        self._risk = RiskAgent(provider, retrieval)
+
+    def build(self):
+        pipeline = AsyncPipeline()
+        pipeline.add_component(
+            "conventions",
+            _SectionAgentComponent("A", lambda c, d: self._conventions.run(c), on_done),
+        )
+        pipeline.add_component(
+            "risk",
+            _SectionAgentComponent("B", lambda c, d: self._risk.run(c), on_done),
+        )
+        pipeline.connect("conventions.output", "risk.input")
+"""
+    file_contents = {
+        "backend/domain/analysis/agent_pipeline.py": orchestrator_code,
+        "backend/domain/analysis/agents/agent_conventions.py": "class ConventionsAgent:\n    pass\n",
+        "backend/domain/analysis/agents/agent_risk.py": "class RiskAgent:\n    pass\n",
+    }
+    wiring = _detect_haystack(file_contents)
+    assert wiring is not None
+
+    by_alias = {n.alias: n for n in wiring.nodes}
+    assert by_alias["conventions"].class_name == "ConventionsAgent"
+    assert by_alias["conventions"].source_hint_file == "backend/domain/analysis/agents/agent_conventions.py"
+    assert by_alias["risk"].class_name == "RiskAgent"
+    assert by_alias["risk"].source_hint_file == "backend/domain/analysis/agents/agent_risk.py"
+    assert by_alias["conventions"].source_hint_file != by_alias["risk"].source_hint_file
+
+
+def test_detect_haystack_falls_back_to_current_file_when_class_unresolvable():
+    """No nested call, no self.attr closure, or the nested class isn't defined
+    anywhere in the available files — must gracefully fall back to today's
+    behavior (the file where add_component() itself is called), never raise,
+    never leave source_hint_file empty."""
+    code = """
+pipeline.add_component("writer", _SectionAgentComponent(agent=UnknownAgent()))
+"""
+    file_contents = {"main.py": code}
+    wiring = _detect_haystack(file_contents)
+    assert wiring is not None
+    node = wiring.nodes[0]
+    assert node.class_name == "UnknownAgent"
+    assert node.source_hint_file == "main.py"
+
+
+def test_detect_haystack_ignores_plain_helper_call_as_constructor_argument():
+    """`RetrieverComponent(_load_corpus())` — a plain lowercase helper function
+    call passed as a positional argument — must NOT be mistaken for a nested
+    wrapped component. This is the regression this fix must never reintroduce:
+    an ordinary, unwrapped add_component() call must resolve to the outer class
+    and the calling file, exactly as before this fix existed."""
+    code = """
+pipeline.add_component("retriever", RetrieverComponent(_load_corpus()))
+"""
+    file_contents = {"pipeline.py": code}
+    wiring = _detect_haystack(file_contents)
+    assert wiring is not None
+    node = wiring.nodes[0]
+    assert node.class_name == "RetrieverComponent"
+    assert node.source_hint_file == "pipeline.py"
+
+
 def test_detect_langgraph():
     langgraph_code = """
 workflow = StateGraph(State)

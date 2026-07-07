@@ -313,7 +313,15 @@ const api = {
     getExpansionMap: (sessionId: string) =>
       ipcRenderer.invoke('aeh:getExpansionMap', sessionId),
     updateExpansionMap: (sessionId: string, map: unknown) =>
-      ipcRenderer.invoke('aeh:updateExpansionMap', sessionId, map)
+      ipcRenderer.invoke('aeh:updateExpansionMap', sessionId, map),
+    generatePlan: (sessionId: string, body: unknown) =>
+      ipcRenderer.invoke('aeh:generatePlan', sessionId, body),
+    getPlan: (sessionId: string) =>
+      ipcRenderer.invoke('aeh:getPlan', sessionId),
+    updatePlan: (sessionId: string, body: unknown) =>
+      ipcRenderer.invoke('aeh:updatePlan', sessionId, body),
+    advanceSession: (sessionId: string, body: unknown) =>
+      ipcRenderer.invoke('aeh:advanceSession', sessionId, body)
   }
 }
 

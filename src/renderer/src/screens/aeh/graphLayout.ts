@@ -10,6 +10,7 @@ export interface GraphLayoutNode {
 export interface GraphLayoutEdge {
   src: string
   dst: string
+  kind?: 'wiring' | 'symbol'
 }
 
 export function getDagreGraphLayout(
@@ -56,11 +57,14 @@ export function getDagreGraphLayout(
 
   const layoutEdges: Edge[] = edges.map((e, idx) => {
     g.setEdge(e.src, e.dst)
+    const isWiring = e.kind === 'wiring'
     return {
       id: `edge-${idx}`,
       source: e.src,
       target: e.dst,
-      style: { stroke: '#475569', strokeWidth: 1.25 },
+      style: isWiring
+        ? { stroke: '#818cf8', strokeWidth: 2.0 }
+        : { stroke: '#475569', strokeWidth: 1.25 },
     } as Edge
   })
 

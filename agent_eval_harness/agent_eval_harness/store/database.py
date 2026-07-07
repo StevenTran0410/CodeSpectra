@@ -215,6 +215,25 @@ _MIGRATIONS: list[dict[str, Any]] = [
             ALTER TABLE discovery_candidates ADD COLUMN file_provenance_json TEXT NOT NULL DEFAULT '{}';
         """,
     },
+    {
+        "version": 11,
+        "description": "Add accepted_edges_json to expansion_sessions — the real file-to-file "
+        "edges discovered during BFS expansion, so Stage 2's graph can show every accepted "
+        "file (not just the narrow framework-recognized component subset)",
+        "sql": """
+            ALTER TABLE expansion_sessions ADD COLUMN accepted_edges_json TEXT NOT NULL DEFAULT '[]';
+        """,
+    },
+    {
+        "version": 12,
+        "description": "Add plan_path to expansion_sessions (CS-273) and pipeline_stage to "
+        "discovery_sessions (CS-274) - explicit pipeline state tracking instead of "
+        "inferring from child record presence",
+        "sql": """
+            ALTER TABLE expansion_sessions ADD COLUMN plan_path TEXT;
+            ALTER TABLE discovery_sessions ADD COLUMN pipeline_stage TEXT NOT NULL DEFAULT 'fingerprinting';
+        """,
+    },
 ]
 
 TARGET_VERSION = len(_MIGRATIONS) - 1

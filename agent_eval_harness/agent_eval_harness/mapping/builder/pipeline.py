@@ -278,11 +278,17 @@ class SystemMapBuilder:
             # Model hints
             model = candidate.model_hints[0] if candidate.model_hints else None
 
+            try:
+                rel_file = candidate.file.relative_to(package_root).as_posix()
+            except ValueError:
+                rel_file = candidate.file.as_posix() if candidate.file else ""
+
             component = Component(
                 id=candidate.candidate_id,
                 role=role_class.role,
                 model=model,
                 entry_point=entry_point,
+                file=rel_file,
                 span_match=span_match,
                 constraints=constraints,
                 upstream=topology.upstream,

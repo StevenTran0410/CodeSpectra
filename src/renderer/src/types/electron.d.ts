@@ -838,6 +838,25 @@ declare global {
         listExpansionSessions: (candidateId: string) => Promise<AEHExpansionSession[]>
         getExpansionMap: (sessionId: string) => Promise<AEHSystemMap>
         updateExpansionMap: (sessionId: string, map: AEHSystemMap) => Promise<{ success: boolean }>
+        generatePlan: (
+          sessionId: string,
+          body: {
+            provider_id?: string | null
+            model_id?: string | null
+          }
+        ) => Promise<AEHPlanSuite>
+        getPlan: (sessionId: string) => Promise<AEHPlanSuite>
+        updatePlan: (sessionId: string, body: { entries: AEHPlanEntry[] }) => Promise<{ success: boolean }>
+        advanceSession: (
+          sessionId: string,
+          body: {
+            confirmed_candidates?: string[] | null
+            confirmed_map_session_id?: string | null
+            confirmed_plan?: boolean | null
+            provider_id?: string | null
+            model_id?: string | null
+          }
+        ) => Promise<{ pipeline_stage: string }>
       }
     }
   }
@@ -865,6 +884,7 @@ declare global {
     role: string
     model: string | null
     entry_point: string | null
+    file?: string
     constraints: Array<{ name: string; value: any; source: string }>
     upstream: string[]
     downstream: string[]
@@ -955,6 +975,7 @@ declare global {
     created_at: string
     finished_at: string | null
     pause_info: { reason: string; provider_id: string; model_id: string | null } | null
+    pipeline_stage: string
   }
 
   export interface AEHDiscoveryCandidate {
@@ -990,8 +1011,32 @@ declare global {
     map_path: string | null
     accepted: string[]
     boundary: string[]
+    accepted_edges: { src: string; dst: string }[]
     stop_reason: string | null
     created_at: string
     finished_at: string | null
+    plan_path: string | null
+  }
+
+  export interface AEHDatasetRef {
+    ref?: string | null
+    required?: Record<string, any> | null
+    waived?: string | null
+  }
+
+  export interface AEHPlanEntry {
+    id: string
+    component: string
+    metric: string
+    metric_class: 'assertion' | 'classifier' | 'llm_judge'
+    dataset?: AEHDatasetRef | null
+    params?: Record<string, any>
+    rationale?: string
+    provenance?: 'rule' | 'human_added' | 'llm_suggested'
+    status?: string | null
+  }
+
+  export interface AEHPlanSuite {
+    entries: AEHPlanEntry[]
   }
 }

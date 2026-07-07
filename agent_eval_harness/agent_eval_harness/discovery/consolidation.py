@@ -88,6 +88,17 @@ async def consolidate_candidates(
         tied = [cid for cid, s in ranked if s == top_score]
         if top_score == 0 or len(tied) > 1:
             def _path_overlap(cid: str) -> int:
+                # Only the EXACT-same-directory signal counts. A "same top-level
+                # segment" tier (e.g. both under "backend/") used to also count as
+                # a weak match — but in a real repo almost everything shares some
+                # common root, so with only one candidate in the whole run (nothing
+                # to disambiguate against), that weak tier trivially "won" by
+                # default and silently attached completely unrelated files (e.g. a
+                # hand-rolled QA agent under backend/domain/qa/ getting folded into
+                # a Haystack pipeline under backend/domain/analysis/agents/ just
+                # because both live somewhere under backend/). No signal at all
+                # must mean "leave unassigned," not "assign because nothing else
+                # was in the running."
                 seed = next(s for cand, s, kind in anchors if str(cand["community_id"]) == cid)
                 best = 0
                 for sf in seed:
@@ -95,8 +106,6 @@ async def consolidate_candidates(
                     f_dir = f.rsplit("/", 1)[0] if "/" in f else ""
                     if sf_dir and sf_dir == f_dir:
                         best = max(best, 2)
-                    elif sf_dir and f_dir and sf_dir.split("/")[0] == f_dir.split("/")[0]:
-                        best = max(best, 1)
                 return best
             candidates_for_tiebreak = tied if top_score > 0 else list(scores.keys())
             path_scores = {cid: _path_overlap(cid) for cid in candidates_for_tiebreak}

@@ -82,6 +82,7 @@ export default function Stage2Screen(): React.ReactElement {
   // System Map State
   const [systemMap, setSystemMap] = useState<AEHSystemMap | null>(null)
   const [mapView, setMapView] = useState<'table' | 'graph'>('table')
+  const [selectedGraphNode, setSelectedGraphNode] = useState<string | null>(null)
   const [savingMap, setSavingMap] = useState(false)
 
   // Load providers on mount
@@ -193,6 +194,22 @@ export default function Stage2Screen(): React.ReactElement {
     }
   }, [selectedCandidateId, startPolling])
 
+  // Dynamic node budget based on candidate size:
+  //   < 20 known files  → 100  (base, ~2.5× old limit)
+  //   20–79 known files → 200  (large system)
+  //   ≥ 80 known files  → 400  (very large system)
+  const computeNodeBudget = (candidate: AEHDiscoveryCandidate | null): number => {
+    if (!candidate) return 100
+    const totalFiles = new Set([
+      ...candidate.cluster_files,
+      ...candidate.hub_paths,
+      ...(candidate.matched_files ?? []),
+    ]).size
+    if (totalFiles >= 80) return 400
+    if (totalFiles >= 20) return 200
+    return 100
+  }
+
   // Trigger Expansion
   const handleRunExpansion = async () => {
     if (!selectedCandidateId || running) return
@@ -208,10 +225,11 @@ export default function Stage2Screen(): React.ReactElement {
 
     try {
       await startAEH()
+      const nodeBudget = computeNodeBudget(activeCandidate)
       const res = await window.api.aeh.startExpansion(selectedCandidateId, {
         provider_id: selectedProviderId,
         model_id: selectedModelId || null,
-        node_budget: 40,
+        node_budget: nodeBudget,
         hop_cap: 3,
         classify_provider_id: classifyProviderId || null,
         classify_model_id: classifyModelId || null,
@@ -335,6 +353,35 @@ export default function Stage2Screen(): React.ReactElement {
               </>
             )}
           </Button>
+
+          {/* Node budget badge */}
+          {(() => {
+            const budget = computeNodeBudget(activeCandidate)
+            const totalFiles = activeCandidate
+              ? new Set([
+                  ...activeCandidate.cluster_files,
+                  ...activeCandidate.hub_paths,
+                  ...(activeCandidate.matched_files ?? []),
+                ]).size
+              : 0
+            const tier = budget === 400 ? 'XL' : budget === 200 ? 'LG' : 'SM'
+            const colorClass =
+              budget === 400
+                ? 'border-rose-800/60 bg-rose-950/40 text-rose-300'
+                : budget === 200
+                  ? 'border-amber-800/60 bg-amber-950/40 text-amber-300'
+                  : 'border-emerald-800/60 bg-emerald-950/40 text-emerald-300'
+            return (
+              <div
+                title={`Node budget: ${budget} nodes (${totalFiles} known files in candidate)`}
+                className={`flex items-center gap-1 h-7 px-2.5 rounded-md border font-mono text-[10px] select-none ${colorClass}`}
+              >
+                <span className="opacity-60">budget</span>
+                <span className="font-bold">{budget}</span>
+                <span className="opacity-50 text-[8px]">{tier}</span>
+              </div>
+            )
+          })()}
         </div>
       </div>
 
@@ -627,8 +674,123 @@ export default function Stage2Screen(): React.ReactElement {
                   </div>
                 </div>
               ) : (
-                <div className="flex-1 min-h-0 relative">
-                  <SystemMapGraphPanel systemMap={systemMap} />
+                <div className="flex-1 flex min-h-0 relative">
+                  <div className="flex-1 min-h-0 relative">
+                    {expansionSession && (
+                      <SystemMapGraphPanel
+                        expansionSession={expansionSession}
+                        systemMap={systemMap}
+                        candidate={activeCandidate}
+                        selectedGraphNode={selectedGraphNode}
+                        onSelectGraphNode={setSelectedGraphNode}
+                      />
+                    )}
+                  </div>
+
+                  {/* Graph Detail Side Panel */}
+                  {selectedGraphNode && (
+                    <div className="w-80 border-l border-slate-850 bg-slate-950/80 backdrop-blur-sm p-4 overflow-y-auto space-y-4 text-xs shrink-0 flex flex-col justify-between">
+                      <div className="space-y-4">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[9px] uppercase tracking-wider font-bold text-slate-500">File Details</span>
+                          <button
+                            onClick={() => setSelectedGraphNode(null)}
+                            className="text-slate-400 hover:text-slate-200 text-sm font-bold px-1"
+                          >
+                            &times;
+                          </button>
+                        </div>
+
+                        <div>
+                          <div className="text-[10px] text-slate-400 mb-0.5">File Path</div>
+                          <div className="font-mono text-[10px] text-slate-200 break-all select-all font-semibold bg-slate-900/50 border border-slate-900 rounded-lg p-2">
+                            {selectedGraphNode}
+                          </div>
+                        </div>
+
+                        {(() => {
+                          const comp = systemMap.components.find((c) => c.file === selectedGraphNode)
+                          if (comp) {
+                            return (
+                              <div className="space-y-3 border-t border-slate-900 pt-3">
+                                <div>
+                                  <div className="text-[10px] text-slate-400 mb-0.5">Component ID</div>
+                                  <div className="font-semibold text-indigo-400 truncate font-mono">{comp.id}</div>
+                                </div>
+                                <div>
+                                  <div className="text-[10px] text-slate-400 mb-0.5">Role</div>
+                                  <div className="font-medium text-slate-200 capitalize">{comp.role}</div>
+                                </div>
+                                {comp.model && (
+                                  <div>
+                                    <div className="text-[10px] text-slate-400 mb-0.5">Model</div>
+                                    <div className="font-mono text-[10px] text-slate-300 bg-slate-900 border border-slate-850 px-1.5 py-0.5 rounded inline-block">
+                                      {comp.model}
+                                    </div>
+                                  </div>
+                                )}
+                                {comp.entry_point && (
+                                  <div>
+                                    <div className="text-[10px] text-slate-400 mb-0.5">Entry Point</div>
+                                    <div className="font-mono text-[9px] text-slate-400 break-all">{comp.entry_point}</div>
+                                  </div>
+                                )}
+                                {comp.constraints && comp.constraints.length > 0 && (
+                                  <div>
+                                    <div className="text-[10px] text-slate-400 mb-1">Constraints ({comp.constraints.length})</div>
+                                    <div className="space-y-1.5 font-mono text-[9px]">
+                                      {comp.constraints.map((cons, i) => (
+                                        <div key={i} className="bg-slate-900/55 border border-slate-900 p-1.5 rounded text-slate-400">
+                                          <div className="text-slate-300 font-semibold">{cons.name}: {String(cons.value)}</div>
+                                          <div className="text-[8px] text-slate-500 truncate mt-0.5" title={cons.source}>{cons.source.split('/').pop()}</div>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            )
+                          } else {
+                            return (
+                              <div className="border-t border-slate-900 pt-3 text-[10px] text-slate-500 italic">
+                                Not classified as a recognized framework component.
+                              </div>
+                            )
+                          }
+                        })()}
+
+                        {(() => {
+                          if (expansionSession) {
+                            const neighbors = new Set<string>()
+                            for (const e of (expansionSession.accepted_edges || [])) {
+                              if (e.src === selectedGraphNode) neighbors.add(e.dst)
+                              if (e.dst === selectedGraphNode) neighbors.add(e.src)
+                            }
+                            if (neighbors.size > 0) {
+                              return (
+                                <div className="border-t border-slate-900 pt-3">
+                                  <div className="text-[10px] text-slate-400 mb-1.5">Direct Neighbors ({neighbors.size})</div>
+                                  <div className="space-y-1 max-h-48 overflow-y-auto pr-1">
+                                    {Array.from(neighbors).map((nPath) => (
+                                      <button
+                                        key={nPath}
+                                        onClick={() => setSelectedGraphNode(nPath)}
+                                        className="w-full text-left font-mono text-[9px] text-slate-400 hover:text-slate-200 truncate hover:underline"
+                                        title={nPath}
+                                      >
+                                        {nPath.split('/').pop() || nPath}
+                                      </button>
+                                    ))}
+                                  </div>
+                                </div>
+                              )
+                            }
+                          }
+                          return null
+                        })()}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -639,24 +801,98 @@ export default function Stage2Screen(): React.ReactElement {
   )
 }
 
-function SystemMapGraphPanel({ systemMap }: { systemMap: AEHSystemMap }): React.ReactElement {
-  const { layoutNodes, layoutEdges } = useMemo(() => {
-    if (!systemMap) return { layoutNodes: [], layoutEdges: [] }
-    const nodes = systemMap.components.map((c) => ({
-      id: c.id,
-      label: `${c.id}\n${c.role}`,
-      color: ROLE_COLORS[c.role] ?? ROLE_COLORS.unknown,
-    }))
-    const edges = systemMap.components.flatMap((c) =>
-      c.downstream.map((d) => ({ src: c.id, dst: d }))
-    )
-    return getDagreGraphLayout(nodes, edges)
+function wiringBlockFileEdges(wiringBlock: AEHDiscoveryCandidate['wiring_block']): { src: string; dst: string }[] {
+  if (!wiringBlock) return []
+  const aliasToFile = new Map<string, string>()
+  for (const n of wiringBlock.nodes) aliasToFile.set(n.alias, n.source_hint_file)
+  const edges: { src: string; dst: string }[] = []
+  for (const e of wiringBlock.edges) {
+    const src = aliasToFile.get(e.src)
+    const dst = aliasToFile.get(e.dst)
+    if (src && dst && src !== dst) edges.push({ src, dst })
+  }
+  return edges
+}
+
+function SystemMapGraphPanel({
+  expansionSession,
+  systemMap,
+  candidate,
+  selectedGraphNode,
+  onSelectGraphNode,
+}: {
+  expansionSession: AEHExpansionSession
+  systemMap: AEHSystemMap
+  candidate: AEHDiscoveryCandidate | null
+  selectedGraphNode: string | null
+  onSelectGraphNode: (path: string | null) => void
+}): React.ReactElement {
+  const roleByFile = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const c of systemMap.components) {
+      if (c.file) m.set(c.file, c.role)
+    }
+    return m
   }, [systemMap])
+
+  const mergedEdges = useMemo(() => {
+    const wiringEdges = wiringBlockFileEdges(candidate?.wiring_block ?? null)
+      .filter((e) => expansionSession.accepted.includes(e.src) && expansionSession.accepted.includes(e.dst))
+    const wiringEdgeKeys = new Set(wiringEdges.map((e) => `${e.src}|${e.dst}`))
+
+    const symbolEdges = (expansionSession.accepted_edges || [])
+      .filter((e) => !wiringEdgeKeys.has(`${e.src}|${e.dst}`) && !wiringEdgeKeys.has(`${e.dst}|${e.src}`))
+
+    return [
+      ...wiringEdges.map((e) => ({ ...e, kind: 'wiring' as const })),
+      ...symbolEdges.map((e) => ({ ...e, kind: 'symbol' as const })),
+    ]
+  }, [expansionSession, candidate])
+
+  const neighborsOf = useMemo(() => {
+    const m = new Map<string, Set<string>>()
+    for (const path of expansionSession.accepted) m.set(path, new Set())
+    for (const e of mergedEdges) {
+      m.get(e.src)?.add(e.dst)
+      m.get(e.dst)?.add(e.src)
+    }
+    return m
+  }, [expansionSession, mergedEdges])
+
+  const { layoutNodes, layoutEdges } = useMemo(() => {
+    const nodes = expansionSession.accepted.map((path) => ({
+      id: path,
+      label: path.split('/').pop() || path,
+      color: ROLE_COLORS[roleByFile.get(path) ?? 'unknown'] ?? ROLE_COLORS.unknown,
+    }))
+    return getDagreGraphLayout(nodes, mergedEdges)
+  }, [expansionSession, roleByFile, mergedEdges])
+
+  // Dim everything except the selected node + its direct neighbors.
+  const styledNodes = useMemo(() => {
+    if (!selectedGraphNode) return layoutNodes
+    const highlighted = new Set([selectedGraphNode, ...(neighborsOf.get(selectedGraphNode) ?? [])])
+    return layoutNodes.map((n) => ({
+      ...n,
+      style: { ...n.style, opacity: highlighted.has(n.id) ? 1 : 0.2 },
+    }))
+  }, [layoutNodes, selectedGraphNode, neighborsOf])
+
+  const styledEdges = useMemo(() => {
+    if (!selectedGraphNode) return layoutEdges
+    return layoutEdges.map((e) => ({
+      ...e,
+      style: {
+        ...e.style,
+        opacity: e.source === selectedGraphNode || e.target === selectedGraphNode ? 1 : 0.1,
+      },
+    }))
+  }, [layoutEdges, selectedGraphNode])
 
   if (layoutNodes.length === 0) {
     return (
-      <div className="h-full flex items-center justify-center p-6 text-center text-slate-600 text-[10px] select-none bg-[#090d16]/10">
-        No components to visualize.
+      <div className="h-full flex items-center justify-center p-6 text-center text-slate-600 text-[10px]">
+        No accepted files to visualize.
       </div>
     )
   }
@@ -664,8 +900,9 @@ function SystemMapGraphPanel({ systemMap }: { systemMap: AEHSystemMap }): React.
   return (
     <div className="absolute inset-0 bg-[#090d16]/20">
       <ReactFlow
-        nodes={layoutNodes}
-        edges={layoutEdges}
+        nodes={styledNodes}
+        edges={styledEdges}
+        onNodeClick={(_e, node) => onSelectGraphNode(node.id === selectedGraphNode ? null : node.id)}
         nodesDraggable={false}
         nodesConnectable={false}
         fitView

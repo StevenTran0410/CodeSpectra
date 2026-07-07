@@ -719,7 +719,7 @@ class ExpandCandidateRequest(BaseModel):
     model_id: str | None = None
     backend_url: str | None = None
     backend_token: str | None = None
-    node_budget: int = 40
+    node_budget: int = 100
     hop_cap: int = 3
     classify_provider_id: str | None = None
     classify_model_id: str | None = None
@@ -773,6 +773,7 @@ async def run_expansion_background(
             accepted=res["accepted"],
             boundary=res["boundary"],
             stop_reason=res["stop_reason"],
+            accepted_edges=res.get("accepted_edges", []),
         )
     except Exception as e:
         logger.error(f"Expansion runner failed: {e}", exc_info=True)
@@ -890,14 +891,190 @@ async def update_expansion_map(session_id: str, body: SystemMap):
     sess = await repository.get_expansion_session(session_id)
     if not sess:
         raise HTTPException(status_code=404, detail="Expansion session not found.")
-    if not sess["map_path"]:
-        raise HTTPException(status_code=400, detail="Expansion session does not have map output.")
-
     try:
         save_system_map(body, sess["map_path"])
         return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to update map file: {e}")
+
+
+class GeneratePlanRequest(BaseModel):
+    provider_id: str | None = None
+    model_id: str | None = None
+    backend_url: str | None = None
+    backend_token: str | None = None
+
+
+class UpdatePlanRequest(BaseModel):
+    entries: list[dict]
+
+
+class AdvanceSessionRequest(BaseModel):
+    confirmed_candidates: list[str] | None = None      # for awaiting_candidate_review
+    confirmed_map_session_id: str | None = None        # for awaiting_map_review
+    confirmed_plan: bool | None = None                 # for awaiting_plan_review
+    provider_id: str | None = None
+    model_id: str | None = None
+    backend_url: str | None = None
+    backend_token: str | None = None
+
+
+@app.post("/api/discovery/expansion-sessions/{session_id}/plan")
+async def generate_plan_route(session_id: str, body: GeneratePlanRequest):
+    sess = await repository.get_expansion_session(session_id)
+    if not sess:
+        raise HTTPException(status_code=404, detail="Expansion session not found.")
+    if sess["status"] != "completed":
+        raise HTTPException(status_code=400, detail="Expansion has not completed.")
+    if not sess["map_path"]:
+        raise HTTPException(status_code=400, detail="No system map for this session.")
+
+    config = AEHConfig.load()
+    provider_id = body.provider_id or config.provider_id
+    backend_url = body.backend_url or config.backend_url
+    backend_token = body.backend_token or config.backend_token
+    if not backend_url or not backend_token:
+        raise HTTPException(status_code=400, detail="Missing backend connection config.")
+    if not provider_id:
+        raise HTTPException(status_code=400, detail="No LLM provider configured.")
+
+    model_id = body.model_id or config.model_id
+    llm_client = CodeSpectraProxyClient(backend_url, backend_token, provider_id, model_id)
+
+    try:
+        from agent_eval_harness.planning.planner import generate_plan as _generate_plan
+        from agent_eval_harness.metrics.suite import Suite
+        import yaml
+
+        suite = await _generate_plan(sess["map_path"], llm_client)
+
+        map_path = Path(sess["map_path"])
+        plan_path = map_path.with_name(map_path.stem + "_plan.yaml")
+        plan_path.write_text(
+            yaml.dump(suite.model_dump(), allow_unicode=True),
+            encoding="utf-8"
+        )
+
+        await repository.update_expansion_session_plan_path(session_id, str(plan_path))
+        
+        # Advance parent discovery session pipeline stage
+        candidate = await repository.get_discovery_candidate(sess["candidate_id"])
+        if candidate:
+            await repository.update_discovery_session_pipeline_stage(candidate["session_id"], "awaiting_plan_review")
+
+        return suite.model_dump()
+    except Exception as e:
+        logger.error(f"generate_plan failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if hasattr(llm_client, "aclose"):
+            await llm_client.aclose()
+
+
+@app.get("/api/discovery/expansion-sessions/{session_id}/plan")
+async def get_plan_route(session_id: str):
+    sess = await repository.get_expansion_session(session_id)
+    if not sess:
+        raise HTTPException(status_code=404, detail="Expansion session not found.")
+    plan_path_str = sess.get("plan_path")
+    if not plan_path_str or not Path(plan_path_str).exists():
+        raise HTTPException(status_code=404, detail="No plan file for this session.")
+    try:
+        from agent_eval_harness.metrics.suite import load_suite
+        suite = load_suite(plan_path_str)
+        return suite.model_dump()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load plan: {e}")
+
+
+@app.put("/api/discovery/expansion-sessions/{session_id}/plan")
+async def update_plan_route(session_id: str, body: UpdatePlanRequest):
+    sess = await repository.get_expansion_session(session_id)
+    if not sess:
+        raise HTTPException(status_code=404, detail="Expansion session not found.")
+    plan_path_str = sess.get("plan_path")
+    if not plan_path_str or not Path(plan_path_str).exists():
+        raise HTTPException(status_code=400, detail="No plan to update.")
+
+    from agent_eval_harness.metrics.suite import Suite, load_suite
+    import yaml
+
+    # Load existing plan to diff provenance
+    old_suite = load_suite(plan_path_str)
+    old_by_id = {e.id: e for e in old_suite.entries}
+
+    # Validate via Suite.model_validate - hard gate per CS-273 spec
+    try:
+        new_suite = Suite.model_validate({"entries": body.entries})
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Invalid plan entries: {e}")
+
+    # Flip provenance to human_added for materially changed entries
+    updated_entries = []
+    for entry in new_suite.entries:
+        old = old_by_id.get(entry.id)
+        if old is None:
+            updated = entry.model_copy(update={"provenance": "human_added"})
+        elif (
+            entry.metric != old.metric
+            or entry.metric_class != old.metric_class
+            or entry.rationale != old.rationale
+            or entry.params != old.params
+        ):
+            updated = entry.model_copy(update={"provenance": "human_added"})
+        else:
+            updated = entry  # unchanged - keep original provenance
+        updated_entries.append(updated)
+
+    final_suite = Suite(entries=updated_entries)
+    Path(plan_path_str).write_text(
+        yaml.dump(final_suite.model_dump(), allow_unicode=True),
+        encoding="utf-8"
+    )
+    return {"success": True}
+
+
+@app.post("/api/discovery/sessions/{session_id}/advance")
+async def advance_session(session_id: str, body: AdvanceSessionRequest):
+    sess = await repository.get_discovery_session(session_id)
+    if not sess:
+        raise HTTPException(status_code=404, detail="Session not found.")
+
+    stage = sess.get("pipeline_stage", "fingerprinting")
+
+    if stage == "awaiting_candidate_review":
+        if not body.confirmed_candidates:
+            raise HTTPException(
+                status_code=400,
+                detail="Must provide confirmed_candidates to advance past candidate review."
+            )
+        await repository.update_discovery_session_pipeline_stage(session_id, "expanding")
+
+    elif stage == "awaiting_map_review":
+        if not body.confirmed_map_session_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Must provide confirmed_map_session_id to advance past map review."
+            )
+        await repository.update_discovery_session_pipeline_stage(session_id, "planning")
+
+    elif stage == "awaiting_plan_review":
+        if not body.confirmed_plan:
+            raise HTTPException(
+                status_code=400,
+                detail="Must confirm the plan (confirmed_plan=true) to advance to done."
+            )
+        await repository.update_discovery_session_pipeline_stage(session_id, "done")
+
+    elif stage in ("fingerprinting", "expanding", "planning"):
+        # Running - return current status (poll-friendly)
+        return {"pipeline_stage": stage, "status": sess["status"]}
+
+    else:
+        raise HTTPException(status_code=400, detail=f"Unknown pipeline stage: {stage}")
+
+    updated = await repository.get_discovery_session(session_id)
+    return {"pipeline_stage": updated.get("pipeline_stage")}
 
 
 current_dir = Path(__file__).parent

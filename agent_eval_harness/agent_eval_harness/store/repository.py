@@ -357,10 +357,16 @@ async def finish_discovery_session(
     error: str | None = None,
 ) -> None:
     db = get_db()
-    await db.execute(
-        "UPDATE discovery_sessions SET status = ?, error = ?, finished_at = ? WHERE id = ?",
-        (status, error, utc_now_iso(), session_id),
-    )
+    if status == "completed":
+        await db.execute(
+            "UPDATE discovery_sessions SET status = ?, error = ?, pipeline_stage = 'awaiting_candidate_review', finished_at = ? WHERE id = ?",
+            (status, error, utc_now_iso(), session_id),
+        )
+    else:
+        await db.execute(
+            "UPDATE discovery_sessions SET status = ?, error = ?, finished_at = ? WHERE id = ?",
+            (status, error, utc_now_iso(), session_id),
+        )
     await db.commit()
 
 
@@ -402,6 +408,40 @@ async def insert_discovery_candidates_bulk(
         await db.commit()
 
 
+async def _resolve_effective_pipeline_stage(d: dict) -> str:
+    db = get_db()
+    stage = d.get("pipeline_stage", "fingerprinting")
+    if stage != "fingerprinting":
+        return stage
+    if d.get("status") == "running":
+        return "fingerprinting"
+
+    async with db.execute(
+        "SELECT id FROM discovery_candidates WHERE session_id = ? AND verdict = 'confirmed'",
+        (d["id"],)
+    ) as cur:
+        confirmed_rows = await cur.fetchall()
+    confirmed_ids = [r[0] for r in confirmed_rows]
+
+    if not confirmed_ids:
+        return "awaiting_candidate_review"
+
+    completed_expansions = 0
+    for cand_id in confirmed_ids:
+        async with db.execute(
+            "SELECT COUNT(*) FROM expansion_sessions WHERE candidate_id = ? AND status = 'completed'",
+            (cand_id,)
+        ) as cur:
+            count_row = await cur.fetchone()
+        if count_row and count_row[0] > 0:
+            completed_expansions += 1
+
+    if completed_expansions > 0:
+        return "awaiting_map_review"
+
+    return "expanding"
+
+
 async def list_discovery_sessions(
     repo_ref: str | None = None, snapshot_id: str | None = None
 ) -> list[dict]:
@@ -428,6 +468,7 @@ async def list_discovery_sessions(
     for r in rows:
         d = dict(r)
         d["pause_info"] = json.loads(d["pause_info_json"]) if d.get("pause_info_json") else None
+        d["pipeline_stage"] = await _resolve_effective_pipeline_stage(d)
         out.append(d)
     return out
 
@@ -443,6 +484,7 @@ async def get_discovery_session(session_id: str) -> dict | None:
         return None
     d = dict(row)
     d["pause_info"] = json.loads(d["pause_info_json"]) if d.get("pause_info_json") else None
+    d["pipeline_stage"] = await _resolve_effective_pipeline_stage(d)
     return d
 
 
@@ -558,12 +600,13 @@ async def finish_expansion_session(
     accepted: list[str] = [],
     boundary: list[str] = [],
     stop_reason: str | None = None,
+    accepted_edges: list[dict] = [],
 ) -> None:
     db = get_db()
     await db.execute(
         "UPDATE expansion_sessions "
         "SET status = ?, error = ?, map_path = ?, accepted_json = ?, boundary_json = ?, "
-        "    stop_reason = ?, finished_at = ? "
+        "    stop_reason = ?, accepted_edges_json = ?, finished_at = ? "
         "WHERE id = ?",
         (
             status,
@@ -572,11 +615,50 @@ async def finish_expansion_session(
             json.dumps(accepted),
             json.dumps(boundary),
             stop_reason,
+            json.dumps(accepted_edges),
             utc_now_iso(),
             session_id,
         ),
     )
     await db.commit()
+
+    if status == "completed":
+        try:
+            # 1. Get current expansion session to find candidate_id
+            async with db.execute("SELECT candidate_id FROM expansion_sessions WHERE id = ?", (session_id,)) as cur:
+                row = await cur.fetchone()
+            if row:
+                candidate_id = row[0]
+                # 2. Get discovery candidate to find session_id (parent discovery session ID)
+                candidate = await get_discovery_candidate(candidate_id)
+                if candidate:
+                    parent_session_id = candidate["session_id"]
+                    # 3. Get all candidates for the parent session
+                    all_candidates = await get_discovery_candidates(parent_session_id)
+                    confirmed_cands = [c for c in all_candidates if c["verdict"] == "confirmed"]
+                    
+                    if confirmed_cands:
+                        # 4. Check if every confirmed candidate has a completed expansion session
+                        all_completed = True
+                        for cand in confirmed_cands:
+                            async with db.execute(
+                                "SELECT COUNT(*) FROM expansion_sessions WHERE candidate_id = ? AND status = 'completed'",
+                                (cand["id"],)
+                            ) as cur2:
+                                count_row = await cur2.fetchone()
+                            has_completed = count_row and count_row[0] > 0
+                            if not has_completed:
+                                all_completed = False
+                                break
+                        
+                        if all_completed:
+                            await db.execute(
+                                "UPDATE discovery_sessions SET pipeline_stage = 'awaiting_map_review' WHERE id = ?",
+                                (parent_session_id,)
+                            )
+                            await db.commit()
+        except Exception as e:
+            logger.error(f"Error checking sibling expansion sessions completion: {e}", exc_info=True)
 
 
 async def get_expansion_session(session_id: str) -> dict | None:
@@ -591,6 +673,7 @@ async def get_expansion_session(session_id: str) -> dict | None:
     d = dict(row)
     d["accepted"] = json.loads(d.get("accepted_json") or "[]")
     d["boundary"] = json.loads(d.get("boundary_json") or "[]")
+    d["accepted_edges"] = json.loads(d.get("accepted_edges_json") or "[]")
     return d
 
 
@@ -606,7 +689,26 @@ async def list_expansion_sessions_for_candidate(candidate_id: str) -> list[dict]
         d = dict(r)
         d["accepted"] = json.loads(d.get("accepted_json") or "[]")
         d["boundary"] = json.loads(d.get("boundary_json") or "[]")
+        d["accepted_edges"] = json.loads(d.get("accepted_edges_json") or "[]")
         out.append(d)
     return out
+
+
+async def update_expansion_session_plan_path(session_id: str, plan_path: str) -> None:
+    db = get_db()
+    await db.execute(
+        "UPDATE expansion_sessions SET plan_path = ? WHERE id = ?",
+        (plan_path, session_id),
+    )
+    await db.commit()
+
+
+async def update_discovery_session_pipeline_stage(session_id: str, stage: str) -> None:
+    db = get_db()
+    await db.execute(
+        "UPDATE discovery_sessions SET pipeline_stage = ? WHERE id = ?",
+        (stage, session_id),
+    )
+    await db.commit()
 
 

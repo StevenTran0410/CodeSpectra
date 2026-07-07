@@ -28,6 +28,7 @@ class Component(BaseModel):
     role: str
     model: str | None = None
     entry_point: str
+    file: str = ""
     span_match: list[SpanMatchBlock] = Field(default_factory=list)
     constraints: list[Constraint] = Field(default_factory=list)
     upstream: list[str] = Field(default_factory=list)

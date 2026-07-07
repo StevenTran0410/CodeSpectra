@@ -34,41 +34,161 @@ class WiringBlock:
         }
 
 
+def _build_self_attr_classes(tree: ast.AST) -> dict[str, str]:
+    """Map self.<attr> -> ClassName for every `self.<attr> = ClassName(...)`
+    assignment found anywhere in this file. Some wrapper patterns construct the
+    real component once (typically in __init__) and merely reference it later via
+    a closure/lambda inside add_component()'s arguments — e.g.
+    `self._conventions = ConventionsAgent(...)` earlier, then
+    `add_component("conventions", _SectionAgentComponent(..., lambda c, d:
+    self._conventions.run(...), ...))` later. Tracing the closure back to this
+    assignment is the only way to recover the real per-component class in that case."""
+    attr_to_class: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target = node.targets[0]
+            if (
+                isinstance(target, ast.Attribute)
+                and isinstance(target.value, ast.Name)
+                and target.value.id == "self"
+                and isinstance(node.value, ast.Call)
+            ):
+                call = node.value
+                class_name = None
+                if isinstance(call.func, ast.Name):
+                    class_name = call.func.id
+                elif isinstance(call.func, ast.Attribute):
+                    class_name = call.func.attr
+                if class_name and class_name[0].isupper():
+                    attr_to_class[target.attr] = class_name
+    return attr_to_class
+
+
+def _find_self_attr_reference(node: ast.AST) -> str | None:
+    """Walk node's subtree (including inside nested lambdas) for the first
+    `self.<attr>` attribute access."""
+    for sub in ast.walk(node):
+        if (
+            isinstance(sub, ast.Attribute)
+            and isinstance(sub.value, ast.Name)
+            and sub.value.id == "self"
+        ):
+            return sub.attr
+    return None
+
+
+def _find_class_definition_file(class_name: str, file_contents: dict[str, str]) -> str | None:
+    """Search every file already available (the candidate's cluster files) for
+    where class_name is actually DEFINED (a `class ClassName` statement) — far more
+    robust than tracing import statements through package re-exports or dynamic
+    lazy-loading (e.g. an `__init__.py` that resolves names via `importlib` at
+    runtime from a name->submodule dict), since it looks for the ground truth:
+    where the class body itself lives, not how it happened to be imported.
+    Returns None (not a guess) if zero or more than one file defines it."""
+    matches = []
+    for fpath, content in file_contents.items():
+        try:
+            other_tree = ast.parse(content, filename=fpath)
+        except SyntaxError:
+            continue
+        if any(isinstance(n, ast.ClassDef) and n.name == class_name for n in ast.walk(other_tree)):
+            matches.append(fpath)
+    return matches[0] if len(matches) == 1 else None
+
+
+def _resolve_component_class_and_file(
+    arg1: ast.expr, file: str, self_attr_classes: dict[str, str], file_contents: dict[str, str]
+) -> tuple[str, str]:
+    """Given add_component()/add_node()'s constructor-call argument, return the most
+    specific class name available and the file it's actually defined in.
+
+    Factory/wrapper patterns (e.g. `_SectionAgentComponent(agent=ConventionsAgent())`,
+    or the closure form `_SectionAgentComponent(..., lambda c, d: self._conventions.run(...))`)
+    register every component from one orchestrator file via one shared wrapper class —
+    naively using the wrapper's own class name/file makes every node in the pipeline
+    look identical (same class_name, same source_hint_file) even though they are
+    completely different real components. Try, in order: (1) a nested constructor
+    call directly among arg1's own positional/keyword arguments, (2) a `self.<attr>`
+    reference inside arg1 (including inside lambdas) traced back to a
+    `self.<attr> = ClassName(...)` assignment elsewhere in the same file. Falls back
+    to the outer wrapper class/this file when neither pattern is found — the exact
+    same behavior as before this fix for any ordinary, unwrapped add_component() call.
+    """
+    outer_name = ""
+    if isinstance(arg1, ast.Call):
+        if isinstance(arg1.func, ast.Name):
+            outer_name = arg1.func.id
+        elif isinstance(arg1.func, ast.Attribute):
+            outer_name = arg1.func.attr
+
+    inner_name = None
+    if isinstance(arg1, ast.Call):
+        for sub in list(arg1.args) + [kw.value for kw in arg1.keywords]:
+            if isinstance(sub, ast.Call):
+                candidate_name = None
+                if isinstance(sub.func, ast.Name):
+                    candidate_name = sub.func.id
+                elif isinstance(sub.func, ast.Attribute):
+                    candidate_name = sub.func.attr
+                # Only treat this as the real wrapped component if it looks like a
+                # class instantiation (PascalCase) — a lowercase/underscore-prefixed
+                # call here is almost always a plain helper/data function passed as
+                # an argument (e.g. `RetrieverComponent(_load_corpus())`), not a
+                # nested component. Without this guard, that helper call gets
+                # mistaken for "the real class" and both class_name and file end up
+                # wrong even for a completely ordinary, unwrapped add_component().
+                if candidate_name and candidate_name[0].isupper():
+                    inner_name = candidate_name
+                    break
+
+        if inner_name is None:
+            attr = _find_self_attr_reference(arg1)
+            if attr and attr in self_attr_classes:
+                inner_name = self_attr_classes[attr]
+
+    if inner_name:
+        resolved_file = _find_class_definition_file(inner_name, file_contents) or file
+        return inner_name, resolved_file
+
+    # No wrapper detected — keep today's exact behavior: the file where
+    # add_component()/add_node() itself is called.
+    return outer_name, file
+
+
 def _detect_haystack(file_contents: dict[str, str]) -> WiringBlock | None:
     nodes = {}
     edges = []
-    
+
     for file, content in file_contents.items():
         try:
             tree = ast.parse(content, filename=file)
         except SyntaxError:
             continue
-            
+
+        self_attr_classes = _build_self_attr_classes(tree)
+
         for node in ast.walk(tree):
             if isinstance(node, ast.Call):
                 if isinstance(node.func, ast.Attribute) and node.func.attr == "add_component":
                     if len(node.args) >= 2:
                         arg0 = node.args[0]
                         arg1 = node.args[1]
-                        
+
                         alias = None
                         if isinstance(arg0, ast.Constant) and isinstance(arg0.value, str):
                             alias = arg0.value
                         elif isinstance(arg0, ast.Str):
                             alias = arg0.s
-                            
-                        class_name = ""
-                        if isinstance(arg1, ast.Call):
-                            if isinstance(arg1.func, ast.Name):
-                                class_name = arg1.func.id
-                            elif isinstance(arg1.func, ast.Attribute):
-                                class_name = arg1.func.attr
-                        
+
+                        class_name, source_hint_file = _resolve_component_class_and_file(
+                            arg1, file, self_attr_classes, file_contents
+                        )
+
                         if alias:
                             nodes[alias] = WiringNode(
                                 alias=alias,
                                 class_name=class_name,
-                                source_hint_file=file
+                                source_hint_file=source_hint_file
                             )
                             
     for file, content in file_contents.items():
@@ -118,36 +238,38 @@ def _detect_langgraph(file_contents: dict[str, str]) -> WiringBlock | None:
             tree = ast.parse(content, filename=file)
         except SyntaxError:
             continue
-            
+
+        self_attr_classes = _build_self_attr_classes(tree)
+
         for node in ast.walk(tree):
             if isinstance(node, ast.Call):
                 if isinstance(node.func, ast.Attribute) and node.func.attr == "add_node":
                     if len(node.args) >= 2:
                         arg0 = node.args[0]
                         arg1 = node.args[1]
-                        
+
                         alias = None
                         if isinstance(arg0, ast.Constant) and isinstance(arg0.value, str):
                             alias = arg0.value
                         elif isinstance(arg0, ast.Str):
                             alias = arg0.s
-                            
+
                         class_name = ""
+                        source_hint_file = file
                         if isinstance(arg1, ast.Name):
                             class_name = arg1.id
                         elif isinstance(arg1, ast.Attribute):
                             class_name = arg1.attr
                         elif isinstance(arg1, ast.Call):
-                            if isinstance(arg1.func, ast.Name):
-                                class_name = arg1.func.id
-                            elif isinstance(arg1.func, ast.Attribute):
-                                class_name = arg1.func.attr
-                                
+                            class_name, source_hint_file = _resolve_component_class_and_file(
+                                arg1, file, self_attr_classes, file_contents
+                            )
+
                         if alias:
                             nodes[alias] = WiringNode(
                                 alias=alias,
                                 class_name=class_name,
-                                source_hint_file=file
+                                source_hint_file=source_hint_file
                             )
                             
                 elif isinstance(node.func, ast.Attribute) and node.func.attr == "add_edge":
