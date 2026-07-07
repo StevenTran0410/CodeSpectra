@@ -25,6 +25,7 @@ from .types import (
     RetrievalEvidence,
     RetrievalMode,
     RetrievalSection,
+    RetrievalSummary,
     RetrieveRequest,
     RrfFusionBundle,
     RrfFusionRequest,
@@ -361,6 +362,24 @@ async def _apply_incremental_idf_update(
 
 
 class RetrievalService:
+    async def summary(self, snapshot_id: str) -> RetrievalSummary:
+        db = get_db()
+        async with db.execute(
+            "SELECT COUNT(*) as c FROM retrieval_chunks WHERE snapshot_id=?", (snapshot_id,)
+        ) as cur:
+            row = await cur.fetchone()
+        chunk_count = int(row["c"]) if row else 0
+        async with db.execute(
+            "SELECT 1 FROM retrieval_bm25_stats WHERE snapshot_id=?", (snapshot_id,)
+        ) as cur:
+            has_bm25_stats = (await cur.fetchone()) is not None
+        return RetrievalSummary(
+            snapshot_id=snapshot_id,
+            chunk_count=chunk_count,
+            has_bm25_stats=has_bm25_stats,
+            built=chunk_count > 0 and has_bm25_stats,
+        )
+
     async def build_index(self, req: BuildRetrievalIndexRequest) -> BuildRetrievalIndexResponse:
         db = get_db()
         async with db.execute(

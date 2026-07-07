@@ -20,7 +20,7 @@ import {
   type Edge,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import dagre from '@dagrejs/dagre'
+import { getDagreGraphLayout } from './graphLayout'
 import { Button, useToastStore } from '../../components/ui'
 import { useAEHStore } from '../../store/aeh.store'
 import { useProviderStore } from '../../store/provider.store'
@@ -68,58 +68,7 @@ const CANDIDATE_COLORS = [
 
 
 
-function getDagreWiringLayout(nodes: any[], edges: any[]): { layoutNodes: Node[]; layoutEdges: Edge[] } {
-  const g = new dagre.graphlib.Graph()
-  g.setGraph({ rankdir: 'LR', nodesep: 30, ranksep: 50 })
-  g.setDefaultEdgeLabel(() => ({}))
 
-  const layoutNodes: Node[] = nodes.map((n) => {
-    g.setNode(n.alias, { width: 120, height: 32 })
-    return {
-      id: n.alias,
-      data: { label: n.alias },
-      position: { x: 0, y: 0 },
-      style: {
-        background: '#0f172a',
-        color: '#f8fafc',
-        fontSize: 9,
-        fontWeight: '500',
-        padding: '6px 8px',
-        borderRadius: 6,
-        border: '1px solid #334155',
-        maxWidth: 120,
-        overflow: 'hidden',
-        textOverflow: 'ellipsis',
-        whiteSpace: 'nowrap',
-        textAlign: 'center',
-      },
-    } as Node
-  })
-
-  const layoutEdges: Edge[] = edges.map((e, idx) => {
-    g.setEdge(e.src, e.dst)
-    return {
-      id: `edge-${idx}`,
-      source: e.src,
-      target: e.dst,
-      style: { stroke: '#475569', strokeWidth: 1.25 },
-    } as Edge
-  })
-
-  try {
-    dagre.layout(g)
-    layoutNodes.forEach((node) => {
-      const pos = g.node(node.id)
-      if (pos) {
-        node.position = { x: pos.x - 60, y: pos.y - 16 }
-      }
-    })
-  } catch (err) {
-    console.error('Dagre layout failed', err)
-  }
-
-  return { layoutNodes, layoutEdges }
-}
 
 function WiringBlockPanel({
   selectedNode,
@@ -218,7 +167,15 @@ function WiringGraphPanel({
 
   const graphData = useMemo(() => {
     if (!candidate || !candidate.wiring_block) return { layoutNodes: [], layoutEdges: [] }
-    return getDagreWiringLayout(candidate.wiring_block.nodes, candidate.wiring_block.edges)
+    const nodes = candidate.wiring_block.nodes.map((n) => ({
+      id: n.alias,
+      label: n.alias,
+    }))
+    const edges = candidate.wiring_block.edges.map((e) => ({
+      src: e.src,
+      dst: e.dst,
+    }))
+    return getDagreGraphLayout(nodes, edges)
   }, [candidate])
 
   if (!candidate || !candidate.wiring_block) {
@@ -601,12 +558,18 @@ function SeedFileListPanel({
   candidateColors,
   selectedNode,
   onSelectFile,
+  markedWrongIds,
+  onToggleWrong,
+  onExcludeFile,
 }: {
   discoveryFileSet: Map<string, AEHDiscoveryCandidate>
   candidates: AEHDiscoveryCandidate[]
   candidateColors: Record<string, string>
   selectedNode: string | null
   onSelectFile: (path: string) => void
+  markedWrongIds: Set<string>
+  onToggleWrong: (candidateId: string) => void
+  onExcludeFile: (candidateId: string, path: string, excluded: boolean) => void
 }): React.ReactElement {
   const [filterText, setFilterText] = useState('')
 
@@ -623,7 +586,7 @@ function SeedFileListPanel({
 
   if (candidates.length === 0) {
     return (
-      <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center text-slate-500 text-xs select-none">
+      <div className="h-full w-full flex flex-col items-center justify-center p-6 text-center text-slate-500 text-xs select-none">
         <Sparkles className="w-10 h-10 mb-3 text-indigo-500/30 animate-pulse" />
         <p className="font-semibold text-slate-400 mb-1">No discovery candidates generated</p>
         <p className="text-slate-500 max-w-sm leading-relaxed">
@@ -647,14 +610,31 @@ function SeedFileListPanel({
         {grouped.map(({ candidate: cand, files }) => (
           <div key={cand.id} className="pb-2">
             <div className="sticky top-0 px-3 py-2 bg-[#0c1220]/95 backdrop-blur-sm border-b border-slate-850 flex items-center gap-2 text-[10px] font-semibold text-slate-300 z-10">
-              <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: candidateColors[cand.id] }} />
+              {cand.verdict === 'proposed' ? (
+                <input
+                  type="checkbox"
+                  checked={markedWrongIds.has(cand.id)}
+                  onChange={() => onToggleWrong(cand.id)}
+                  title="Mark this candidate as wrong (will be rejected on Confirm All Others)"
+                  className="shrink-0 accent-red-500"
+                />
+              ) : (
+                <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: candidateColors[cand.id] }} />
+              )}
               <span className="truncate flex-1">{cand.name}</span>
+              {cand.verdict === 'confirmed' && (
+                <span className="text-[8px] text-emerald-400 font-semibold shrink-0">confirmed</span>
+              )}
+              {cand.verdict === 'rejected' && (
+                <span className="text-[8px] text-red-400 font-semibold shrink-0 line-through">rejected</span>
+              )}
               <span className="text-slate-500 font-mono text-[9px]">({files.length})</span>
             </div>
             <div className="divide-y divide-slate-900/40">
               {files.map((path) => {
                 const isHit = cand.evidence.some((h) => h.file === path)
                 const isSelected = path === selectedNode
+                const isExcluded = (cand.excluded_files || []).includes(path)
                 return (
                   <button
                     key={path}
@@ -663,18 +643,36 @@ function SeedFileListPanel({
                       isSelected
                         ? 'bg-indigo-950/20 border-l-amber-400'
                         : 'border-l-transparent'
-                    }`}
+                    } ${isExcluded ? 'opacity-50' : ''}`}
                   >
-                    <div className="text-[11px] font-medium text-slate-200 truncate">
-                      {path.split('/').pop()}
+                    <div className="flex items-center gap-1.5 w-full">
+                      <div className={`text-[11px] font-medium text-slate-200 truncate flex-1 ${isExcluded ? 'line-through' : ''}`}>
+                        {path.split('/').pop()}
+                      </div>
+                      <button
+                        type="button"
+                        title={isExcluded ? 'Un-exclude this file' : 'Mark this file as not part of this candidate'}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          onExcludeFile(cand.id, path, !isExcluded)
+                        }}
+                        className="shrink-0 p-0.5 rounded hover:bg-slate-800"
+                      >
+                        <ThumbsDown className={`w-3 h-3 ${isExcluded ? 'text-red-400' : 'text-slate-600'}`} />
+                      </button>
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 w-full">
                       <span className="text-[9px] text-slate-500 font-mono truncate flex-1" title={path}>
                         {path}
                       </span>
                       {isHit && (
                         <span className="text-[8px] shrink-0 px-1 rounded bg-indigo-950/50 border border-indigo-900/30 text-indigo-300 font-mono">
                           hit
+                        </span>
+                      )}
+                      {isExcluded && (
+                        <span className="text-[8px] shrink-0 px-1 rounded bg-red-950/40 border border-red-900/30 text-red-400 font-mono">
+                          excluded
                         </span>
                       )}
                     </div>
@@ -704,6 +702,8 @@ export default function Stage1GraphScreen(): React.ReactElement {
   const [communityData, setCommunityData] = useState<CommunitiesResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [loadTimedOut, setLoadTimedOut] = useState(false)
+  const [rebuilding, setRebuilding] = useState(false)
 
   const [selectedNode, setSelectedNode] = useState<string | null>(null)
 
@@ -716,10 +716,10 @@ export default function Stage1GraphScreen(): React.ReactElement {
       return
     }
     let cancelled = false
-    window.api.repomap.summary(snapshotId)
+    window.api.retrieval.summary(snapshotId)
       .then((rSummary) => {
         if (cancelled) return
-        setRetrievalStatus(rSummary && rSummary.files_indexed > 0 ? 'built' : 'missing')
+        setRetrievalStatus(rSummary && rSummary.built ? 'built' : 'missing')
       })
       .catch(() => {
         if (!cancelled) setRetrievalStatus('missing')
@@ -732,6 +732,8 @@ export default function Stage1GraphScreen(): React.ReactElement {
   const [candidates, setCandidates] = useState<AEHDiscoveryCandidate[]>([])
   const [runningDiscovery, setRunningDiscovery] = useState(false)
   const [discoveryError, setDiscoveryError] = useState<string | null>(null)
+  const [pauseInfo, setPauseInfo] = useState<AEHDiscoverySession['pause_info']>(null)
+  const [resuming, setResuming] = useState(false)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // Picker options are scoped to this stage and kept in a local config modal.
@@ -740,23 +742,55 @@ export default function Stage1GraphScreen(): React.ReactElement {
   const [llmConfigOpen, setLlmConfigOpen] = useState(false)
 
   // Load code data and community layout from Codespectra backend
+  const LOAD_TIMEOUT_MS = 60_000
+
   const loadGraphData = useCallback(async () => {
     if (!snapshotId) return
     setLoading(true)
     setError(null)
+    setLoadTimedOut(false)
+    let timedOut = false
+    let timeoutHandle: ReturnType<typeof setTimeout>
+    const dataPromise = Promise.all([
+      window.api.graph.exportData(snapshotId),
+      window.api.graph.communities(snapshotId),
+    ])
+    // Prevent an "unhandled rejection" console warning if this promise later
+    // fails after the timeout already won the race below.
+    dataPromise.catch(() => {})
+    const timeout = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => {
+        timedOut = true
+        reject(new Error('Loading timed out after 60s — the structural graph may need a rebuild.'))
+      }, LOAD_TIMEOUT_MS)
+    })
     try {
-      const [exported, communities] = await Promise.all([
-        window.api.graph.exportData(snapshotId),
-        window.api.graph.communities(snapshotId),
-      ])
+      const [exported, communities] = await Promise.race([dataPromise, timeout])
+      clearTimeout(timeoutHandle!)
       setGraphExport(exported)
       setCommunityData(communities)
     } catch (e: any) {
+      clearTimeout(timeoutHandle!)
+      setLoadTimedOut(timedOut)
       setError(e?.message ?? 'Failed to load graph export data.')
     } finally {
       setLoading(false)
     }
   }, [snapshotId])
+
+  const handleRebuildGraph = async () => {
+    if (!snapshotId || rebuilding) return
+    setRebuilding(true)
+    setError(null)
+    try {
+      await window.api.graph.build(snapshotId, true)
+      await loadGraphData()
+    } catch (e: any) {
+      setError(e?.message ?? 'Failed to rebuild graph.')
+    } finally {
+      setRebuilding(false)
+    }
+  }
 
   useEffect(() => {
     if (snapshotId) {
@@ -777,6 +811,13 @@ export default function Stage1GraphScreen(): React.ReactElement {
         if (latest.status === 'completed') {
           const cands = await window.api.aeh.listDiscoveryCandidates(latest.id)
           setCandidates(cands)
+        } else if (latest.status === 'paused_rate_limit') {
+          setPauseInfo(latest.pause_info)
+          const cands = await window.api.aeh.listDiscoveryCandidates(latest.id)
+          setCandidates(cands)
+        } else if (latest.status === 'running') {
+          setRunningDiscovery(true)
+          startPolling(latest.id)
         }
       }
     } catch (e) {
@@ -816,6 +857,10 @@ export default function Stage1GraphScreen(): React.ReactElement {
             const cands = await window.api.aeh.listDiscoveryCandidates(sessionId)
             setCandidates(cands)
             toast.success('Discovery completed successfully.')
+          } else if (session.status === 'paused_rate_limit') {
+            setPauseInfo(session.pause_info)
+            const cands = await window.api.aeh.listDiscoveryCandidates(sessionId)
+            setCandidates(cands)
           } else if (session.status === 'failed') {
             setDiscoveryError(session.error ?? 'Discovery synthesis failed')
           }
@@ -828,6 +873,24 @@ export default function Stage1GraphScreen(): React.ReactElement {
   }, [toast])
 
   useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current) }, [])
+
+  const handleResumeDiscovery = async (overrideProviderId?: string, overrideModelId?: string) => {
+    if (!discoverySession) return
+    setResuming(true)
+    try {
+      await window.api.aeh.resumeDiscoverySession(discoverySession.id, {
+        provider_id: overrideProviderId ?? null,
+        model_id: overrideModelId ?? null,
+      })
+      setPauseInfo(null)
+      setRunningDiscovery(true)
+      startPolling(discoverySession.id)
+    } catch (err: any) {
+      toast.error(err?.message ?? 'Failed to resume discovery.')
+    } finally {
+      setResuming(false)
+    }
+  }
 
   // Action: Trigger new discovery
   const handleRunDiscovery = async () => {
@@ -878,6 +941,66 @@ export default function Stage1GraphScreen(): React.ReactElement {
     }
   }
 
+  const handleExcludeFile = async (candidateId: string, path: string, excluded: boolean) => {
+    const cand = candidates.find((c) => c.id === candidateId)
+    if (!cand) return
+    const nextExcluded = excluded
+      ? [...(cand.excluded_files || []), path]
+      : (cand.excluded_files || []).filter((p) => p !== path)
+    try {
+      await window.api.aeh.updateDiscoveryCandidateExcludedFiles(candidateId, nextExcluded)
+      setCandidates((prev) =>
+        prev.map((c) => (c.id === candidateId ? { ...c, excluded_files: nextExcluded } : c))
+      )
+      toast.success(excluded ? 'File excluded.' : 'File un-excluded.')
+    } catch (err) {
+      toast.error('Failed to update file exclusion.')
+    }
+  }
+
+  // Bulk review: mark the wrong candidates, confirm everything else in one click.
+  const [markedWrongIds, setMarkedWrongIds] = useState<Set<string>>(new Set())
+  const [confirmingAll, setConfirmingAll] = useState(false)
+
+  const toggleMarkedWrong = (candidateId: string) => {
+    setMarkedWrongIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(candidateId)) next.delete(candidateId)
+      else next.add(candidateId)
+      return next
+    })
+  }
+
+  const pendingCandidates = candidates.filter((c) => c.verdict === 'proposed')
+
+  const handleConfirmAllOthers = async () => {
+    if (pendingCandidates.length === 0 || confirmingAll) return
+    setConfirmingAll(true)
+    try {
+      await Promise.all(
+        pendingCandidates.map((c) =>
+          window.api.aeh.updateDiscoveryCandidateVerdict(
+            c.id,
+            markedWrongIds.has(c.id) ? 'rejected' : 'confirmed'
+          )
+        )
+      )
+      setCandidates((prev) =>
+        prev.map((c) =>
+          c.verdict === 'proposed'
+            ? { ...c, verdict: markedWrongIds.has(c.id) ? 'rejected' : 'confirmed' }
+            : c
+        )
+      )
+      setMarkedWrongIds(new Set())
+      toast.success('Reviewed — confirmed all candidates except the ones marked wrong.')
+    } catch (err) {
+      toast.error('Failed to bulk-update candidate verdicts.')
+    } finally {
+      setConfirmingAll(false)
+    }
+  }
+
   // Candidate mapping: file path -> candidate
   const discoveryFileSet = useMemo(() => {
     const map = new Map<string, AEHDiscoveryCandidate>()
@@ -914,13 +1037,26 @@ export default function Stage1GraphScreen(): React.ReactElement {
       <div className="h-full flex items-center justify-center bg-[#090d16] p-6">
         <div className="text-center space-y-4 max-w-sm">
           <AlertCircle size={36} className="text-red-500 mx-auto" />
-          <h3 className="text-sm font-semibold text-slate-200">Failed to load graph</h3>
+          <h3 className="text-sm font-semibold text-slate-200">
+            {loadTimedOut ? 'Loading timed out' : 'Failed to load graph'}
+          </h3>
           <p className="text-xs text-slate-500 leading-relaxed">{error || 'No graph data parsed.'}</p>
+          {loadTimedOut && (
+            <p className="text-[10px] text-slate-600 leading-relaxed">
+              The structural graph for this snapshot may be stale (source files changed since the
+              last build). Rebuilding re-scans the repo and can take a while for large changes.
+            </p>
+          )}
           <div className="flex justify-center gap-3">
             <Button variant="secondary" onClick={() => navigate(-1)}>
               Go Back
             </Button>
-            <Button variant="primary" onClick={loadGraphData}>
+            {loadTimedOut && (
+              <Button variant="primary" onClick={handleRebuildGraph} loading={rebuilding}>
+                Rebuild Graph
+              </Button>
+            )}
+            <Button variant={loadTimedOut ? 'secondary' : 'primary'} onClick={loadGraphData}>
               Retry
             </Button>
           </div>
@@ -983,6 +1119,14 @@ export default function Stage1GraphScreen(): React.ReactElement {
                 setDiscoveryProviderId(pid)
                 setDiscoveryModelId(mid)
               }}
+              onConfirmResume={
+                pauseInfo
+                  ? () => {
+                      handleResumeDiscovery(discoveryProviderId, discoveryModelId)
+                      setLlmConfigOpen(false)
+                    }
+                  : undefined
+              }
             />
 
             <Button
@@ -1004,6 +1148,26 @@ export default function Stage1GraphScreen(): React.ReactElement {
                 </>
               )}
             </Button>
+
+            {pendingCandidates.length > 0 && (
+              <>
+                <span className="h-4 w-px bg-slate-800" />
+                <Button
+                  variant="primary"
+                  disabled={confirmingAll}
+                  onClick={handleConfirmAllOthers}
+                  title="Rejects candidates you've checked below, confirms every other pending candidate"
+                  className="text-[10px] h-7 px-3 flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-500"
+                >
+                  {confirmingAll ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <ThumbsUp className="w-3.5 h-3.5" />
+                  )}
+                  <span>Confirm All Others ({pendingCandidates.length - markedWrongIds.size})</span>
+                </Button>
+              </>
+            )}
 
           </div>
         </div>
@@ -1042,6 +1206,22 @@ export default function Stage1GraphScreen(): React.ReactElement {
           </div>
         )}
 
+        {pauseInfo && (
+          <div className="absolute inset-x-0 top-0 z-10 bg-amber-950/90 border-b border-amber-500/40 px-4 py-3 backdrop-blur-sm flex items-center gap-3 text-xs text-amber-200">
+            <AlertCircle className="w-4 h-4 shrink-0 text-amber-400" />
+            <span className="flex-1">
+              Rate limited on provider "{pauseInfo.provider_id}" — paused. Wait a bit and resume with the
+              same model, or switch to a different one.
+            </span>
+            <Button variant="secondary" disabled={resuming} onClick={() => handleResumeDiscovery()} className="text-[10px] h-6 px-2">
+              Wait & Resume
+            </Button>
+            <Button variant="primary" disabled={resuming} onClick={() => setLlmConfigOpen(true)} className="text-[10px] h-6 px-2">
+              Switch Model
+            </Button>
+          </div>
+        )}
+
         <div className="flex-1 flex flex-col min-h-0 overflow-hidden divide-y divide-slate-800">
           {/* Top row: Wiring Block details + Small Graph */}
           <div className="flex h-1/2 min-h-0 divide-x divide-slate-800">
@@ -1069,6 +1249,9 @@ export default function Stage1GraphScreen(): React.ReactElement {
               candidateColors={candidateColors}
               selectedNode={selectedNode}
               onSelectFile={setSelectedNode}
+              markedWrongIds={markedWrongIds}
+              onToggleWrong={toggleMarkedWrong}
+              onExcludeFile={handleExcludeFile}
             />
           </div>
         </div>

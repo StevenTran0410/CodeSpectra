@@ -116,6 +116,7 @@ const api = {
   retrieval: {
     buildIndex: (snapshotId: string, forceRebuild = true) =>
       ipcRenderer.invoke('retrieval:buildIndex', snapshotId, forceRebuild),
+    summary: (snapshotId: string) => ipcRenderer.invoke('retrieval:summary', snapshotId),
     retrieve: (body: {
       snapshot_id: string
       query: string
@@ -293,14 +294,22 @@ const api = {
     startDiscovery: (body: unknown) => ipcRenderer.invoke('aeh:startDiscovery', body),
     listDiscoverySessions: (repoRef?: string, snapshotId?: string) => ipcRenderer.invoke('aeh:listDiscoverySessions', repoRef, snapshotId),
     getDiscoverySession: (sessionId: string) => ipcRenderer.invoke('aeh:getDiscoverySession', sessionId),
+    resumeDiscoverySession: (
+      sessionId: string,
+      body?: { provider_id?: string | null; model_id?: string | null }
+    ) => ipcRenderer.invoke('aeh:resumeDiscoverySession', sessionId, body ?? {}),
     listDiscoveryCandidates: (sessionId: string) =>
       ipcRenderer.invoke('aeh:listDiscoveryCandidates', sessionId),
     updateDiscoveryCandidateVerdict: (candidateId: string, verdict: string) =>
       ipcRenderer.invoke('aeh:updateDiscoveryCandidateVerdict', candidateId, verdict),
+    updateDiscoveryCandidateExcludedFiles: (candidateId: string, excludedFiles: string[]) =>
+      ipcRenderer.invoke('aeh:updateDiscoveryCandidateExcludedFiles', candidateId, excludedFiles),
     startExpansion: (candidateId: string, body: unknown) =>
       ipcRenderer.invoke('aeh:startExpansion', candidateId, body),
     getExpansionSession: (sessionId: string) =>
       ipcRenderer.invoke('aeh:getExpansionSession', sessionId),
+    listExpansionSessions: (candidateId: string) =>
+      ipcRenderer.invoke('aeh:listExpansionSessions', candidateId),
     getExpansionMap: (sessionId: string) =>
       ipcRenderer.invoke('aeh:getExpansionMap', sessionId),
     updateExpansionMap: (sessionId: string, map: unknown) =>

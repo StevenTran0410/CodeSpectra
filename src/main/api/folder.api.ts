@@ -257,6 +257,10 @@ export function registerFolderHandlers(client: BackendClient): void {
     client.post('/api/retrieval/build-index', { snapshot_id: snapshotId, force_rebuild: forceRebuild })
   )
 
+  ipcMain.handle('retrieval:summary', (_event, snapshotId: string) =>
+    client.get(`/api/retrieval/summary/${snapshotId}`)
+  )
+
   ipcMain.handle(
     'retrieval:retrieve',
     (_event, body: {

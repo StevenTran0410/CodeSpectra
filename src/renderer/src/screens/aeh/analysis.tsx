@@ -179,13 +179,14 @@ function AnalysisOverview(): React.ReactElement {
       try {
         const rSummary = await window.api.repomap.summary(snapshotId)
         setRepomapSummary(rSummary)
-        if (rSummary && rSummary.files_indexed > 0) {
-          setRetrievalStatus('built')
-        } else {
-          setRetrievalStatus('missing')
-        }
       } catch (e) {
         setRepomapSummary(null)
+      }
+
+      try {
+        const retSummary = await window.api.retrieval.summary(snapshotId)
+        setRetrievalStatus(retSummary && retSummary.built ? 'built' : 'missing')
+      } catch (e) {
         setRetrievalStatus('missing')
       }
 

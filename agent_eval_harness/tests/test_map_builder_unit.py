@@ -188,6 +188,44 @@ class TestHaystackScanner:
             assert cls is not None
             assert cls.__name__ == candidate.class_name
 
+    def test_langgraph_and_lcel_admission(self):
+        """Verify that LangGraph add_node and LangChain LCEL chain nodes are admitted as CandidateComponents."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            
+            # File defining the classes and registering via LangGraph and LCEL
+            file_a = tmp_path / "app.py"
+            file_a.write_text(
+                "class MyAgent:\n"
+                "    pass\n"
+                "class MyTool:\n"
+                "    pass\n"
+                "class LCELStep1:\n"
+                "    pass\n"
+                "class LCELStep2:\n"
+                "    pass\n\n"
+                "builder.add_node('agent', MyAgent())\n"
+                "builder.add_node('tool', MyTool)\n"
+                "chain = LCELStep1() | LCELStep2()\n"
+            )
+
+            scanner = HaystackScanner()
+            files = [file_a]
+            candidates = scanner.scan(files)
+
+            class_names = {c.class_name for c in candidates}
+            assert "MyAgent" in class_names
+            assert "MyTool" in class_names
+            assert "LCELStep1" in class_names
+            assert "LCELStep2" in class_names
+
+            # Verify that haystack_name / aliases map correctly to node alias
+            by_class = {c.class_name: c for c in candidates}
+            assert by_class["MyAgent"].haystack_name == "agent"
+            assert by_class["MyTool"].haystack_name == "tool"
+            assert by_class["LCELStep1"].haystack_name == "LCELStep1"
+            assert by_class["LCELStep2"].haystack_name == "LCELStep2"
+
 
 class TestTopology:
     def test_topology_t1_connect_edges(self, target_root: Path):

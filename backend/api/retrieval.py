@@ -8,6 +8,7 @@ from domain.retrieval.types import (
     BuildRetrievalIndexResponse,
     RetrievalBundle,
     RetrievalCompareResponse,
+    RetrievalSummary,
     RetrieveRequest,
     RrfFusionBundle,
     RrfFusionRequest,
@@ -18,6 +19,11 @@ from shared.http_utils import handle_value_error
 
 router = APIRouter(tags=["retrieval"])
 _service = RetrievalService()
+
+
+@router.get("/summary/{snapshot_id}", response_model=RetrievalSummary)
+async def get_retrieval_summary(snapshot_id: str) -> RetrievalSummary:
+    return await _service.summary(snapshot_id)
 
 
 @router.post("/build-index", response_model=BuildRetrievalIndexResponse)

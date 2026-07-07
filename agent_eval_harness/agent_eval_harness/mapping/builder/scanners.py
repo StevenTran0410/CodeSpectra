@@ -74,6 +74,73 @@ class HaystackScanner:
                                     class_name = child.args[1].func.id
                                     add_component_names[haystack_name] = class_name
 
+                # Find add_node() calls (LangGraph)
+                for child in ast.walk(node):
+                    if isinstance(child, ast.Call):
+                        if isinstance(child.func, ast.Attribute) and child.func.attr == "add_node":
+                            if len(child.args) >= 2:
+                                arg0 = child.args[0]
+                                arg1 = child.args[1]
+                                alias = None
+                                if isinstance(arg0, ast.Constant) and isinstance(arg0.value, str):
+                                    alias = arg0.value
+                                elif isinstance(arg0, ast.Str):
+                                    alias = arg0.s
+
+                                class_name = None
+                                if isinstance(arg1, ast.Name):
+                                    class_name = arg1.id
+                                elif isinstance(arg1, ast.Attribute):
+                                    class_name = arg1.attr
+                                elif isinstance(arg1, ast.Call):
+                                    if isinstance(arg1.func, ast.Name):
+                                        class_name = arg1.func.id
+                                    elif isinstance(arg1.func, ast.Attribute):
+                                        class_name = arg1.func.attr
+
+                                if alias and class_name:
+                                    known_classes.add(class_name)
+                                    add_component_names[alias] = class_name
+
+                # Find BitOr calls (LangChain LCEL)
+                processed_binops = set()
+                for child in ast.walk(node):
+                    if isinstance(child, (ast.Assign, ast.AnnAssign, ast.Expr, ast.Return, ast.Yield)):
+                        val_node = None
+                        if isinstance(child, (ast.Assign, ast.Expr, ast.Return, ast.Yield)):
+                            val_node = child.value
+                        elif isinstance(child, ast.AnnAssign):
+                            val_node = child.value
+                        
+                        if val_node:
+                            for sub_child in ast.walk(val_node):
+                                if isinstance(sub_child, ast.BinOp) and isinstance(sub_child.op, ast.BitOr):
+                                    if sub_child in processed_binops:
+                                        continue
+                                    
+                                    def _flatten(n):
+                                        if isinstance(n, ast.BinOp) and isinstance(n.op, ast.BitOr):
+                                            processed_binops.add(n)
+                                            return _flatten(n.left) + _flatten(n.right)
+                                        return [n]
+                                    
+                                    operands = _flatten(sub_child)
+                                    for op in operands:
+                                        class_name = None
+                                        if isinstance(op, ast.Name):
+                                            class_name = op.id
+                                        elif isinstance(op, ast.Call):
+                                            if isinstance(op.func, ast.Name):
+                                                class_name = op.func.id
+                                            elif isinstance(op.func, ast.Attribute):
+                                                class_name = op.func.attr
+                                        elif isinstance(op, ast.Attribute):
+                                            class_name = op.attr
+
+                                        if class_name:
+                                            known_classes.add(class_name)
+                                            add_component_names[class_name] = class_name
+
         # Second pass: grow known_classes with composed components using cached ASTs
         for file, tree in asts.items():
             # Grow known_classes with composed components

@@ -15,9 +15,33 @@ class _StubClient:
             return {"content": self._files[rel_path], "snapshot_id": snapshot_id, "rel_path": rel_path, "truncated": False}
         return {"content": "", "snapshot_id": snapshot_id, "rel_path": rel_path, "truncated": False}
 
-    async def get_neighbors(self, snapshot_id: str, seed_path: str, hops: int = 1, limit: int = 300) -> dict:
-        self.neighbors_calls.append(seed_path)
-        return {"snapshot_id": snapshot_id, "seed_path": seed_path, "hops": hops, "nodes": self._neighbors.get(seed_path, []), "edges": []}
+    async def get_symbol_edges(self, snapshot_id: str, file_path: str) -> dict:
+        self.neighbors_calls.append(file_path)
+        outgoing = []
+        for n_path in self._neighbors.get(file_path, []):
+            outgoing.append({
+                "src_symbol": f"{file_path}::symbolA",
+                "dst_symbol": f"{n_path}::symbolB",
+                "edge_type": "call",
+                "confidence_score": 1.0,
+            })
+            outgoing.append({
+                "src_symbol": f"{file_path}::symbolB",
+                "dst_symbol": f"{n_path}::symbolB",
+                "edge_type": "call",
+                "confidence_score": 1.0,
+            })
+            outgoing.append({
+                "src_symbol": f"{file_path}::Agent",
+                "dst_symbol": f"{n_path}::symbolB",
+                "edge_type": "call",
+                "confidence_score": 1.0,
+            })
+        return {
+            "defined_symbols": ["symbolA", "symbolB", "Agent"],
+            "outgoing": outgoing,
+            "incoming": [],
+        }
 
 
 class _StubLLMClient:
@@ -127,3 +151,78 @@ async def test_expansion_containment_negative_control() -> None:
     assert res["stop_reason"] == "frontier_exhausted"
     # Neighbors of boundary should never be called
     assert "file_b.py" not in client.read_calls
+
+
+@pytest.mark.anyio
+async def test_expansion_chunk_level_evidence_and_bypass() -> None:
+    files = {
+        "file_a.py": "class Agent: pass\ndef run(): pass",
+        "file_b.py": "def helper(): pass",
+    }
+    neighbors = {
+        "file_a.py": ["file_b.py"]
+    }
+    verdicts = {
+        "file_b.py": "accept"
+    }
+
+    client = _StubClient(files, neighbors)
+    llm_client = _StubLLMClient(verdicts)
+
+    candidate = {
+        "cluster_files": ["file_a.py"],
+        "hub_paths": [],
+        "evidence": [
+            {
+                "file": "file_a.py",
+                "chunk_id": "Agent",
+                "snippet": "class Agent: pass"
+            }
+        ],
+        "wiring_block": {
+            "nodes": [
+                {"alias": "agent", "class_name": "Agent", "source_hint_file": "file_a.py"}
+            ],
+            "edges": []
+        }
+    }
+
+    res = await expand_candidate("snap-123", candidate, client, llm_client, node_budget=5, hop_cap=3)
+    assert "file_a.py" in res["accepted"]
+    assert "file_b.py" in res["accepted"]
+    assert res["stop_reason"] == "frontier_exhausted"
+
+
+@pytest.mark.anyio
+async def test_expansion_respects_excluded_files() -> None:
+    files = {
+        "file_a.py": "class Agent: pass",
+        "file_b.py": "def helper(): pass",
+    }
+    neighbors = {
+        "file_a.py": ["file_b.py"]
+    }
+    verdicts = {
+        "file_b.py": "accept"
+    }
+
+    client = _StubClient(files, neighbors)
+    llm_client = _StubLLMClient(verdicts)
+
+    candidate = {
+        "cluster_files": ["file_a.py"],
+        "hub_paths": [],
+        "evidence": [
+            {
+                "file": "file_a.py",
+                "chunk_id": "Agent",
+                "snippet": "class Agent: pass"
+            }
+        ],
+        "excluded_files": ["file_a.py"]
+    }
+
+    res = await expand_candidate("snap-123", candidate, client, llm_client, node_budget=5, hop_cap=3)
+    assert "file_a.py" not in res["accepted"]
+    assert "file_b.py" not in res["accepted"]
+    assert res["stop_reason"] == "frontier_exhausted"

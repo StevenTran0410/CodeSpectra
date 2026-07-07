@@ -4,7 +4,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from agent_eval_harness.llm.client import LLMMessage
+from agent_eval_harness.llm.client import LLMMessage, RateLimitExceeded
 from agent_eval_harness.llm.proxy_client import CodeSpectraProxyClient
 
 pytestmark = pytest.mark.asyncio
@@ -61,7 +61,7 @@ async def test_exhausts_retries_and_raises(monkeypatch) -> None:
     http_client = httpx.AsyncClient(transport=transport)
     client = CodeSpectraProxyClient("http://test", "tok", "provider-x", http_client=http_client)
 
-    with pytest.raises(httpx.HTTPStatusError):
+    with pytest.raises(RateLimitExceeded):
         await client.complete([LLMMessage(role="user", content="hi")])
 
     assert transport.call_count == 4

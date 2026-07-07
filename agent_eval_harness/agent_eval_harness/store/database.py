@@ -188,6 +188,33 @@ _MIGRATIONS: list[dict[str, Any]] = [
             ALTER TABLE discovery_candidates ADD COLUMN wiring_block_json TEXT;
         """,
     },
+    {
+        "version": 8,
+        "description": "Add excluded_files_json to discovery_candidates — lets a reviewer "
+        "remove one bad file from a candidate's cluster without rejecting the whole candidate",
+        "sql": """
+            ALTER TABLE discovery_candidates ADD COLUMN excluded_files_json TEXT NOT NULL DEFAULT '[]';
+        """,
+    },
+    {
+        "version": 9,
+        "description": "Add pause_info_json to discovery_sessions and 'paused_rate_limit' as a "
+        "possible status — lets a run pause on a sustained rate limit instead of silently "
+        "degrading or failing, so the user can wait or switch model and resume",
+        "sql": """
+            ALTER TABLE discovery_sessions ADD COLUMN pause_info_json TEXT;
+        """,
+    },
+    {
+        "version": 10,
+        "description": "Add matched_files_json and file_provenance_json to discovery_candidates — "
+        "Pass E's cross-candidate core-seed consolidation, corrects Pass B's Louvain "
+        "community assignment using Pass D's structural wiring evidence",
+        "sql": """
+            ALTER TABLE discovery_candidates ADD COLUMN matched_files_json TEXT NOT NULL DEFAULT '[]';
+            ALTER TABLE discovery_candidates ADD COLUMN file_provenance_json TEXT NOT NULL DEFAULT '{}';
+        """,
+    },
 ]
 
 TARGET_VERSION = len(_MIGRATIONS) - 1

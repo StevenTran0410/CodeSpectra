@@ -35,6 +35,13 @@ class BuildRetrievalIndexResponse(BaseModel):
     generated_at: str
 
 
+class RetrievalSummary(BaseModel):
+    snapshot_id: str
+    chunk_count: int
+    has_bm25_stats: bool
+    built: bool
+
+
 class RetrievalEvidence(BaseModel):
     chunk_id: str
     rel_path: str

@@ -15,6 +15,12 @@ import {
   Layers,
 } from 'lucide-react'
 import { Button, Select, Badge, useToastStore } from '../../components/ui'
+import {
+  ReactFlow,
+  Background,
+} from '@xyflow/react'
+import '@xyflow/react/dist/style.css'
+import { getDagreGraphLayout } from './graphLayout'
 import { useAEHStore } from '../../store/aeh.store'
 import { useProviderStore } from '../../store/provider.store'
 import LLMConfigModal from './LLMConfigModal'
@@ -30,6 +36,17 @@ const VALID_ROLES = [
   'validator',
   'writer',
 ]
+
+const ROLE_COLORS: Record<string, string> = {
+  orchestrator: '#6366f1',
+  retrieval_agent: '#0ea5e9',
+  tool: '#f59e0b',
+  writer: '#10b981',
+  validator: '#ec4899',
+  'input_guard.rule': '#ef4444',
+  'input_guard.llm': '#ef4444',
+  unknown: '#475569',
+}
 
 export default function Stage2Screen(): React.ReactElement {
   const [searchParams] = useSearchParams()
@@ -57,8 +74,14 @@ export default function Stage2Screen(): React.ReactElement {
   const [selectedModelId, setSelectedModelId] = useState('')
   const [llmConfigOpen, setLlmConfigOpen] = useState(false)
 
+  // Classify LLM Config (optional)
+  const [classifyProviderId, setClassifyProviderId] = useState('')
+  const [classifyModelId, setClassifyModelId] = useState('')
+  const [classifyLlmConfigOpen, setClassifyLlmConfigOpen] = useState(false)
+
   // System Map State
   const [systemMap, setSystemMap] = useState<AEHSystemMap | null>(null)
+  const [mapView, setMapView] = useState<'table' | 'graph'>('table')
   const [savingMap, setSavingMap] = useState(false)
 
   // Load providers on mount
@@ -138,6 +161,38 @@ export default function Stage2Screen(): React.ReactElement {
 
   useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current) }, [])
 
+  // Load the most recent expansion session/map for the selected candidate — without this,
+  // navigating away and back always starts from a blank slate even after a completed run.
+  useEffect(() => {
+    if (!selectedCandidateId) return
+    let cancelled = false
+    setExpansionSession(null)
+    setSystemMap(null)
+    setError(null)
+    ;(async () => {
+      try {
+        const sessions = await window.api.aeh.listExpansionSessions(selectedCandidateId)
+        if (cancelled || sessions.length === 0) return
+        const latest = sessions[0]
+        setExpansionSession(latest)
+        if (latest.status === 'completed') {
+          const map = await window.api.aeh.getExpansionMap(latest.id)
+          if (!cancelled) setSystemMap(map)
+        } else if (latest.status === 'running') {
+          setRunning(true)
+          startPolling(latest.id)
+        } else if (latest.status === 'failed') {
+          setError(latest.error ?? 'Expansion failed.')
+        }
+      } catch (e) {
+        console.error('Failed to load previous expansion session', e)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [selectedCandidateId, startPolling])
+
   // Trigger Expansion
   const handleRunExpansion = async () => {
     if (!selectedCandidateId || running) return
@@ -158,6 +213,8 @@ export default function Stage2Screen(): React.ReactElement {
         model_id: selectedModelId || null,
         node_budget: 40,
         hop_cap: 3,
+        classify_provider_id: classifyProviderId || null,
+        classify_model_id: classifyModelId || null,
       })
       const session = await window.api.aeh.getExpansionSession(res.session_id)
       setExpansionSession(session)
@@ -233,6 +290,31 @@ export default function Stage2Screen(): React.ReactElement {
               setSelectedModelId(mid)
             }}
             title="Expansion Model (this stage only)"
+          />
+
+          <button
+            onClick={() => setClassifyLlmConfigOpen(true)}
+            disabled={running}
+            className={`text-[10px] h-7 px-2.5 rounded-md border font-mono transition-colors ${
+              classifyProviderId
+                ? 'border-slate-700 bg-slate-950 text-slate-300 hover:border-slate-500'
+                : 'border-slate-800 bg-slate-950/30 text-slate-500 hover:border-slate-700'
+            }`}
+          >
+            {classifyProviderId
+              ? `Classifier: ${classifyModelId || providers.find((p) => p.id === classifyProviderId)?.display_name || '?'}`
+              : 'Classifier: Default'}
+          </button>
+          <LLMConfigModal
+            isOpen={classifyLlmConfigOpen}
+            onClose={() => setClassifyLlmConfigOpen(false)}
+            providerId={classifyProviderId}
+            modelId={classifyModelId}
+            onChange={(pid, mid) => {
+              setClassifyProviderId(pid)
+              setClassifyModelId(mid)
+            }}
+            title="Chunk Classifier Model (optional — defaults to main model, pick something fast/cheap)"
           />
 
           <Button
@@ -326,6 +408,32 @@ export default function Stage2Screen(): React.ReactElement {
                   </div>
                 )}
               </div>
+
+              {expansionSession.accepted.length > 0 && (
+                <div className="space-y-1 border-t border-slate-900 pt-2">
+                  <span className="text-[9px] uppercase tracking-wider font-bold text-slate-500">Accepted</span>
+                  <div className="max-h-40 overflow-y-auto space-y-0.5 pr-1">
+                    {expansionSession.accepted.map((path) => (
+                      <div key={path} className="text-[9px] font-mono text-slate-300 truncate" title={path}>
+                        {path}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {expansionSession.boundary.length > 0 && (
+                <div className="space-y-1 border-t border-slate-900 pt-2">
+                  <span className="text-[9px] uppercase tracking-wider font-bold text-slate-500">Boundary (stopped here)</span>
+                  <div className="max-h-32 overflow-y-auto space-y-0.5 pr-1">
+                    {expansionSession.boundary.map((path) => (
+                      <div key={path} className="text-[9px] font-mono text-slate-600 truncate" title={path}>
+                        {path}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -376,15 +484,41 @@ export default function Stage2Screen(): React.ReactElement {
                   </p>
                 </div>
 
-                <Button
-                  variant="primary"
-                  onClick={handleSaveMap}
-                  loading={savingMap}
-                  className="text-[10px] h-8 px-4 flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 text-white"
-                >
-                  <Save className="w-3.5 h-3.5" />
-                  <span>Save Blueprint Map</span>
-                </Button>
+                <div className="flex items-center gap-3">
+                  {/* View Toggle */}
+                  <div className="flex items-center bg-slate-950 border border-slate-800 rounded-lg p-0.5 shrink-0">
+                    <button
+                      onClick={() => setMapView('table')}
+                      className={`text-[10px] px-2.5 py-1 rounded-md transition-colors ${
+                        mapView === 'table'
+                          ? 'bg-slate-800 text-slate-200 font-semibold'
+                          : 'text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      Table
+                    </button>
+                    <button
+                      onClick={() => setMapView('graph')}
+                      className={`text-[10px] px-2.5 py-1 rounded-md transition-colors ${
+                        mapView === 'graph'
+                          ? 'bg-slate-800 text-slate-200 font-semibold'
+                          : 'text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      Graph
+                    </button>
+                  </div>
+
+                  <Button
+                    variant="primary"
+                    onClick={handleSaveMap}
+                    loading={savingMap}
+                    className="text-[10px] h-8 px-4 flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 text-white"
+                  >
+                    <Save className="w-3.5 h-3.5" />
+                    <span>Save Blueprint Map</span>
+                  </Button>
+                </div>
               </div>
 
               {/* Discrepancies Alerts */}
@@ -402,99 +536,146 @@ export default function Stage2Screen(): React.ReactElement {
                 </div>
               )}
 
-              {/* Components List Table */}
-              <div className="flex-1 overflow-y-auto px-6 py-4">
-                <div className="border border-slate-850 rounded-xl overflow-hidden bg-slate-950/20">
-                  <table className="w-full text-left border-collapse text-xs">
-                    <thead>
-                      <tr className="border-b border-slate-850 bg-slate-900/30 text-slate-400 font-medium">
-                        <th className="p-3">Component / Class ID</th>
-                        <th className="p-3">Role</th>
-                        <th className="p-3">Model</th>
-                        <th className="p-3">Entry Point</th>
-                        <th className="p-3">Topology</th>
-                        <th className="p-3 text-right">Constraints</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-850">
-                      {systemMap.components.map((comp) => {
-                        const isUnknown = comp.role === 'unknown'
-                        return (
-                          <tr
-                            key={comp.id}
-                            className={`hover:bg-slate-900/25 transition-colors ${
-                              isUnknown ? 'bg-amber-950/5' : ''
-                            }`}
-                          >
-                            <td className="p-3 font-mono font-medium text-slate-200">
-                              <div className="flex items-center gap-2">
-                                <span className="truncate max-w-[160px]" title={comp.id}>
-                                  {comp.id}
-                                </span>
-                                {isUnknown && (
-                                  <Badge variant="error" size="sm" className="bg-amber-900/30 border border-amber-800/40 text-amber-400 animate-pulse">
-                                    Triage
-                                  </Badge>
-                                )}
-                              </div>
-                            </td>
-                            <td className="p-3">
-                              <Select
-                                value={comp.role}
-                                onChange={(e) => handleRoleChange(comp.id, e.target.value)}
-                                className={`text-[11px] h-7 px-2 py-0.5 ${
-                                  isUnknown ? 'border-amber-700 bg-amber-950/20 text-amber-300' : ''
-                                }`}
-                              >
-                                {VALID_ROLES.map((r) => (
-                                  <option key={r} value={r}>
-                                    {r}
-                                  </option>
-                                ))}
-                              </Select>
-                            </td>
-                            <td className="p-3">
-                              <span className="text-[10px] px-2 py-0.5 rounded font-mono bg-slate-900 border border-slate-800 text-slate-400">
-                                {comp.model || 'None'}
-                              </span>
-                            </td>
-                            <td className="p-3 font-mono text-[10px] text-slate-400 break-all select-text max-w-[200px]" title={comp.entry_point || ''}>
-                              {comp.entry_point || '-'}
-                            </td>
-                            <td className="p-3 text-slate-400">
-                              <div className="flex items-center gap-2">
-                                <span title={`Upstream: ${comp.upstream.join(', ') || 'none'}`}>
-                                  In: {comp.upstream.length}
-                                </span>
-                                <span className="text-slate-650">•</span>
-                                <span title={`Downstream: ${comp.downstream.join(', ') || 'none'}`}>
-                                  Out: {comp.downstream.length}
-                                </span>
-                              </div>
-                            </td>
-                            <td className="p-3 text-right text-slate-400 font-mono font-medium">
-                              {comp.constraints.length > 0 ? (
-                                <span
-                                  className="underline cursor-help text-indigo-400"
-                                  title={comp.constraints.map((c) => `${c.name}: ${c.value} (${c.source})`).join('\n')}
+              {/* Components List Table OR Graph View */}
+              {mapView === 'table' ? (
+                <div className="flex-1 overflow-y-auto px-6 py-4">
+                  <div className="border border-slate-850 rounded-xl overflow-hidden bg-slate-950/20">
+                    <table className="w-full text-left border-collapse text-xs">
+                      <thead>
+                        <tr className="border-b border-slate-850 bg-slate-900/30 text-slate-400 font-medium">
+                          <th className="p-3">Component / Class ID</th>
+                          <th className="p-3">Role</th>
+                          <th className="p-3">Model</th>
+                          <th className="p-3">Entry Point</th>
+                          <th className="p-3">Topology</th>
+                          <th className="p-3 text-right">Constraints</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-850">
+                        {systemMap.components.map((comp) => {
+                          const isUnknown = comp.role === 'unknown'
+                          return (
+                            <tr
+                              key={comp.id}
+                              className={`hover:bg-slate-900/25 transition-colors ${
+                                isUnknown ? 'bg-amber-950/5' : ''
+                              }`}
+                            >
+                              <td className="p-3 font-mono font-medium text-slate-200">
+                                <div className="flex items-center gap-2">
+                                  <span className="truncate max-w-[160px]" title={comp.id}>
+                                    {comp.id}
+                                  </span>
+                                  {isUnknown && (
+                                    <Badge variant="error" size="sm" className="bg-amber-900/30 border border-amber-800/40 text-amber-400 animate-pulse">
+                                      Triage
+                                    </Badge>
+                                  )}
+                                </div>
+                              </td>
+                              <td className="p-3">
+                                <Select
+                                  value={comp.role}
+                                  onChange={(e) => handleRoleChange(comp.id, e.target.value)}
+                                  className={`text-[11px] h-7 px-2 py-0.5 ${
+                                    isUnknown ? 'border-amber-700 bg-amber-950/20 text-amber-300' : ''
+                                  }`}
                                 >
-                                  {comp.constraints.length} citation{comp.constraints.length !== 1 ? 's' : ''}
+                                  {VALID_ROLES.map((r) => (
+                                    <option key={r} value={r}>
+                                      {r}
+                                    </option>
+                                  ))}
+                                </Select>
+                              </td>
+                              <td className="p-3">
+                                <span className="text-[10px] px-2 py-0.5 rounded font-mono bg-slate-900 border border-slate-800 text-slate-400">
+                                  {comp.model || 'None'}
                                 </span>
-                              ) : (
-                                '0'
-                              )}
-                            </td>
-                          </tr>
-                        )
-                      })}
-                    </tbody>
-                  </table>
+                              </td>
+                              <td className="p-3 font-mono text-[10px] text-slate-400 break-all select-text max-w-[200px]" title={comp.entry_point || ''}>
+                                {comp.entry_point || '-'}
+                              </td>
+                              <td className="p-3 text-slate-400">
+                                <div className="flex items-center gap-2">
+                                  <span title={`Upstream: ${comp.upstream.join(', ') || 'none'}`}>
+                                    In: {comp.upstream.length}
+                                  </span>
+                                  <span className="text-slate-650">•</span>
+                                  <span title={`Downstream: ${comp.downstream.join(', ') || 'none'}`}>
+                                    Out: {comp.downstream.length}
+                                  </span>
+                                </div>
+                              </td>
+                              <td className="p-3 text-right text-slate-400 font-mono font-medium">
+                                {comp.constraints.length > 0 ? (
+                                  <span
+                                    className="underline cursor-help text-indigo-400"
+                                    title={comp.constraints.map((c) => `${c.name}: ${c.value} (${c.source})`).join('\n')}
+                                  >
+                                    {comp.constraints.length} citation{comp.constraints.length !== 1 ? 's' : ''}
+                                  </span>
+                                ) : (
+                                  '0'
+                                )}
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
-              </div>
+              ) : (
+                <div className="flex-1 min-h-0 relative">
+                  <SystemMapGraphPanel systemMap={systemMap} />
+                </div>
+              )}
             </div>
           )}
         </div>
       </div>
+    </div>
+  )
+}
+
+function SystemMapGraphPanel({ systemMap }: { systemMap: AEHSystemMap }): React.ReactElement {
+  const { layoutNodes, layoutEdges } = useMemo(() => {
+    if (!systemMap) return { layoutNodes: [], layoutEdges: [] }
+    const nodes = systemMap.components.map((c) => ({
+      id: c.id,
+      label: `${c.id}\n${c.role}`,
+      color: ROLE_COLORS[c.role] ?? ROLE_COLORS.unknown,
+    }))
+    const edges = systemMap.components.flatMap((c) =>
+      c.downstream.map((d) => ({ src: c.id, dst: d }))
+    )
+    return getDagreGraphLayout(nodes, edges)
+  }, [systemMap])
+
+  if (layoutNodes.length === 0) {
+    return (
+      <div className="h-full flex items-center justify-center p-6 text-center text-slate-600 text-[10px] select-none bg-[#090d16]/10">
+        No components to visualize.
+      </div>
+    )
+  }
+
+  return (
+    <div className="absolute inset-0 bg-[#090d16]/20">
+      <ReactFlow
+        nodes={layoutNodes}
+        edges={layoutEdges}
+        nodesDraggable={false}
+        nodesConnectable={false}
+        fitView
+        fitViewOptions={{ padding: 0.2 }}
+        minZoom={0.2}
+        maxZoom={1.5}
+        proOptions={{ hideAttribution: true }}
+      >
+        <Background color="#1e293b" gap={10} size={1} />
+      </ReactFlow>
     </div>
   )
 }

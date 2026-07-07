@@ -384,6 +384,9 @@ async def insert_discovery_candidates_bulk(
             json.dumps(c.get("cluster_files", [])),
             json.dumps(c.get("hub_paths", [])),
             json.dumps(c.get("wiring_block")) if c.get("wiring_block") is not None else None,
+            json.dumps(c.get("excluded_files", [])),
+            json.dumps(c.get("matched_files", [])),
+            json.dumps(c.get("file_provenance", {})),
         )
         for c in candidates
     ]
@@ -391,8 +394,9 @@ async def insert_discovery_candidates_bulk(
         await db.executemany(
             "INSERT INTO discovery_candidates (id, session_id, name, frameworks_json, "
             "entry_points_json, evidence_json, confidence, verdict, needs_human, "
-            "community_id, cluster_files_json, hub_paths_json, wiring_block_json) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "community_id, cluster_files_json, hub_paths_json, wiring_block_json, "
+            "excluded_files_json, matched_files_json, file_provenance_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             rows,
         )
         await db.commit()
@@ -420,7 +424,12 @@ async def list_discovery_sessions(
             "SELECT * FROM discovery_sessions ORDER BY created_at DESC"
         ) as cur:
             rows = await cur.fetchall()
-    return [dict(r) for r in rows]
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["pause_info"] = json.loads(d["pause_info_json"]) if d.get("pause_info_json") else None
+        out.append(d)
+    return out
 
 
 async def get_discovery_session(session_id: str) -> dict | None:
@@ -430,7 +439,37 @@ async def get_discovery_session(session_id: str) -> dict | None:
         (session_id,),
     ) as cur:
         row = await cur.fetchone()
-    return dict(row) if row else None
+    if not row:
+        return None
+    d = dict(row)
+    d["pause_info"] = json.loads(d["pause_info_json"]) if d.get("pause_info_json") else None
+    return d
+
+
+async def pause_discovery_session(session_id: str, provider_id: str, model_id: str | None) -> None:
+    db = get_db()
+    pause_info = json.dumps({"reason": "rate_limited", "provider_id": provider_id, "model_id": model_id})
+    await db.execute(
+        "UPDATE discovery_sessions SET status = 'paused_rate_limit', pause_info_json = ? WHERE id = ?",
+        (pause_info, session_id),
+    )
+    await db.commit()
+
+
+async def resume_discovery_session(session_id: str) -> None:
+    db = get_db()
+    await db.execute(
+        "UPDATE discovery_sessions SET status = 'running', pause_info_json = NULL WHERE id = ?",
+        (session_id,),
+    )
+    await db.commit()
+
+
+async def replace_discovery_candidates(session_id: str, candidates: list[dict]) -> None:
+    db = get_db()
+    await db.execute("DELETE FROM discovery_candidates WHERE session_id = ?", (session_id,))
+    await db.commit()
+    await insert_discovery_candidates_bulk(session_id, candidates)
 
 
 async def get_discovery_candidates(session_id: str) -> list[dict]:
@@ -450,6 +489,9 @@ async def get_discovery_candidates(session_id: str) -> list[dict]:
         d["cluster_files"] = json.loads(d.get("cluster_files_json") or "[]")
         d["hub_paths"] = json.loads(d.get("hub_paths_json") or "[]")
         d["wiring_block"] = json.loads(d["wiring_block_json"]) if d.get("wiring_block_json") else None
+        d["excluded_files"] = json.loads(d.get("excluded_files_json") or "[]")
+        d["matched_files"] = json.loads(d.get("matched_files_json") or "[]")
+        d["file_provenance"] = json.loads(d.get("file_provenance_json") or "{}")
         out.append(d)
     return out
 
@@ -462,6 +504,15 @@ async def update_candidate_verdict(
     await db.execute(
         "UPDATE discovery_candidates SET verdict = ? WHERE id = ?",
         (verdict, candidate_id),
+    )
+    await db.commit()
+
+
+async def update_candidate_excluded_files(candidate_id: str, excluded_files: list[str]) -> None:
+    db = get_db()
+    await db.execute(
+        "UPDATE discovery_candidates SET excluded_files_json = ? WHERE id = ?",
+        (json.dumps(excluded_files), candidate_id),
     )
     await db.commit()
 
@@ -483,6 +534,9 @@ async def get_discovery_candidate(candidate_id: str) -> dict | None:
     d["cluster_files"] = json.loads(d.get("cluster_files_json") or "[]")
     d["hub_paths"] = json.loads(d.get("hub_paths_json") or "[]")
     d["wiring_block"] = json.loads(d["wiring_block_json"]) if d.get("wiring_block_json") else None
+    d["excluded_files"] = json.loads(d.get("excluded_files_json") or "[]")
+    d["matched_files"] = json.loads(d.get("matched_files_json") or "[]")
+    d["file_provenance"] = json.loads(d.get("file_provenance_json") or "{}")
     return d
 
 

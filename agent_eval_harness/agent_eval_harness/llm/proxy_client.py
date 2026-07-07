@@ -5,7 +5,7 @@ import asyncio
 
 import httpx
 
-from agent_eval_harness.llm.client import LLMMessage, LLMResponse
+from agent_eval_harness.llm.client import LLMMessage, LLMResponse, RateLimitExceeded
 
 _MAX_RATE_LIMIT_RETRIES = 3
 _BASE_BACKOFF_SECONDS = 1.0
@@ -52,11 +52,13 @@ class CodeSpectraProxyClient:
             try:
                 resp.raise_for_status()
             except httpx.HTTPStatusError as exc:
-                if resp.status_code != 429 or attempt == _MAX_RATE_LIMIT_RETRIES:
-                    raise
-                last_exc = exc
-                await asyncio.sleep(_BASE_BACKOFF_SECONDS * (2**attempt))
-                continue
+                if resp.status_code == 429 and attempt < _MAX_RATE_LIMIT_RETRIES:
+                    last_exc = exc
+                    await asyncio.sleep(_BASE_BACKOFF_SECONDS * (2**attempt))
+                    continue
+                if resp.status_code == 429:
+                    raise RateLimitExceeded(self._provider_id, self._model_id) from exc
+                raise
 
             body = resp.json()
             has_usage = body.get("prompt_tokens") is not None

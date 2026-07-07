@@ -80,6 +80,25 @@ chain = prompt_template | chat_model | output_parser
     assert wiring.edges[1].dst == "output_parser"
 
 
+def test_detect_langchain_lcel_ignores_pep604_type_unions():
+    """`str | None` and similar type-annotation unions must not be mistaken for
+    an LCEL pipe chain — same BinOp/BitOr AST shape, different meaning entirely."""
+    type_union_code = """
+from dataclasses import dataclass, field
+
+@dataclass
+class StaticRiskConfig:
+    threshold: str | None = None
+    weight: float | None = None
+    flags: set | None = None
+    enabled: bool | None = None
+    extra: dict | None = None
+"""
+    file_contents = {"static_risk.py": type_union_code}
+    wiring = _detect_langchain_lcel(file_contents)
+    assert wiring is None, f"type-union annotations must not produce a fake wiring block, got: {wiring}"
+
+
 @pytest.mark.anyio
 async def test_detect_via_llm():
     custom_code = """
@@ -116,3 +135,13 @@ def run_my_custom_chain():
     assert len(wiring.edges) == 1
     assert wiring.edges[0].src == "fetch"
     assert wiring.edges[0].dst == "llm"
+
+
+@pytest.mark.anyio
+async def test_detect_via_llm_propagates_rate_limit():
+    from agent_eval_harness.llm.client import RateLimitExceeded
+    mock_llm_client = AsyncMock()
+    mock_llm_client.complete.side_effect = RateLimitExceeded("prov", "model")
+    
+    with pytest.raises(RateLimitExceeded):
+        await _detect_via_llm({"custom.py": "pass"}, mock_llm_client)

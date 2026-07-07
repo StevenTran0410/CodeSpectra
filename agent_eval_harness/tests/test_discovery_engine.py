@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 
 from agent_eval_harness.discovery.engine import discover_agentic_systems
-from agent_eval_harness.llm.client import LLMResponse
+from agent_eval_harness.llm.client import LLMResponse, RateLimitExceeded
 from agent_eval_harness.llm.fake_client import FakeLLMClient
 
 HAYSTACK_EXCERPT = (
@@ -187,3 +187,110 @@ async def test_llm_synthesis_budget_cap_marks_overflow_needs_human() -> None:
     assert len(llm_client.calls) == engine_module.MAX_LLM_SYNTHESIZED_CLUSTERS, (
         "LLM must be called at most MAX_LLM_SYNTHESIZED_CLUSTERS times, never once per cluster"
     )
+
+
+@pytest.mark.asyncio
+async def test_wiring_llm_fallback_has_its_own_smaller_budget() -> None:
+    """Pass D's LLM fallback (wiring detection) must be capped separately from —
+    and smaller than — Pass C's naming budget, since it's a second LLM call per
+    cluster on top of naming. CREWAI_EXCERPT has no static wiring pattern, so
+    every cluster here falls through to the fallback unless the budget stops it."""
+    from agent_eval_harness.discovery import engine as engine_module
+
+    n_clusters = engine_module.MAX_WIRING_LLM_FALLBACK_CALLS + 3
+    assert n_clusters < engine_module.MAX_LLM_SYNTHESIZED_CLUSTERS, (
+        "test assumes all clusters get named by Pass C so needs_human never gates the fallback"
+    )
+    evidences = [
+        {"rel_path": f"agents/crew_{i}.py", "excerpt": CREWAI_EXCERPT}
+        for i in range(n_clusters)
+    ]
+    node_index = {f"agents/crew_{i}.py": i for i in range(n_clusters)}
+    communities = [{"community_id": i, "hub_paths": [f"agents/crew_{i}.py"]} for i in range(n_clusters)]
+    client = _StubClient(evidences, node_index, communities)
+
+    # One response shape that satisfies both Pass C's schema and Pass D's wiring
+    # schema at once — high confidence so needs_human never suppresses the fallback.
+    combined_response = LLMResponse(
+        content='{"is_agentic_system": true, "name": "Crew Setup", "frameworks": ["crewai"], '
+        '"entry_points": [], "confidence": "high", "framework": "llm_inferred", '
+        '"nodes": [{"alias": "a", "class_name": "A", "source_hint_file": "x.py"}], "edges": []}',
+        model="fake",
+    )
+    llm_client = FakeLLMClient(combined_response)
+
+    candidates = await discover_agentic_systems("snap-wiring-budget", "repo-wiring-budget", client, llm_client)
+
+    assert len(candidates) == n_clusters
+    wiring_found_count = sum(1 for c in candidates if c.get("wiring_block") is not None)
+    assert wiring_found_count == engine_module.MAX_WIRING_LLM_FALLBACK_CALLS, (
+        f"expected exactly MAX_WIRING_LLM_FALLBACK_CALLS clusters to get a wiring block via "
+        f"the fallback, got {wiring_found_count}"
+    )
+    expected_calls = n_clusters + engine_module.MAX_WIRING_LLM_FALLBACK_CALLS
+    assert len(llm_client.calls) == expected_calls, (
+        f"expected {expected_calls} total LLM calls (Pass C once per cluster + capped "
+        f"wiring fallback), got {len(llm_client.calls)}"
+    )
+
+
+class _RateLimitingLLMClient:
+    def __init__(self, responses, limit_after=1):
+        self.responses = list(responses)
+        self.limit_after = limit_after
+        self.calls = []
+
+    async def complete(self, messages, **kwargs):
+        self.calls.append(messages)
+        if len(self.calls) > self.limit_after:
+            raise RateLimitExceeded("prov", "model")
+        return self.responses.pop(0)
+
+
+@pytest.mark.asyncio
+async def test_discovery_paused_on_rate_limit() -> None:
+    from agent_eval_harness.discovery.engine import DiscoveryPaused
+    from agent_eval_harness.llm.client import RateLimitExceeded
+
+    evidences = [
+        {"rel_path": "agents/crew_0.py", "excerpt": CREWAI_EXCERPT},
+        {"rel_path": "agents/crew_1.py", "excerpt": CREWAI_EXCERPT},
+    ]
+    node_index = {"agents/crew_0.py": 0, "agents/crew_1.py": 1}
+    communities = [
+        {"community_id": 0, "hub_paths": ["agents/crew_0.py"]},
+        {"community_id": 1, "hub_paths": ["agents/crew_1.py"]},
+    ]
+    client = _StubClient(evidences, node_index, communities)
+
+    combined_response_0 = LLMResponse(
+        content='{"is_agentic_system": true, "name": "Crew 0", "frameworks": ["crewai"], '
+        '"entry_points": [], "confidence": "high", "framework": "llm_inferred", '
+        '"nodes": [{"alias": "a", "class_name": "A", "source_hint_file": "agents/crew_0.py"}], "edges": []}',
+        model="fake",
+    )
+    combined_response_1 = LLMResponse(
+        content='{"is_agentic_system": true, "name": "Crew 1", "frameworks": ["crewai"], '
+        '"entry_points": [], "confidence": "high", "framework": "llm_inferred", '
+        '"nodes": [{"alias": "b", "class_name": "B", "source_hint_file": "agents/crew_1.py"}], "edges": []}',
+        model="fake",
+    )
+
+    llm_client = _RateLimitingLLMClient([combined_response_0, combined_response_0, combined_response_1], limit_after=2)
+
+    with pytest.raises(DiscoveryPaused) as exc_info:
+        await discover_agentic_systems("snap", "repo", client, llm_client)
+
+    paused = exc_info.value
+    assert len(paused.candidates_so_far) == 1
+    assert paused.candidates_so_far[0]["name"] == "Crew 0"
+    assert paused.provider_id == "prov"
+
+    already_named = {"0": paused.candidates_so_far[0]}
+    new_llm_client = _RateLimitingLLMClient([combined_response_1, combined_response_1], limit_after=99)
+
+    candidates = await discover_agentic_systems("snap", "repo", client, new_llm_client, already_named=already_named)
+    assert len(candidates) == 2
+    assert candidates[0]["name"] == "Crew 0"
+    assert candidates[1]["name"] == "Crew 1"
+    assert len(new_llm_client.calls) == 2

@@ -638,6 +638,12 @@ declare global {
           files_indexed: number
           generated_at: string
         }>
+        summary: (snapshotId: string) => Promise<{
+          snapshot_id: string
+          chunk_count: number
+          has_bm25_stats: boolean
+          built: boolean
+        }>
         retrieve: (body: {
           snapshot_id: string
           query: string
@@ -813,8 +819,10 @@ declare global {
         }) => Promise<{ session_id: string }>
         listDiscoverySessions: (repoRef?: string, snapshotId?: string) => Promise<AEHDiscoverySession[]>
         getDiscoverySession: (sessionId: string) => Promise<AEHDiscoverySession>
+        resumeDiscoverySession: (sessionId: string, body?: { provider_id?: string | null; model_id?: string | null }) => Promise<{ success: boolean }>
         listDiscoveryCandidates: (sessionId: string) => Promise<AEHDiscoveryCandidate[]>
         updateDiscoveryCandidateVerdict: (candidateId: string, verdict: 'proposed' | 'confirmed' | 'rejected') => Promise<{ success: boolean }>
+        updateDiscoveryCandidateExcludedFiles: (candidateId: string, excludedFiles: string[]) => Promise<{ success: boolean }>
         startExpansion: (
           candidateId: string,
           body: {
@@ -822,9 +830,12 @@ declare global {
             model_id?: string | null
             node_budget?: number
             hop_cap?: number
+            classify_provider_id?: string | null
+            classify_model_id?: string | null
           }
         ) => Promise<{ session_id: string }>
         getExpansionSession: (sessionId: string) => Promise<AEHExpansionSession>
+        listExpansionSessions: (candidateId: string) => Promise<AEHExpansionSession[]>
         getExpansionMap: (sessionId: string) => Promise<AEHSystemMap>
         updateExpansionMap: (sessionId: string, map: AEHSystemMap) => Promise<{ success: boolean }>
       }
@@ -939,10 +950,11 @@ declare global {
     id: string
     repo_ref: string
     snapshot_id: string
-    status: 'running' | 'completed' | 'failed'
+    status: 'running' | 'completed' | 'failed' | 'paused_rate_limit'
     error: string | null
     created_at: string
     finished_at: string | null
+    pause_info: { reason: string; provider_id: string; model_id: string | null } | null
   }
 
   export interface AEHDiscoveryCandidate {
@@ -964,6 +976,9 @@ declare global {
       framework: string
       source: 'static' | 'llm_fallback'
     } | null
+    excluded_files: string[]
+    matched_files?: string[]
+    file_provenance?: Record<string, string>
   }
 
   export interface AEHExpansionSession {

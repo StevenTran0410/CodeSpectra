@@ -504,6 +504,7 @@ class DiscoverySessionResponse(BaseModel):
     error: str | None
     created_at: str
     finished_at: str | None
+    pause_info: dict | None = None
 
 
 class DiscoveryCandidateResponse(BaseModel):
@@ -520,10 +521,17 @@ class DiscoveryCandidateResponse(BaseModel):
     cluster_files: list[str] = []
     hub_paths: list[str] = []
     wiring_block: dict | None = None
+    excluded_files: list[str] = []
+    matched_files: list[str] = []
+    file_provenance: dict[str, str] = {}
 
 
 class UpdateVerdictRequest(BaseModel):
     verdict: str
+
+
+class UpdateExcludedFilesRequest(BaseModel):
+    excluded_files: list[str]
 
 
 @app.post("/api/discovery/sessions")
@@ -579,6 +587,7 @@ async def list_discovery_sessions(repo_ref: str | None = None, snapshot_id: str 
                 error=s["error"],
                 created_at=s["created_at"],
                 finished_at=s["finished_at"],
+                pause_info=s.get("pause_info"),
             )
             for s in sessions
         ]
@@ -600,6 +609,7 @@ async def get_discovery_session(session_id: str):
         error=session["error"],
         created_at=session["created_at"],
         finished_at=session["finished_at"],
+        pause_info=session.get("pause_info"),
     )
 
 
@@ -622,6 +632,9 @@ async def list_discovery_candidates(session_id: str):
                 cluster_files=c.get("cluster_files", []),
                 hub_paths=c.get("hub_paths", []),
                 wiring_block=c.get("wiring_block"),
+                excluded_files=c.get("excluded_files", []),
+                matched_files=c.get("matched_files", []),
+                file_provenance=c.get("file_provenance", {}),
             )
             for c in candidates
         ]
@@ -644,6 +657,56 @@ async def update_candidate_verdict(candidate_id: str, body: UpdateVerdictRequest
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/discovery/candidates/{candidate_id}/excluded-files")
+async def update_candidate_excluded_files_route(candidate_id: str, body: UpdateExcludedFilesRequest):
+    try:
+        await repository.update_candidate_excluded_files(candidate_id, body.excluded_files)
+        return {"success": True}
+    except Exception as e:
+        logger.error(f"Failed to update excluded files: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class ResumeDiscoveryRequest(BaseModel):
+    provider_id: str | None = None
+    model_id: str | None = None
+    backend_url: str | None = None
+    backend_token: str | None = None
+
+
+@app.post("/api/discovery/sessions/{session_id}/resume")
+async def resume_discovery(session_id: str, body: ResumeDiscoveryRequest):
+    session = await repository.get_discovery_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Discovery session not found")
+    if session["status"] != "paused_rate_limit":
+        raise HTTPException(
+            status_code=400, detail=f"Session is not paused (status={session['status']})"
+        )
+
+    config = AEHConfig.load()
+    backend_url = body.backend_url or config.backend_url
+    backend_token = body.backend_token or config.backend_token
+    pause_info = session.get("pause_info") or {}
+    provider_id = body.provider_id or pause_info.get("provider_id") or config.provider_id
+    model_id = body.model_id if body.model_id is not None else pause_info.get("model_id")
+
+    llm_client = CodeSpectraProxyClient(backend_url, backend_token, provider_id, model_id)
+    client = CodeSpectraClient(backend_url, backend_token)
+
+    existing = await repository.get_discovery_candidates(session_id)
+    already_named = {c["community_id"]: c for c in existing if c.get("community_id")}
+
+    await repository.resume_discovery_session(session_id)
+    asyncio.create_task(
+        run_discovery_background(
+            session_id, session["snapshot_id"], session["repo_ref"], client, llm_client,
+            already_named=already_named,
+        )
+    )
+    return {"success": True}
+
+
 @app.get("/health")
 async def health_check():
     return {"status": "ok"}
@@ -658,6 +721,8 @@ class ExpandCandidateRequest(BaseModel):
     backend_token: str | None = None
     node_budget: int = 40
     hop_cap: int = 3
+    classify_provider_id: str | None = None
+    classify_model_id: str | None = None
 
 
 async def run_expansion_background(
@@ -666,6 +731,7 @@ async def run_expansion_background(
     candidate: dict,
     client: CodeSpectraClient,
     llm_client: CodeSpectraProxyClient,
+    classify_llm_client: CodeSpectraProxyClient,
     node_budget: int,
     hop_cap: int,
 ):
@@ -674,7 +740,7 @@ async def run_expansion_background(
             snapshot_id,
             candidate,
             client,
-            llm_client,
+            classify_llm_client,
             node_budget=node_budget,
             hop_cap=hop_cap,
         )
@@ -716,6 +782,8 @@ async def run_expansion_background(
         await client.aclose()
         if hasattr(llm_client, "aclose"):
             await llm_client.aclose()
+        if classify_llm_client is not llm_client and hasattr(classify_llm_client, "aclose"):
+            await classify_llm_client.aclose()
 
 
 @app.post("/api/discovery/candidates/{candidate_id}/expand")
@@ -751,6 +819,16 @@ async def start_expansion(candidate_id: str, body: ExpandCandidateRequest):
 
         model_id = body.model_id or config.model_id
         llm_client = CodeSpectraProxyClient(backend_url, backend_token, provider_id, model_id)
+
+        classify_provider_id = body.classify_provider_id or provider_id
+        classify_model_id = body.classify_model_id or model_id
+        if classify_provider_id == provider_id and classify_model_id == model_id:
+            classify_llm_client = llm_client
+        else:
+            classify_llm_client = CodeSpectraProxyClient(
+                backend_url, backend_token, classify_provider_id, classify_model_id
+            )
+
         client = CodeSpectraClient(backend_url, backend_token)
 
         session_id = repository.new_id()
@@ -763,6 +841,7 @@ async def start_expansion(candidate_id: str, body: ExpandCandidateRequest):
                 candidate,
                 client,
                 llm_client,
+                classify_llm_client,
                 body.node_budget,
                 body.hop_cap,
             )
@@ -782,6 +861,11 @@ async def get_expansion_session(session_id: str):
     if not sess:
         raise HTTPException(status_code=404, detail="Expansion session not found.")
     return sess
+
+
+@app.get("/api/discovery/candidates/{candidate_id}/expansion-sessions")
+async def list_expansion_sessions(candidate_id: str):
+    return await repository.list_expansion_sessions_for_candidate(candidate_id)
 
 
 @app.get("/api/discovery/expansion-sessions/{session_id}/map")

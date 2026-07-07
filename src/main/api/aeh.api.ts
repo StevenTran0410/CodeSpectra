@@ -83,6 +83,10 @@ export function registerAEHHandlers(): void {
     aehClient().get(`/api/discovery/sessions/${sessionId}`)
   )
 
+  ipcMain.handle('aeh:resumeDiscoverySession', (_e, sessionId: string, body: unknown) =>
+    aehClient().post(`/api/discovery/sessions/${sessionId}/resume`, withBackendConnection(body ?? {}))
+  )
+
   ipcMain.handle('aeh:listDiscoveryCandidates', (_e, sessionId: string) =>
     aehClient().get(`/api/discovery/sessions/${sessionId}/candidates`)
   )
@@ -91,12 +95,20 @@ export function registerAEHHandlers(): void {
     aehClient().post(`/api/discovery/candidates/${candidateId}/verdict`, { verdict })
   )
 
+  ipcMain.handle('aeh:updateDiscoveryCandidateExcludedFiles', (_e, candidateId: string, excludedFiles: string[]) =>
+    aehClient().post(`/api/discovery/candidates/${candidateId}/excluded-files`, { excluded_files: excludedFiles })
+  )
+
   ipcMain.handle('aeh:startExpansion', (_e, candidateId: string, body: unknown) =>
     aehClient().post(`/api/discovery/candidates/${candidateId}/expand`, withBackendConnection(body))
   )
 
   ipcMain.handle('aeh:getExpansionSession', (_e, sessionId: string) =>
     aehClient().get(`/api/discovery/expansion-sessions/${sessionId}`)
+  )
+
+  ipcMain.handle('aeh:listExpansionSessions', (_e, candidateId: string) =>
+    aehClient().get(`/api/discovery/candidates/${candidateId}/expansion-sessions`)
   )
 
   ipcMain.handle('aeh:getExpansionMap', (_e, sessionId: string) =>

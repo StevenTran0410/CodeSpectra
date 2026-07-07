@@ -10,13 +10,17 @@ from typing import Any
 import yaml
 
 from agent_eval_harness.discovery.client import CodeSpectraClient
-from agent_eval_harness.llm.client import LLMClient, LLMMessage
+from agent_eval_harness.llm.client import LLMClient, LLMMessage, RateLimitExceeded
 from agent_eval_harness.store import repository
 
 logger = logging.getLogger("agent_eval_harness.discovery.engine")
 
 # LLM budget limit: cap how many clusters get a real LLM call to save tokens.
 MAX_LLM_SYNTHESIZED_CLUSTERS = 12
+
+# Separate, smaller budget for Pass D's wiring-detection LLM fallback (static
+# detection is free and always tried first; this only bounds the escalation).
+MAX_WIRING_LLM_FALLBACK_CALLS = 5
 
 
 def load_fingerprints() -> list[dict[str, Any]]:
@@ -42,11 +46,23 @@ def _encode_hits_toon(hits: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+class DiscoveryPaused(Exception):
+    """Raised when a sustained rate limit interrupts Pass C/D. Carries every cluster that
+    finished successfully before the pause, so the caller can persist progress and resume
+    without re-synthesizing clusters that are already done."""
+    def __init__(self, candidates_so_far: list[dict], provider_id: str, model_id: str | None) -> None:
+        super().__init__(f"Discovery paused: rate limit on provider={provider_id} model={model_id}")
+        self.candidates_so_far = candidates_so_far
+        self.provider_id = provider_id
+        self.model_id = model_id
+
+
 async def discover_agentic_systems(
     snapshot_id: str,
     repo_ref: str,
     client: CodeSpectraClient,
     llm_client: LLMClient,
+    already_named: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     logger.info("Starting AEH Discovery Pass A: Fingerprinting scan...")
     fingerprints = load_fingerprints()
@@ -87,6 +103,7 @@ async def discover_agentic_systems(
                             "framework": framework,
                             "weight": weight,
                             "token_estimate": len(entry["excerpt"]) // 4,
+                            "chunk_id": entry.get("chunk_id"),
                         })
         except Exception as exc:
             logger.warning(f"Query failed for fingerprint {fp_id}: {exc}")
@@ -187,8 +204,14 @@ async def discover_agentic_systems(
         logger.warning(f"Could not retrieve sibling CA report: {exc}")
 
     candidates = []
+    wiring_llm_fallback_used = 0
     for rank, cluster in enumerate(candidate_clusters):
         cid = cluster["community_id"]
+        cid_str = str(cid)
+        if already_named and cid_str in already_named:
+            candidates.append(already_named[cid_str])
+            continue
+
         sorted_hits = sorted(cluster["hits"], key=lambda h: h["weight"], reverse=True)
         top_hits = sorted_hits[:15]
 
@@ -277,6 +300,8 @@ async def discover_agentic_systems(
                 candidate_profile["frameworks"] = parsed.get("frameworks") or cluster["frameworks"] or ["unknown"]
                 candidate_profile["entry_points"] = parsed.get("entry_points") or cluster["hub_paths"][:2]
                 candidate_profile["confidence"] = parsed.get("confidence") or "low"
+        except RateLimitExceeded as rle:
+            raise DiscoveryPaused(candidates, rle.provider_id, rle.model_id) from rle
         except Exception as exc:
             logger.warning(f"LLM synthesis failed for cluster {cid}: {exc}. Using fallback.")
 
@@ -295,10 +320,30 @@ async def discover_agentic_systems(
                 logger.warning(f"Failed to read {path} for wiring detection: {e}")
 
         from agent_eval_harness.discovery.wiring import detect_wiring_block
-        wiring_block = await detect_wiring_block(file_contents, llm_client)
+        # Static detection is always attempted (free); the LLM fallback is only
+        # allowed for candidates worth naming, within its own separate budget.
+        allow_wiring_llm_fallback = (
+            not candidate_profile["needs_human"]
+            and wiring_llm_fallback_used < MAX_WIRING_LLM_FALLBACK_CALLS
+        )
+        try:
+            wiring_block = await detect_wiring_block(
+                file_contents, llm_client if allow_wiring_llm_fallback else None
+            )
+        except RateLimitExceeded as rle:
+            raise DiscoveryPaused(candidates, rle.provider_id, rle.model_id) from rle
+
+        if wiring_block and wiring_block.source == "llm_fallback":
+            wiring_llm_fallback_used += 1
         candidate_profile["wiring_block"] = wiring_block.to_dict() if wiring_block else None
 
         candidates.append(candidate_profile)
+
+    try:
+        from agent_eval_harness.discovery.consolidation import consolidate_candidates
+        candidates = await consolidate_candidates(candidates, client, snapshot_id, llm_client)
+    except RateLimitExceeded as rle:
+        raise DiscoveryPaused(candidates, rle.provider_id, rle.model_id) from rle
 
     return candidates
 
@@ -309,14 +354,21 @@ async def run_discovery_background(
     repo_ref: str,
     client: CodeSpectraClient,
     llm_client: LLMClient,
+    already_named: dict[str, dict] | None = None,
 ) -> None:
     """Executes discovery process asynchronously and stores the output candidates in the DB."""
     try:
         try:
-            candidates = await discover_agentic_systems(snapshot_id, repo_ref, client, llm_client)
-            await repository.insert_discovery_candidates_bulk(session_id, candidates)
+            candidates = await discover_agentic_systems(
+                snapshot_id, repo_ref, client, llm_client, already_named=already_named
+            )
+            await repository.replace_discovery_candidates(session_id, candidates)
             await repository.finish_discovery_session(session_id, "completed")
             logger.info(f"Discovery session {session_id} completed successfully.")
+        except DiscoveryPaused as p:
+            await repository.replace_discovery_candidates(session_id, p.candidates_so_far)
+            await repository.pause_discovery_session(session_id, p.provider_id, p.model_id)
+            logger.info(f"Discovery session {session_id} paused on rate limit (provider={p.provider_id}).")
         except Exception as e:
             err_msg = "".join(traceback.format_exception(None, e, e.__traceback__))
             logger.error(f"Discovery session {session_id} failed: {e}\n{err_msg}")

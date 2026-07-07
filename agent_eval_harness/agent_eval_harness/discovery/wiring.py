@@ -3,6 +3,7 @@ from dataclasses import dataclass, asdict
 import json
 import logging
 from typing import Any
+from agent_eval_harness.llm.client import RateLimitExceeded, LLMMessage
 
 logger = logging.getLogger("agent_eval_harness.discovery.wiring")
 
@@ -181,6 +182,24 @@ def _flatten_bitor(node: ast.AST, sub_nodes_set: set[ast.AST]) -> list[ast.AST]:
     return [node]
 
 
+_BUILTIN_TYPE_NAMES = frozenset({
+    "str", "int", "float", "bool", "dict", "list", "set", "tuple",
+    "bytes", "bytearray", "complex", "object", "frozenset", "type", "Any", "None",
+})
+
+
+def _looks_like_type_union(operands: list) -> bool:
+    """PEP 604 unions (`str | None`) parse to the same BinOp/BitOr AST shape as a
+    LangChain LCEL chain — reject anything containing a bare constant (the `None`
+    in `X | None`) or a builtin type name, since a real pipe chain never does."""
+    for op in operands:
+        if isinstance(op, ast.Constant):
+            return True
+        if isinstance(op, ast.Name) and op.id in _BUILTIN_TYPE_NAMES:
+            return True
+    return False
+
+
 def _detect_langchain_lcel(file_contents: dict[str, str]) -> WiringBlock | None:
     nodes = {}
     edges = []
@@ -199,7 +218,7 @@ def _detect_langchain_lcel(file_contents: dict[str, str]) -> WiringBlock | None:
                     continue
                     
                 operands = _flatten_bitor(node, processed_binops)
-                if len(operands) >= 2:
+                if len(operands) >= 2 and not _looks_like_type_union(operands):
                     operand_nodes = []
                     for idx, op in enumerate(operands):
                         alias = None
@@ -336,6 +355,8 @@ async def _detect_via_llm(file_contents: dict[str, str], llm_client: Any) -> Wir
             framework=parsed.get("framework") or "llm_inferred",
             source="llm_fallback",
         )
+    except RateLimitExceeded:
+        raise
     except Exception as exc:
         logger.warning("LLM fallback wiring detection failed: %s", exc)
         return None

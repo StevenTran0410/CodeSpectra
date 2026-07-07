@@ -30,3 +30,12 @@ class LLMClient(Protocol):
         temperature: float | None = 0.2,
         json_mode: bool = False,
     ) -> LLMResponse: ...
+
+
+class RateLimitExceeded(Exception):
+    """Raised once CodeSpectraProxyClient's retry/backoff is exhausted on a 429 — a
+    sustained rate limit, not a transient blip. Callers should pause, not silently degrade."""
+    def __init__(self, provider_id: str, model_id: str | None) -> None:
+        super().__init__(f"Rate limit exceeded for provider={provider_id} model={model_id}")
+        self.provider_id = provider_id
+        self.model_id = model_id

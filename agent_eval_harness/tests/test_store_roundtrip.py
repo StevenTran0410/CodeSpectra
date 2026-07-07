@@ -117,6 +117,7 @@ async def test_discovery_candidates_persistence() -> None:
                 "framework": "haystack",
                 "source": "static",
             },
+            "excluded_files": ["bad_file.py"],
         }
     ]
     await repository.insert_discovery_candidates_bulk(session_id, candidates)
@@ -129,6 +130,13 @@ async def test_discovery_candidates_persistence() -> None:
     assert c["evidence"] == [{"file": "app.py", "snippet": "import haystack", "token_estimate": 4}]
     assert c["confidence"] == "high"
     assert c["verdict"] == "proposed"
+    assert c["excluded_files"] == ["bad_file.py"]
+
+    # Test update
+    await repository.update_candidate_excluded_files(c["id"], ["bad_file.py", "another.py"])
+    updated = await repository.get_discovery_candidate(c["id"])
+    assert updated is not None
+    assert updated["excluded_files"] == ["bad_file.py", "another.py"]
     assert c["needs_human"] is False
     assert c["community_id"] == "42"
     assert c["cluster_files"] == ["app.py", "utils.py"]
@@ -155,4 +163,30 @@ async def test_list_discovery_sessions_finds_session_by_snapshot_id_even_when_re
     # snapshot_id filtering must find it regardless.
     by_snapshot_id = await repository.list_discovery_sessions(snapshot_id="snap-mismatch-test")
     assert session_id in [s["id"] for s in by_snapshot_id]
+
+
+async def test_discovery_session_pause_resume_roundtrip() -> None:
+    session_id = await repository.insert_discovery_session("repo-test", "snap-test")
+    session = await repository.get_discovery_session(session_id)
+    assert session is not None
+    assert session["status"] == "running"
+    assert session["pause_info"] is None
+
+    # Pause it
+    await repository.pause_discovery_session(session_id, "prov-123", "model-abc")
+    paused = await repository.get_discovery_session(session_id)
+    assert paused is not None
+    assert paused["status"] == "paused_rate_limit"
+    assert paused["pause_info"] == {
+        "reason": "rate_limited",
+        "provider_id": "prov-123",
+        "model_id": "model-abc",
+    }
+
+    # Resume it
+    await repository.resume_discovery_session(session_id)
+    resumed = await repository.get_discovery_session(session_id)
+    assert resumed is not None
+    assert resumed["status"] == "running"
+    assert resumed["pause_info"] is None
 

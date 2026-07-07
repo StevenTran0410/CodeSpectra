@@ -12,6 +12,7 @@ export default function LLMConfigModal({
   providerId,
   modelId,
   onChange,
+  onConfirmResume,
   title = 'LLM Model (this stage only)',
 }: {
   isOpen: boolean
@@ -19,6 +20,7 @@ export default function LLMConfigModal({
   providerId: string
   modelId: string
   onChange: (providerId: string, modelId: string) => void
+  onConfirmResume?: () => void
   title?: string
 }): React.ReactElement | null {
   const { providers, load, fetchModels, modelLists, loadingModels, modelErrors } = useProviderStore()
@@ -92,8 +94,11 @@ export default function LLMConfigModal({
             <div className="text-[11px] text-rose-400 mt-1">{modelErrors[providerId]}</div>
           )}
         </div>
-        <div className="flex justify-end pt-2">
-          <Button variant="primary" onClick={onClose} className="text-xs px-4 py-2">Done</Button>
+        <div className="flex justify-end gap-2 pt-2">
+          {onConfirmResume && (
+            <Button variant="primary" onClick={onConfirmResume} className="text-xs px-4 py-2">Confirm & Resume</Button>
+          )}
+          <Button variant={onConfirmResume ? 'secondary' : 'primary'} onClick={onClose} className="text-xs px-4 py-2">Done</Button>
         </div>
       </div>
     </div>,
