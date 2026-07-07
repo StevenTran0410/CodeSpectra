@@ -35,13 +35,7 @@ pipeline.connect("prompt_builder.prompt", "llm.prompt")
 
 
 def test_detect_haystack_resolves_wrapped_component_to_its_real_file():
-    """Factory/wrapper pattern: every component is registered from one orchestrator
-    file via one shared wrapper class (`_SectionAgentComponent`), with the real
-    per-section agent passed as a nested constructor call. Naively using the
-    wrapper's own file/class name makes every node identical — must instead resolve
-    the nested class (`ConventionsAgent`/`RiskAgent`) by searching the OTHER cluster
-    files for where that class is actually defined, so distinct components don't
-    collapse into one indistinguishable node."""
+    """Factory/wrapper pattern: nested class must resolve to its own file, not the shared wrapper's."""
     orchestrator_code = """
 from .agents.agent_conventions import ConventionsAgent
 from .agents.agent_risk import RiskAgent
@@ -71,10 +65,7 @@ pipeline.connect("conventions.output", "risk.input")
 
 
 def test_detect_haystack_resolves_self_attr_closure_to_its_real_file():
-    """The actual real-world pattern found in production: the real agent is
-    constructed once (e.g. in __init__) and assigned to self.<attr>, then merely
-    REFERENCED later via a closure/lambda inside add_component()'s arguments —
-    there is no nested constructor call at the add_component() site at all."""
+    """Agent built in __init__, only referenced via closure/lambda at add_component() — must still resolve to its own file."""
     orchestrator_code = """
 class Pipeline:
     def __init__(self):
@@ -110,10 +101,7 @@ class Pipeline:
 
 
 def test_detect_haystack_falls_back_to_current_file_when_class_unresolvable():
-    """No nested call, no self.attr closure, or the nested class isn't defined
-    anywhere in the available files — must gracefully fall back to today's
-    behavior (the file where add_component() itself is called), never raise,
-    never leave source_hint_file empty."""
+    """Unresolvable nested class must fall back to the calling file, never raise or leave source_hint_file empty."""
     code = """
 pipeline.add_component("writer", _SectionAgentComponent(agent=UnknownAgent()))
 """
@@ -126,11 +114,7 @@ pipeline.add_component("writer", _SectionAgentComponent(agent=UnknownAgent()))
 
 
 def test_detect_haystack_ignores_plain_helper_call_as_constructor_argument():
-    """`RetrieverComponent(_load_corpus())` — a plain lowercase helper function
-    call passed as a positional argument — must NOT be mistaken for a nested
-    wrapped component. This is the regression this fix must never reintroduce:
-    an ordinary, unwrapped add_component() call must resolve to the outer class
-    and the calling file, exactly as before this fix existed."""
+    """A plain helper-call constructor arg must not be mistaken for a wrapped component (regression guard)."""
     code = """
 pipeline.add_component("retriever", RetrieverComponent(_load_corpus()))
 """

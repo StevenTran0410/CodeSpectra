@@ -45,10 +45,6 @@ export function registerAEHHandlers(): void {
     aehClient().get(`/api/traces/${traceId}`)
   )
 
-  ipcMain.handle('aeh:datasetCases', (_e, datasetId: string) =>
-    aehClient().get(`/api/datasets/${datasetId}/cases`)
-  )
-
   ipcMain.handle('aeh:providers', () => {
     // backend_url/backend_token must ride in query string as AEH's /api/providers is a GET request.
     const port = getBackendPort()

@@ -5,12 +5,10 @@ import {
   AlertCircle,
   Sparkles,
   Save,
-  CheckCircle2,
   ArrowLeft,
   Settings,
   Plus,
   Trash2,
-  HelpCircle,
   Layers,
 } from 'lucide-react'
 import { Button, Select, Badge, useToastStore } from '../../components/ui'
@@ -102,6 +100,17 @@ export default function Stage3Screen(): React.ReactElement {
     }
   }, [snapshotId, loadConfirmedCandidates])
 
+  // Adopt a freshly fetched/generated plan suite into local editable state.
+  const applyPlanSuite = (suite: AEHPlanSuite) => {
+    setPlanSuite(suite)
+    setLocalEntries(suite.entries || [])
+    setOriginalEntries(JSON.parse(JSON.stringify(suite.entries || [])))
+    setInvalidJsonIndices({})
+    const ps: Record<number, string> = {}
+    ;(suite.entries || []).forEach((e: AEHPlanEntry, i: number) => { ps[i] = JSON.stringify(e.params || {}) })
+    setParamsStrings(ps)
+  }
+
   // Fetch expansion session, system map and plan for candidate
   useEffect(() => {
     if (!selectedCandidateId) return
@@ -139,14 +148,7 @@ export default function Stage3Screen(): React.ReactElement {
           setLoadingPlan(true)
           try {
             const suite = await window.api.aeh.getPlan(latest.id)
-            if (!cancelled) {
-              setPlanSuite(suite)
-              setLocalEntries(suite.entries || [])
-              setOriginalEntries(JSON.parse(JSON.stringify(suite.entries || [])))
-              const ps: Record<number, string> = {}
-              ;(suite.entries || []).forEach((e: AEHPlanEntry, i: number) => { ps[i] = JSON.stringify(e.params || {}) })
-              setParamsStrings(ps)
-            }
+            if (!cancelled) applyPlanSuite(suite)
           } catch (planErr: any) {
             // Plan not found or error loading
             if (!cancelled) {
@@ -191,13 +193,7 @@ export default function Stage3Screen(): React.ReactElement {
         model_id: selectedModelId || null,
       })
       toast.success('Plan suite generated successfully.')
-      setPlanSuite(suite)
-      setLocalEntries(suite.entries || [])
-      setOriginalEntries(JSON.parse(JSON.stringify(suite.entries || [])))
-      setInvalidJsonIndices({})
-      const ps: Record<number, string> = {}
-      ;(suite.entries || []).forEach((e: AEHPlanEntry, i: number) => { ps[i] = JSON.stringify(e.params || {}) })
-      setParamsStrings(ps)
+      applyPlanSuite(suite)
     } catch (err: any) {
       setError(err?.message ?? 'Failed to generate plan.')
       toast.error(err?.message ?? 'Plan generation failed.')
@@ -228,13 +224,7 @@ export default function Stage3Screen(): React.ReactElement {
 
       // Re-fetch plan to refresh provenance values
       const suite = await window.api.aeh.getPlan(expansionSession.id)
-      setPlanSuite(suite)
-      setLocalEntries(suite.entries || [])
-      setOriginalEntries(JSON.parse(JSON.stringify(suite.entries || [])))
-      setInvalidJsonIndices({})
-      const ps: Record<number, string> = {}
-      ;(suite.entries || []).forEach((e: AEHPlanEntry, i: number) => { ps[i] = JSON.stringify(e.params || {}) })
-      setParamsStrings(ps)
+      applyPlanSuite(suite)
     } catch (err: any) {
       toast.error(err?.message ?? 'Failed to save changes.')
     } finally {

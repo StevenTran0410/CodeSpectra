@@ -37,63 +37,44 @@ class SystemMapBuilder:
 
         files, composed_import_names = self._discover_source_files(target_path)
 
-        # Pass 1: Scan
+        # Pass 1: Scan, keeping only candidates defined inside target dir or referenced compositionally
         all_candidates = self._scanner.scan(files)
-
-        # Filter candidates: keep defined inside target dir or referenced compositionally.
         candidates = [
             c for c in all_candidates
             if c.file in original_target_files or c.class_name in composed_import_names
         ]
 
-        # Pass 2: Classify roles
-        role_classifications = await classify_roles(candidates, self._llm_client, self._threshold)
-
-        # Pass 3: Extract topology
-        topology_map = extract_topology(files, candidates)
-
-        # Pass 4a: Mine static constraints
         package_root = self._find_package_root(target_path)
-        constraint_map = mine_constraints(files, candidates, package_root)
-
-        # Pass 4b: Mine LLM-based constraints
-        constraint_map = await mine_constraints_llm_phase(
-            candidates, self._llm_client, constraint_map
+        return await self._build_from_candidates(
+            candidates, files, package_root, target_path.name, docs_path
         )
-
-        # Assemble components
-        components = self._assemble_components(
-            candidates, role_classifications, topology_map, constraint_map, package_root
-        )
-
-        # Reconcile docs (if provided)
-        discrepancies = await self._reconcile_docs(docs_path, components) if docs_path else []
-
-        # Create and validate system map
-        system_map = SystemMap.model_validate({
-            "target_system_id": target_path.name,
-            "components": [c.model_dump() for c in components],
-            "discrepancies": discrepancies,
-        })
-
-        summary = self._build_summary(system_map, role_classifications)
-
-        return system_map, summary
 
     async def build_from_files(
         self, files: list[Path], package_root: Path, target_system_id: str, docs_path: Path | None = None
     ) -> tuple[SystemMap, str]:
         """Same as build(), but the caller supplies the exact file set directly instead of a directory glob."""
         all_candidates = self._scanner.scan(files)
+        return await self._build_from_candidates(
+            all_candidates, files, package_root, target_system_id, docs_path
+        )
 
-        role_classifications = await classify_roles(all_candidates, self._llm_client, self._threshold)
-        topology_map = extract_topology(files, all_candidates)
-        constraint_map = mine_constraints(files, all_candidates, package_root)
+    async def _build_from_candidates(
+        self,
+        candidates: list[CandidateComponent],
+        files: list[Path],
+        package_root: Path,
+        target_system_id: str,
+        docs_path: Path | None,
+    ) -> tuple[SystemMap, str]:
+        """Passes 2-6: role classification through system map assembly, shared by build() and build_from_files()."""
+        role_classifications = await classify_roles(candidates, self._llm_client, self._threshold)
+        topology_map = extract_topology(files, candidates)
+        constraint_map = mine_constraints(files, candidates, package_root)
         constraint_map = await mine_constraints_llm_phase(
-            all_candidates, self._llm_client, constraint_map
+            candidates, self._llm_client, constraint_map
         )
         components = self._assemble_components(
-            all_candidates, role_classifications, topology_map, constraint_map, package_root
+            candidates, role_classifications, topology_map, constraint_map, package_root
         )
         discrepancies = await self._reconcile_docs(docs_path, components) if docs_path else []
         system_map = SystemMap.model_validate({

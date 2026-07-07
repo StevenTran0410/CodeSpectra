@@ -1,18 +1,13 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import {
   Loader2,
   AlertCircle,
   Play,
   ArrowLeft,
-  Sparkles,
   Save,
   CheckCircle2,
-  FileText,
   Workflow,
-  HelpCircle,
-  Shield,
-  Layers,
 } from 'lucide-react'
 import { Button, Select, Badge, useToastStore } from '../../components/ui'
 import {
@@ -23,7 +18,8 @@ import '@xyflow/react/dist/style.css'
 import { getDagreGraphLayout } from './graphLayout'
 import { useAEHStore } from '../../store/aeh.store'
 import { useProviderStore } from '../../store/provider.store'
-import LLMConfigModal from './LLMConfigModal'
+import LLMConfigModal, { LLMModelButton } from './LLMConfigModal'
+import { useSessionPolling } from './useSessionPolling'
 // AEHDiscoveryCandidate/AEHExpansionSession/AEHSystemMap/AEHSystemMapComponent are global ambient types.
 
 const VALID_ROLES = [
@@ -67,7 +63,6 @@ export default function Stage2Screen(): React.ReactElement {
   const [expansionSession, setExpansionSession] = useState<AEHExpansionSession | null>(null)
   const [running, setRunning] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // LLM Config
   const [selectedProviderId, setSelectedProviderId] = useState('')
@@ -135,35 +130,26 @@ export default function Stage2Screen(): React.ReactElement {
   }, [candidates, selectedCandidateId])
 
   // Start polling
-  const startPolling = useCallback((sessionId: string) => {
-    if (pollRef.current) clearInterval(pollRef.current)
-    pollRef.current = setInterval(async () => {
-      try {
-        const session = await window.api.aeh.getExpansionSession(sessionId)
-        setExpansionSession(session)
-        if (session.status !== 'running') {
-          if (pollRef.current) clearInterval(pollRef.current)
-          setRunning(false)
-          if (session.status === 'completed') {
-            toast.success('Expansion complete. Loading system map...')
-            const map = await window.api.aeh.getExpansionMap(sessionId)
-            setSystemMap(map)
-          } else if (session.status === 'failed') {
-            setError(session.error ?? 'Expansion failed.')
-          }
-        }
-      } catch (err) {
-        if (pollRef.current) clearInterval(pollRef.current)
-        setRunning(false)
-        setError('Error polling expansion status.')
+  const startPolling = useSessionPolling<AEHExpansionSession>({
+    fetchSession: (sessionId) => window.api.aeh.getExpansionSession(sessionId),
+    onUpdate: setExpansionSession,
+    onDone: async (session) => {
+      setRunning(false)
+      if (session.status === 'completed') {
+        toast.success('Expansion complete. Loading system map...')
+        const map = await window.api.aeh.getExpansionMap(session.id)
+        setSystemMap(map)
+      } else if (session.status === 'failed') {
+        setError(session.error ?? 'Expansion failed.')
       }
-    }, 2000)
-  }, [toast])
+    },
+    onError: () => {
+      setRunning(false)
+      setError('Error polling expansion status.')
+    },
+  })
 
-  useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current) }, [])
-
-  // Load the most recent expansion session/map for the selected candidate — without this,
-  // navigating away and back always starts from a blank slate even after a completed run.
+  // Restore the latest session/map for this candidate so navigating back isn't a blank slate.
   useEffect(() => {
     if (!selectedCandidateId) return
     let cancelled = false
@@ -194,21 +180,24 @@ export default function Stage2Screen(): React.ReactElement {
     }
   }, [selectedCandidateId, startPolling])
 
-  // Dynamic node budget based on candidate size:
-  //   < 20 known files  → 100  (base, ~2.5× old limit)
-  //   20–79 known files → 200  (large system)
-  //   ≥ 80 known files  → 400  (very large system)
-  const computeNodeBudget = (candidate: AEHDiscoveryCandidate | null): number => {
-    if (!candidate) return 100
-    const totalFiles = new Set([
+  const countKnownFiles = (candidate: AEHDiscoveryCandidate | null): number => {
+    if (!candidate) return 0
+    return new Set([
       ...candidate.cluster_files,
       ...candidate.hub_paths,
       ...(candidate.matched_files ?? []),
     ]).size
+  }
+
+  // Node budget scales with candidate size: <20 files→100, 20-79→200, ≥80→400.
+  const budgetForFileCount = (totalFiles: number): number => {
     if (totalFiles >= 80) return 400
     if (totalFiles >= 20) return 200
     return 100
   }
+
+  const computeNodeBudget = (candidate: AEHDiscoveryCandidate | null): number =>
+    budgetForFileCount(countKnownFiles(candidate))
 
   // Trigger Expansion
   const handleRunExpansion = async () => {
@@ -285,19 +274,13 @@ export default function Stage2Screen(): React.ReactElement {
         </div>
 
         <div className="flex items-center gap-3">
-          <button
-            onClick={() => setLlmConfigOpen(true)}
+          <LLMModelButton
+            providerId={selectedProviderId}
+            modelId={selectedModelId}
+            providers={providers}
             disabled={running}
-            className={`text-[10px] h-7 px-2.5 rounded-md border font-mono transition-colors ${
-              selectedProviderId
-                ? 'border-slate-700 bg-slate-950 text-slate-300 hover:border-slate-500'
-                : 'border-red-900/30 bg-red-950/40 text-red-400 hover:border-red-700/50'
-            }`}
-          >
-            {selectedProviderId
-              ? `Model: ${selectedModelId || providers.find((p) => p.id === selectedProviderId)?.display_name || '?'}`
-              : 'No LLM Configured'}
-          </button>
+            onClick={() => setLlmConfigOpen(true)}
+          />
           <LLMConfigModal
             isOpen={llmConfigOpen}
             onClose={() => setLlmConfigOpen(false)}
@@ -310,19 +293,16 @@ export default function Stage2Screen(): React.ReactElement {
             title="Expansion Model (this stage only)"
           />
 
-          <button
-            onClick={() => setClassifyLlmConfigOpen(true)}
+          <LLMModelButton
+            providerId={classifyProviderId}
+            modelId={classifyModelId}
+            providers={providers}
             disabled={running}
-            className={`text-[10px] h-7 px-2.5 rounded-md border font-mono transition-colors ${
-              classifyProviderId
-                ? 'border-slate-700 bg-slate-950 text-slate-300 hover:border-slate-500'
-                : 'border-slate-800 bg-slate-950/30 text-slate-500 hover:border-slate-700'
-            }`}
-          >
-            {classifyProviderId
-              ? `Classifier: ${classifyModelId || providers.find((p) => p.id === classifyProviderId)?.display_name || '?'}`
-              : 'Classifier: Default'}
-          </button>
+            onClick={() => setClassifyLlmConfigOpen(true)}
+            labelPrefix="Classifier"
+            emptyLabel="Classifier: Default"
+            emptyVariant="neutral"
+          />
           <LLMConfigModal
             isOpen={classifyLlmConfigOpen}
             onClose={() => setClassifyLlmConfigOpen(false)}
@@ -356,14 +336,8 @@ export default function Stage2Screen(): React.ReactElement {
 
           {/* Node budget badge */}
           {(() => {
-            const budget = computeNodeBudget(activeCandidate)
-            const totalFiles = activeCandidate
-              ? new Set([
-                  ...activeCandidate.cluster_files,
-                  ...activeCandidate.hub_paths,
-                  ...(activeCandidate.matched_files ?? []),
-                ]).size
-              : 0
+            const totalFiles = countKnownFiles(activeCandidate)
+            const budget = budgetForFileCount(totalFiles)
             const tier = budget === 400 ? 'XL' : budget === 200 ? 'LG' : 'SM'
             const colorClass =
               budget === 400

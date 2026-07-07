@@ -24,6 +24,16 @@ from agent_eval_harness.store.database import close_db, init_db  # noqa: E402
 from test_targets._shared.defects import DefectConfig  # noqa: E402
 
 
+def _add_provider_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--provider-id", dest="provider_id", default=None)
+    parser.add_argument("--backend-url", dest="backend_url", default=None)
+    parser.add_argument("--backend-token", dest="backend_token", default=None)
+
+
+def _add_data_dir_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--data-dir", dest="data_dir", default=None)
+
+
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="aeh")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -36,16 +46,14 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--query", help="single query string")
     run_parser.add_argument("--input-file", dest="input_file", help="file of queries, one per line")
     run_parser.add_argument("--tier", default="auto", choices=["auto", "1", "2"])
-    run_parser.add_argument("--provider-id", dest="provider_id", default=None)
-    run_parser.add_argument("--backend-url", dest="backend_url", default=None)
-    run_parser.add_argument("--backend-token", dest="backend_token", default=None)
+    _add_provider_args(run_parser)
     run_parser.add_argument(
         "--unmatched-warn-threshold",
         dest="unmatched_warn_threshold",
         type=float,
         default=DEFAULT_UNMATCHED_WARN_THRESHOLD,
     )
-    run_parser.add_argument("--data-dir", dest="data_dir", default=None)
+    _add_data_dir_arg(run_parser)
     run_parser.add_argument("--json", action="store_true")
 
     # dataset parser group
@@ -64,17 +72,15 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--config", required=True, help="Path to generator configuration YAML file"
     )
     gen_parser.add_argument("--seed", type=int, default=None, help="Random seed for generation")
-    gen_parser.add_argument("--provider-id", dest="provider_id", default=None)
-    gen_parser.add_argument("--backend-url", dest="backend_url", default=None)
-    gen_parser.add_argument("--backend-token", dest="backend_token", default=None)
-    gen_parser.add_argument("--data-dir", dest="data_dir", default=None)
+    _add_provider_args(gen_parser)
+    _add_data_dir_arg(gen_parser)
 
     rev_parser = dataset_subparsers.add_parser("review", help="Review synthetic cases in a dataset")
     rev_parser.add_argument("dataset_id", help="Dataset ID to review")
-    rev_parser.add_argument("--data-dir", dest="data_dir", default=None)
+    _add_data_dir_arg(rev_parser)
 
     ls_parser = dataset_subparsers.add_parser("ls", help="List all datasets and their summaries")
-    ls_parser.add_argument("--data-dir", dest="data_dir", default=None)
+    _add_data_dir_arg(ls_parser)
 
     # eval subcommand group
     eval_parser = subparsers.add_parser("eval", help="Run an evaluation sweep against a target")
@@ -87,10 +93,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     eval_parser.add_argument("--suite", help="path to suite.yaml")
     eval_parser.add_argument("--plan", help="path to eval_plan.yaml (alias for --suite)")
     eval_parser.add_argument("--tier", default="auto", choices=["auto", "1", "2"])
-    eval_parser.add_argument("--provider-id", dest="provider_id", default=None)
-    eval_parser.add_argument("--backend-url", dest="backend_url", default=None)
-    eval_parser.add_argument("--backend-token", dest="backend_token", default=None)
-    eval_parser.add_argument("--data-dir", dest="data_dir", default=None)
+    _add_provider_args(eval_parser)
+    _add_data_dir_arg(eval_parser)
     eval_parser.add_argument("--concurrency", type=int, default=4)
     eval_parser.add_argument("--json", action="store_true")
 
@@ -101,20 +105,18 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     # validate subcommand: aeh plan validate --plan <path>
     validate_parser = plan_subparsers.add_parser("validate", help="Validate an evaluation plan")
     validate_parser.add_argument("--plan", required=True, help="path to eval_plan.yaml")
-    validate_parser.add_argument("--data-dir", dest="data_dir", default=None)
+    _add_data_dir_arg(validate_parser)
 
     # plan generator command (when plan_command is not validate)
     plan_parser.add_argument("--map", dest="map_path", help="path to system_map.yaml")
     plan_parser.add_argument("--output", dest="output_path", help="path to output eval_plan.yaml")
-    plan_parser.add_argument("--provider-id", dest="provider_id", default=None)
-    plan_parser.add_argument("--backend-url", dest="backend_url", default=None)
-    plan_parser.add_argument("--backend-token", dest="backend_token", default=None)
-    plan_parser.add_argument("--data-dir", dest="data_dir", default=None)
+    _add_provider_args(plan_parser)
+    _add_data_dir_arg(plan_parser)
 
     # report subcommand group
     report_parser = subparsers.add_parser("report", help="Print an evaluation report for a run")
     report_parser.add_argument("--run", dest="run_id", required=True, help="run ID to report on")
-    report_parser.add_argument("--data-dir", dest="data_dir", default=None)
+    _add_data_dir_arg(report_parser)
     report_parser.add_argument("--json", action="store_true")
 
     # map subcommand group
@@ -125,24 +127,20 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     map_parser.add_argument(
         "--confidence-threshold", dest="confidence_threshold", type=float, default=0.7
     )
-    map_parser.add_argument("--provider-id", dest="provider_id", default=None)
-    map_parser.add_argument("--backend-url", dest="backend_url", default=None)
-    map_parser.add_argument("--backend-token", dest="backend_token", default=None)
+    _add_provider_args(map_parser)
 
     # ui subcommand group
     ui_parser = subparsers.add_parser("ui", help="Start the evaluation dashboard web server")
     ui_parser.add_argument("--port", type=int, default=8321, help="Port to bind the server to")
     ui_parser.add_argument("--host", default="127.0.0.1", help="Host address to bind the server to")
-    ui_parser.add_argument("--data-dir", dest="data_dir", default=None)
+    _add_data_dir_arg(ui_parser)
 
     # discover subcommand group
     discover_parser = subparsers.add_parser("discover", help="Discover candidate agentic systems")
     discover_parser.add_argument("--snapshot", required=True, help="Snapshot ID to scan")
     discover_parser.add_argument("--repo-ref", help="Optional reference repository path/identifier")
-    discover_parser.add_argument("--provider-id", dest="provider_id", default=None)
-    discover_parser.add_argument("--backend-url", dest="backend_url", default=None)
-    discover_parser.add_argument("--backend-token", dest="backend_token", default=None)
-    discover_parser.add_argument("--data-dir", dest="data_dir", default=None)
+    _add_provider_args(discover_parser)
+    _add_data_dir_arg(discover_parser)
     discover_parser.add_argument("--json", action="store_true")
 
     return parser

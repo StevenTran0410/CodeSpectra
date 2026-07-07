@@ -9,12 +9,6 @@ from agent_eval_harness.mapping.builder.scanners import HaystackScanner
 from agent_eval_harness.mapping.builder.topology import extract_topology
 
 
-@pytest.fixture
-def target_root() -> Path:
-    """Path to test targets."""
-    return Path(__file__).parent.parent / "test_targets"
-
-
 class TestHaystackScanner:
     def test_haystack_scanner_finds_retriever_and_writer_in_t1(self, target_root: Path):
         """T1 (linear_rag) has 2 components: RetrieverComponent, WriterComponent."""
@@ -83,15 +77,7 @@ class TestHaystackScanner:
         worker_candidates = [c for c in candidates if c.class_name == "WorkerComponent"]
         assert len(worker_candidates) > 0
 
-        worker = worker_candidates[0]
-        # Worker has a manual_span with dynamic {"aeh.tool.name": tool_name}
-        # This should be filtered out
-        for hint in worker.manual_span_hints:
-            # If the hint's tags are empty, it means dynamic values were filtered
-            # The worker should not be split because of this
-            pass
-
-        # Worker should NOT be split
+        # Worker's manual_span has a dynamic {"aeh.tool.name": tool_name} tag, filtered out below
         worker_split_candidates = [
             c for c in candidates if c.class_name == "WorkerComponent" and c.tag_suffix
         ]

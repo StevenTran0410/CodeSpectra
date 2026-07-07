@@ -6,6 +6,7 @@ os.environ.setdefault("HAYSTACK_AUTO_TRACE_ENABLED", "false")
 
 import tempfile  # noqa: E402
 from collections.abc import AsyncGenerator, Iterator  # noqa: E402
+from pathlib import Path  # noqa: E402
 
 import pytest  # noqa: E402
 
@@ -28,3 +29,9 @@ def _isolate_aeh_config(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Tests must never be influenced by an ambient .aeh/config.yaml sitting in"""
     monkeypatch.setattr(AEHConfig, "load", classmethod(lambda cls, path=None: cls()))
     yield
+
+
+@pytest.fixture
+def target_root() -> Path:
+    """Path to test_targets/ (shared by map-builder unit/golden/robustness tests)."""
+    return Path(__file__).parent.parent / "test_targets"

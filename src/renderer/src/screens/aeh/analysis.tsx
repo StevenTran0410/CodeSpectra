@@ -22,10 +22,7 @@ import {
   ArrowRight,
   Play,
   Settings,
-  Layers,
   Loader2,
-  Workflow,
-  Sparkles,
 } from 'lucide-react'
 import type { RepoSnapshot, LocalRepo } from '../../types/electron'
 // AEHDiscoverySession/AEHDiscoveryCandidate are global ambient types.
@@ -74,9 +71,7 @@ function AnalysisOverview(): React.ReactElement {
   const [repoId, setRepoId] = useState(persistedConfig.repoId ?? '')
   const [snapshotId, setSnapshotId] = useState<string>(persistedConfig.snapshotId ?? '')
   const [snapshots, setSnapshots] = useState<RepoSnapshot[]>([])
-  const [loadingSnapshots, setLoadingSnapshots] = useState(false)
   const [reports, setReports] = useState<any[]>([])
-  const [loadingReports, setLoadingReports] = useState(false)
 
   // Statuses for indices
   const [manifestStatus, setManifestStatus] = useState<'loading' | 'built' | 'missing'>('loading')
@@ -119,7 +114,6 @@ function AnalysisOverview(): React.ReactElement {
     }
 
     const loadSnapshots = async () => {
-      setLoadingSnapshots(true)
       try {
         const list = await window.api.sync.listForRepo(repoId)
         setSnapshots(list)
@@ -136,8 +130,6 @@ function AnalysisOverview(): React.ReactElement {
         })
       } catch (err) {
         console.error('Failed to list snapshots', err)
-      } finally {
-        setLoadingSnapshots(false)
       }
     }
 
@@ -181,11 +173,9 @@ function AnalysisOverview(): React.ReactElement {
       setReports([])
       return
     }
-    setLoadingReports(true)
     window.api.analysis.listReports(siblingCARepo.id)
       .then((list) => setReports(list))
       .catch((err) => console.error('Failed to list CA reports', err))
-      .finally(() => setLoadingReports(false))
   }, [siblingCARepo])
 
   // Check index statuses when snapshotId changes

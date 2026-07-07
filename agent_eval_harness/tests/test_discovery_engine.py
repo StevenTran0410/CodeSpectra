@@ -191,10 +191,7 @@ async def test_llm_synthesis_budget_cap_marks_overflow_needs_human() -> None:
 
 @pytest.mark.asyncio
 async def test_wiring_llm_fallback_has_its_own_smaller_budget() -> None:
-    """Pass D's LLM fallback (wiring detection) must be capped separately from —
-    and smaller than — Pass C's naming budget, since it's a second LLM call per
-    cluster on top of naming. CREWAI_EXCERPT has no static wiring pattern, so
-    every cluster here falls through to the fallback unless the budget stops it."""
+    """Pass D's wiring-fallback LLM budget must be capped separately from, and smaller than, Pass C's."""
     from agent_eval_harness.discovery import engine as engine_module
 
     n_clusters = engine_module.MAX_WIRING_LLM_FALLBACK_CALLS + 3

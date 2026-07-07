@@ -23,7 +23,7 @@ from agent_eval_harness.discovery.expansion import expand_candidate
 from agent_eval_harness.mapping.builder.pipeline import SystemMapBuilder
 from agent_eval_harness.mapping.system_map import load_system_map, save_system_map, SystemMap
 from agent_eval_harness.store import repository
-from agent_eval_harness.store.database import close_db, init_db
+from agent_eval_harness.store.database import close_db, get_db, init_db
 
 logger = logging.getLogger("agent_eval_harness.ui.server")
 
@@ -54,7 +54,6 @@ app.add_middleware(
 )
 
 
-# Pydantic models for response serialization
 class RunListItem(BaseModel):
     id: str
     target_system_id: str
@@ -115,6 +114,13 @@ class TraceDetailResponse(BaseModel):
 
 # --- API Routes ---
 
+async def _get_run_or_404(run_id: str) -> dict:
+    run = await repository.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return run
+
+
 @app.get("/api/runs", response_model=list[RunListItem])
 async def get_runs(target_system_id: str | None = None):
     try:
@@ -149,9 +155,7 @@ async def get_runs(target_system_id: str | None = None):
 
 @app.get("/api/runs/{run_id}", response_model=RunDetailResponse)
 async def get_run_detail(run_id: str):
-    run = await repository.get_run(run_id)
-    if not run:
-        raise HTTPException(status_code=404, detail="Run not found")
+    run = await _get_run_or_404(run_id)
 
     # Load system map from map_path if possible
     system_map_dict = {
@@ -169,8 +173,6 @@ async def get_run_detail(run_id: str):
             logger.warning(f"Could not load system map from {run['map_path']}: {e}")
 
     # Fetch component aggregates
-    from agent_eval_harness.store.database import get_db
-
     db = get_db()
     async with db.execute(
         "SELECT component_id, COUNT(*) as total, "
@@ -195,7 +197,7 @@ async def get_run_detail(run_id: str):
         except Exception:
             pass
 
-    # Fetch overall pass rate from database (Fix 5)
+    # Fetch overall pass rate from database
     async with db.execute(
         "SELECT COALESCE("
         "CAST(SUM(CASE WHEN passed = 1 THEN 1 ELSE 0 END) AS REAL) / "
@@ -238,8 +240,6 @@ async def get_run_detail(run_id: str):
     response_model=list[EvaluationDetailItem],
 )
 async def get_component_evaluations(run_id: str, component_id: str):
-    from agent_eval_harness.store.database import get_db
-
     db = get_db()
     query = """
         SELECT
@@ -287,8 +287,6 @@ async def get_component_evaluations(run_id: str, component_id: str):
 
 @app.get("/api/traces/{trace_id}", response_model=TraceDetailResponse)
 async def get_trace_detail(trace_id: str):
-    from agent_eval_harness.store.database import get_db
-
     db = get_db()
     async with db.execute("SELECT * FROM traces WHERE id = ?", (trace_id,)) as cur:
         row = await cur.fetchone()
@@ -313,8 +311,6 @@ class ProviderSummary(BaseModel):
 @app.get("/api/providers", response_model=list[ProviderSummary])
 async def get_providers(backend_url: str | None = None, backend_token: str | None = None):
     import httpx
-
-    from agent_eval_harness.config import AEHConfig
 
     config = AEHConfig.load()
     backend_url = backend_url or config.backend_url
@@ -345,18 +341,12 @@ _rerun_in_flight: set[str] = set()
 
 @app.post("/api/runs/{run_id}/rerun")
 async def rerun_run(run_id: str, body: RerunRequest):
-    import asyncio
-
-    from agent_eval_harness.config import AEHConfig
     from agent_eval_harness.llm.client import LLMResponse
     from agent_eval_harness.llm.fake_client import FakeLLMClient
-    from agent_eval_harness.llm.proxy_client import CodeSpectraProxyClient
     from agent_eval_harness.llm.routing_client import RoutingLLMClient
     from agent_eval_harness.metrics.sweep import run_sweep
 
-    parent = await repository.get_run(run_id)
-    if not parent:
-        raise HTTPException(status_code=404, detail="Run not found")
+    parent = await _get_run_or_404(run_id)
 
     if not parent.get("target") or not parent.get("suite_path"):
         raise HTTPException(
@@ -534,28 +524,47 @@ class UpdateExcludedFilesRequest(BaseModel):
     excluded_files: list[str]
 
 
+async def _get_discovery_session_or_404(session_id: str) -> dict:
+    session = await repository.get_discovery_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Discovery session not found")
+    return session
+
+
+async def _get_expansion_session_or_404(session_id: str) -> dict:
+    sess = await repository.get_expansion_session(session_id)
+    if not sess:
+        raise HTTPException(status_code=404, detail="Expansion session not found.")
+    return sess
+
+
+def _resolve_synthesis_config(
+    body: StartDiscoveryRequest | ExpandCandidateRequest, config: AEHConfig
+) -> tuple[str, str, str, str | None]:
+    """Resolve provider/backend config for Pass C synthesis LLM calls, or raise 400."""
+    provider_id = body.provider_id or config.provider_id
+    backend_url = body.backend_url or config.backend_url
+    backend_token = body.backend_token or config.backend_token
+
+    if not backend_url or not backend_token:
+        raise HTTPException(
+            status_code=400,
+            detail="Missing CodeSpectra backend connection config (url/token)."
+        )
+    if not provider_id:
+        raise HTTPException(
+            status_code=400,
+            detail="No LLM provider configured for Pass C synthesis. Set up a provider in "
+            "Settings, then select it before running Discovery.",
+        )
+    return provider_id, backend_url, backend_token, body.model_id or config.model_id
+
+
 @app.post("/api/discovery/sessions")
 async def start_discovery(body: StartDiscoveryRequest):
     try:
         config = AEHConfig.load()
-        provider_id = body.provider_id or config.provider_id
-        backend_url = body.backend_url or config.backend_url
-        backend_token = body.backend_token or config.backend_token
-
-        if not backend_url or not backend_token:
-            raise HTTPException(
-                status_code=400,
-                detail="Missing CodeSpectra backend connection config (url/token)."
-            )
-
-        # Build LLM client
-        if not provider_id:
-            raise HTTPException(
-                status_code=400,
-                detail="No LLM provider configured for Pass C synthesis. Set up a provider in "
-                "Settings, then select it before running Discovery.",
-            )
-        model_id = body.model_id or config.model_id
+        provider_id, backend_url, backend_token, model_id = _resolve_synthesis_config(body, config)
         llm_client = CodeSpectraProxyClient(backend_url, backend_token, provider_id, model_id)
 
         client = CodeSpectraClient(backend_url, backend_token)
@@ -598,9 +607,7 @@ async def list_discovery_sessions(repo_ref: str | None = None, snapshot_id: str 
 
 @app.get("/api/discovery/sessions/{session_id}", response_model=DiscoverySessionResponse)
 async def get_discovery_session(session_id: str):
-    session = await repository.get_discovery_session(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Discovery session not found")
+    session = await _get_discovery_session_or_404(session_id)
     return DiscoverySessionResponse(
         id=session["id"],
         repo_ref=session["repo_ref"],
@@ -676,9 +683,7 @@ class ResumeDiscoveryRequest(BaseModel):
 
 @app.post("/api/discovery/sessions/{session_id}/resume")
 async def resume_discovery(session_id: str, body: ResumeDiscoveryRequest):
-    session = await repository.get_discovery_session(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Discovery session not found")
+    session = await _get_discovery_session_or_404(session_id)
     if session["status"] != "paused_rate_limit":
         raise HTTPException(
             status_code=400, detail=f"Session is not paused (status={session['status']})"
@@ -712,7 +717,7 @@ async def health_check():
     return {"status": "ok"}
 
 
-# --- Static Files / SPA Fallback ---
+# --- Expansion & Planning Endpoints ---
 
 class ExpandCandidateRequest(BaseModel):
     provider_id: str | None = None
@@ -754,7 +759,7 @@ async def run_expansion_background(
         abs_files = [local_path / p for p in res["accepted"]]
 
         builder = SystemMapBuilder(llm_client)
-        system_map, summary = await builder.build_from_files(
+        system_map, _summary = await builder.build_from_files(
             abs_files,
             package_root=local_path,
             target_system_id=candidate["name"],
@@ -801,24 +806,7 @@ async def start_expansion(candidate_id: str, body: ExpandCandidateRequest):
         snapshot_id = session["snapshot_id"]
 
         config = AEHConfig.load()
-        provider_id = body.provider_id or config.provider_id
-        backend_url = body.backend_url or config.backend_url
-        backend_token = body.backend_token or config.backend_token
-
-        if not backend_url or not backend_token:
-            raise HTTPException(
-                status_code=400,
-                detail="Missing CodeSpectra backend connection config (url/token)."
-            )
-
-        if not provider_id:
-            raise HTTPException(
-                status_code=400,
-                detail="No LLM provider configured for Pass C synthesis. Set up a provider in "
-                "Settings, then select it before running Discovery.",
-            )
-
-        model_id = body.model_id or config.model_id
+        provider_id, backend_url, backend_token, model_id = _resolve_synthesis_config(body, config)
         llm_client = CodeSpectraProxyClient(backend_url, backend_token, provider_id, model_id)
 
         classify_provider_id = body.classify_provider_id or provider_id
@@ -858,10 +846,7 @@ async def start_expansion(candidate_id: str, body: ExpandCandidateRequest):
 
 @app.get("/api/discovery/expansion-sessions/{session_id}")
 async def get_expansion_session(session_id: str):
-    sess = await repository.get_expansion_session(session_id)
-    if not sess:
-        raise HTTPException(status_code=404, detail="Expansion session not found.")
-    return sess
+    return await _get_expansion_session_or_404(session_id)
 
 
 @app.get("/api/discovery/candidates/{candidate_id}/expansion-sessions")
@@ -871,9 +856,7 @@ async def list_expansion_sessions(candidate_id: str):
 
 @app.get("/api/discovery/expansion-sessions/{session_id}/map")
 async def get_expansion_map(session_id: str):
-    sess = await repository.get_expansion_session(session_id)
-    if not sess:
-        raise HTTPException(status_code=404, detail="Expansion session not found.")
+    sess = await _get_expansion_session_or_404(session_id)
     if sess["status"] != "completed":
         raise HTTPException(status_code=400, detail="Expansion session has not completed.")
     if not sess["map_path"]:
@@ -888,9 +871,7 @@ async def get_expansion_map(session_id: str):
 
 @app.put("/api/discovery/expansion-sessions/{session_id}/map")
 async def update_expansion_map(session_id: str, body: SystemMap):
-    sess = await repository.get_expansion_session(session_id)
-    if not sess:
-        raise HTTPException(status_code=404, detail="Expansion session not found.")
+    sess = await _get_expansion_session_or_404(session_id)
     try:
         save_system_map(body, sess["map_path"])
         return {"success": True}
@@ -921,9 +902,7 @@ class AdvanceSessionRequest(BaseModel):
 
 @app.post("/api/discovery/expansion-sessions/{session_id}/plan")
 async def generate_plan_route(session_id: str, body: GeneratePlanRequest):
-    sess = await repository.get_expansion_session(session_id)
-    if not sess:
-        raise HTTPException(status_code=404, detail="Expansion session not found.")
+    sess = await _get_expansion_session_or_404(session_id)
     if sess["status"] != "completed":
         raise HTTPException(status_code=400, detail="Expansion has not completed.")
     if not sess["map_path"]:
@@ -943,7 +922,6 @@ async def generate_plan_route(session_id: str, body: GeneratePlanRequest):
 
     try:
         from agent_eval_harness.planning.planner import generate_plan as _generate_plan
-        from agent_eval_harness.metrics.suite import Suite
         import yaml
 
         suite = await _generate_plan(sess["map_path"], llm_client)
@@ -973,9 +951,7 @@ async def generate_plan_route(session_id: str, body: GeneratePlanRequest):
 
 @app.get("/api/discovery/expansion-sessions/{session_id}/plan")
 async def get_plan_route(session_id: str):
-    sess = await repository.get_expansion_session(session_id)
-    if not sess:
-        raise HTTPException(status_code=404, detail="Expansion session not found.")
+    sess = await _get_expansion_session_or_404(session_id)
     plan_path_str = sess.get("plan_path")
     if not plan_path_str or not Path(plan_path_str).exists():
         raise HTTPException(status_code=404, detail="No plan file for this session.")
@@ -989,9 +965,7 @@ async def get_plan_route(session_id: str):
 
 @app.put("/api/discovery/expansion-sessions/{session_id}/plan")
 async def update_plan_route(session_id: str, body: UpdatePlanRequest):
-    sess = await repository.get_expansion_session(session_id)
-    if not sess:
-        raise HTTPException(status_code=404, detail="Expansion session not found.")
+    sess = await _get_expansion_session_or_404(session_id)
     plan_path_str = sess.get("plan_path")
     if not plan_path_str or not Path(plan_path_str).exists():
         raise HTTPException(status_code=400, detail="No plan to update.")

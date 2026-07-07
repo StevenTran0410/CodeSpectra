@@ -40,16 +40,8 @@ def mine_constraints(
                             target = item.targets[0]
                             if isinstance(target, ast.Name):
                                 name = target.id
-                                if (
-                                    name[0].isupper()
-                                    and name.replace("_", "").replace("0", "").replace(
-                                        "1", ""
-                                    ).replace("2", "").replace("3", "").replace(
-                                        "4", ""
-                                    ).replace("5", "").replace("6", "").replace(
-                                        "7", ""
-                                    ).replace("8", "").replace("9", "").isupper()
-                                ):
+                                letters_only = "".join(ch for ch in name if ch.isalpha())
+                                if name[0].isupper() and letters_only.isupper():
                                     if isinstance(item.value, ast.Constant) and isinstance(
                                         item.value.value, int
                                     ):

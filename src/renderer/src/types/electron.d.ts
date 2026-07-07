@@ -806,7 +806,6 @@ declare global {
         runDetail: (runId: string) => Promise<AEHRunDetailResponse>
         componentEvaluations: (runId: string, componentId: string) => Promise<AEHEvaluationDetailItem[]>
         traceDetail: (traceId: string) => Promise<AEHTraceDetailResponse>
-        datasetCases: (datasetId: string) => Promise<unknown[]>
         providers: () => Promise<AEHProviderSummary[]>
         rerun: (runId: string, body: { model_overrides: Record<string, string>; active_defects: string[] }) => Promise<{ run_id: string }>
         startDiscovery: (body: {
@@ -861,7 +860,7 @@ declare global {
     }
   }
 
-  export interface AEHRunListItem {
+  export interface AEHRunSummaryBase {
     id: string
     target_system_id: string
     eval_plan_id: string | null
@@ -870,6 +869,9 @@ declare global {
     status: string
     map_path: string | null
     active_defects: string[]
+  }
+
+  export interface AEHRunListItem extends AEHRunSummaryBase {
     pass_rate: number
     judge_cost: number
   }
@@ -896,15 +898,7 @@ declare global {
     components: AEHSystemMapComponent[]
   }
 
-  export interface AEHRunDetailResponse {
-    id: string
-    target_system_id: string
-    eval_plan_id: string | null
-    started_at: string
-    finished_at: string | null
-    status: string
-    map_path: string | null
-    active_defects: string[]
+  export interface AEHRunDetailResponse extends AEHRunSummaryBase {
     system_map: AEHSystemMap
     component_aggregates: Record<string, AEHComponentAggregate>
     overall_pass_rate: number
@@ -966,14 +960,18 @@ declare global {
     model_id: string | null
   }
 
-  export interface AEHDiscoverySession {
+  export interface AEHSessionBase<Status extends string> {
     id: string
-    repo_ref: string
     snapshot_id: string
-    status: 'running' | 'completed' | 'failed' | 'paused_rate_limit'
+    status: Status
     error: string | null
     created_at: string
     finished_at: string | null
+  }
+
+  export interface AEHDiscoverySession
+    extends AEHSessionBase<'running' | 'completed' | 'failed' | 'paused_rate_limit'> {
+    repo_ref: string
     pause_info: { reason: string; provider_id: string; model_id: string | null } | null
     pipeline_stage: string
   }
@@ -1002,19 +1000,13 @@ declare global {
     file_provenance?: Record<string, string>
   }
 
-  export interface AEHExpansionSession {
-    id: string
+  export interface AEHExpansionSession extends AEHSessionBase<'running' | 'completed' | 'failed'> {
     candidate_id: string
-    snapshot_id: string
-    status: 'running' | 'completed' | 'failed'
-    error: string | null
     map_path: string | null
     accepted: string[]
     boundary: string[]
     accepted_edges: { src: string; dst: string }[]
     stop_reason: string | null
-    created_at: string
-    finished_at: string | null
     plan_path: string | null
   }
 

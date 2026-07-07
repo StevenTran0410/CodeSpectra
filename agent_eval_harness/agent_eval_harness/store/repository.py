@@ -408,6 +408,36 @@ async def insert_discovery_candidates_bulk(
         await db.commit()
 
 
+async def _decode_discovery_session_row(d: dict) -> dict:
+    """Expand a discovery_sessions row's *_json column and resolve its derived pipeline_stage."""
+    d["pause_info"] = json.loads(d["pause_info_json"]) if d.get("pause_info_json") else None
+    d["pipeline_stage"] = await _resolve_effective_pipeline_stage(d)
+    return d
+
+
+def _decode_discovery_candidate_row(d: dict) -> dict:
+    """Expand a discovery_candidates row's *_json columns into their parsed list/dict fields."""
+    d["frameworks"] = json.loads(d["frameworks_json"] or "[]")
+    d["entry_points"] = json.loads(d["entry_points_json"] or "[]")
+    d["evidence"] = json.loads(d["evidence_json"] or "[]")
+    d["needs_human"] = bool(d.get("needs_human", 0))
+    d["cluster_files"] = json.loads(d.get("cluster_files_json") or "[]")
+    d["hub_paths"] = json.loads(d.get("hub_paths_json") or "[]")
+    d["wiring_block"] = json.loads(d["wiring_block_json"]) if d.get("wiring_block_json") else None
+    d["excluded_files"] = json.loads(d.get("excluded_files_json") or "[]")
+    d["matched_files"] = json.loads(d.get("matched_files_json") or "[]")
+    d["file_provenance"] = json.loads(d.get("file_provenance_json") or "{}")
+    return d
+
+
+def _decode_expansion_session_row(d: dict) -> dict:
+    """Expand an expansion_sessions row's *_json columns into their parsed list fields."""
+    d["accepted"] = json.loads(d.get("accepted_json") or "[]")
+    d["boundary"] = json.loads(d.get("boundary_json") or "[]")
+    d["accepted_edges"] = json.loads(d.get("accepted_edges_json") or "[]")
+    return d
+
+
 async def _resolve_effective_pipeline_stage(d: dict) -> str:
     db = get_db()
     stage = d.get("pipeline_stage", "fingerprinting")
@@ -464,13 +494,7 @@ async def list_discovery_sessions(
             "SELECT * FROM discovery_sessions ORDER BY created_at DESC"
         ) as cur:
             rows = await cur.fetchall()
-    out = []
-    for r in rows:
-        d = dict(r)
-        d["pause_info"] = json.loads(d["pause_info_json"]) if d.get("pause_info_json") else None
-        d["pipeline_stage"] = await _resolve_effective_pipeline_stage(d)
-        out.append(d)
-    return out
+    return [await _decode_discovery_session_row(dict(r)) for r in rows]
 
 
 async def get_discovery_session(session_id: str) -> dict | None:
@@ -482,10 +506,7 @@ async def get_discovery_session(session_id: str) -> dict | None:
         row = await cur.fetchone()
     if not row:
         return None
-    d = dict(row)
-    d["pause_info"] = json.loads(d["pause_info_json"]) if d.get("pause_info_json") else None
-    d["pipeline_stage"] = await _resolve_effective_pipeline_stage(d)
-    return d
+    return await _decode_discovery_session_row(dict(row))
 
 
 async def pause_discovery_session(session_id: str, provider_id: str, model_id: str | None) -> None:
@@ -521,21 +542,7 @@ async def get_discovery_candidates(session_id: str) -> list[dict]:
         (session_id,),
     ) as cur:
         rows = await cur.fetchall()
-    out = []
-    for r in rows:
-        d = dict(r)
-        d["frameworks"] = json.loads(d["frameworks_json"] or "[]")
-        d["entry_points"] = json.loads(d["entry_points_json"] or "[]")
-        d["evidence"] = json.loads(d["evidence_json"] or "[]")
-        d["needs_human"] = bool(d.get("needs_human", 0))
-        d["cluster_files"] = json.loads(d.get("cluster_files_json") or "[]")
-        d["hub_paths"] = json.loads(d.get("hub_paths_json") or "[]")
-        d["wiring_block"] = json.loads(d["wiring_block_json"]) if d.get("wiring_block_json") else None
-        d["excluded_files"] = json.loads(d.get("excluded_files_json") or "[]")
-        d["matched_files"] = json.loads(d.get("matched_files_json") or "[]")
-        d["file_provenance"] = json.loads(d.get("file_provenance_json") or "{}")
-        out.append(d)
-    return out
+    return [_decode_discovery_candidate_row(dict(r)) for r in rows]
 
 
 async def update_candidate_verdict(
@@ -568,18 +575,7 @@ async def get_discovery_candidate(candidate_id: str) -> dict | None:
         row = await cur.fetchone()
     if not row:
         return None
-    d = dict(row)
-    d["frameworks"] = json.loads(d["frameworks_json"] or "[]")
-    d["entry_points"] = json.loads(d["entry_points_json"] or "[]")
-    d["evidence"] = json.loads(d["evidence_json"] or "[]")
-    d["needs_human"] = bool(d.get("needs_human", 0))
-    d["cluster_files"] = json.loads(d.get("cluster_files_json") or "[]")
-    d["hub_paths"] = json.loads(d.get("hub_paths_json") or "[]")
-    d["wiring_block"] = json.loads(d["wiring_block_json"]) if d.get("wiring_block_json") else None
-    d["excluded_files"] = json.loads(d.get("excluded_files_json") or "[]")
-    d["matched_files"] = json.loads(d.get("matched_files_json") or "[]")
-    d["file_provenance"] = json.loads(d.get("file_provenance_json") or "{}")
-    return d
+    return _decode_discovery_candidate_row(dict(row))
 
 
 async def insert_expansion_session(session_id: str, candidate_id: str, snapshot_id: str) -> None:
@@ -636,7 +632,7 @@ async def finish_expansion_session(
                     # 3. Get all candidates for the parent session
                     all_candidates = await get_discovery_candidates(parent_session_id)
                     confirmed_cands = [c for c in all_candidates if c["verdict"] == "confirmed"]
-                    
+
                     if confirmed_cands:
                         # 4. Check if every confirmed candidate has a completed expansion session
                         all_completed = True
@@ -650,7 +646,7 @@ async def finish_expansion_session(
                             if not has_completed:
                                 all_completed = False
                                 break
-                        
+
                         if all_completed:
                             await db.execute(
                                 "UPDATE discovery_sessions SET pipeline_stage = 'awaiting_map_review' WHERE id = ?",
@@ -670,11 +666,7 @@ async def get_expansion_session(session_id: str) -> dict | None:
         row = await cur.fetchone()
     if not row:
         return None
-    d = dict(row)
-    d["accepted"] = json.loads(d.get("accepted_json") or "[]")
-    d["boundary"] = json.loads(d.get("boundary_json") or "[]")
-    d["accepted_edges"] = json.loads(d.get("accepted_edges_json") or "[]")
-    return d
+    return _decode_expansion_session_row(dict(row))
 
 
 async def list_expansion_sessions_for_candidate(candidate_id: str) -> list[dict]:
@@ -684,14 +676,7 @@ async def list_expansion_sessions_for_candidate(candidate_id: str) -> list[dict]
         (candidate_id,),
     ) as cur:
         rows = await cur.fetchall()
-    out = []
-    for r in rows:
-        d = dict(r)
-        d["accepted"] = json.loads(d.get("accepted_json") or "[]")
-        d["boundary"] = json.loads(d.get("boundary_json") or "[]")
-        d["accepted_edges"] = json.loads(d.get("accepted_edges_json") or "[]")
-        out.append(d)
-    return out
+    return [_decode_expansion_session_row(dict(r)) for r in rows]
 
 
 async def update_expansion_session_plan_path(session_id: str, plan_path: str) -> None:

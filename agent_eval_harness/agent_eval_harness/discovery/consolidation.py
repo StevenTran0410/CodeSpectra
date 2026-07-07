@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import logging
 import json
-from typing import Any
 
 from agent_eval_harness.discovery.client import CodeSpectraClient
 from agent_eval_harness.llm.client import LLMClient, LLMMessage, RateLimitExceeded
@@ -88,17 +87,9 @@ async def consolidate_candidates(
         tied = [cid for cid, s in ranked if s == top_score]
         if top_score == 0 or len(tied) > 1:
             def _path_overlap(cid: str) -> int:
-                # Only the EXACT-same-directory signal counts. A "same top-level
-                # segment" tier (e.g. both under "backend/") used to also count as
-                # a weak match — but in a real repo almost everything shares some
-                # common root, so with only one candidate in the whole run (nothing
-                # to disambiguate against), that weak tier trivially "won" by
-                # default and silently attached completely unrelated files (e.g. a
-                # hand-rolled QA agent under backend/domain/qa/ getting folded into
-                # a Haystack pipeline under backend/domain/analysis/agents/ just
-                # because both live somewhere under backend/). No signal at all
-                # must mean "leave unassigned," not "assign because nothing else
-                # was in the running."
+                # Exact-same-directory only — a "shared top-level segment" tier was tried and
+                # dropped: it trivially wins with only one candidate in the run, silently
+                # attaching unrelated files that merely share a common root like "backend/".
                 seed = next(s for cand, s, kind in anchors if str(cand["community_id"]) == cid)
                 best = 0
                 for sf in seed:

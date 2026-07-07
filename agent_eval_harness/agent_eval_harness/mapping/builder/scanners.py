@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from agent_eval_harness.discovery.wiring import _call_func_name, _const_str, _flatten_bitor
 from agent_eval_harness.mapping.builder.types import (
     CandidateComponent,
     ManualSpanHint,
@@ -81,11 +82,7 @@ class HaystackScanner:
                             if len(child.args) >= 2:
                                 arg0 = child.args[0]
                                 arg1 = child.args[1]
-                                alias = None
-                                if isinstance(arg0, ast.Constant) and isinstance(arg0.value, str):
-                                    alias = arg0.value
-                                elif isinstance(arg0, ast.Str):
-                                    alias = arg0.s
+                                alias = _const_str(arg0)
 
                                 class_name = None
                                 if isinstance(arg1, ast.Name):
@@ -93,10 +90,7 @@ class HaystackScanner:
                                 elif isinstance(arg1, ast.Attribute):
                                     class_name = arg1.attr
                                 elif isinstance(arg1, ast.Call):
-                                    if isinstance(arg1.func, ast.Name):
-                                        class_name = arg1.func.id
-                                    elif isinstance(arg1.func, ast.Attribute):
-                                        class_name = arg1.func.attr
+                                    class_name = _call_func_name(arg1)
 
                                 if alias and class_name:
                                     known_classes.add(class_name)
@@ -111,29 +105,20 @@ class HaystackScanner:
                             val_node = child.value
                         elif isinstance(child, ast.AnnAssign):
                             val_node = child.value
-                        
+
                         if val_node:
                             for sub_child in ast.walk(val_node):
                                 if isinstance(sub_child, ast.BinOp) and isinstance(sub_child.op, ast.BitOr):
                                     if sub_child in processed_binops:
                                         continue
-                                    
-                                    def _flatten(n):
-                                        if isinstance(n, ast.BinOp) and isinstance(n.op, ast.BitOr):
-                                            processed_binops.add(n)
-                                            return _flatten(n.left) + _flatten(n.right)
-                                        return [n]
-                                    
-                                    operands = _flatten(sub_child)
+
+                                    operands = _flatten_bitor(sub_child, processed_binops)
                                     for op in operands:
                                         class_name = None
                                         if isinstance(op, ast.Name):
                                             class_name = op.id
                                         elif isinstance(op, ast.Call):
-                                            if isinstance(op.func, ast.Name):
-                                                class_name = op.func.id
-                                            elif isinstance(op.func, ast.Attribute):
-                                                class_name = op.func.attr
+                                            class_name = _call_func_name(op)
                                         elif isinstance(op, ast.Attribute):
                                             class_name = op.attr
 

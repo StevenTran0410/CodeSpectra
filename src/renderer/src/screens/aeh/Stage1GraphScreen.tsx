@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import {
   Loader2,
@@ -11,7 +11,6 @@ import {
   BadgeAlert,
   Sparkles,
   Search,
-  List,
 } from 'lucide-react'
 import {
   ReactFlow,
@@ -24,7 +23,8 @@ import { getDagreGraphLayout } from './graphLayout'
 import { Button, useToastStore } from '../../components/ui'
 import { useAEHStore } from '../../store/aeh.store'
 import { useProviderStore } from '../../store/provider.store'
-import LLMConfigModal from './LLMConfigModal'
+import LLMConfigModal, { LLMModelButton } from './LLMConfigModal'
+import { useSessionPolling } from './useSessionPolling'
 // AEHDiscoveryCandidate/AEHDiscoverySession are global ambient types — no import needed.
 
 type ExportJson = {
@@ -734,7 +734,6 @@ export default function Stage1GraphScreen(): React.ReactElement {
   const [discoveryError, setDiscoveryError] = useState<string | null>(null)
   const [pauseInfo, setPauseInfo] = useState<AEHDiscoverySession['pause_info']>(null)
   const [resuming, setResuming] = useState(false)
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // Picker options are scoped to this stage and kept in a local config modal.
   const [discoveryProviderId, setDiscoveryProviderId] = useState('')
@@ -755,8 +754,7 @@ export default function Stage1GraphScreen(): React.ReactElement {
       window.api.graph.exportData(snapshotId),
       window.api.graph.communities(snapshotId),
     ])
-    // Prevent an "unhandled rejection" console warning if this promise later
-    // fails after the timeout already won the race below.
+    // Swallow the losing race's rejection to avoid an unhandled-rejection console warning.
     dataPromise.catch(() => {})
     const timeout = new Promise<never>((_, reject) => {
       timeoutHandle = setTimeout(() => {
@@ -844,35 +842,26 @@ export default function Stage1GraphScreen(): React.ReactElement {
   }, [providers, discoveryProviderId])
 
   // Polling discovery progress
-  const startPolling = useCallback((sessionId: string) => {
-    if (pollRef.current) clearInterval(pollRef.current)
-    pollRef.current = setInterval(async () => {
-      try {
-        const session = await window.api.aeh.getDiscoverySession(sessionId)
-        setDiscoverySession(session)
-        if (session.status !== 'running') {
-          if (pollRef.current) clearInterval(pollRef.current)
-          setRunningDiscovery(false)
-          if (session.status === 'completed') {
-            const cands = await window.api.aeh.listDiscoveryCandidates(sessionId)
-            setCandidates(cands)
-            toast.success('Discovery completed successfully.')
-          } else if (session.status === 'paused_rate_limit') {
-            setPauseInfo(session.pause_info)
-            const cands = await window.api.aeh.listDiscoveryCandidates(sessionId)
-            setCandidates(cands)
-          } else if (session.status === 'failed') {
-            setDiscoveryError(session.error ?? 'Discovery synthesis failed')
-          }
-        }
-      } catch (err) {
-        if (pollRef.current) clearInterval(pollRef.current)
-        setRunningDiscovery(false)
+  const startPolling = useSessionPolling<AEHDiscoverySession>({
+    fetchSession: (sessionId) => window.api.aeh.getDiscoverySession(sessionId),
+    intervalMs: 2500,
+    onUpdate: setDiscoverySession,
+    onDone: async (session) => {
+      setRunningDiscovery(false)
+      if (session.status === 'completed') {
+        const cands = await window.api.aeh.listDiscoveryCandidates(session.id)
+        setCandidates(cands)
+        toast.success('Discovery completed successfully.')
+      } else if (session.status === 'paused_rate_limit') {
+        setPauseInfo(session.pause_info)
+        const cands = await window.api.aeh.listDiscoveryCandidates(session.id)
+        setCandidates(cands)
+      } else if (session.status === 'failed') {
+        setDiscoveryError(session.error ?? 'Discovery synthesis failed')
       }
-    }, 2500)
-  }, [toast])
-
-  useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current) }, [])
+    },
+    onError: () => setRunningDiscovery(false),
+  })
 
   const handleResumeDiscovery = async (overrideProviderId?: string, overrideModelId?: string) => {
     if (!discoverySession) return
@@ -1097,19 +1086,13 @@ export default function Stage1GraphScreen(): React.ReactElement {
 
           <div className="flex items-center gap-3 shrink-0">
             {/* Run Controls inside header */}
-            <button
-              onClick={() => setLlmConfigOpen(true)}
+            <LLMModelButton
+              providerId={discoveryProviderId}
+              modelId={discoveryModelId}
+              providers={providers}
               disabled={runningDiscovery}
-              className={`text-[10px] h-7 px-2.5 rounded-md border font-mono transition-colors ${
-                discoveryProviderId
-                  ? 'border-slate-700 bg-slate-950 text-slate-300 hover:border-slate-500'
-                  : 'border-red-900/30 bg-red-950/40 text-red-400 hover:border-red-700/50'
-              }`}
-            >
-              {discoveryProviderId
-                ? `Model: ${discoveryModelId || providers.find((p) => p.id === discoveryProviderId)?.display_name || '?'}`
-                : 'No LLM Configured'}
-            </button>
+              onClick={() => setLlmConfigOpen(true)}
+            />
             <LLMConfigModal
               isOpen={llmConfigOpen}
               onClose={() => setLlmConfigOpen(false)}

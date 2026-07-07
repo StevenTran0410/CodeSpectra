@@ -1,47 +1,7 @@
 import pytest
 from agent_eval_harness.llm.client import LLMMessage, LLMResponse
 from agent_eval_harness.discovery.expansion import expand_candidate
-
-class _StubClient:
-    def __init__(self, files: dict[str, str], neighbors: dict[str, list[str]]):
-        self._files = files
-        self._neighbors = neighbors
-        self.read_calls = []
-        self.neighbors_calls = []
-
-    async def read_file(self, snapshot_id: str, rel_path: str, max_bytes: int = 200_000) -> dict:
-        self.read_calls.append(rel_path)
-        if rel_path in self._files:
-            return {"content": self._files[rel_path], "snapshot_id": snapshot_id, "rel_path": rel_path, "truncated": False}
-        return {"content": "", "snapshot_id": snapshot_id, "rel_path": rel_path, "truncated": False}
-
-    async def get_symbol_edges(self, snapshot_id: str, file_path: str) -> dict:
-        self.neighbors_calls.append(file_path)
-        outgoing = []
-        for n_path in self._neighbors.get(file_path, []):
-            outgoing.append({
-                "src_symbol": f"{file_path}::symbolA",
-                "dst_symbol": f"{n_path}::symbolB",
-                "edge_type": "call",
-                "confidence_score": 1.0,
-            })
-            outgoing.append({
-                "src_symbol": f"{file_path}::symbolB",
-                "dst_symbol": f"{n_path}::symbolB",
-                "edge_type": "call",
-                "confidence_score": 1.0,
-            })
-            outgoing.append({
-                "src_symbol": f"{file_path}::Agent",
-                "dst_symbol": f"{n_path}::symbolB",
-                "edge_type": "call",
-                "confidence_score": 1.0,
-            })
-        return {
-            "defined_symbols": ["symbolA", "symbolB", "Agent"],
-            "outgoing": outgoing,
-            "incoming": [],
-        }
+from tests._stubs import FakeCodeSpectraClient as _StubClient
 
 
 class _StubLLMClient:

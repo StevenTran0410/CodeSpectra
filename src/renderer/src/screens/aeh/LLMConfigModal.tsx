@@ -3,9 +3,9 @@ import { createPortal } from 'react-dom'
 import { Loader2 } from 'lucide-react'
 import { Button, FormGroup, Select } from '../../components/ui'
 import { useProviderStore } from '../../store/provider.store'
+import type { ProviderConfig } from '../../types/electron'
 
-// Portals to document.body so it renders correctly regardless of ancestor
-// stacking contexts (e.g. ReactFlow's transformed viewport on Stage 1).
+// Portals to document.body to escape ReactFlow's transformed stacking context on Stage 1.
 export default function LLMConfigModal({
   isOpen,
   onClose,
@@ -103,5 +103,45 @@ export default function LLMConfigModal({
       </div>
     </div>,
     document.body
+  )
+}
+
+/** Header button that opens an LLMConfigModal, showing the active provider/model or a fallback label. */
+export function LLMModelButton({
+  providerId,
+  modelId,
+  providers,
+  disabled,
+  onClick,
+  labelPrefix = 'Model',
+  emptyLabel = 'No LLM Configured',
+  emptyVariant = 'error',
+}: {
+  providerId: string
+  modelId: string
+  providers: ProviderConfig[]
+  disabled?: boolean
+  onClick: () => void
+  labelPrefix?: string
+  emptyLabel?: string
+  emptyVariant?: 'error' | 'neutral'
+}): React.ReactElement {
+  const emptyClass =
+    emptyVariant === 'neutral'
+      ? 'border-slate-800 bg-slate-950/30 text-slate-500 hover:border-slate-700'
+      : 'border-red-900/30 bg-red-950/40 text-red-400 hover:border-red-700/50'
+
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className={`text-[10px] h-7 px-2.5 rounded-md border font-mono transition-colors ${
+        providerId ? 'border-slate-700 bg-slate-950 text-slate-300 hover:border-slate-500' : emptyClass
+      }`}
+    >
+      {providerId
+        ? `${labelPrefix}: ${modelId || providers.find((p) => p.id === providerId)?.display_name || '?'}`
+        : emptyLabel}
+    </button>
   )
 }

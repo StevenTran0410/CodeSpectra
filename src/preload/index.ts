@@ -288,7 +288,6 @@ const api = {
     componentEvaluations: (runId: string, componentId: string) =>
       ipcRenderer.invoke('aeh:componentEvaluations', runId, componentId),
     traceDetail: (traceId: string) => ipcRenderer.invoke('aeh:traceDetail', traceId),
-    datasetCases: (datasetId: string) => ipcRenderer.invoke('aeh:datasetCases', datasetId),
     providers: () => ipcRenderer.invoke('aeh:providers'),
     rerun: (runId: string, body: unknown) => ipcRenderer.invoke('aeh:rerun', runId, body),
     startDiscovery: (body: unknown) => ipcRenderer.invoke('aeh:startDiscovery', body),

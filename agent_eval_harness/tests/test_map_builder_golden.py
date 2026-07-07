@@ -3,36 +3,9 @@ from pathlib import Path
 
 import pytest
 
-from agent_eval_harness.llm.client import LLMMessage, LLMResponse
+from agent_eval_harness.llm.client import LLMResponse
 from agent_eval_harness.mapping.builder.pipeline import SystemMapBuilder
-
-
-class KeyedFakeLLMClient:
-    """Maps the first line of the user prompt (candidate_id-derived class_name)"""
-
-    def __init__(self, by_key: dict[str, LLMResponse], default: LLMResponse | None = None) -> None:
-        self._map = by_key
-        self._default = default
-        self.calls: list[list[LLMMessage]] = []
-
-    async def complete(self, messages, *, max_tokens=512, temperature=0.2, json_mode=False):
-        self.calls.append(messages)
-        first_line = messages[-1].content.split("\n")[0].strip()
-
-        for key, resp in self._map.items():
-            if key in first_line:
-                return resp
-
-        if self._default is not None:
-            return self._default
-
-        raise KeyError(f"KeyedFakeLLMClient: no canned response for prompt starting {first_line!r}")
-
-
-@pytest.fixture
-def target_root() -> Path:
-    """Path to test targets."""
-    return Path(__file__).parent.parent / "test_targets"
+from tests._stubs import KeyedFakeLLMClient
 
 
 @pytest.fixture

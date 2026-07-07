@@ -7,34 +7,7 @@ import pytest
 
 from agent_eval_harness.llm.client import LLMResponse
 from agent_eval_harness.mapping.builder.pipeline import SystemMapBuilder
-
-
-class KeyedFakeLLMClient:
-    """Test fixture for golden tests."""
-
-    def __init__(self, by_key: dict[str, LLMResponse], default: LLMResponse | None = None) -> None:
-        self._map = by_key
-        self._default = default
-        self.calls = []
-
-    async def complete(self, messages, *, max_tokens=512, temperature=0.2, json_mode=False):
-        self.calls.append(messages)
-        first_line = messages[-1].content.split("\n")[0].strip()
-
-        for key, resp in self._map.items():
-            if key in first_line:
-                return resp
-
-        if self._default is not None:
-            return self._default
-
-        raise KeyError(f"KeyedFakeLLMClient: no canned response for prompt starting {first_line!r}")
-
-
-@pytest.fixture
-def target_root() -> Path:
-    """Path to test targets."""
-    return Path(__file__).parent.parent / "test_targets"
+from tests._stubs import KeyedFakeLLMClient
 
 
 class TestRobustness:
@@ -113,10 +86,11 @@ class TestRobustness:
             builder = SystemMapBuilder(KeyedFakeLLMClient({}, default=default_response))
             system_map, summary = await builder.build(t2_dir)
 
-            # No component should have role != "unknown" with low confidence
+            # Below-threshold confidence must degrade to "unknown", never keep the wrong guess
             for component in system_map.components:
-                # If below threshold, should be unknown
-                pass
+                assert component.role == "unknown", (
+                    f"Component {component.id} should be 'unknown', not a confident wrong guess"
+                )
 
         asyncio.run(run_test())
 

@@ -1,7 +1,6 @@
 import ast
 import json
 import logging
-from typing import Any
 from agent_eval_harness.llm.client import LLMClient, LLMMessage
 from agent_eval_harness.discovery.client import CodeSpectraClient
 
@@ -9,11 +8,8 @@ logger = logging.getLogger("agent_eval_harness.discovery.expansion")
 
 
 def extract_symbol_snippet(content: str, symbol_identifier: str) -> str:
-    """
-    Parse content using AST, find the ClassDef/FunctionDef matching symbol_identifier
-    (e.g., 'MyClass.run', 'MyClass', or 'my_function').
-    Returns a snippet of the matched node, or empty string.
-    """
+    """Return the source snippet for symbol_identifier (e.g. 'MyClass.run', 'MyClass',
+    'my_function'), or empty string if it can't be parsed or found."""
     try:
         tree = ast.parse(content)
     except SyntaxError:
@@ -58,7 +54,7 @@ def extract_symbol_snippet(content: str, symbol_identifier: str) -> str:
     end_line = getattr(matched_node, "end_lineno", None)
     if end_line is None:
         end_line = start_line + 50
-    
+
     snippet_lines = lines[start_line:end_line]
     if len(snippet_lines) > 100:
         snippet_lines = snippet_lines[:100]
@@ -159,7 +155,7 @@ async def expand_candidate(
     boundary_files = set()
     visited_chunks = set()
     raw_file_edges: set[tuple[str, str]] = set()
-    
+
     # hops_from_seed tracks distance at (file_path, chunk_id) granularity
     hops_from_seed = {}
     for f_path, c_id, _ in frontier:
@@ -177,7 +173,7 @@ async def expand_candidate(
                 "stop_reason": "node_budget",
                 "accepted_edges": edges_out
             }
-            
+
         level = []
         while frontier and len(level) < MAX_CLASSIFY_BATCH_SIZE:
             item = frontier.pop(0)
@@ -240,7 +236,7 @@ async def expand_candidate(
             if verdict == "expand" and hops_from_seed.get(chunk_key, 0) < hop_cap:
                 try:
                     edges_resp = await client.get_symbol_edges(snapshot_id, file_path)
-                    
+
                     for edge in edges_resp.get("outgoing", []):
                         src_sym = edge.get("src_symbol")
                         dst_sym = edge.get("dst_symbol")

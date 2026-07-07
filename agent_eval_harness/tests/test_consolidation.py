@@ -2,18 +2,7 @@ import pytest
 from unittest.mock import AsyncMock
 from agent_eval_harness.discovery.consolidation import consolidate_candidates
 from agent_eval_harness.llm.client import RateLimitExceeded, LLMResponse
-
-
-class _StubClient:
-    def __init__(self, edges_map=None, file_contents=None):
-        self.edges_map = edges_map or {}
-        self.file_contents = file_contents or {}
-
-    async def get_symbol_edges(self, snapshot_id, file_path):
-        return self.edges_map.get(file_path, {})
-
-    async def read_file(self, snapshot_id, file_path):
-        return {"content": self.file_contents.get(file_path, "")}
+from tests._stubs import FakeCodeSpectraClient as _StubClient
 
 
 @pytest.mark.anyio
@@ -107,15 +96,7 @@ async def test_consolidation_tied_and_unresolved() -> None:
 
 @pytest.mark.anyio
 async def test_consolidation_lone_candidate_does_not_claim_unrelated_file_by_repo_root_alone() -> None:
-    """Regression: with only ONE candidate in the whole run (nothing to disambiguate
-    against), a file sharing no real symbol-edge signal must NOT be attached just
-    because it happens to live somewhere under the same top-level directory as the
-    candidate's core seed (e.g. both under "backend/") — that's true of nearly
-    every file in a real repo and provides zero actual discriminating signal.
-    Real-world case this caught: a hand-rolled QA agent under
-    backend/domain/qa/agent.py got silently folded into a Haystack pipeline whose
-    core seed lives under backend/domain/analysis/agents/, purely because both
-    paths start with "backend/"."""
+    """Regression: a lone candidate must not claim a file via shared top-level dir alone (e.g. "backend/") absent real symbol-edge signal."""
     candidates = [
         {
             "community_id": 1,
@@ -160,7 +141,7 @@ async def test_consolidation_llm_judge_resolves_tie() -> None:
     ]
 
     # dir/shared.py has a tie: path overlap is equal (best=2 for both since directories match)
-    client = _StubClient(file_contents={"dir/shared.py": "some content"})
+    client = _StubClient(files={"dir/shared.py": "some content"})
     llm_client = AsyncMock()
     llm_client.complete.return_value = LLMResponse(
         content='{"candidate_id": "1", "confidence": "high"}',

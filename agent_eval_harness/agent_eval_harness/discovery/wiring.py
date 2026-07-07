@@ -34,15 +34,36 @@ class WiringBlock:
         }
 
 
+def _iter_parsed_files(file_contents: dict[str, str]):
+    """Parse each file once, silently skipping any with a syntax error."""
+    for file, content in file_contents.items():
+        try:
+            yield file, ast.parse(content, filename=file)
+        except SyntaxError:
+            continue
+
+
+def _const_str(node: ast.expr) -> str | None:
+    """Extract a string literal from a Constant (or legacy Str) AST node, else None."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.Str):
+        return node.s
+    return None
+
+
+def _call_func_name(call: ast.Call) -> str | None:
+    """Return a Call node's callee name: `Foo(...)` -> "Foo", `mod.Foo(...)` -> "Foo"."""
+    if isinstance(call.func, ast.Name):
+        return call.func.id
+    if isinstance(call.func, ast.Attribute):
+        return call.func.attr
+    return None
+
+
 def _build_self_attr_classes(tree: ast.AST) -> dict[str, str]:
-    """Map self.<attr> -> ClassName for every `self.<attr> = ClassName(...)`
-    assignment found anywhere in this file. Some wrapper patterns construct the
-    real component once (typically in __init__) and merely reference it later via
-    a closure/lambda inside add_component()'s arguments — e.g.
-    `self._conventions = ConventionsAgent(...)` earlier, then
-    `add_component("conventions", _SectionAgentComponent(..., lambda c, d:
-    self._conventions.run(...), ...))` later. Tracing the closure back to this
-    assignment is the only way to recover the real per-component class in that case."""
+    """Map self.<attr> -> ClassName for `self.<attr> = ClassName(...)` assignments, so a later
+    closure/lambda that only references self.<attr> can still be traced back to its real class."""
     attr_to_class: dict[str, str] = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign) and len(node.targets) == 1:
@@ -53,20 +74,14 @@ def _build_self_attr_classes(tree: ast.AST) -> dict[str, str]:
                 and target.value.id == "self"
                 and isinstance(node.value, ast.Call)
             ):
-                call = node.value
-                class_name = None
-                if isinstance(call.func, ast.Name):
-                    class_name = call.func.id
-                elif isinstance(call.func, ast.Attribute):
-                    class_name = call.func.attr
+                class_name = _call_func_name(node.value)
                 if class_name and class_name[0].isupper():
                     attr_to_class[target.attr] = class_name
     return attr_to_class
 
 
 def _find_self_attr_reference(node: ast.AST) -> str | None:
-    """Walk node's subtree (including inside nested lambdas) for the first
-    `self.<attr>` attribute access."""
+    """Return the first `self.<attr>` access anywhere in node's subtree, including inside lambdas."""
     for sub in ast.walk(node):
         if (
             isinstance(sub, ast.Attribute)
@@ -78,65 +93,30 @@ def _find_self_attr_reference(node: ast.AST) -> str | None:
 
 
 def _find_class_definition_file(class_name: str, file_contents: dict[str, str]) -> str | None:
-    """Search every file already available (the candidate's cluster files) for
-    where class_name is actually DEFINED (a `class ClassName` statement) — far more
-    robust than tracing import statements through package re-exports or dynamic
-    lazy-loading (e.g. an `__init__.py` that resolves names via `importlib` at
-    runtime from a name->submodule dict), since it looks for the ground truth:
-    where the class body itself lives, not how it happened to be imported.
-    Returns None (not a guess) if zero or more than one file defines it."""
-    matches = []
-    for fpath, content in file_contents.items():
-        try:
-            other_tree = ast.parse(content, filename=fpath)
-        except SyntaxError:
-            continue
-        if any(isinstance(n, ast.ClassDef) and n.name == class_name for n in ast.walk(other_tree)):
-            matches.append(fpath)
+    """Return the file that actually DEFINES class_name (ground truth, robust to re-exports/lazy
+    imports); None if zero or more than one file defines it."""
+    matches = [
+        fpath for fpath, tree in _iter_parsed_files(file_contents)
+        if any(isinstance(n, ast.ClassDef) and n.name == class_name for n in ast.walk(tree))
+    ]
     return matches[0] if len(matches) == 1 else None
 
 
 def _resolve_component_class_and_file(
     arg1: ast.expr, file: str, self_attr_classes: dict[str, str], file_contents: dict[str, str]
 ) -> tuple[str, str]:
-    """Given add_component()/add_node()'s constructor-call argument, return the most
-    specific class name available and the file it's actually defined in.
-
-    Factory/wrapper patterns (e.g. `_SectionAgentComponent(agent=ConventionsAgent())`,
-    or the closure form `_SectionAgentComponent(..., lambda c, d: self._conventions.run(...))`)
-    register every component from one orchestrator file via one shared wrapper class —
-    naively using the wrapper's own class name/file makes every node in the pipeline
-    look identical (same class_name, same source_hint_file) even though they are
-    completely different real components. Try, in order: (1) a nested constructor
-    call directly among arg1's own positional/keyword arguments, (2) a `self.<attr>`
-    reference inside arg1 (including inside lambdas) traced back to a
-    `self.<attr> = ClassName(...)` assignment elsewhere in the same file. Falls back
-    to the outer wrapper class/this file when neither pattern is found — the exact
-    same behavior as before this fix for any ordinary, unwrapped add_component() call.
-    """
-    outer_name = ""
-    if isinstance(arg1, ast.Call):
-        if isinstance(arg1.func, ast.Name):
-            outer_name = arg1.func.id
-        elif isinstance(arg1.func, ast.Attribute):
-            outer_name = arg1.func.attr
+    """Resolve add_component()/add_node()'s constructor arg to the real (possibly wrapper-hidden)
+    component class and the file it's defined in, via a nested constructor call or a self.<attr>
+    closure reference; falls back to the outer wrapper class/this file if neither is found."""
+    outer_name = _call_func_name(arg1) or "" if isinstance(arg1, ast.Call) else ""
 
     inner_name = None
     if isinstance(arg1, ast.Call):
         for sub in list(arg1.args) + [kw.value for kw in arg1.keywords]:
             if isinstance(sub, ast.Call):
-                candidate_name = None
-                if isinstance(sub.func, ast.Name):
-                    candidate_name = sub.func.id
-                elif isinstance(sub.func, ast.Attribute):
-                    candidate_name = sub.func.attr
-                # Only treat this as the real wrapped component if it looks like a
-                # class instantiation (PascalCase) — a lowercase/underscore-prefixed
-                # call here is almost always a plain helper/data function passed as
-                # an argument (e.g. `RetrieverComponent(_load_corpus())`), not a
-                # nested component. Without this guard, that helper call gets
-                # mistaken for "the real class" and both class_name and file end up
-                # wrong even for a completely ordinary, unwrapped add_component().
+                candidate_name = _call_func_name(sub)
+                # PascalCase only — a lowercase helper call (e.g. RetrieverComponent(_load_corpus()))
+                # is data, not a nested component, and must not be mistaken for the real class.
                 if candidate_name and candidate_name[0].isupper():
                     inner_name = candidate_name
                     break
@@ -150,21 +130,16 @@ def _resolve_component_class_and_file(
         resolved_file = _find_class_definition_file(inner_name, file_contents) or file
         return inner_name, resolved_file
 
-    # No wrapper detected — keep today's exact behavior: the file where
-    # add_component()/add_node() itself is called.
+    # No wrapper detected — the file where add_component()/add_node() itself is called.
     return outer_name, file
 
 
 def _detect_haystack(file_contents: dict[str, str]) -> WiringBlock | None:
     nodes = {}
     edges = []
+    parsed_files = list(_iter_parsed_files(file_contents))
 
-    for file, content in file_contents.items():
-        try:
-            tree = ast.parse(content, filename=file)
-        except SyntaxError:
-            continue
-
+    for file, tree in parsed_files:
         self_attr_classes = _build_self_attr_classes(tree)
 
         for node in ast.walk(tree):
@@ -174,12 +149,7 @@ def _detect_haystack(file_contents: dict[str, str]) -> WiringBlock | None:
                         arg0 = node.args[0]
                         arg1 = node.args[1]
 
-                        alias = None
-                        if isinstance(arg0, ast.Constant) and isinstance(arg0.value, str):
-                            alias = arg0.value
-                        elif isinstance(arg0, ast.Str):
-                            alias = arg0.s
-
+                        alias = _const_str(arg0)
                         class_name, source_hint_file = _resolve_component_class_and_file(
                             arg1, file, self_attr_classes, file_contents
                         )
@@ -190,32 +160,15 @@ def _detect_haystack(file_contents: dict[str, str]) -> WiringBlock | None:
                                 class_name=class_name,
                                 source_hint_file=source_hint_file
                             )
-                            
-    for file, content in file_contents.items():
-        try:
-            tree = ast.parse(content, filename=file)
-        except SyntaxError:
-            continue
-            
+
+    for file, tree in parsed_files:
         for node in ast.walk(tree):
             if isinstance(node, ast.Call):
                 if isinstance(node.func, ast.Attribute) and node.func.attr == "connect":
                     if len(node.args) >= 2:
-                        arg0 = node.args[0]
-                        arg1 = node.args[1]
-                        
-                        src_str = None
-                        if isinstance(arg0, ast.Constant) and isinstance(arg0.value, str):
-                            src_str = arg0.value
-                        elif isinstance(arg0, ast.Str):
-                            src_str = arg0.s
-                            
-                        dst_str = None
-                        if isinstance(arg1, ast.Constant) and isinstance(arg1.value, str):
-                            dst_str = arg1.value
-                        elif isinstance(arg1, ast.Str):
-                            dst_str = arg1.s
-                            
+                        src_str = _const_str(node.args[0])
+                        dst_str = _const_str(node.args[1])
+
                         if src_str and dst_str:
                             src_parts = src_str.split(".", 1)
                             dst_parts = dst_str.split(".", 1)
@@ -223,7 +176,7 @@ def _detect_haystack(file_contents: dict[str, str]) -> WiringBlock | None:
                                 src_name = src_parts[0]
                                 dst_name = dst_parts[0]
                                 edges.append(WiringEdge(src=src_name, dst=dst_name))
-                                
+
     if nodes or edges:
         return WiringBlock(nodes=list(nodes.values()), edges=edges, framework="haystack", source="static")
     return None
@@ -232,13 +185,8 @@ def _detect_haystack(file_contents: dict[str, str]) -> WiringBlock | None:
 def _detect_langgraph(file_contents: dict[str, str]) -> WiringBlock | None:
     nodes = {}
     edges = []
-    
-    for file, content in file_contents.items():
-        try:
-            tree = ast.parse(content, filename=file)
-        except SyntaxError:
-            continue
 
+    for file, tree in _iter_parsed_files(file_contents):
         self_attr_classes = _build_self_attr_classes(tree)
 
         for node in ast.walk(tree):
@@ -248,11 +196,7 @@ def _detect_langgraph(file_contents: dict[str, str]) -> WiringBlock | None:
                         arg0 = node.args[0]
                         arg1 = node.args[1]
 
-                        alias = None
-                        if isinstance(arg0, ast.Constant) and isinstance(arg0.value, str):
-                            alias = arg0.value
-                        elif isinstance(arg0, ast.Str):
-                            alias = arg0.s
+                        alias = _const_str(arg0)
 
                         class_name = ""
                         source_hint_file = file
@@ -271,27 +215,15 @@ def _detect_langgraph(file_contents: dict[str, str]) -> WiringBlock | None:
                                 class_name=class_name,
                                 source_hint_file=source_hint_file
                             )
-                            
+
                 elif isinstance(node.func, ast.Attribute) and node.func.attr == "add_edge":
                     if len(node.args) >= 2:
-                        arg0 = node.args[0]
-                        arg1 = node.args[1]
-                        
-                        src = None
-                        if isinstance(arg0, ast.Constant) and isinstance(arg0.value, str):
-                            src = arg0.value
-                        elif isinstance(arg0, ast.Str):
-                            src = arg0.s
-                            
-                        dst = None
-                        if isinstance(arg1, ast.Constant) and isinstance(arg1.value, str):
-                            dst = arg1.value
-                        elif isinstance(arg1, ast.Str):
-                            dst = arg1.s
-                            
+                        src = _const_str(node.args[0])
+                        dst = _const_str(node.args[1])
+
                         if src and dst:
                             edges.append(WiringEdge(src=src, dst=dst))
-                            
+
     if nodes or edges:
         return WiringBlock(nodes=list(nodes.values()), edges=edges, framework="langgraph", source="static")
     return None
@@ -325,50 +257,42 @@ def _looks_like_type_union(operands: list) -> bool:
 def _detect_langchain_lcel(file_contents: dict[str, str]) -> WiringBlock | None:
     nodes = {}
     edges = []
-    
-    for file, content in file_contents.items():
-        try:
-            tree = ast.parse(content, filename=file)
-        except SyntaxError:
-            continue
-            
+
+    for file, tree in _iter_parsed_files(file_contents):
         processed_binops = set()
-        
+
         for node in ast.walk(tree):
             if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
                 if node in processed_binops:
                     continue
-                    
+
                 operands = _flatten_bitor(node, processed_binops)
                 if len(operands) >= 2 and not _looks_like_type_union(operands):
                     operand_nodes = []
                     for idx, op in enumerate(operands):
                         alias = None
                         class_name = ""
-                        
+
                         if isinstance(op, ast.Name):
                             alias = op.id
                             class_name = op.id
                         elif isinstance(op, ast.Call):
-                            if isinstance(op.func, ast.Name):
-                                class_name = op.func.id
-                            elif isinstance(op.func, ast.Attribute):
-                                class_name = op.func.attr
+                            class_name = _call_func_name(op) or ""
                             alias = class_name
                         elif isinstance(op, ast.Attribute):
                             alias = op.attr
                             class_name = op.attr
-                        
+
                         if not alias:
                             alias = f"step_{idx}"
                             class_name = "unknown"
-                            
+
                         unique_alias = alias
                         suffix = 1
                         while unique_alias in nodes and nodes[unique_alias].class_name != class_name:
                             unique_alias = f"{alias}_{suffix}"
                             suffix += 1
-                            
+
                         node_obj = WiringNode(
                             alias=unique_alias,
                             class_name=class_name,
@@ -376,13 +300,13 @@ def _detect_langchain_lcel(file_contents: dict[str, str]) -> WiringBlock | None:
                         )
                         nodes[unique_alias] = node_obj
                         operand_nodes.append(node_obj)
-                        
+
                     for i in range(len(operand_nodes) - 1):
                         edges.append(WiringEdge(
                             src=operand_nodes[i].alias,
                             dst=operand_nodes[i + 1].alias
                         ))
-                        
+
     if nodes or edges:
         return WiringBlock(nodes=list(nodes.values()), edges=edges, framework="langchain", source="static")
     return None
@@ -413,9 +337,9 @@ async def _detect_via_llm(file_contents: dict[str, str], llm_client: Any) -> Wir
     for path, content in file_contents.items():
         truncated = content[:6000]
         context_parts.append(f"=== File: {path} ===\n{truncated}\n")
-    
+
     files_context = "\n".join(context_parts)
-    
+
     system_prompt = (
         "You are an expert AI software architect. Analyze the provided file contents and determine if there is an agentic pipeline or call chain (custom orchestrator or undocumented framework).\n"
         "If you find a pipeline/agent orchestration structure, respond ONLY in raw JSON format with the exact schema:\n"
@@ -430,18 +354,17 @@ async def _detect_via_llm(file_contents: dict[str, str], llm_client: Any) -> Wir
         "}\n"
         "If no agentic pipeline/orchestration is present, return empty lists."
     )
-    
+
     user_prompt = f"File contents:\n{files_context}\n\nAnalyze the files and return the wiring block JSON."
-    
+
     try:
-        from agent_eval_harness.llm.client import LLMMessage
         messages = [
             LLMMessage(role="system", content=system_prompt),
             LLMMessage(role="user", content=user_prompt),
         ]
         response = await llm_client.complete(messages, max_tokens=1024, json_mode=True)
         content = response.content.strip()
-        
+
         if content.startswith("```"):
             lines = content.splitlines()
             if lines[0].startswith("```"):
@@ -449,14 +372,14 @@ async def _detect_via_llm(file_contents: dict[str, str], llm_client: Any) -> Wir
             if lines[-1].startswith("```"):
                 lines = lines[:-1]
             content = "\n".join(lines).strip()
-            
+
         parsed = json.loads(content)
         nodes_raw = parsed.get("nodes") or []
         edges_raw = parsed.get("edges") or []
-        
+
         if not nodes_raw:
             return None
-            
+
         nodes = []
         for n in nodes_raw:
             nodes.append(WiringNode(
@@ -470,7 +393,7 @@ async def _detect_via_llm(file_contents: dict[str, str], llm_client: Any) -> Wir
                 src=e.get("src") or "",
                 dst=e.get("dst") or "",
             ))
-            
+
         return WiringBlock(
             nodes=nodes,
             edges=edges,
