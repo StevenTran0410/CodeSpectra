@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from typing import Literal
 
 from agent_eval_harness.instrumentation._extract import utc_now_iso
 from agent_eval_harness.instrumentation.base import CapturedSpan
 from agent_eval_harness.store.database import get_db
+
+logger = logging.getLogger("agent_eval_harness.store.repository")
 
 
 def new_id() -> str:

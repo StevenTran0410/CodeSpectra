@@ -578,6 +578,8 @@ async def start_discovery(body: StartDiscoveryRequest):
         )
 
         return {"session_id": session_id}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to start discovery session: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
