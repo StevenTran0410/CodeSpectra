@@ -23,11 +23,17 @@ class SuiteEntry(BaseModel):
     component: str
     metric: str
     metric_class: Literal["assertion", "classifier", "llm_judge"]
+    # Representability only — nothing consumes level at run-time yet (CS-286 will).
+    level: Literal["component", "trace", "session"] = "component"
+    # CS-284 codegen keys off execution="entrypoint" for in-process classifier injection.
+    execution: Literal["harness", "entrypoint"] = "harness"
     dataset: DatasetRef | None = None
     params: dict[str, Any] = Field(default_factory=dict)
     rationale: str = ""
     provenance: Literal["rule", "human_added", "llm_suggested"] = "rule"
     status: str | None = None
+    agent_id: str | None = None
+
 
 
 class Suite(BaseModel):

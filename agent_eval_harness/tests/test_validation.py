@@ -1,11 +1,11 @@
-"""Tests for Evaluation Plan Validation Engine (CS-265)."""
+"""Tests for Evaluation Plan Validation Engine (CS-281 updated)."""
 from __future__ import annotations
 
 import textwrap
 
 import pytest
 
-from agent_eval_harness.planning.validation import validate_plan
+from agent_eval_harness.planning.validation import PlanValidationReport, validate_plan
 from agent_eval_harness.store.database import close_db, init_db
 
 pytestmark = pytest.mark.asyncio
@@ -19,8 +19,13 @@ async def _init_db(tmp_path, monkeypatch):
     await close_db()
 
 
+def _errors(report: PlanValidationReport) -> list[str]:
+    """Backward-compat helper: extract the errors list."""
+    return report.errors
+
+
 async def test_validation_clean_plan(tmp_path) -> None:
-    """A valid plan with no errors should return an empty list of errors."""
+    """A valid plan with no errors should return an empty errors list and all runnable readiness."""
     plan_content = textwrap.dedent("""
         entries:
           - id: writer.faithfulness
@@ -29,12 +34,16 @@ async def test_validation_clean_plan(tmp_path) -> None:
             metric_class: llm_judge
             rationale: "valid"
             provenance: rule
+            params:
+              queries: ["What is the capital of France?"]
     """)
     plan_path = tmp_path / "valid_plan.yaml"
     plan_path.write_text(plan_content, encoding="utf-8")
 
-    errors = await validate_plan(plan_path)
-    assert not errors
+    report = await validate_plan(plan_path)
+    assert isinstance(report, PlanValidationReport)
+    assert not _errors(report)
+    assert report.readiness["writer.faithfulness"].status == "runnable"
 
 
 async def test_validation_invalid_schema(tmp_path) -> None:
@@ -49,13 +58,14 @@ async def test_validation_invalid_schema(tmp_path) -> None:
     plan_path = tmp_path / "invalid_schema.yaml"
     plan_path.write_text(plan_content, encoding="utf-8")
 
-    errors = await validate_plan(plan_path)
+    report = await validate_plan(plan_path)
+    errors = _errors(report)
     assert len(errors) == 1
     assert "Schema validation failed" in errors[0]
 
 
 async def test_validation_invalid_metric_name(tmp_path) -> None:
-    """Assert error returned for unregistered metric names."""
+    """Unregistered metrics produce errors + metric_not_dispatchable readiness."""
     plan_content = textwrap.dedent("""
         entries:
           - id: writer.unknown_metric
@@ -74,10 +84,15 @@ async def test_validation_invalid_metric_name(tmp_path) -> None:
     plan_path = tmp_path / "invalid_metrics.yaml"
     plan_path.write_text(plan_content, encoding="utf-8")
 
-    errors = await validate_plan(plan_path)
+    report = await validate_plan(plan_path)
+    errors = _errors(report)
     assert len(errors) == 2
-    assert any("LLM judge metric" in err and "is not registered" in err for err in errors)
-    assert any("assertion metric" in err and "does not exist in registry" in err for err in errors)
+    assert any("not registered in METRIC_REGISTRY" in e for e in errors)
+    # Both gates are blocked with metric_not_dispatchable
+    assert report.readiness["writer.unknown_metric"].status == "blocked"
+    assert "metric_not_dispatchable" in report.readiness["writer.unknown_metric"].reasons
+    assert report.readiness["planner.bad_assertion"].status == "blocked"
+    assert "metric_not_dispatchable" in report.readiness["planner.bad_assertion"].reasons
 
 
 async def test_validation_dataset_missing_and_waived(tmp_path) -> None:
@@ -112,16 +127,14 @@ async def test_validation_dataset_missing_and_waived(tmp_path) -> None:
     plan_path = tmp_path / "dataset_validation.yaml"
     plan_path.write_text(plan_content, encoding="utf-8")
 
-    errors = await validate_plan(plan_path)
-    assert len(errors) == 2
-    assert any(
-        "dataset reference 'nonexistent_dataset_ref' does not exist" in err
-        for err in errors
-    )
-    assert any(
-        "dataset requirement of kind 'guard_classification' is unfulfilled" in err
-        for err in errors
-    )
+    report = await validate_plan(plan_path)
+    errors = _errors(report)
+    # nonexistent ref error + dataset_unfulfilled (guard3) + both missing entry_point
+    assert any("nonexistent_dataset_ref" in e for e in errors)
+    assert any("guard_classification' is unfulfilled" in e for e in errors)
+    # guard3 has unfulfilled dataset → blocked
+    assert report.readiness["guard3.classifier"].status == "blocked"
+    assert "dataset_unfulfilled" in report.readiness["guard3.classifier"].reasons
 
 
 async def test_validation_needs_human_and_unknown(tmp_path) -> None:
@@ -139,7 +152,52 @@ async def test_validation_needs_human_and_unknown(tmp_path) -> None:
     plan_path = tmp_path / "needs_human.yaml"
     plan_path.write_text(plan_content, encoding="utf-8")
 
-    errors = await validate_plan(plan_path)
+    report = await validate_plan(plan_path)
+    errors = _errors(report)
     assert len(errors) == 2
-    assert any("carries leftover 'needs_human' status marker" in err for err in errors)
-    assert any("has 'unknown' metric placeholder" in err for err in errors)
+    assert any("carries leftover 'needs_human' status marker" in e for e in errors)
+    assert any("has 'unknown' metric placeholder" in e for e in errors)
+
+
+async def test_validation_no_queries_blocked(tmp_path) -> None:
+    """Gates with no queries and no dataset.ref are blocked with no_queries reason."""
+    plan_content = textwrap.dedent("""
+        entries:
+          - id: writer.faithfulness
+            component: writer
+            metric: ragas.faithfulness
+            metric_class: llm_judge
+            rationale: "no queries"
+            provenance: llm_suggested
+    """)
+    plan_path = tmp_path / "no_queries.yaml"
+    plan_path.write_text(plan_content, encoding="utf-8")
+
+    report = await validate_plan(plan_path)
+    assert report.readiness["writer.faithfulness"].status == "blocked"
+    assert "no_queries" in report.readiness["writer.faithfulness"].reasons
+
+
+async def test_validation_invalid_dataset_kind(tmp_path) -> None:
+    """Invented dataset kinds are flagged as invalid_dataset_kind."""
+    plan_content = textwrap.dedent("""
+        entries:
+          - id: ret.faithfulness
+            component: ret
+            metric: ragas.faithfulness
+            metric_class: llm_judge
+            dataset:
+              required: {kind: retrieval_grounded_outputs, min_cases: 20}
+            rationale: "LLM invented kind"
+            provenance: llm_suggested
+            params:
+              queries: ["q"]
+    """)
+    plan_path = tmp_path / "bad_kind.yaml"
+    plan_path.write_text(plan_content, encoding="utf-8")
+
+    report = await validate_plan(plan_path)
+    # retrieval_grounded_outputs is not in DATASET_KINDS
+    reasons = report.readiness["ret.faithfulness"].reasons
+    assert "invalid_dataset_kind" in reasons or "dataset_unfulfilled" in reasons
+    assert any("retrieval_grounded_outputs" in e for e in _errors(report))

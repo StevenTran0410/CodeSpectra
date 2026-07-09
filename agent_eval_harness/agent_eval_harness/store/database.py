@@ -234,6 +234,33 @@ _MIGRATIONS: list[dict[str, Any]] = [
             ALTER TABLE discovery_sessions ADD COLUMN pipeline_stage TEXT NOT NULL DEFAULT 'fingerprinting';
         """,
     },
+    {
+        "version": 13,
+        "description": "Add agent_flows_path to expansion_sessions - the LLM-2 holistic "
+        "agent-flow separation pass output (Stage 2 agent-flow view), a sibling YAML next "
+        "to the map, same pattern as plan_path",
+        "sql": """
+            ALTER TABLE expansion_sessions ADD COLUMN agent_flows_path TEXT;
+        """,
+    },
+    {
+        "version": 14,
+        "description": "Add plan_report_path to expansion_sessions - the Stage 3 agentic "
+        "eval planner's per-agent report (data profiles, gates, advisory notes), a sibling "
+        "YAML next to the map, same pattern as plan_path/agent_flows_path",
+        "sql": """
+            ALTER TABLE expansion_sessions ADD COLUMN plan_report_path TEXT;
+        """,
+    },
+    {
+        "version": 15,
+        "description": "Add entry_id and agent_id to evaluations (CS-281 §6) — the run↔plan "
+        "linkage CS-283 ingest scoring and the reports UI join on",
+        "sql": """
+            ALTER TABLE evaluations ADD COLUMN entry_id TEXT;
+            ALTER TABLE evaluations ADD COLUMN agent_id TEXT;
+        """,
+    },
 ]
 
 TARGET_VERSION = len(_MIGRATIONS) - 1

@@ -90,6 +90,8 @@ async def run_sweep(
                         details=mr.details,
                         evaluator=mr.evaluator,
                         cost_tokens=mr.cost_tokens,
+                        entry_id=entry.id,
+                        agent_id=entry.agent_id,
                     )
     except Exception:
         await repository.finish_run(run_id, "failed")
@@ -291,8 +293,14 @@ async def _dispatch_judge(
             trace_id=trace_id,
         )
 
-    logger.warning("Unknown judge metric '%s' for entry '%s' — skipping", metric, entry.id)
-    return None
+    logger.warning(
+        "Unknown judge metric '%s' for entry '%s' — unregistered metric reached dispatch",
+        metric, entry.id,
+    )
+    raise ValueError(
+        f"Metric '{metric}' is not registered in METRIC_REGISTRY and cannot be dispatched. "
+        "Register it or remove it from the plan."
+    )
 
 
 def _get_queries_for_entry(entry: SuiteEntry, system_map: SystemMap) -> list[str]:

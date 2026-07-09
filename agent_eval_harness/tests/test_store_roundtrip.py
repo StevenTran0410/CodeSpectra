@@ -217,3 +217,74 @@ async def test_expansion_session_roundtrip_includes_accepted_edges() -> None:
     assert len(list_sessions) == 1
     assert list_sessions[0]["accepted_edges"] == edges
 
+
+async def test_expansion_session_agent_flows_path_roundtrip() -> None:
+    session_id = "sess-agentflows-123"
+    await repository.insert_expansion_session(session_id, "cand-123", "snap-123")
+
+    # Before generation, agent_flows_path is unset.
+    sess = await repository.get_expansion_session(session_id)
+    assert sess is not None
+    assert sess["agent_flows_path"] is None
+
+    await repository.update_expansion_session_agentflows_path(
+        session_id, "/tmp/map_agentflows.yaml"
+    )
+
+    sess = await repository.get_expansion_session(session_id)
+    assert sess is not None
+    assert sess["agent_flows_path"] == "/tmp/map_agentflows.yaml"
+
+
+async def test_cancel_orphaned_running_sessions_only_touches_running() -> None:
+    running_discovery = await repository.insert_discovery_session("repo-x", "snap-x")
+    paused_discovery = await repository.insert_discovery_session("repo-y", "snap-y")
+    await repository.pause_discovery_session(paused_discovery, "prov", "model")
+
+    running_expansion = "exp-running"
+    completed_expansion = "exp-completed"
+    await repository.insert_expansion_session(running_expansion, "cand-1", "snap-x")
+    await repository.insert_expansion_session(completed_expansion, "cand-1", "snap-x")
+    await repository.finish_expansion_session(completed_expansion, "completed")
+
+    await repository.cancel_orphaned_running_sessions()
+
+    running_disc = await repository.get_discovery_session(running_discovery)
+    assert running_disc is not None
+    assert running_disc["status"] == "failed"
+    assert running_disc["error"] is not None
+    assert running_disc["finished_at"] is not None
+
+    paused_disc = await repository.get_discovery_session(paused_discovery)
+    assert paused_disc is not None
+    assert paused_disc["status"] == "paused_rate_limit"  # untouched — intentionally paused
+
+    running_exp = await repository.get_expansion_session(running_expansion)
+    assert running_exp is not None
+    assert running_exp["status"] == "failed"
+    assert running_exp["error"] is not None
+
+    completed_exp = await repository.get_expansion_session(completed_expansion)
+    assert completed_exp is not None
+    assert completed_exp["status"] == "completed"  # untouched
+
+
+async def test_evaluation_entry_id_agent_id_roundtrip() -> None:
+    run_id = await repository.insert_run("test_target")
+    eval_id = await repository.insert_evaluation(
+        run_id=run_id,
+        metric_name="ragas.faithfulness",
+        metric_class="llm_judge",
+        entry_id="writer.faithfulness.123",
+        agent_id="writer_agent",
+    )
+
+    db = get_db()
+    async with db.execute("SELECT * FROM evaluations WHERE id = ?", (eval_id,)) as cur:
+        row = await cur.fetchone()
+
+    assert row is not None
+    assert row["entry_id"] == "writer.faithfulness.123"
+    assert row["agent_id"] == "writer_agent"
+
+

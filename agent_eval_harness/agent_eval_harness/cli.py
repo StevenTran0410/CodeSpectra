@@ -412,10 +412,10 @@ async def _plan_command(args: argparse.Namespace) -> int:
 
     if args.plan_command == "validate":
         async with _db_session():
-            errors = await validate_plan(args.plan)
-            if errors:
+            report = await validate_plan(args.plan)
+            if report.errors:
                 print("[aeh] Validation failed:")
-                for err in errors:
+                for err in report.errors:
                     print(f"  - {err}")
                 return 1
             print(f"[aeh] Plan {args.plan} is VALID.")
@@ -569,7 +569,10 @@ def _ui_command(args) -> int:
 
     if args.data_dir:
         os.environ["AEH_DATA_DIR"] = str(Path(args.data_dir).absolute())
-    else:
+    elif "AEH_DATA_DIR" not in os.environ:
+        # Only default to cwd for standalone CLI usage — a parent process (the
+        # Electron AEHProcessManager) already sets this to a proper per-user data
+        # directory before spawning us, and must never be silently overridden here.
         os.environ["AEH_DATA_DIR"] = str(Path(os.getcwd()).absolute())
 
     print(f"Starting AEH Dashboard server on http://{args.host}:{args.port}")

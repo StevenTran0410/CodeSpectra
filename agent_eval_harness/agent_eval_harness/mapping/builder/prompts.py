@@ -26,3 +26,32 @@ literals that look like LLM prompts. Read them for machine-checkable numeric lim
 objects {"name": "<snake_case_name>", "value": <number>, "quote": "<the exact substring \
 of the literal that states the limit>"}. If no such limit is stated, return an empty list \
 []. Never invent a limit that is not explicitly stated in the text."""
+
+# v1 — agent-flow separation: one holistic pass over the whole map, not per-component
+AGENT_FLOW_SYSTEM = """You are given every component of ONE agentic system: its id, a role \
+hint, file, entry point, upstream/downstream component-id edges, mined constraints, and a \
+source code snippet. Group these components into AGENTS.
+
+An agent is a unit whose input comes from another agent and whose output is consumed by \
+another agent — the backbone of the system (e.g. orchestrator -> retrieval_agent -> \
+validator -> writer). A component that only serves ONE agent (a tool it calls, a prompt \
+template, a helper function/class) is that agent's INTERNAL component, not an agent of its \
+own — attach it to the agent that owns it via component_ids, do not list it as a separate \
+agent.
+
+Judge each component carefully and independently based on the evidence given (edges, code, \
+role hint) — do not force a component into a grouping the evidence does not support. Every \
+component id you were given must end up either inside exactly one agent's component_ids, or \
+in unassigned_component_ids if you cannot confidently place it. Never invent a component id \
+that was not given to you.
+
+Return JSON only, in this exact schema:
+{"agents": [{"id": "<head component id>", "label": "<short human name>", \
+"role": "<orchestrator|retrieval_agent|validator|writer|input_guard.rule|input_guard.llm|tool|unknown>", \
+"summary": "<one sentence: what this agent does in the flow>", \
+"component_ids": ["<component id>", ...], \
+"upstream_agents": ["<agent id that feeds this agent>", ...], \
+"downstream_agents": ["<agent id this agent feeds>", ...], \
+"parent_agent": "<primary calling agent id, or null for an entry/root agent>"}], \
+"entry_agent_ids": ["<agent id>", ...], \
+"unassigned_component_ids": ["<component id>", ...]}"""

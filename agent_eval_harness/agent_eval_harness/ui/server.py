@@ -20,8 +20,16 @@ from agent_eval_harness.llm.proxy_client import CodeSpectraProxyClient
 from agent_eval_harness.discovery.client import CodeSpectraClient
 from agent_eval_harness.discovery.engine import run_discovery_background
 from agent_eval_harness.discovery.expansion import expand_candidate
+from agent_eval_harness.mapping.agent_flow import (
+    build_source_by_component,
+    load_agent_flow_map,
+    save_agent_flow_map,
+    separate_agent_flows,
+)
 from agent_eval_harness.mapping.builder.pipeline import SystemMapBuilder
 from agent_eval_harness.mapping.system_map import load_system_map, save_system_map, SystemMap
+from agent_eval_harness.planning.agentic_planner import generate_plan_agentic
+from agent_eval_harness.planning.report import load_plan_report, save_plan_report
 from agent_eval_harness.store import repository
 from agent_eval_harness.store.database import close_db, get_db, init_db
 
@@ -34,6 +42,7 @@ async def lifespan(app: FastAPI):
     if not os.getenv("AEH_DATA_DIR"):
         os.environ["AEH_DATA_DIR"] = os.getcwd()
     await init_db()
+    await repository.cancel_orphaned_running_sessions()
     yield
     await close_db()
 
@@ -904,11 +913,21 @@ class AdvanceSessionRequest(BaseModel):
 
 @app.post("/api/discovery/expansion-sessions/{session_id}/plan")
 async def generate_plan_route(session_id: str, body: GeneratePlanRequest):
+    """Stage 3's own DAG orchestrator (CS-265 redesign). Hard-gated on Stage 2's
+    agent-flow separation having already run — the agent is the planning unit, so
+    there is no flat-component fallback (see repo_atlas_plan/
+    aeh_stage3_agentic_eval_planner_plan.md §2)."""
     sess = await _get_expansion_session_or_404(session_id)
     if sess["status"] != "completed":
         raise HTTPException(status_code=400, detail="Expansion has not completed.")
     if not sess["map_path"]:
         raise HTTPException(status_code=400, detail="No system map for this session.")
+    agent_flows_path_str = sess.get("agent_flows_path")
+    if not agent_flows_path_str or not Path(agent_flows_path_str).exists():
+        raise HTTPException(
+            status_code=400,
+            detail="Run Stage 2 agent-flow separation first — Stage 3 plans per agent.",
+        )
 
     config = AEHConfig.load()
     provider_id = body.provider_id or config.provider_id
@@ -921,12 +940,26 @@ async def generate_plan_route(session_id: str, body: GeneratePlanRequest):
 
     model_id = body.model_id or config.model_id
     llm_client = CodeSpectraProxyClient(backend_url, backend_token, provider_id, model_id)
+    client = CodeSpectraClient(backend_url, backend_token)
 
     try:
-        from agent_eval_harness.planning.planner import generate_plan as _generate_plan
         import yaml
 
-        suite = await _generate_plan(sess["map_path"], llm_client)
+        system_map = load_system_map(sess["map_path"])
+        agent_flow_map = load_agent_flow_map(agent_flows_path_str)
+
+        snapshot = await client.get_snapshot(sess["snapshot_id"])
+        local_path_str = snapshot.get("local_path")
+        if not local_path_str:
+            raise HTTPException(status_code=400, detail="Snapshot is missing local_path context.")
+        local_path = Path(local_path_str)
+        abs_files = [local_path / p for p in sess["accepted"]]
+        source_by_component = build_source_by_component(abs_files, system_map)
+
+        suite, plan_report = await generate_plan_agentic(
+            system_map, agent_flow_map, source_by_component, sess["accepted_edges"], llm_client,
+            files=abs_files, files_root=local_path,
+        )
 
         map_path = Path(sess["map_path"])
         plan_path = map_path.with_name(map_path.stem + "_plan.yaml")
@@ -934,21 +967,43 @@ async def generate_plan_route(session_id: str, body: GeneratePlanRequest):
             yaml.dump(suite.model_dump(), allow_unicode=True),
             encoding="utf-8"
         )
+        plan_report_path = map_path.with_name(map_path.stem + "_plan_report.yaml")
+        save_plan_report(plan_report, plan_report_path)
 
         await repository.update_expansion_session_plan_path(session_id, str(plan_path))
-        
+        await repository.update_expansion_session_plan_report_path(session_id, str(plan_report_path))
+
         # Advance parent discovery session pipeline stage
         candidate = await repository.get_discovery_candidate(sess["candidate_id"])
         if candidate:
             await repository.update_discovery_session_pipeline_stage(candidate["session_id"], "awaiting_plan_review")
 
-        return suite.model_dump()
+        from agent_eval_harness.planning.validation import validate_plan
+        report = await validate_plan(plan_path)
+        result = suite.model_dump()
+        result["readiness"] = {eid: r.model_dump() for eid, r in report.readiness.items()}
+        return result
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"generate_plan failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
     finally:
+        await client.aclose()
         if hasattr(llm_client, "aclose"):
             await llm_client.aclose()
+
+
+@app.get("/api/discovery/expansion-sessions/{session_id}/plan-report")
+async def get_plan_report_route(session_id: str):
+    sess = await _get_expansion_session_or_404(session_id)
+    plan_report_path_str = sess.get("plan_report_path")
+    if not plan_report_path_str or not Path(plan_report_path_str).exists():
+        raise HTTPException(status_code=404, detail="No plan report for this session.")
+    try:
+        return load_plan_report(plan_report_path_str).model_dump()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load plan report: {e}")
 
 
 @app.get("/api/discovery/expansion-sessions/{session_id}/plan")
@@ -959,8 +1014,12 @@ async def get_plan_route(session_id: str):
         raise HTTPException(status_code=404, detail="No plan file for this session.")
     try:
         from agent_eval_harness.metrics.suite import load_suite
+        from agent_eval_harness.planning.validation import validate_plan
         suite = load_suite(plan_path_str)
-        return suite.model_dump()
+        report = await validate_plan(plan_path_str)
+        result = suite.model_dump()
+        result["readiness"] = {eid: r.model_dump() for eid, r in report.readiness.items()}
+        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to load plan: {e}")
 
@@ -1008,6 +1067,83 @@ async def update_plan_route(session_id: str, body: UpdatePlanRequest):
         encoding="utf-8"
     )
     return {"success": True}
+
+
+class AgentFlowRequest(BaseModel):
+    """provider_id/model_id here select LLM 2, independent of the expansion/classify model."""
+    provider_id: str | None = None
+    model_id: str | None = None
+    backend_url: str | None = None
+    backend_token: str | None = None
+
+
+@app.post("/api/discovery/expansion-sessions/{session_id}/agent-flows")
+async def generate_agent_flows_route(session_id: str, body: AgentFlowRequest):
+    sess = await _get_expansion_session_or_404(session_id)
+    if sess["status"] != "completed":
+        raise HTTPException(status_code=400, detail="Expansion has not completed.")
+    if not sess["map_path"]:
+        raise HTTPException(status_code=400, detail="No system map for this session.")
+
+    config = AEHConfig.load()
+    provider_id = body.provider_id or config.provider_id
+    backend_url = body.backend_url or config.backend_url
+    backend_token = body.backend_token or config.backend_token
+    if not backend_url or not backend_token:
+        raise HTTPException(status_code=400, detail="Missing backend connection config.")
+    if not provider_id:
+        raise HTTPException(status_code=400, detail="No LLM provider configured.")
+    model_id = body.model_id or config.model_id
+
+    llm_client = CodeSpectraProxyClient(backend_url, backend_token, provider_id, model_id)
+    client = CodeSpectraClient(backend_url, backend_token)
+
+    try:
+        system_map = load_system_map(sess["map_path"])
+
+        snapshot = await client.get_snapshot(sess["snapshot_id"])
+        local_path_str = snapshot.get("local_path")
+        if not local_path_str:
+            raise HTTPException(
+                status_code=400, detail="Snapshot is missing local_path context."
+            )
+        local_path = Path(local_path_str)
+        abs_files = [local_path / p for p in sess["accepted"]]
+
+        source_by_component = build_source_by_component(abs_files, system_map)
+        agent_flow_map = await separate_agent_flows(system_map, source_by_component, llm_client)
+
+        map_path = Path(sess["map_path"])
+        agent_flows_path = map_path.with_name(map_path.stem + "_agentflows.yaml")
+        save_agent_flow_map(agent_flow_map, agent_flows_path)
+
+        await repository.update_expansion_session_agentflows_path(
+            session_id, str(agent_flows_path)
+        )
+
+        return agent_flow_map.model_dump()
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"generate_agent_flows failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        await client.aclose()
+        if hasattr(llm_client, "aclose"):
+            await llm_client.aclose()
+
+
+@app.get("/api/discovery/expansion-sessions/{session_id}/agent-flows")
+async def get_agent_flows_route(session_id: str):
+    sess = await _get_expansion_session_or_404(session_id)
+    agent_flows_path_str = sess.get("agent_flows_path")
+    if not agent_flows_path_str or not Path(agent_flows_path_str).exists():
+        raise HTTPException(status_code=404, detail="No agent-flow map for this session.")
+    try:
+        agent_flow_map = load_agent_flow_map(agent_flows_path_str)
+        return agent_flow_map.model_dump()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load agent-flow map: {e}")
 
 
 @app.post("/api/discovery/sessions/{session_id}/advance")

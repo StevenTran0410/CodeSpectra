@@ -39,29 +39,40 @@ SUITE_SUGGESTION_SYSTEM = (
 )
 
 
-def get_component_info(entry_point: str) -> dict[str, str]:
-    """Helper to extract docstring and source snippet from component's entry_point."""
+def get_component_info(entry_point: str, search_roots: list[Path] | None = None) -> dict[str, str]:
+    """Static (AST) docstring/source extraction — never imports target code (CS-287)."""
     info = {"docstring": "", "source_snippet": ""}
     if not entry_point or entry_point.startswith(("http://", "https://")):
         return info
 
-    try:
-        module_path, _, class_name = entry_point.partition(":")
-        import importlib
-        import inspect
+    module_path, _, class_name = entry_point.partition(":")
+    class_name = class_name.split(".")[0]
+    if not module_path or not class_name:
+        return info
 
-        module = importlib.import_module(module_path)
-        cls = getattr(module, class_name)
-        
-        info["docstring"] = inspect.getdoc(cls) or ""
+    # Default root = the agent_eval_harness project dir (covers the in-repo test targets).
+    roots = search_roots or [Path(__file__).resolve().parents[2]]
+    rel = Path(*module_path.split(".")).with_suffix(".py")
+    for root in roots:
+        candidate = root / rel
+        if not candidate.is_file():
+            continue
         try:
-            source = inspect.getsource(cls) or ""
-            info["source_snippet"] = "\n".join(source.splitlines()[:50])
-        except Exception:
-            pass
-    except Exception as e:
-        logger.debug(f"Could not load entry point {entry_point}: {e}")
+            import ast
 
+            content = candidate.read_text(encoding="utf-8")
+            tree = ast.parse(content)
+        except (OSError, SyntaxError, UnicodeDecodeError) as e:
+            logger.debug(f"Could not parse {candidate}: {e}")
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef) and node.name == class_name:
+                info["docstring"] = ast.get_docstring(node) or ""
+                from agent_eval_harness.discovery.expansion import extract_symbol_snippet
+
+                snippet = extract_symbol_snippet(content, class_name)
+                info["source_snippet"] = "\n".join(snippet.splitlines()[:50])
+                return info
     return info
 
 
@@ -134,11 +145,324 @@ async def _resolve_dataset_ref(
     return DatasetRef(ref=best_ds_id)
 
 
+def _component_role_rules(
+    component: Component,
+    components_by_id: dict[str, Component],
+    validator_comp: Component | None,
+    system_map: SystemMap,
+) -> list[dict]:
+    """Pure, deterministic: which role-based rule dicts fire for this component."""
+    role = component.role
+    role_rules: list[dict] = []
+
+    if role in ("input_guard.rule", "input_guard.llm"):
+        role_rules.append({
+            "metric": f"classifier.{component.id}_accuracy",
+            "metric_class": "classifier",
+            "dataset_kind": "guard_classification",
+            "rationale": (
+                f"role={role} ⇒ classification accuracy over labeled "
+                "guard dataset. scored via sklearn."
+            ),
+        })
+    elif role == "validator":
+        role_rules.append({
+            "metric": f"classifier.{component.id}_accuracy",
+            "metric_class": "classifier",
+            "dataset_kind": "sufficiency_labeled",
+            "rationale": (
+                f"role={role} ⇒ sufficiency classification accuracy. "
+                "scored via sklearn."
+            ),
+        })
+    elif role == "orchestrator":
+        role_rules.append({
+            "metric": "geval.decomposition_coverage",
+            "metric_class": "llm_judge",
+            "dataset_kind": "decomposition_gold",
+            "rationale": (
+                f"role={role} ⇒ decomposition coverage. evaluates "
+                "if decomposed intents cover query."
+            ),
+        })
+        role_rules.append({
+            "metric": "allowed_downstream",
+            "metric_class": "assertion",
+            "rationale": (
+                f"role={role} ⇒ orchestrator must only fan out to "
+                "its declared downstream components."
+            ),
+        })
+    elif role == "retrieval_agent":
+        # Add no_unnecessary_calls if it invokes any tools downstream
+        has_downstream_tools = any(
+            components_by_id[d].role == "tool"
+            for d in component.downstream
+            if d in components_by_id
+        ) or any(
+            tc.role == "tool" and component.id in tc.upstream
+            for tc in system_map.components
+        )
+        if has_downstream_tools:
+            role_rules.append({
+                "metric": "no_unnecessary_calls",
+                "metric_class": "assertion",
+                "rationale": (
+                    f"role={role} ⇒ checks that every tool result "
+                    "is used by some downstream component."
+                ),
+            })
+            # Add tool_correctness (llm_judge)
+            role_rules.append({
+                "metric": "tool_correctness",
+                "metric_class": "llm_judge",
+                "rationale": (
+                    f"role={role} ⇒ evaluates if the correct tools "
+                    "were selected."
+                ),
+            })
+
+        # Check if this retrieval agent is part of a retry loop
+        is_in_retry_loop = False
+        if validator_comp:
+            # check if retrieval_agent goes to validator, and validator goes to planner
+            has_downstream_validator = any(d == validator_comp.id for d in component.downstream)
+            has_validator_to_orchestrator = any(
+                components_by_id[d].role == "orchestrator"
+                for d in validator_comp.downstream
+                if d in components_by_id
+            )
+            if has_downstream_validator and has_validator_to_orchestrator:
+                is_in_retry_loop = True
+
+        if is_in_retry_loop:
+            role_rules.append({
+                "metric": "retry_on_reject_required",
+                "metric_class": "assertion",
+                "rationale": (
+                    f"role={role} ⇒ verifies orchestrator dispatches "
+                    "a retry when validator rejects."
+                ),
+            })
+    elif role == "writer":
+        role_rules.append({
+            "metric": "ragas.faithfulness",
+            "metric_class": "llm_judge",
+            "rationale": (
+                f"role={role} ⇒ faithfulness is the central correctness "
+                "property. writer must not fabricate facts."
+            ),
+        })
+        role_rules.append({
+            "metric": "ragas.answer_relevancy",
+            "metric_class": "llm_judge",
+            "rationale": (
+                f"role={role} ⇒ answer should be relevant to the "
+                "user's original query."
+            ),
+        })
+
+    return role_rules
+
+
+async def _hydrate_rule_to_entry(
+    rule: dict,
+    component: Component,
+    components_by_id: dict[str, Component],
+    system_map: SystemMap,
+    db_datasets: list[dict],
+    llm_client: LLMClient,
+    *,
+    agent_id: str | None = None,
+) -> SuiteEntry:
+    """Resolve dataset refs and params, producing the SuiteEntry for one fired role rule."""
+    dataset_ref = None
+    if "dataset_kind" in rule:
+        dataset_ref = await _resolve_dataset_ref(
+            rule["dataset_kind"], component, system_map, db_datasets
+        )
+
+    params: dict[str, Any] = {}
+    # Fetch queries from dataset cases if we have resolved a reference
+    if dataset_ref and dataset_ref.ref:
+        try:
+            cases = await repository.get_dataset_cases(dataset_ref.ref)
+            if cases:
+                sample_queries = []
+                for case in cases[:2]:
+                    inp = json.loads(case.get("input_json") or "{}")
+                    q = inp.get("query", inp.get("text"))
+                    if q:
+                        sample_queries.append(q)
+                if sample_queries:
+                    params["queries"] = sample_queries
+        except Exception:
+            pass
+
+    if "queries" not in params:
+        params["queries"] = [
+            "<TODO: add a representative query for this target>"
+        ]
+
+    if rule["metric"] == "allowed_downstream":
+        params["allowed"] = component.downstream
+    elif rule["metric"] == "tool_correctness":
+        # Find all downstream tools or tools having this component
+        expected_tool_comps = []
+        for d in component.downstream:
+            if d in components_by_id and components_by_id[d].role == "tool":
+                expected_tool_comps.append(components_by_id[d])
+        for tc in system_map.components:
+            if tc.role == "tool" and component.id in tc.upstream:
+                if tc not in expected_tool_comps:
+                    expected_tool_comps.append(tc)
+        params["expected_tools"] = [
+            get_tool_name_from_component(tc) for tc in expected_tool_comps
+        ]
+
+    if rule["metric"] == "geval.decomposition_coverage":
+        # Tailor rubric wording via LLM
+        info = get_component_info(component.entry_point)
+        params["rubric_text"] = await _tailor_geval_rubric(
+            component, info, llm_client
+        )
+
+    if rule["metric_class"] == "classifier":
+        params["entry_point"] = component.entry_point
+
+    metric_suffix = (
+        rule["metric"]
+        .replace("classifier.", "")
+        .replace("geval.", "")
+        .replace("ragas.", "")
+    )
+    if rule["metric_class"] == "classifier":
+        metric_suffix = "classifier"
+
+    return SuiteEntry(
+        id=f"{component.id}.{metric_suffix}",
+        component=component.id,
+        metric=rule["metric"],
+        metric_class=rule["metric_class"],
+        dataset=dataset_ref,
+        params=params,
+        rationale=rule["rationale"],
+        provenance="rule",
+        agent_id=agent_id,
+    )
+
+
+def _constraint_entries(
+    component: Component,
+    components_by_id: dict[str, Component],
+    *,
+    agent_id: str | None = None,
+) -> list[SuiteEntry]:
+    """Constraints → assertion SuiteEntry list. Pure/deterministic — no I/O."""
+    entries: list[SuiteEntry] = []
+    for constraint in component.constraints:
+        # Check if this constraint name is a registered assertion
+        try:
+            from agent_eval_harness.metrics.assertions.registry import get_assertion
+            get_assertion(constraint.name)
+        except KeyError:
+            continue
+
+        # Handle max_items_per_call gotcha: observable in downstream retrieval_agent (worker)
+        target_comp_id = component.id
+        if constraint.name == "max_items_per_call":
+            # find a downstream retrieval_agent
+            downstream_retrievers = [
+                d for d in component.downstream
+                if d in components_by_id and components_by_id[d].role == "retrieval_agent"
+            ]
+            if downstream_retrievers:
+                target_comp_id = downstream_retrievers[0]
+
+        params = {
+            "limit": constraint.value,
+            "source": f"system_map constraint ({constraint.source})",
+            "queries": ["<TODO: add a representative query for this target>"],
+        }
+
+        entries.append(
+            SuiteEntry(
+                id=f"{component.id}.{constraint.name}",
+                component=target_comp_id,
+                metric=constraint.name,
+                metric_class="assertion",
+                params=params,
+                rationale=f"constraint mined from code: {constraint.name}={constraint.value}",
+                provenance="rule",
+                agent_id=agent_id,
+            )
+        )
+    return entries
+
+
+def _find_validator(system_map: SystemMap) -> Component | None:
+    for c in system_map.components:
+        if c.role == "validator":
+            return c
+    return None
+
+
+async def baseline_gates_for_component(
+    component: Component,
+    components_by_id: dict[str, Component],
+    validator_comp: Component | None,
+    system_map: SystemMap,
+    db_datasets: list[dict],
+    llm_client: LLMClient,
+    *,
+    agent_id: str | None = None,
+) -> list[SuiteEntry]:
+    """Deterministic role+constraint baseline for ONE component; tool/unknown roles get nothing."""
+    if component.role in ("tool", "unknown"):
+        return []
+
+    entries: list[SuiteEntry] = []
+    for rule in _component_role_rules(component, components_by_id, validator_comp, system_map):
+        entries.append(
+            await _hydrate_rule_to_entry(
+                rule, component, components_by_id, system_map, db_datasets, llm_client,
+                agent_id=agent_id,
+            )
+        )
+    entries.extend(_constraint_entries(component, components_by_id, agent_id=agent_id))
+    return entries
+
+
+async def baseline_gates_for_agent(
+    agent_component_ids: list[str],
+    system_map: SystemMap,
+    db_datasets: list[dict],
+    llm_client: LLMClient,
+    *,
+    agent_id: str,
+) -> list[SuiteEntry]:
+    """Deterministic-rule baseline for every component one AgentFlowMap agent owns."""
+    components_by_id = {c.id: c for c in system_map.components}
+    validator_comp = _find_validator(system_map)
+    entries: list[SuiteEntry] = []
+    for cid in agent_component_ids:
+        component = components_by_id.get(cid)
+        if component is None:
+            continue
+        entries.extend(
+            await baseline_gates_for_component(
+                component, components_by_id, validator_comp, system_map, db_datasets,
+                llm_client, agent_id=agent_id,
+            )
+        )
+    return entries
+
+
 async def generate_plan(
     system_map_path: str | Path,
     llm_client: LLMClient,
 ) -> Suite:
-    """Generate an evaluation plan from a system map."""
+    """Generate an evaluation plan from a system map (flat, role+constraint rules only)."""
     system_map = load_system_map(system_map_path)
     entries: list[SuiteEntry] = []
 
@@ -150,13 +474,7 @@ async def generate_plan(
 
     # Map for quick component lookup
     components_by_id = {c.id: c for c in system_map.components}
-
-    # Find the validator component (if any) and components in retry loops
-    validator_comp = None
-    for c in system_map.components:
-        if c.role == "validator":
-            validator_comp = c
-            break
+    validator_comp = _find_validator(system_map)
 
     for component in system_map.components:
         role = component.role
@@ -174,232 +492,12 @@ async def generate_plan(
         if role == "tool":
             continue
 
-        # 1. Role→suite rules (deterministic)
-        role_rules = []
-        if role in ("input_guard.rule", "input_guard.llm"):
-            role_rules.append({
-                "metric": f"classifier.{component.id}_accuracy",
-                "metric_class": "classifier",
-                "dataset_kind": "guard_classification",
-                "rationale": (
-                    f"role={role} ⇒ classification accuracy over labeled "
-                    "guard dataset. scored via sklearn."
-                ),
-            })
-        elif role == "validator":
-            role_rules.append({
-                "metric": f"classifier.{component.id}_accuracy",
-                "metric_class": "classifier",
-                "dataset_kind": "sufficiency_labeled",
-                "rationale": (
-                    f"role={role} ⇒ sufficiency classification accuracy. "
-                    "scored via sklearn."
-                ),
-            })
-        elif role == "orchestrator":
-            role_rules.append({
-                "metric": "geval.decomposition_coverage",
-                "metric_class": "llm_judge",
-                "dataset_kind": "decomposition_gold",
-                "rationale": (
-                    f"role={role} ⇒ decomposition coverage. evaluates "
-                    "if decomposed intents cover query."
-                ),
-            })
-            role_rules.append({
-                "metric": "allowed_downstream",
-                "metric_class": "assertion",
-                "rationale": (
-                    f"role={role} ⇒ orchestrator must only fan out to "
-                    "its declared downstream components."
-                ),
-            })
-        elif role == "retrieval_agent":
-            # Add no_unnecessary_calls if it invokes any tools downstream
-            has_downstream_tools = any(
-                components_by_id[d].role == "tool"
-                for d in component.downstream
-                if d in components_by_id
-            ) or any(
-                tc.role == "tool" and component.id in tc.upstream
-                for tc in system_map.components
+        entries.extend(
+            await baseline_gates_for_component(
+                component, components_by_id, validator_comp, system_map, db_datasets,
+                llm_client,
             )
-            if has_downstream_tools:
-                role_rules.append({
-                    "metric": "no_unnecessary_calls",
-                    "metric_class": "assertion",
-                    "rationale": (
-                        f"role={role} ⇒ checks that every tool result "
-                        "is used by some downstream component."
-                    ),
-                })
-                # Add tool_correctness (llm_judge)
-                role_rules.append({
-                    "metric": "tool_correctness",
-                    "metric_class": "llm_judge",
-                    "rationale": (
-                        f"role={role} ⇒ evaluates if the correct tools "
-                        "were selected."
-                    ),
-                })
-
-            # Check if this retrieval agent is part of a retry loop
-            is_in_retry_loop = False
-            if validator_comp:
-                # check if retrieval_agent goes to validator, and validator goes to planner
-                has_downstream_validator = any(d == validator_comp.id for d in component.downstream)
-                has_validator_to_orchestrator = any(
-                    components_by_id[d].role == "orchestrator"
-                    for d in validator_comp.downstream
-                    if d in components_by_id
-                )
-                if has_downstream_validator and has_validator_to_orchestrator:
-                    is_in_retry_loop = True
-
-            if is_in_retry_loop:
-                role_rules.append({
-                    "metric": "retry_on_reject_required",
-                    "metric_class": "assertion",
-                    "rationale": (
-                        f"role={role} ⇒ verifies orchestrator dispatches "
-                        "a retry when validator rejects."
-                    ),
-                })
-        elif role == "writer":
-            role_rules.append({
-                "metric": "ragas.faithfulness",
-                "metric_class": "llm_judge",
-                "rationale": (
-                    f"role={role} ⇒ faithfulness is the central correctness "
-                    "property. writer must not fabricate facts."
-                ),
-            })
-            role_rules.append({
-                "metric": "ragas.answer_relevancy",
-                "metric_class": "llm_judge",
-                "rationale": (
-                    f"role={role} ⇒ answer should be relevant to the "
-                    "user's original query."
-                ),
-            })
-
-        # Process role rules
-        for rule in role_rules:
-            dataset_ref = None
-            if "dataset_kind" in rule:
-                dataset_ref = await _resolve_dataset_ref(
-                    rule["dataset_kind"], component, system_map, db_datasets
-                )
-
-            params: dict[str, Any] = {}
-            # Fetch queries from dataset cases if we have resolved a reference
-            if dataset_ref and dataset_ref.ref:
-                try:
-                    cases = await repository.get_dataset_cases(dataset_ref.ref)
-                    if cases:
-                        sample_queries = []
-                        for case in cases[:2]:
-                            inp = json.loads(case.get("input_json") or "{}")
-                            q = inp.get("query", inp.get("text"))
-                            if q:
-                                sample_queries.append(q)
-                        if sample_queries:
-                            params["queries"] = sample_queries
-                except Exception:
-                    pass
-
-            if "queries" not in params:
-                params["queries"] = [
-                    "<TODO: add a representative query for this target>"
-                ]
-
-            if rule["metric"] == "allowed_downstream":
-                params["allowed"] = component.downstream
-            elif rule["metric"] == "tool_correctness":
-                # Find all downstream tools or tools having this component
-                expected_tool_comps = []
-                for d in component.downstream:
-                    if d in components_by_id and components_by_id[d].role == "tool":
-                        expected_tool_comps.append(components_by_id[d])
-                for tc in system_map.components:
-                    if tc.role == "tool" and component.id in tc.upstream:
-                        if tc not in expected_tool_comps:
-                            expected_tool_comps.append(tc)
-                params["expected_tools"] = [
-                    get_tool_name_from_component(tc) for tc in expected_tool_comps
-                ]
-
-            if rule["metric"] == "geval.decomposition_coverage":
-                # Tailor rubric wording via LLM
-                info = get_component_info(component.entry_point)
-                params["rubric_text"] = await _tailor_geval_rubric(
-                    component, info, llm_client
-                )
-
-            if rule["metric_class"] == "classifier":
-                params["entry_point"] = component.entry_point
-
-            metric_suffix = (
-                rule["metric"]
-                .replace("classifier.", "")
-                .replace("geval.", "")
-                .replace("ragas.", "")
-            )
-            if rule["metric_class"] == "classifier":
-                metric_suffix = "classifier"
-
-            entries.append(
-                SuiteEntry(
-                    id=f"{component.id}.{metric_suffix}",
-                    component=component.id,
-                    metric=rule["metric"],
-                    metric_class=rule["metric_class"],
-                    dataset=dataset_ref,
-                    params=params,
-                    rationale=rule["rationale"],
-                    provenance="rule",
-                )
-            )
-
-        # 2. Constraints→assertions (deterministic)
-        for constraint in component.constraints:
-            # Check if this constraint name is a registered assertion
-            try:
-                from agent_eval_harness.metrics.assertions.registry import get_assertion
-                get_assertion(constraint.name)
-            except KeyError:
-                continue
-
-            # Handle max_items_per_call gotcha: observable in downstream retrieval_agent (worker)
-            target_comp_id = component.id
-            if constraint.name == "max_items_per_call":
-                # find a downstream retrieval_agent
-                downstream_retrievers = [
-                    d for d in component.downstream
-                    if d in components_by_id and components_by_id[d].role == "retrieval_agent"
-                ]
-                if downstream_retrievers:
-                    target_comp_id = downstream_retrievers[0]
-
-            params = {
-                "limit": constraint.value,
-                "source": f"system_map constraint ({constraint.source})",
-            }
-            params["queries"] = [
-                "<TODO: add a representative query for this target>"
-            ]
-
-            entries.append(
-                SuiteEntry(
-                    id=f"{component.id}.{constraint.name}",
-                    component=target_comp_id,
-                    metric=constraint.name,
-                    metric_class="assertion",
-                    params=params,
-                    rationale=f"constraint mined from code: {constraint.name}={constraint.value}",
-                    provenance="rule",
-                )
-            )
+        )
 
     return Suite(entries=entries)
 

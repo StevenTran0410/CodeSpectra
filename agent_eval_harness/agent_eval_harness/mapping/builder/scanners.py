@@ -6,7 +6,13 @@ import sys
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-from agent_eval_harness.discovery.wiring import _call_func_name, _const_str, _flatten_bitor
+from agent_eval_harness.discovery.wiring import (
+    _build_self_attr_classes,
+    _call_func_name,
+    _const_str,
+    _flatten_bitor,
+    _resolve_component_class_and_file,
+)
 from agent_eval_harness.mapping.builder.types import (
     CandidateComponent,
     ManualSpanHint,
@@ -29,6 +35,7 @@ class HaystackScanner:
 
         # Cache ASTs upfront to avoid quadratic re-parsing in the second pass
         asts: dict[Path, ast.Module] = {}
+        file_contents: dict[str, str] = {}
         known_classes: set[str] = set()
         add_component_names: dict[str, str] = {}  # {haystack_name: class_name}
         module_level_async_functions: dict[str, ast.AsyncFunctionDef] = {}
@@ -39,12 +46,15 @@ class HaystackScanner:
                 source = file.read_text(encoding="utf-8")
                 tree = ast.parse(source, filename=str(file))
                 asts[file] = tree
+                file_contents[str(file)] = source
             except SyntaxError as exc:
                 print(f"[aeh map] skipping {file}: {exc}", file=sys.stderr)
                 continue
 
         # First pass: build known_classes and add_component_names
         for file, tree in asts.items():
+            self_attr_classes = _build_self_attr_classes(tree)
+
             # Collect top-level async functions for tool discovery
             for node in tree.body:
                 if isinstance(node, ast.AsyncFunctionDef):
@@ -59,7 +69,9 @@ class HaystackScanner:
                             known_classes.add(node.name)
                             break
 
-                # Find add_component() calls
+                # Find add_component() calls — resolve through factory/wrapper components
+                # (e.g. add_component(alias, _WrapperComponent(..., self._real_agent, ...)))
+                # to the real wrapped class, same as the wiring detector does for Stage 1.
                 for child in ast.walk(node):
                     if isinstance(child, ast.Call):
                         if self._is_add_component_call(child):
@@ -67,13 +79,15 @@ class HaystackScanner:
                                 len(child.args) >= 2
                                 and isinstance(child.args[0], ast.Constant)
                                 and isinstance(child.args[0].value, str)
+                                and isinstance(child.args[1], ast.Call)
                             ):
                                 haystack_name = child.args[0].value
-                                if isinstance(child.args[1], ast.Call) and isinstance(
-                                    child.args[1].func, ast.Name
-                                ):
-                                    class_name = child.args[1].func.id
+                                class_name, _resolved_file = _resolve_component_class_and_file(
+                                    child.args[1], str(file), self_attr_classes, file_contents
+                                )
+                                if class_name:
                                     add_component_names[haystack_name] = class_name
+                                    known_classes.add(class_name)
 
                 # Find add_node() calls (LangGraph)
                 for child in ast.walk(node):

@@ -77,8 +77,8 @@ async def test_generated_plan_passes_validation(tmp_path) -> None:
     plan_path = tmp_path / "t2_generated_plan.yaml"
     plan_path.write_text(yaml.dump(plan.model_dump(exclude_none=True)), encoding="utf-8")
 
-    errors = await validate_plan(plan_path)
-    assert not errors, f"Validation errors on generated plan: {errors}"
+    report = await validate_plan(plan_path)
+    assert not report.errors, f"Validation errors on generated plan: {report.errors}"
 
 
 async def test_defect_planner_overpack_via_generated_plan() -> None:

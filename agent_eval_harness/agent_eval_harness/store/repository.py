@@ -257,14 +257,17 @@ async def insert_evaluation(
     details: dict | None = None,
     evaluator: str | None = None,
     cost_tokens: int | None = None,
+    entry_id: str | None = None,
+    agent_id: str | None = None,
 ) -> str:
     eval_id = new_id()
     db = get_db()
     passed_int = int(passed) if passed is not None else None
     await db.execute(
         "INSERT INTO evaluations (id, run_id, span_id, trace_id, component_id, "
-        "metric_name, metric_class, score, passed, details_json, evaluator, cost_tokens) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "metric_name, metric_class, score, passed, details_json, evaluator, cost_tokens, "
+        "entry_id, agent_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             eval_id,
             run_id,
@@ -278,6 +281,8 @@ async def insert_evaluation(
             json.dumps(details or {}),
             evaluator,
             cost_tokens,
+            entry_id,
+            agent_id,
         ),
     )
     await db.commit()
@@ -687,6 +692,45 @@ async def update_expansion_session_plan_path(session_id: str, plan_path: str) ->
     await db.execute(
         "UPDATE expansion_sessions SET plan_path = ? WHERE id = ?",
         (plan_path, session_id),
+    )
+    await db.commit()
+
+
+async def update_expansion_session_agentflows_path(session_id: str, agent_flows_path: str) -> None:
+    db = get_db()
+    await db.execute(
+        "UPDATE expansion_sessions SET agent_flows_path = ? WHERE id = ?",
+        (agent_flows_path, session_id),
+    )
+    await db.commit()
+
+
+async def update_expansion_session_plan_report_path(session_id: str, plan_report_path: str) -> None:
+    db = get_db()
+    await db.execute(
+        "UPDATE expansion_sessions SET plan_report_path = ? WHERE id = ?",
+        (plan_report_path, session_id),
+    )
+    await db.commit()
+
+
+async def cancel_orphaned_running_sessions() -> None:
+    """Mark any status='running' session as failed. AEH's background tasks are plain
+    asyncio.create_task() calls with no persistence across process restarts, so a 'running'
+    row at server startup can only be left over from a previous process that died mid-task —
+    never one that's genuinely still in progress."""
+    db = get_db()
+    now = utc_now_iso()
+    error = "Interrupted: app closed before this run finished."
+    await db.execute(
+        "UPDATE discovery_sessions SET status = 'failed', error = ?, finished_at = ? "
+        "WHERE status = 'running'",
+        (error, now),
+    )
+    await db.execute(
+        "UPDATE expansion_sessions SET status = 'failed', error = ?, finished_at = ? "
+        "WHERE status = 'running'",
+        (error, now),
     )
     await db.commit()
 
