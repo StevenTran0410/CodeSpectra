@@ -42,6 +42,8 @@ function AnalysisOverview(): React.ReactElement {
 
   const [selectedProviderId, setSelectedProviderId] = useState('')
   const [selectedModelId, setSelectedModelId] = useState('')
+  const [selectedReasoningEffort, setSelectedReasoningEffort] = useState<string | null>(null)
+  const [selectedThinkingBudget, setSelectedThinkingBudget] = useState<number | null>(null)
   const [llmConfigOpen, setLlmConfigOpen] = useState(false)
 
   const [pollingSessionId, setPollingSessionId] = useState<string | null>(null)
@@ -405,6 +407,8 @@ function AnalysisOverview(): React.ReactElement {
         await window.api.aeh.startExpansion(candId, {
           provider_id: provId,
           model_id: modId,
+          reasoning_effort: selectedReasoningEffort,
+          thinking_budget: selectedThinkingBudget,
           node_budget: 100,
           hop_cap: 3,
         })
@@ -456,6 +460,8 @@ function AnalysisOverview(): React.ReactElement {
       await window.api.aeh.generatePlan(mapSessionId, {
         provider_id: provId,
         model_id: modId,
+        reasoning_effort: selectedReasoningEffort,
+        thinking_budget: selectedThinkingBudget,
       })
       toast.success('Triggered Stage 3 build evaluation planning.')
       setPollingSessionId(discoverySession.id)
@@ -491,6 +497,8 @@ function AnalysisOverview(): React.ReactElement {
           snapshot_id: snapshotId,
           provider_id: provId,
           model_id: modId,
+          reasoning_effort: selectedReasoningEffort,
+          thinking_budget: selectedThinkingBudget,
         })
         const session = await window.api.aeh.getDiscoverySession(result.session_id)
         setDiscoverySession(session)
@@ -1016,9 +1024,13 @@ function AnalysisOverview(): React.ReactElement {
           onClose={() => setLlmConfigOpen(false)}
           providerId={selectedProviderId}
           modelId={selectedModelId}
-          onChange={(prov, model) => {
+          reasoningEffort={selectedReasoningEffort}
+          thinkingBudget={selectedThinkingBudget}
+          onChange={(prov, model, effort, budget) => {
             setSelectedProviderId(prov)
             setSelectedModelId(model)
+            setSelectedReasoningEffort(effort ?? null)
+            setSelectedThinkingBudget(budget ?? null)
           }}
           title="Planning LLM Model"
         />

@@ -401,6 +401,14 @@ export interface GpuRerankerStatus {
   vram_gb: number | null
 }
 
+export interface LocalEmbeddingStatus {
+  enabled: boolean
+  gpu_available: boolean
+  vram_gb: number | null
+  model_id: string
+}
+
+
 export interface TwoStageDebugBundle {
   snapshot_id: string
   query: string
@@ -497,6 +505,14 @@ export interface ProviderConfig {
   updated_at: string
 }
 
+/** How a model's reasoning/thinking parameters must be shaped for its provider's request. */
+export type ReasoningStyle = 'none' | 'effort' | 'budget_tokens' | 'thinking_budget' | 'toggle'
+
+export interface ModelInfo {
+  id: string
+  reasoning_style: ReasoningStyle
+}
+
 export interface CreateProviderRequest {
   kind: ProviderKind
   display_name: string
@@ -528,7 +544,7 @@ declare global {
         update: (id: string, req: UpdateProviderRequest) => Promise<ProviderConfig>
         delete: (id: string) => Promise<void>
         test: (id: string) => Promise<{ ok: boolean; message: string; warning?: string }>
-        models: (id: string) => Promise<{ models: string[] }>
+        models: (id: string) => Promise<{ models: ModelInfo[] }>
       }
       consent: {
         checkCloud: () => Promise<{ given: boolean }>
@@ -538,6 +554,11 @@ declare global {
         status: () => Promise<GpuRerankerStatus>
         setEnabled: (enabled: boolean) => Promise<GpuRerankerStatus>
       }
+      localEmbedding: {
+        status: () => Promise<LocalEmbeddingStatus>
+        setEnabled: (enabled: boolean) => Promise<LocalEmbeddingStatus>
+      }
+
       folder: {
         pick: () => Promise<string | null>
         validate: (path: string) => Promise<ValidateFolderResponse>
@@ -815,10 +836,20 @@ declare global {
           model_id?: string | null
           backend_url?: string | null
           backend_token?: string | null
+          reasoning_effort?: string | null
+          thinking_budget?: number | null
         }) => Promise<{ session_id: string }>
         listDiscoverySessions: (repoRef?: string, snapshotId?: string) => Promise<AEHDiscoverySession[]>
         getDiscoverySession: (sessionId: string) => Promise<AEHDiscoverySession>
-        resumeDiscoverySession: (sessionId: string, body?: { provider_id?: string | null; model_id?: string | null }) => Promise<{ success: boolean }>
+        resumeDiscoverySession: (
+          sessionId: string,
+          body?: {
+            provider_id?: string | null
+            model_id?: string | null
+            reasoning_effort?: string | null
+            thinking_budget?: number | null
+          }
+        ) => Promise<{ success: boolean }>
         listDiscoveryCandidates: (sessionId: string) => Promise<AEHDiscoveryCandidate[]>
         updateDiscoveryCandidateVerdict: (candidateId: string, verdict: 'proposed' | 'confirmed' | 'rejected') => Promise<{ success: boolean }>
         updateDiscoveryCandidateExcludedFiles: (candidateId: string, excludedFiles: string[]) => Promise<{ success: boolean }>
@@ -827,10 +858,14 @@ declare global {
           body: {
             provider_id?: string | null
             model_id?: string | null
+            reasoning_effort?: string | null
+            thinking_budget?: number | null
             node_budget?: number
             hop_cap?: number
             classify_provider_id?: string | null
             classify_model_id?: string | null
+            classify_reasoning_effort?: string | null
+            classify_thinking_budget?: number | null
           }
         ) => Promise<{ session_id: string }>
         getExpansionSession: (sessionId: string) => Promise<AEHExpansionSession>
@@ -842,6 +877,8 @@ declare global {
           body: {
             provider_id?: string | null
             model_id?: string | null
+            reasoning_effort?: string | null
+            thinking_budget?: number | null
           }
         ) => Promise<AEHPlanSuite>
         getPlan: (sessionId: string) => Promise<AEHPlanSuite | null>
@@ -852,6 +889,8 @@ declare global {
           body: {
             provider_id?: string | null
             model_id?: string | null
+            reasoning_effort?: string | null
+            thinking_budget?: number | null
           }
         ) => Promise<AEHAgentFlowMap>
         getAgentFlowMap: (sessionId: string) => Promise<AEHAgentFlowMap | null>
@@ -870,7 +909,12 @@ declare global {
           body: {
             provider_id?: string | null
             model_id?: string | null
+            reasoning_effort?: string | null
+            thinking_budget?: number | null
             instructions?: Record<string, { painpoint?: string; seed_cases?: unknown[] }> | null
+            embedding_provider_id?: string | null
+            embedding_model_id?: string | null
+            use_local_embedding?: boolean
           }
         ) => Promise<Record<string, AEHFulfillmentGroupResult>>
         listDatasets: () => Promise<AEHDatasetSummary[]>

@@ -134,6 +134,25 @@ async def test_list_local_repos_delegates() -> None:
 
 
 @pytest.mark.asyncio
+async def test_llm_embed_delegates_to_provider_service() -> None:
+    from domain.model_connector.types import EmbedRequest
+    sentinel = object()
+    with patch.object(external, "_service") as mock_service:
+        mock_service.embed = AsyncMock(return_value=sentinel)
+        body = external.LLMEmbedRequest(
+            provider_id="p1", model_id="m1", texts=["test"], task_type="retrieval_document"
+        )
+        result = await external.llm_embed(body)
+
+    mock_service.embed.assert_awaited_once_with(
+        EmbedRequest(
+            provider_id="p1", model_id="m1", texts=["test"], task_type="retrieval_document"
+        )
+    )
+    assert result is sentinel
+
+
+@pytest.mark.asyncio
 async def test_all_new_routes_are_token_gated() -> None:
     """Every new route must depend on require_external_token — a route that forgets this dependency would leak CodeSpectra's index to any local process without the bearer token, defeating the entire narrow-slice design."""
     gated_paths = {
@@ -148,6 +167,7 @@ async def test_all_new_routes_are_token_gated() -> None:
         "/snapshots/{snapshot_id}",
         "/repos/{repo_id}",
         "/repos",
+        "/llm/embed",
     }
     found = {route.path for route in external.router.routes if route.path in gated_paths}
     assert found == gated_paths, f"missing routes: {gated_paths - found}"
@@ -158,3 +178,4 @@ async def test_all_new_routes_are_token_gated() -> None:
             assert external.require_external_token in dependant_calls, (
                 f"route {route.path} is missing the require_external_token dependency"
             )
+

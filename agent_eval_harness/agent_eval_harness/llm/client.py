@@ -34,7 +34,15 @@ class LLMClient(Protocol):
 
 class RateLimitExceeded(Exception):
     """Raised once CodeSpectraProxyClient exhausts retries on a 429 (sustained, not transient)."""
-    def __init__(self, provider_id: str, model_id: str | None) -> None:
+    def __init__(
+        self,
+        provider_id: str,
+        model_id: str | None,
+        reasoning_effort: str | None = None,
+        thinking_budget: int | None = None,
+    ) -> None:
         super().__init__(f"Rate limit exceeded for provider={provider_id} model={model_id}")
         self.provider_id = provider_id
         self.model_id = model_id
+        self.reasoning_effort = reasoning_effort
+        self.thinking_budget = thinking_budget

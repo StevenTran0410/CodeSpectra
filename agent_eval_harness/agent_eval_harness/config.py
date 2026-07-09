@@ -13,6 +13,8 @@ class AEHConfig:
     backend_token: str | None = None
     provider_id: str | None = None
     model_id: str | None = None
+    reasoning_effort: str | None = None
+    thinking_budget: int | None = None
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> AEHConfig:
@@ -25,4 +27,6 @@ class AEHConfig:
             backend_token=data.get("backend_token"),
             provider_id=data.get("provider_id"),
             model_id=data.get("model_id"),
+            reasoning_effort=data.get("reasoning_effort"),
+            thinking_budget=data.get("thinking_budget"),
         )

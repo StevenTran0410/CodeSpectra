@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { FolderOpen, Info, Cpu, BrainCircuit, Plus, Trash2, RefreshCw, CheckCircle, XCircle } from 'lucide-react'
-import type { GpuRerankerStatus } from '../../types/electron'
+import type { GpuRerankerStatus, LocalEmbeddingStatus } from '../../types/electron'
 
 interface NativeFunction {
   name: string
@@ -129,6 +129,11 @@ export default function SettingsScreen(): React.ReactElement {
   const [gpuRerankerError, setGpuRerankerError] = useState<string | null>(null)
   const [gpuRerankerToggling, setGpuRerankerToggling] = useState(false)
 
+  // Local embedding state
+  const [localEmbedding, setLocalEmbedding] = useState<LocalEmbeddingStatus | null>(null)
+  const [localEmbeddingError, setLocalEmbeddingError] = useState<string | null>(null)
+  const [localEmbeddingToggling, setLocalEmbeddingToggling] = useState(false)
+
   // Classifier state
   const [classifierStatus, setClassifierStatus] = useState<ClassifierStatus | null>(null)
   const [classifierExamples, setClassifierExamples] = useState<ClassifierExample[]>([])
@@ -151,6 +156,10 @@ export default function SettingsScreen(): React.ReactElement {
       .status()
       .then(setGpuReranker)
       .catch((e) => setGpuRerankerError(String(e)))
+    window.api.localEmbedding
+      .status()
+      .then(setLocalEmbedding)
+      .catch((e) => setLocalEmbeddingError(String(e)))
   }, [])
 
   const handleToggleGpuReranker = async () => {
@@ -164,6 +173,20 @@ export default function SettingsScreen(): React.ReactElement {
       setGpuRerankerError(String(e))
     } finally {
       setGpuRerankerToggling(false)
+    }
+  }
+
+  const handleToggleLocalEmbedding = async () => {
+    if (!localEmbedding) return
+    setLocalEmbeddingToggling(true)
+    setLocalEmbeddingError(null)
+    try {
+      const next = await window.api.localEmbedding.setEnabled(!localEmbedding.enabled)
+      setLocalEmbedding(next)
+    } catch (e) {
+      setLocalEmbeddingError(String(e))
+    } finally {
+      setLocalEmbeddingToggling(false)
     }
   }
 
@@ -336,6 +359,58 @@ export default function SettingsScreen(): React.ReactElement {
             </>
           )}
         </section>
+
+        {/* ── Local Embedding Model ─────────────────────────────────────────── */}
+        <section className="card p-4 space-y-3">
+          <h2 className="text-sm font-medium text-gray-300 flex items-center gap-2">
+            <Cpu className="w-4 h-4" />
+            Local Embedding Model
+          </h2>
+          {localEmbeddingError && (
+            <p className="text-xs text-red-400">{localEmbeddingError}</p>
+          )}
+          {!localEmbedding ? (
+            <p className="text-xs text-gray-500">Checking GPU availability...</p>
+          ) : !localEmbedding.gpu_available ? (
+            <>
+              <p className="text-xs text-gray-500">
+                No GPU with at least 2GB VRAM was detected. The local embedding model
+                stage requires a CUDA-capable GPU and is unavailable on this machine.
+              </p>
+              <div className="flex items-center justify-between py-2 border border-surface-border rounded-md px-3 opacity-50">
+                <span className="text-sm text-gray-400">Enable local embedding model</span>
+                <span className="text-xs text-gray-500 bg-surface-raised border border-surface-border px-2 py-0.5 rounded-full">
+                  Unavailable
+                </span>
+              </div>
+            </>
+          ) : (
+            <>
+              <p className="text-xs text-gray-500">
+                Generates text embeddings locally using Qwen3-Embedding-0.6B on GPU
+                ({localEmbedding.vram_gb}GB VRAM detected). When enabled, this model is
+                loaded into VRAM for QA testset context clustering.
+              </p>
+              <button
+                onClick={handleToggleLocalEmbedding}
+                disabled={localEmbeddingToggling}
+                className="flex items-center justify-between w-full py-2 border border-surface-border rounded-md px-3 hover:border-gray-600 transition-colors disabled:opacity-50"
+              >
+                <span className="text-sm text-gray-400">Enable local embedding model</span>
+                <span
+                  className={
+                    localEmbedding.enabled
+                      ? 'text-xs text-green-400 bg-green-950 border border-green-800 px-2 py-0.5 rounded-full'
+                      : 'text-xs text-gray-400 bg-surface-raised border border-surface-border px-2 py-0.5 rounded-full'
+                  }
+                >
+                  {localEmbeddingToggling ? 'Updating...' : localEmbedding.enabled ? 'On' : 'Off'}
+                </span>
+              </button>
+            </>
+          )}
+        </section>
+
 
         {/* ── Deep Research Classifier ─────────────────────────────────────── */}
         <section className="card p-4 space-y-4">

@@ -738,6 +738,8 @@ export default function Stage1GraphScreen(): React.ReactElement {
   // Picker options are scoped to this stage and kept in a local config modal.
   const [discoveryProviderId, setDiscoveryProviderId] = useState('')
   const [discoveryModelId, setDiscoveryModelId] = useState('')
+  const [discoveryReasoningEffort, setDiscoveryReasoningEffort] = useState<string | null>(null)
+  const [discoveryThinkingBudget, setDiscoveryThinkingBudget] = useState<number | null>(null)
   const [llmConfigOpen, setLlmConfigOpen] = useState(false)
 
   // Load code data and community layout from Codespectra backend
@@ -865,13 +867,20 @@ export default function Stage1GraphScreen(): React.ReactElement {
     onError: () => setRunningDiscovery(false),
   })
 
-  const handleResumeDiscovery = async (overrideProviderId?: string, overrideModelId?: string) => {
+  const handleResumeDiscovery = async (
+    overrideProviderId?: string,
+    overrideModelId?: string,
+    overrideReasoningEffort?: string | null,
+    overrideThinkingBudget?: number | null,
+  ) => {
     if (!discoverySession) return
     setResuming(true)
     try {
       await window.api.aeh.resumeDiscoverySession(discoverySession.id, {
         provider_id: overrideProviderId ?? null,
         model_id: overrideModelId ?? null,
+        reasoning_effort: overrideReasoningEffort ?? null,
+        thinking_budget: overrideThinkingBudget ?? null,
       })
       setPauseInfo(null)
       setRunningDiscovery(true)
@@ -908,6 +917,8 @@ export default function Stage1GraphScreen(): React.ReactElement {
         snapshot_id: snapshotId,
         provider_id: discoveryProviderId,
         model_id: discoveryModelId || null,
+        reasoning_effort: discoveryReasoningEffort,
+        thinking_budget: discoveryThinkingBudget,
       })
       const session = await window.api.aeh.getDiscoverySession(result.session_id)
       setDiscoverySession(session)
@@ -1100,14 +1111,23 @@ export default function Stage1GraphScreen(): React.ReactElement {
               onClose={() => setLlmConfigOpen(false)}
               providerId={discoveryProviderId}
               modelId={discoveryModelId}
-              onChange={(pid, mid) => {
+              reasoningEffort={discoveryReasoningEffort}
+              thinkingBudget={discoveryThinkingBudget}
+              onChange={(pid, mid, effort, budget) => {
                 setDiscoveryProviderId(pid)
                 setDiscoveryModelId(mid)
+                setDiscoveryReasoningEffort(effort ?? null)
+                setDiscoveryThinkingBudget(budget ?? null)
               }}
               onConfirmResume={
                 pauseInfo
                   ? () => {
-                      handleResumeDiscovery(discoveryProviderId, discoveryModelId)
+                      handleResumeDiscovery(
+                        discoveryProviderId,
+                        discoveryModelId,
+                        discoveryReasoningEffort,
+                        discoveryThinkingBudget,
+                      )
                       setLlmConfigOpen(false)
                     }
                   : undefined

@@ -30,6 +30,13 @@ export interface ProviderConfig {
   updated_at: string
 }
 
+export type ReasoningStyle = 'none' | 'effort' | 'budget_tokens' | 'thinking_budget' | 'toggle'
+
+export interface ModelInfo {
+  id: string
+  reasoning_style: ReasoningStyle
+}
+
 export interface CreateProviderRequest {
   kind: ProviderKind
   display_name: string

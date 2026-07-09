@@ -176,7 +176,7 @@ function ProviderForm({ kind, initial, onClose }: ProviderFormProps) {
   const tempId = initial?.id ?? '__new__'
   const testResult = testResults[tempId]
   const isTesting = testing[tempId] ?? false
-  const models = modelLists[tempId] ?? []
+  const models = (modelLists[tempId] ?? []).map((m) => m.id)
   const isLoadingModels = loadingModels[tempId] ?? false
   const modelFetchError = modelErrors[tempId] ?? ''
 

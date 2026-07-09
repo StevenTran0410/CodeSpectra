@@ -2,7 +2,8 @@ import { create } from 'zustand'
 import type {
   ProviderConfig,
   CreateProviderRequest,
-  UpdateProviderRequest
+  UpdateProviderRequest,
+  ModelInfo
 } from '../types/electron'
 
 export interface TestResult {
@@ -19,8 +20,8 @@ interface ProviderState {
   testResults: Record<string, TestResult>
   /** Map of providerId → boolean (is test in-flight) */
   testing: Record<string, boolean>
-  /** Map of providerId → string[] (available models from live fetch) */
-  modelLists: Record<string, string[]>
+  /** Map of providerId → ModelInfo[] (available models + reasoning style from live fetch) */
+  modelLists: Record<string, ModelInfo[]>
   loadingModels: Record<string, boolean>
   /** Map of providerId → error message when fetchModels fails */
   modelErrors: Record<string, string>
@@ -30,7 +31,7 @@ interface ProviderState {
   update: (id: string, req: UpdateProviderRequest) => Promise<ProviderConfig>
   remove: (id: string) => Promise<void>
   testConnection: (id: string) => Promise<TestResult>
-  fetchModels: (id: string) => Promise<string[]>
+  fetchModels: (id: string) => Promise<ModelInfo[]>
   clearError: () => void
 }
 

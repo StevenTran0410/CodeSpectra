@@ -213,7 +213,7 @@ const [starting, setStarting] = useState(false)
   )
   const modelOptions = useMemo(() => {
     const live = modelLists[providerId] ?? []
-    if (live.length > 0) return live
+    if (live.length > 0) return live.map((m) => m.id)
     if (selectedProvider?.model_id) return [selectedProvider.model_id]
     return []
   }, [modelLists, providerId, selectedProvider])

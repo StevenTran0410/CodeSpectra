@@ -1,9 +1,12 @@
 """External-agent-facing API (narrow slice, for AEH's CodeSpectraProxyClient). Not a full implementation: no external_call_log table, no generalized multi-endpoint auth framework — just a bearer-token-gated LLM passthrough so an external harness (starting with AEH) can reuse whatever provider the user already configured here, without AEH ever holding a provider API key of its own."""
+import asyncio
+from typing import Literal
+
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel
 
 from domain.model_connector.service import ProviderConfigService
-from domain.model_connector.types import ChatMessage, ChatRequest, ChatResponse
+from domain.model_connector.types import ChatMessage, ChatRequest, ChatResponse, EmbedRequest, EmbedResponse
 from infrastructure.db.database import get_db
 
 from domain.retrieval.service import RetrievalService
@@ -38,6 +41,8 @@ class LLMCompleteRequest(BaseModel):
     messages: list[ChatMessage]
     max_completion_tokens: int = 2048
     temperature: float | None = 0.2
+    reasoning_effort: str | None = None
+    thinking_budget: int | None = None
     json_mode: bool = False
 
 
@@ -86,6 +91,8 @@ async def llm_complete(body: LLMCompleteRequest) -> ChatResponse:
             messages=body.messages,
             max_completion_tokens=body.max_completion_tokens,
             temperature=body.temperature,
+            reasoning_effort=body.reasoning_effort,
+            thinking_budget=body.thinking_budget,
             json_mode=body.json_mode,
             stream=False,
         )
@@ -227,3 +234,55 @@ async def list_local_repos(
 ) -> list[LocalRepo]:
     return await _local_repo_service.list_all(workspace_id, mode)
 
+
+class LLMEmbedRequest(BaseModel):
+    provider_id: str | None = None
+    model_id: str | None = None
+    texts: list[str]
+    # Gemini: "retrieval_document" (default) or "retrieval_query"
+    task_type: Literal["retrieval_document", "retrieval_query"] | None = None
+    # When True, route to the local GPU embedding model instead of a cloud provider.
+    use_local: bool = False
+
+
+@router.post(
+    "/llm/embed",
+    response_model=EmbedResponse,
+    dependencies=[Depends(require_external_token)],
+)
+async def llm_embed(body: LLMEmbedRequest) -> EmbedResponse:
+    """AEH-facing embedding passthrough — bearer-token gated.
+
+    Routes to the local Qwen3-Embedding model when use_local=True (requires GPU),
+    or to the specified cloud provider's embed() otherwise.
+    """
+    if body.use_local:
+        from domain.embeddings.local_model import embed_texts, local_embedding_available
+        if not await local_embedding_available():
+            raise HTTPException(
+                status_code=503,
+                detail="Local embedding model unavailable — no usable GPU on this machine",
+            )
+        try:
+            vectors = await asyncio.to_thread(embed_texts, body.texts)
+        except RuntimeError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        dims = len(vectors[0]) if vectors else 0
+        return EmbedResponse(
+            provider_id="local",
+            model_id="Qwen/Qwen3-Embedding-0.6B",
+            embeddings=vectors,
+            dimensions=dims,
+        )
+
+    if not body.provider_id:
+        raise HTTPException(status_code=400, detail="provider_id is required when use_local=False")
+
+    return await _service.embed(
+        EmbedRequest(
+            provider_id=body.provider_id,
+            model_id=body.model_id,
+            texts=body.texts,
+            task_type=body.task_type,
+        )
+    )

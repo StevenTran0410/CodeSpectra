@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from agent_eval_harness.datasets.generator_utils import build_qa_testset_case
 from agent_eval_harness.datasets.types import DatasetCase
 from agent_eval_harness.llm.client import LLMClient
+from agent_eval_harness.llm.embedding_client import EmbeddingClient
 
 
 class QATestsetConfig(BaseModel):
@@ -19,13 +20,23 @@ class QATestsetConfig(BaseModel):
 @runtime_checkable
 class QATestsetBackend(Protocol):
     async def generate_cases(
-        self, dataset_name: str, corpus_paths: list[Path], count: int, llm_client: LLMClient
+        self,
+        dataset_name: str,
+        corpus_paths: list[Path],
+        count: int,
+        llm_client: LLMClient,
+        embedding_client: EmbeddingClient,
     ) -> list[DatasetCase]:
         ...
 
 class DeepEvalQATestsetBackend:
     async def generate_cases(
-        self, dataset_name: str, corpus_paths: list[Path], count: int, llm_client: LLMClient
+        self,
+        dataset_name: str,
+        corpus_paths: list[Path],
+        count: int,
+        llm_client: LLMClient,
+        embedding_client: EmbeddingClient,
     ) -> list[DatasetCase]:
         try:
             from deepeval.synthesizer import Synthesizer
@@ -43,14 +54,14 @@ class DeepEvalQATestsetBackend:
         )
 
         llm_adapter = make_deepeval_llm_adapter(llm_client)
-        dummy_embedder = make_deepeval_embedding_model()
+        real_embedder = make_deepeval_embedding_model(embedding_client)
         synthesizer = Synthesizer(model=llm_adapter)
 
         # DeepEval requires file paths as list of strings
         paths_str = [str(p.resolve()) for p in corpus_paths]
 
         context_config = ContextConstructionConfig(
-            embedder=dummy_embedder,
+            embedder=real_embedder,
             critic_model=llm_adapter
         )
         goldens = synthesizer.generate_goldens_from_docs(
@@ -74,7 +85,12 @@ class DeepEvalQATestsetBackend:
 
 class RagasQATestsetBackend:
     async def generate_cases(
-        self, dataset_name: str, corpus_paths: list[Path], count: int, llm_client: LLMClient
+        self,
+        dataset_name: str,
+        corpus_paths: list[Path],
+        count: int,
+        llm_client: LLMClient,
+        embedding_client: EmbeddingClient,
     ) -> list[DatasetCase]:
         from agent_eval_harness.llm.ragas_adapter import (
             make_ragas_embeddings,
@@ -95,7 +111,7 @@ class RagasQATestsetBackend:
             )
 
         llm = make_ragas_llm_adapter(llm_client)
-        embeddings = make_ragas_embeddings()
+        embeddings = make_ragas_embeddings(embedding_client)
 
         # Load documents
         docs = []
@@ -124,37 +140,17 @@ class RagasQATestsetBackend:
             ))
         return cases
 
-class MockQATestsetBackend:
-    async def generate_cases(
-        self, dataset_name: str, corpus_paths: list[Path], count: int, llm_client: LLMClient
-    ) -> list[DatasetCase]:
-        cases = []
-        for path in corpus_paths[:count]:
-            name = path.stem.replace("_", " ").title()
-            cases.append(build_qa_testset_case(
-                dataset_name=dataset_name,
-                query=f"What is the policy for {name}?",
-                answer=f"This is a placeholder answer for {name} policy.",
-                contexts=[f"Context snippet from {path.name}."]
-            ))
-        while len(cases) < count:
-            cases.append(build_qa_testset_case(
-                dataset_name=dataset_name,
-                query=f"Query placeholder {len(cases)}",
-                answer="Expected placeholder answer",
-                contexts=["Context placeholder"]
-            ))
-        return cases
-
-# Global backend instance registry to allow testing/mocking
+# Global backend instance registry
 _BACKENDS = {
     "deepeval": DeepEvalQATestsetBackend(),
     "ragas": RagasQATestsetBackend(),
-    "mock": MockQATestsetBackend()
 }
 
 async def generate(
-    config: dict, llm_client: LLMClient | None, seed: int | None = None
+    config: dict,
+    llm_client: LLMClient | None,
+    seed: int | None = None,
+    embedding_client: EmbeddingClient | None = None,
 ) -> list[DatasetCase]:
     parsed_config = QATestsetConfig.model_validate(config)
     
@@ -189,10 +185,14 @@ async def generate(
     if not llm_client:
         raise ValueError("LLM client is required for qa_testset generation")
 
+    if not embedding_client:
+        raise ValueError("Embedding client is required for qa_testset generation")
+
     backend = _BACKENDS[backend_name]
     return await backend.generate_cases(
         dataset_name=dataset_name,
         corpus_paths=corpus_files,
         count=parsed_config.count,
-        llm_client=llm_client
+        llm_client=llm_client,
+        embedding_client=embedding_client,
     )

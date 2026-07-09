@@ -578,9 +578,21 @@ async def get_discovery_session(session_id: str) -> dict | None:
     return await _decode_discovery_session_row(dict(row))
 
 
-async def pause_discovery_session(session_id: str, provider_id: str, model_id: str | None) -> None:
+async def pause_discovery_session(
+    session_id: str,
+    provider_id: str,
+    model_id: str | None,
+    reasoning_effort: str | None = None,
+    thinking_budget: int | None = None,
+) -> None:
     db = get_db()
-    pause_info = json.dumps({"reason": "rate_limited", "provider_id": provider_id, "model_id": model_id})
+    pause_info = json.dumps({
+        "reason": "rate_limited",
+        "provider_id": provider_id,
+        "model_id": model_id,
+        "reasoning_effort": reasoning_effort,
+        "thinking_budget": thinking_budget,
+    })
     await db.execute(
         "UPDATE discovery_sessions SET status = 'paused_rate_limit', pause_info_json = ? WHERE id = ?",
         (pause_info, session_id),

@@ -80,6 +80,8 @@ export default function Stage3Screen(): React.ReactElement {
   // LLM Config — Stage 3's OWN slot, independent of Stage 2's LLM 1 / LLM 2.
   const [selectedProviderId, setSelectedProviderId] = useState('')
   const [selectedModelId, setSelectedModelId] = useState('')
+  const [selectedReasoningEffort, setSelectedReasoningEffort] = useState<string | null>(null)
+  const [selectedThinkingBudget, setSelectedThinkingBudget] = useState<number | null>(null)
   const [llmConfigOpen, setLlmConfigOpen] = useState(false)
 
   // Regenerate Confirmation Modal
@@ -242,6 +244,8 @@ export default function Stage3Screen(): React.ReactElement {
       const suite = await window.api.aeh.generatePlan(expansionSession.id, {
         provider_id: selectedProviderId || null,
         model_id: selectedModelId || null,
+        reasoning_effort: selectedReasoningEffort,
+        thinking_budget: selectedThinkingBudget,
       })
       toast.success('Plan suite generated successfully.')
       applyPlanSuite(suite)
@@ -574,9 +578,13 @@ export default function Stage3Screen(): React.ReactElement {
         onClose={() => setLlmConfigOpen(false)}
         providerId={selectedProviderId}
         modelId={selectedModelId}
-        onChange={(prov, model) => {
+        reasoningEffort={selectedReasoningEffort}
+        thinkingBudget={selectedThinkingBudget}
+        onChange={(prov, model, effort, budget) => {
           setSelectedProviderId(prov)
           setSelectedModelId(model)
+          setSelectedReasoningEffort(effort ?? null)
+          setSelectedThinkingBudget(budget ?? null)
         }}
         title="Planning LLM Model"
       />

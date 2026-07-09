@@ -3,7 +3,8 @@ import httpx
 
 from domain.model_connector._cloud_base import CloudAdapterBase
 from domain.model_connector.errors import ProviderError, ProviderErrorCode
-from domain.model_connector.types import ChatRequest, ChatResponse, ProviderConfig
+from domain.model_connector.reasoning import ReasoningStyle, classify
+from domain.model_connector.types import ChatRequest, ChatResponse, EmbedRequest, EmbedResponse, ProviderConfig, ProviderKind
 from shared.logger import logger
 
 ANTHROPIC_VERSION = "2023-06-01"
@@ -71,8 +72,18 @@ class AnthropicAdapter(CloudAdapterBase):
         system_blocks = self._build_system_blocks(system_parts)
         if system_blocks:
             payload["system"] = system_blocks
-        # Anthropic supports temperature 0.0–1.0; omit when None to use model default.
-        if request.temperature is not None:
+
+        thinking_style = classify(ProviderKind.ANTHROPIC, self.config.model_id or "")
+        if (
+            thinking_style == ReasoningStyle.BUDGET_TOKENS
+            and request.thinking_budget
+            and request.thinking_budget > 0
+        ):
+            budget_tokens = min(request.thinking_budget, request.max_completion_tokens - 1)
+            payload["thinking"] = {"type": "enabled", "budget_tokens": budget_tokens}
+            # Anthropic rejects temperature/top_p while extended thinking is enabled.
+        elif request.temperature is not None:
+            # Anthropic supports temperature 0.0–1.0; omit when None to use model default.
             payload["temperature"] = min(max(request.temperature, 0.0), 1.0)
 
         try:
@@ -127,3 +138,10 @@ class AnthropicAdapter(CloudAdapterBase):
             return False, self._map_timeout(e).message, None
         except Exception as e:
             return False, str(e), None
+
+    async def embed(self, request: EmbedRequest) -> EmbedResponse:  # noqa: ARG002
+        raise ProviderError(
+            ProviderErrorCode.UNKNOWN,
+            "Anthropic has no embeddings API — use OpenAI or Gemini for embeddings",
+            provider_id=self.config.id,
+        )

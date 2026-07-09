@@ -51,3 +51,56 @@ categories:
     assert "t2_cli_guard_v1" in out_ls
     assert "Total Cases: 85" in out_ls
     assert "Status:      pending review" in out_ls
+
+
+def test_cli_dataset_generate_qa_testset_missing_options(tmp_path):
+    config_file = tmp_path / "qa_config.yaml"
+    config_file.write_text("""
+dataset_name: t2_cli_qa
+corpus_paths: ["non_existent_path"]
+count: 5
+backend: deepeval
+""", encoding="utf-8")
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main([
+            "dataset", "generate",
+            "--kind", "qa_testset",
+            "--config", str(config_file)
+        ])
+    assert "requires either --use-local-embedding or --embedding-provider-id" in str(exc_info.value)
+
+
+def test_cli_dataset_generate_qa_testset_with_local_mocked(tmp_path, monkeypatch):
+    config_file = tmp_path / "qa_config.yaml"
+    config_file.write_text("""
+dataset_name: t2_cli_qa
+corpus_paths: ["non_existent_path"]
+count: 5
+backend: deepeval
+""", encoding="utf-8")
+
+    # Mock next_version to return static version
+    # Mock get_generator to return a mock generator function
+    # Mock init_db and close_db to be no-ops
+    async def mock_next_version(base):
+        return f"{base}_v1"
+
+    async def mock_generator(config, llm_client, seed, embedding_client=None):
+        assert embedding_client is not None
+        assert embedding_client._use_local is True
+        return []
+
+    monkeypatch.setattr("agent_eval_harness.datasets.versioning.next_version", mock_next_version)
+    monkeypatch.setattr("agent_eval_harness.datasets.registry.get_generator", lambda kind: mock_generator)
+
+    exit_code = cli.main([
+        "dataset", "generate",
+        "--kind", "qa_testset",
+        "--config", str(config_file),
+        "--use-local-embedding",
+        "--backend-url", "http://localhost:8000",
+        "--backend-token", "some-token"
+    ])
+    assert exit_code == 0
+

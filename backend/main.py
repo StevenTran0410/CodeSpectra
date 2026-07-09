@@ -18,6 +18,7 @@ from api.analysis import router as analysis_router
 from api.consent import router as consent_router
 from api.external import router as external_router
 from api.gpu_reranker import router as gpu_reranker_router
+from api.local_embedding import router as local_embedding_router
 from api.impact import router as impact_router
 from api.job import router as job_router
 from api.local_repo import router as local_repo_router
@@ -93,6 +94,7 @@ def create_app() -> FastAPI:
     app.include_router(provider_router, prefix="/api/provider")
     app.include_router(consent_router, prefix="/api/consent")
     app.include_router(gpu_reranker_router, prefix="/api/gpu-reranker")
+    app.include_router(local_embedding_router, prefix="/api/local-embedding")
     app.include_router(local_repo_router, prefix="/api/local-repo")
     app.include_router(sync_router, prefix="/api/sync")
     app.include_router(manifest_router, prefix="/api/manifest")

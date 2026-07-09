@@ -4,46 +4,29 @@ from __future__ import annotations
 
 import time
 
+from domain.shared.gpu import GPU_MIN_VRAM_GB, detect_gpu, release_gpu_cache
 from shared.logger import logger
 
 from .types import FusedRankEntry, RerankedEntry
 
 # Lazy-loaded singleton model
 _model = None
-_gpu_available = None
-_vram_gb: float | None = None
 
 # Minimum VRAM (GB) required to consider the GPU usable for this model
-_MIN_VRAM_GB = 2.0
+_MIN_VRAM_GB = GPU_MIN_VRAM_GB
 
 # Jina-reranker-v3 max sequence length (verified against model card)
 # This is the maximum tokens the model can accept for both query + passages combined
 _MAX_SEQ_LENGTH = 8192
 
-# torch/transformers are an optional extra ([reranker] in pyproject.toml); most installs don't have them, so every import of torch/transformers here must be deferred into function bodies to keep this module (and the whole retrieval pipeline) importable without it.
-
-
-def detect_gpu(min_vram_gb: float = _MIN_VRAM_GB) -> tuple[bool, float | None]:
-    """Returns (meets_min_vram, vram_gb). Never raises — any torch/CUDA import or probing error is treated as 'no usable GPU', not a crash."""
-    global _gpu_available, _vram_gb
-    if _gpu_available is not None:
-        return _gpu_available, _vram_gb
-    try:
-        import torch
-
-        if not torch.cuda.is_available():
-            _gpu_available, _vram_gb = False, None
-        else:
-            total_bytes = torch.cuda.get_device_properties(0).total_memory
-            _vram_gb = round(total_bytes / (1024**3), 2)
-            _gpu_available = _vram_gb >= min_vram_gb
-    except Exception:
-        _gpu_available, _vram_gb = False, None
-    return _gpu_available, _vram_gb
+# torch/transformers are an optional extra ([reranker] in pyproject.toml); most installs
+# don't have them, so every import of torch/transformers here must be deferred into
+# function bodies to keep this module (and the whole retrieval pipeline) importable
+# without it.
 
 
 def _check_gpu_available() -> bool:
-    """Check if CUDA GPU is available (cached). Kept for backward compatibility with callers that only need the boolean."""
+    """Check if CUDA GPU is available (cached). Backward-compat wrapper."""
     available, _ = detect_gpu()
     return available
 

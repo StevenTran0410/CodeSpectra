@@ -173,7 +173,9 @@ async def test_discovery_session_pause_resume_roundtrip() -> None:
     assert session["pause_info"] is None
 
     # Pause it
-    await repository.pause_discovery_session(session_id, "prov-123", "model-abc")
+    await repository.pause_discovery_session(
+        session_id, "prov-123", "model-abc", reasoning_effort="high", thinking_budget=4096
+    )
     paused = await repository.get_discovery_session(session_id)
     assert paused is not None
     assert paused["status"] == "paused_rate_limit"
@@ -181,6 +183,8 @@ async def test_discovery_session_pause_resume_roundtrip() -> None:
         "reason": "rate_limited",
         "provider_id": "prov-123",
         "model_id": "model-abc",
+        "reasoning_effort": "high",
+        "thinking_budget": 4096,
     }
 
     # Resume it

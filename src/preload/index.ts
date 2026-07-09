@@ -40,6 +40,14 @@ const api = {
     ): Promise<{ enabled: boolean; gpu_available: boolean; vram_gb: number | null }> =>
       ipcRenderer.invoke('gpuReranker:setEnabled', enabled)
   },
+  localEmbedding: {
+    status: (): Promise<{ enabled: boolean; gpu_available: boolean; vram_gb: number | null; model_id: string }> =>
+      ipcRenderer.invoke('localEmbedding:status'),
+    setEnabled: (
+      enabled: boolean
+    ): Promise<{ enabled: boolean; gpu_available: boolean; vram_gb: number | null; model_id: string }> =>
+      ipcRenderer.invoke('localEmbedding:setEnabled', enabled)
+  },
   folder: {
     pick: (): Promise<string | null> => ipcRenderer.invoke('folder:pick'),
     validate: (path: string) => ipcRenderer.invoke('folder:validate', path),
@@ -295,7 +303,12 @@ const api = {
     getDiscoverySession: (sessionId: string) => ipcRenderer.invoke('aeh:getDiscoverySession', sessionId),
     resumeDiscoverySession: (
       sessionId: string,
-      body?: { provider_id?: string | null; model_id?: string | null }
+      body?: {
+        provider_id?: string | null
+        model_id?: string | null
+        reasoning_effort?: string | null
+        thinking_budget?: number | null
+      }
     ) => ipcRenderer.invoke('aeh:resumeDiscoverySession', sessionId, body ?? {}),
     listDiscoveryCandidates: (sessionId: string) =>
       ipcRenderer.invoke('aeh:listDiscoveryCandidates', sessionId),

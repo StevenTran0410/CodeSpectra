@@ -50,11 +50,20 @@ class DiscoveryPaused(Exception):
     """Raised when a sustained rate limit interrupts Pass C/D. Carries every cluster that
     finished successfully before the pause, so the caller can persist progress and resume
     without re-synthesizing clusters that are already done."""
-    def __init__(self, candidates_so_far: list[dict], provider_id: str, model_id: str | None) -> None:
+    def __init__(
+        self,
+        candidates_so_far: list[dict],
+        provider_id: str,
+        model_id: str | None,
+        reasoning_effort: str | None = None,
+        thinking_budget: int | None = None,
+    ) -> None:
         super().__init__(f"Discovery paused: rate limit on provider={provider_id} model={model_id}")
         self.candidates_so_far = candidates_so_far
         self.provider_id = provider_id
         self.model_id = model_id
+        self.reasoning_effort = reasoning_effort
+        self.thinking_budget = thinking_budget
 
 
 async def discover_agentic_systems(
@@ -301,7 +310,9 @@ async def discover_agentic_systems(
                 candidate_profile["entry_points"] = parsed.get("entry_points") or cluster["hub_paths"][:2]
                 candidate_profile["confidence"] = parsed.get("confidence") or "low"
         except RateLimitExceeded as rle:
-            raise DiscoveryPaused(candidates, rle.provider_id, rle.model_id) from rle
+            raise DiscoveryPaused(
+                candidates, rle.provider_id, rle.model_id, rle.reasoning_effort, rle.thinking_budget
+            ) from rle
         except Exception as exc:
             logger.warning(f"LLM synthesis failed for cluster {cid}: {exc}. Using fallback.")
 
@@ -331,7 +342,9 @@ async def discover_agentic_systems(
                 file_contents, llm_client if allow_wiring_llm_fallback else None
             )
         except RateLimitExceeded as rle:
-            raise DiscoveryPaused(candidates, rle.provider_id, rle.model_id) from rle
+            raise DiscoveryPaused(
+                candidates, rle.provider_id, rle.model_id, rle.reasoning_effort, rle.thinking_budget
+            ) from rle
 
         if wiring_block and wiring_block.source == "llm_fallback":
             wiring_llm_fallback_used += 1
@@ -343,7 +356,9 @@ async def discover_agentic_systems(
         from agent_eval_harness.discovery.consolidation import consolidate_candidates
         candidates = await consolidate_candidates(candidates, client, snapshot_id, llm_client)
     except RateLimitExceeded as rle:
-        raise DiscoveryPaused(candidates, rle.provider_id, rle.model_id) from rle
+        raise DiscoveryPaused(
+            candidates, rle.provider_id, rle.model_id, rle.reasoning_effort, rle.thinking_budget
+        ) from rle
 
     return candidates
 
@@ -367,7 +382,9 @@ async def run_discovery_background(
             logger.info(f"Discovery session {session_id} completed successfully.")
         except DiscoveryPaused as p:
             await repository.replace_discovery_candidates(session_id, p.candidates_so_far)
-            await repository.pause_discovery_session(session_id, p.provider_id, p.model_id)
+            await repository.pause_discovery_session(
+                session_id, p.provider_id, p.model_id, p.reasoning_effort, p.thinking_budget
+            )
             logger.info(f"Discovery session {session_id} paused on rate limit (provider={p.provider_id}).")
         except Exception as e:
             err_msg = "".join(traceback.format_exception(None, e, e.__traceback__))

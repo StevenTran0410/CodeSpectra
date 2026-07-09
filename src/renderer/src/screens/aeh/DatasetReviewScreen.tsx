@@ -3,7 +3,8 @@ import { useSearchParams, useNavigate } from 'react-router-dom'
 import { Loader2, Sparkles, ArrowLeft, Settings } from 'lucide-react'
 import { Button, Badge, useToastStore } from '../../components/ui'
 import { useProviderStore } from '../../store/provider.store'
-import LLMConfigModal from './LLMConfigModal'
+import LLMConfigModal, { LLMModelButton } from './LLMConfigModal'
+import EmbeddingConfigModal, { EmbeddingModelButton } from './EmbeddingConfigModal'
 
 type EditStrings = { input: string; expected: string; labels: string }
 
@@ -18,7 +19,15 @@ export default function DatasetReviewScreen(): React.ReactElement {
   const { providers, load: loadProviders } = useProviderStore()
   const [selectedProviderId, setSelectedProviderId] = useState('')
   const [selectedModelId, setSelectedModelId] = useState('')
+  const [selectedReasoningEffort, setSelectedReasoningEffort] = useState<string | null>(null)
+  const [selectedThinkingBudget, setSelectedThinkingBudget] = useState<number | null>(null)
   const [llmConfigOpen, setLlmConfigOpen] = useState(false)
+
+  // Embedding configuration states
+  const [selectedEmbedProviderId, setSelectedEmbedProviderId] = useState('')
+  const [selectedEmbedModelId, setSelectedEmbedModelId] = useState('')
+  const [selectedUseLocalEmbedding, setSelectedUseLocalEmbedding] = useState(false)
+  const [embedConfigOpen, setEmbedConfigOpen] = useState(false)
 
   useEffect(() => {
     loadProviders()
@@ -30,6 +39,32 @@ export default function DatasetReviewScreen(): React.ReactElement {
       setSelectedModelId(providers[0].model_id || '')
     }
   }, [providers, selectedProviderId])
+
+  useEffect(() => {
+    if (providers.length > 0 && !selectedEmbedProviderId && !selectedUseLocalEmbedding) {
+      const openAi = providers.find((p) => p.kind === 'openai')
+      if (openAi) {
+        setSelectedEmbedProviderId(openAi.id)
+        setSelectedEmbedModelId('text-embedding-3-small')
+      } else {
+        const gemini = providers.find((p) => p.kind === 'gemini')
+        if (gemini) {
+          setSelectedEmbedProviderId(gemini.id)
+          setSelectedEmbedModelId('gemini-embedding-001')
+        } else {
+          // Check if local GPU is available, if so default to local embedder
+          window.api.localEmbedding
+            .status()
+            .then((status) => {
+              if (status.gpu_available) {
+                setSelectedUseLocalEmbedding(true)
+              }
+            })
+            .catch(() => {})
+        }
+      }
+    }
+  }, [providers, selectedEmbedProviderId, selectedUseLocalEmbedding])
 
   const [datasets, setDatasets] = useState<AEHDatasetSummary[]>([])
   const [loadingDatasets, setLoadingDatasets] = useState(false)
@@ -156,7 +191,12 @@ export default function DatasetReviewScreen(): React.ReactElement {
     try {
       const report = await window.api.aeh.fulfillDatasets(sessionId, {
         provider_id: selectedProviderId,
-        model_id: selectedModelId || null
+        model_id: selectedModelId || null,
+        reasoning_effort: selectedReasoningEffort,
+        thinking_budget: selectedThinkingBudget,
+        embedding_provider_id: selectedEmbedProviderId || null,
+        embedding_model_id: selectedEmbedModelId || null,
+        use_local_embedding: selectedUseLocalEmbedding
       })
       setFulfillmentReport(report)
       await loadDatasets()
@@ -189,7 +229,22 @@ export default function DatasetReviewScreen(): React.ReactElement {
             </p>
           </div>
         </div>
-        <div className="flex items-center gap-3 shrink-0">
+        <div className="flex items-center gap-2 shrink-0">
+          <LLMModelButton
+            providerId={selectedProviderId}
+            modelId={selectedModelId}
+            providers={providers}
+            onClick={() => setLlmConfigOpen(true)}
+            labelPrefix="LLM"
+            emptyLabel="No LLM Configured"
+          />
+          <EmbeddingModelButton
+            providerId={selectedEmbedProviderId}
+            modelId={selectedEmbedModelId}
+            useLocal={selectedUseLocalEmbedding}
+            providers={providers}
+            onClick={() => setEmbedConfigOpen(true)}
+          />
           <Button
             variant="primary"
             onClick={handleFulfill}
@@ -200,14 +255,6 @@ export default function DatasetReviewScreen(): React.ReactElement {
             <Sparkles size={13} />
             <span>Fulfill Datasets</span>
           </Button>
-          <Button
-            variant="ghost"
-            onClick={() => setLlmConfigOpen(true)}
-            className="w-9 h-9 p-0 flex items-center justify-center border border-slate-800 bg-slate-900/40 hover:bg-slate-900 text-slate-300"
-            title="Configure fulfillment LLM"
-          >
-            <Settings size={15} />
-          </Button>
         </div>
       </div>
 
@@ -216,11 +263,29 @@ export default function DatasetReviewScreen(): React.ReactElement {
         onClose={() => setLlmConfigOpen(false)}
         providerId={selectedProviderId}
         modelId={selectedModelId}
-        onChange={(prov, model) => {
+        reasoningEffort={selectedReasoningEffort}
+        thinkingBudget={selectedThinkingBudget}
+        onChange={(prov, model, effort, budget) => {
           setSelectedProviderId(prov)
           setSelectedModelId(model)
+          setSelectedReasoningEffort(effort ?? null)
+          setSelectedThinkingBudget(budget ?? null)
         }}
         title="Fulfillment LLM Model"
+      />
+
+      <EmbeddingConfigModal
+        isOpen={embedConfigOpen}
+        onClose={() => setEmbedConfigOpen(false)}
+        providerId={selectedEmbedProviderId}
+        modelId={selectedEmbedModelId}
+        useLocal={selectedUseLocalEmbedding}
+        onChange={(prov, model, local) => {
+          setSelectedEmbedProviderId(prov)
+          setSelectedEmbedModelId(model)
+          setSelectedUseLocalEmbedding(local)
+        }}
+        title="Fulfillment Embedding Model"
       />
 
       {fulfillmentReport && (

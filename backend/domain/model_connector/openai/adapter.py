@@ -8,7 +8,7 @@ import httpx
 
 from domain.model_connector._cloud_base import CloudAdapterBase
 from domain.model_connector.errors import ProviderError
-from domain.model_connector.types import ChatRequest, ChatResponse, ProviderConfig
+from domain.model_connector.types import ChatRequest, ChatResponse, EmbedRequest, EmbedResponse, ProviderConfig
 from shared.logger import logger
 
 # Chat-capable models returned by /v1/models that we surface to the user
@@ -70,6 +70,8 @@ class OpenAIAdapter(CloudAdapterBase):
         model_rejects_temp = any(mid.startswith(p) for p in self._NO_TEMPERATURE_PREFIXES)
         if request.temperature is not None and not model_rejects_temp:
             payload["temperature"] = request.temperature
+        if model_rejects_temp and request.reasoning_effort:
+            payload["reasoning_effort"] = request.reasoning_effort
         # json_object mode is supported by gpt-4o, gpt-4-turbo, gpt-3.5-turbo-1106+
         # but NOT by o1/o3/o4/gpt-5 reasoning models.
         if request.json_mode and not model_rejects_temp:
@@ -126,6 +128,31 @@ class OpenAIAdapter(CloudAdapterBase):
                             yield delta
                     except (KeyError, IndexError, ValueError):
                         continue
+        except httpx.ConnectError as e:
+            raise self._map_connect_error(e) from e
+        except httpx.TimeoutException as e:
+            raise self._map_timeout(e) from e
+        except httpx.HTTPStatusError as e:
+            raise self._map_http_error(e) from e
+        except Exception as e:
+            raise ProviderError(self._code_unknown(), str(e), provider_id=self.config.id) from e
+
+    async def embed(self, request: EmbedRequest) -> EmbedResponse:
+        model = request.model_id or "text-embedding-3-small"
+        payload = {"model": model, "input": request.texts}
+        try:
+            logger.debug(f"openai embed: model={model}, n={len(request.texts)}")
+            res = await self._client.post("/v1/embeddings", json=payload, headers=self._auth())
+            res.raise_for_status()
+            data = res.json()
+            embeddings = [item["embedding"] for item in data["data"]]
+            dims = len(embeddings[0]) if embeddings else 0
+            return EmbedResponse(
+                provider_id=self.config.id,
+                model_id=model,
+                embeddings=embeddings,
+                dimensions=dims,
+            )
         except httpx.ConnectError as e:
             raise self._map_connect_error(e) from e
         except httpx.TimeoutException as e:

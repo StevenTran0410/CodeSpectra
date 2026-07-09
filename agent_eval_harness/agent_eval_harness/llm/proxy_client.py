@@ -19,12 +19,19 @@ class CodeSpectraProxyClient:
         provider_id: str,
         model_id: str | None = None,
         http_client: httpx.AsyncClient | None = None,
+        reasoning_effort: str | None = None,
+        thinking_budget: int | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._token = bearer_token
         self._provider_id = provider_id
         self._model_id = model_id
         self._http = http_client or httpx.AsyncClient(timeout=60.0)
+        # Constructor-level, like provider_id/model_id — applies to every complete()
+        # call this client makes, so every AEH call site gets the user's chosen
+        # reasoning settings without threading them through each individual call.
+        self._reasoning_effort = reasoning_effort
+        self._thinking_budget = thinking_budget
 
     async def complete(
         self,
@@ -46,6 +53,8 @@ class CodeSpectraProxyClient:
                     "messages": [{"role": m.role, "content": m.content} for m in messages],
                     "max_completion_tokens": max_tokens,
                     "temperature": temperature,
+                    "reasoning_effort": self._reasoning_effort,
+                    "thinking_budget": self._thinking_budget,
                     "json_mode": json_mode,
                 },
             )
@@ -57,7 +66,12 @@ class CodeSpectraProxyClient:
                     await asyncio.sleep(_BASE_BACKOFF_SECONDS * (2**attempt))
                     continue
                 if resp.status_code == 429:
-                    raise RateLimitExceeded(self._provider_id, self._model_id) from exc
+                    raise RateLimitExceeded(
+                        self._provider_id,
+                        self._model_id,
+                        self._reasoning_effort,
+                        self._thinking_budget,
+                    ) from exc
                 raise
 
             body = resp.json()

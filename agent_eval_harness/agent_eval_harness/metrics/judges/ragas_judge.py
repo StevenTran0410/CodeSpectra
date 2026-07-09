@@ -86,6 +86,9 @@ async def run_ragas_faithfulness(
     )
 
 
+from agent_eval_harness.llm.embedding_client import EmbeddingClient
+
+
 async def run_ragas_answer_relevancy(
     query: str,
     actual_answer: str,
@@ -94,14 +97,14 @@ async def run_ragas_answer_relevancy(
     retrieved_contexts: list[str] | None = None,
     component_id: str | None = None,
     trace_id: str | None = None,
+    embedding_client: EmbeddingClient | None = None,
 ) -> MetricResult:
-    """Answer Relevancy metric using RAGAS."""
     try:
         from agent_eval_harness.llm.ragas_adapter import stub_missing_langchain_community_vertexai
 
         stub_missing_langchain_community_vertexai()
 
-        from ragas import SingleTurnSample
+        from ragas.dataset_schema import SingleTurnSample
         from ragas.metrics import AnswerRelevancy
     except ImportError as exc:
         raise ImportError(
@@ -112,7 +115,25 @@ async def run_ragas_answer_relevancy(
     from agent_eval_harness.llm.ragas_adapter import make_ragas_embeddings, make_ragas_llm_adapter
 
     llm_adapter = make_ragas_llm_adapter(llm_client)
-    embeddings = make_ragas_embeddings()
+
+    if embedding_client is None:
+        return MetricResult(
+            metric_name="llm_judge.ragas.answer_relevancy",
+            metric_class="llm_judge",
+            score=None,
+            passed=False,
+            details={
+                "error": "no embedding_client configured for ragas.answer_relevancy — "
+                "this metric needs an embedding provider, not yet wired into "
+                "the evaluation-run flow"
+            },
+            component_id=component_id,
+            trace_id=trace_id,
+            evaluator="ragas.AnswerRelevancy",
+            cost_tokens=0,
+        )
+
+    embeddings = make_ragas_embeddings(embedding_client)
 
     sample = SingleTurnSample(
         user_input=query,

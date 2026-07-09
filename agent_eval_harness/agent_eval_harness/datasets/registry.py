@@ -4,7 +4,7 @@ from typing import Any
 from agent_eval_harness.datasets.types import DatasetCase
 from agent_eval_harness.llm.client import LLMClient
 
-GeneratorFn = Callable[[dict, LLMClient | None, int | None], Coroutine[Any, Any, list[DatasetCase]]]
+GeneratorFn = Callable[..., Coroutine[Any, Any, list[DatasetCase]]]
 
 def get_generator(kind: str) -> GeneratorFn:
     if kind == "guard_classification":

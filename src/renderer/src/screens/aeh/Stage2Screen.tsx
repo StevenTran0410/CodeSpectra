@@ -47,11 +47,15 @@ export default function Stage2Screen(): React.ReactElement {
   // LLM Config
   const [selectedProviderId, setSelectedProviderId] = useState('')
   const [selectedModelId, setSelectedModelId] = useState('')
+  const [selectedReasoningEffort, setSelectedReasoningEffort] = useState<string | null>(null)
+  const [selectedThinkingBudget, setSelectedThinkingBudget] = useState<number | null>(null)
   const [llmConfigOpen, setLlmConfigOpen] = useState(false)
 
   // Flow Analysis LLM Config (LLM 2 — holistic agent-flow separation pass, needs a strong model)
   const [flowProviderId, setFlowProviderId] = useState('')
   const [flowModelId, setFlowModelId] = useState('')
+  const [flowReasoningEffort, setFlowReasoningEffort] = useState<string | null>(null)
+  const [flowThinkingBudget, setFlowThinkingBudget] = useState<number | null>(null)
   const [flowLlmConfigOpen, setFlowLlmConfigOpen] = useState(false)
 
   // System Map State
@@ -131,6 +135,8 @@ export default function Stage2Screen(): React.ReactElement {
         const flows = await window.api.aeh.generateAgentFlowMap(sessionId, {
           provider_id: flowProviderId || selectedProviderId,
           model_id: (flowProviderId ? flowModelId : selectedModelId) || null,
+          reasoning_effort: flowProviderId ? flowReasoningEffort : selectedReasoningEffort,
+          thinking_budget: flowProviderId ? flowThinkingBudget : selectedThinkingBudget,
         })
         setAgentFlowMap(flows)
         setSelectedAgentId(flows.entry_agent_ids[0] ?? flows.agents[0]?.id ?? null)
@@ -142,7 +148,17 @@ export default function Stage2Screen(): React.ReactElement {
         setGeneratingFlows(false)
       }
     },
-    [flowProviderId, flowModelId, selectedProviderId, selectedModelId, toast]
+    [
+      flowProviderId,
+      flowModelId,
+      flowReasoningEffort,
+      flowThinkingBudget,
+      selectedProviderId,
+      selectedModelId,
+      selectedReasoningEffort,
+      selectedThinkingBudget,
+      toast,
+    ]
   )
 
   const startPolling = useSessionPolling<AEHExpansionSession>({
@@ -240,6 +256,8 @@ export default function Stage2Screen(): React.ReactElement {
       const res = await window.api.aeh.startExpansion(selectedCandidateId, {
         provider_id: selectedProviderId,
         model_id: selectedModelId || null,
+        reasoning_effort: selectedReasoningEffort,
+        thinking_budget: selectedThinkingBudget,
         node_budget: nodeBudget,
         hop_cap: 3,
       })
@@ -284,9 +302,13 @@ export default function Stage2Screen(): React.ReactElement {
             onClose={() => setLlmConfigOpen(false)}
             providerId={selectedProviderId}
             modelId={selectedModelId}
-            onChange={(pid, mid) => {
+            reasoningEffort={selectedReasoningEffort}
+            thinkingBudget={selectedThinkingBudget}
+            onChange={(pid, mid, effort, budget) => {
               setSelectedProviderId(pid)
               setSelectedModelId(mid)
+              setSelectedReasoningEffort(effort ?? null)
+              setSelectedThinkingBudget(budget ?? null)
             }}
             title="LLM 1 — Expansion & Classification Model (this stage only)"
           />
@@ -306,9 +328,13 @@ export default function Stage2Screen(): React.ReactElement {
             onClose={() => setFlowLlmConfigOpen(false)}
             providerId={flowProviderId}
             modelId={flowModelId}
-            onChange={(pid, mid) => {
+            reasoningEffort={flowReasoningEffort}
+            thinkingBudget={flowThinkingBudget}
+            onChange={(pid, mid, effort, budget) => {
               setFlowProviderId(pid)
               setFlowModelId(mid)
+              setFlowReasoningEffort(effort ?? null)
+              setFlowThinkingBudget(budget ?? null)
             }}
             title="LLM 2 — Agent-Flow Analysis Model (optional — reasons over the whole map at once, needs a strong model)"
           />

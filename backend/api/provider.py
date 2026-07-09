@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 from pydantic import BaseModel, field_validator
 
+from domain.model_connector.reasoning import ModelInfo
 from domain.model_connector.service import ProviderConfigService
 from domain.model_connector.types import ProviderCapabilities, ProviderConfig, ProviderKind
 
@@ -58,7 +59,7 @@ class TestConnectionResponse(BaseModel):
 
 
 class ListModelsResponse(BaseModel):
-    models: list[str]
+    models: list[ModelInfo]
 
 
 # ──────────────────────────────────────────────────────────────────────────────

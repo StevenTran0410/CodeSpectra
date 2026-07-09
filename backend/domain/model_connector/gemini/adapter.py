@@ -3,7 +3,8 @@ import httpx
 
 from domain.model_connector._cloud_base import CloudAdapterBase
 from domain.model_connector.errors import ProviderError, ProviderErrorCode
-from domain.model_connector.types import ChatRequest, ChatResponse, ProviderConfig
+from domain.model_connector.reasoning import ReasoningStyle, classify, thinking_budget_range
+from domain.model_connector.types import ChatRequest, ChatResponse, EmbedRequest, EmbedResponse, ProviderConfig, ProviderKind
 from shared.logger import logger
 
 MODEL_PRESETS = [
@@ -62,6 +63,15 @@ class GeminiAdapter(CloudAdapterBase):
             generation_config["temperature"] = request.temperature
         if request.json_mode:
             generation_config["responseMimeType"] = "application/json"
+        if (
+            classify(ProviderKind.GEMINI, model or "") == ReasoningStyle.THINKING_BUDGET
+            and request.thinking_budget is not None
+        ):
+            lo, hi, _can_disable = thinking_budget_range(ProviderKind.GEMINI, model or "")
+            budget = request.thinking_budget
+            if budget != -1:  # -1 = dynamic thinking, always valid, no clamping
+                budget = min(max(budget, lo), hi)
+            generation_config["thinkingConfig"] = {"thinkingBudget": budget}
 
         payload: dict = {
             "contents": contents,
@@ -88,6 +98,41 @@ class GeminiAdapter(CloudAdapterBase):
                 content=text,
                 prompt_tokens=usage.get("promptTokenCount"),
                 completion_tokens=usage.get("candidatesTokenCount"),
+            )
+        except httpx.ConnectError as e:
+            raise self._map_connect_error(e) from e
+        except httpx.TimeoutException as e:
+            raise self._map_timeout(e) from e
+        except httpx.HTTPStatusError as e:
+            raise self._map_http_error(e) from e
+        except Exception as e:
+            raise ProviderError(ProviderErrorCode.UNKNOWN, str(e), provider_id=self.config.id) from e
+
+    async def embed(self, request: EmbedRequest) -> EmbedResponse:
+        model = request.model_id or "gemini-embedding-001"
+        # Gemini taskType: RETRIEVAL_DOCUMENT for corpus chunks (default), RETRIEVAL_QUERY
+        # for embedding the query side. Using the wrong task_type measurably hurts quality.
+        task_type_str = (
+            "RETRIEVAL_QUERY" if request.task_type == "retrieval_query" else "RETRIEVAL_DOCUMENT"
+        )
+        requests_body = [
+            {"model": f"models/{model}", "content": {"parts": [{"text": t}]}, "taskType": task_type_str}
+            for t in request.texts
+        ]
+        url = f"/v1beta/models/{model}:batchEmbedContents"
+        payload = {"requests": requests_body}
+        try:
+            logger.debug(f"gemini embed: model={model}, n={len(request.texts)}, task={task_type_str}")
+            res = await self._client.post(url, json=payload, params=self._key_param())
+            res.raise_for_status()
+            data = res.json()
+            embeddings = [item["values"] for item in data.get("embeddings", [])]
+            dims = len(embeddings[0]) if embeddings else 0
+            return EmbedResponse(
+                provider_id=self.config.id,
+                model_id=model,
+                embeddings=embeddings,
+                dimensions=dims,
             )
         except httpx.ConnectError as e:
             raise self._map_connect_error(e) from e

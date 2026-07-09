@@ -1,9 +1,16 @@
 import React, { useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import { Loader2 } from 'lucide-react'
-import { Button, FormGroup, Select } from '../../components/ui'
+import { Badge, Button, FormGroup, Input, Select } from '../../components/ui'
 import { useProviderStore } from '../../store/provider.store'
-import type { ProviderConfig } from '../../types/electron'
+import type { ProviderConfig, ProviderKind, ReasoningStyle } from '../../types/electron'
+
+/** UI hint only — the backend adapter is the source of truth and clamps out-of-range values. */
+function thinkingBudgetHint(kind: ProviderKind | undefined, style: ReasoningStyle): string {
+  if (style === 'budget_tokens') return 'Anthropic: 1024–32000 tokens. Leave blank to disable thinking.'
+  if (kind === 'gemini') return 'Gemini: 0–24576 (Flash, 0 disables) or 128–32768 (Pro, cannot disable). -1 = dynamic.'
+  return ''
+}
 
 // Portals to document.body to escape ReactFlow's transformed stacking context on Stage 1.
 export default function LLMConfigModal({
@@ -11,6 +18,8 @@ export default function LLMConfigModal({
   onClose,
   providerId,
   modelId,
+  reasoningEffort = null,
+  thinkingBudget = null,
   onChange,
   onConfirmResume,
   title = 'LLM Model (this stage only)',
@@ -19,7 +28,14 @@ export default function LLMConfigModal({
   onClose: () => void
   providerId: string
   modelId: string
-  onChange: (providerId: string, modelId: string) => void
+  reasoningEffort?: string | null
+  thinkingBudget?: number | null
+  onChange: (
+    providerId: string,
+    modelId: string,
+    reasoningEffort?: string | null,
+    thinkingBudget?: number | null
+  ) => void
   onConfirmResume?: () => void
   title?: string
 }): React.ReactElement | null {
@@ -37,11 +53,22 @@ export default function LLMConfigModal({
   if (!isOpen) return null
 
   const selectedProvider = providers.find((p) => p.id === providerId) ?? null
-  const modelOptions = modelLists[providerId]?.length
+  const modelInfos = modelLists[providerId]?.length
     ? modelLists[providerId]
     : selectedProvider?.model_id
-      ? [selectedProvider.model_id]
+      ? [{ id: selectedProvider.model_id, reasoning_style: 'none' as ReasoningStyle }]
       : []
+  const modelOptions = modelInfos.map((m) => m.id)
+  const reasoningStyle: ReasoningStyle =
+    modelInfos.find((m) => m.id === modelId)?.reasoning_style ?? 'none'
+
+  const handleModelChange = (newModelId: string): void => {
+    const style = modelInfos.find((m) => m.id === newModelId)?.reasoning_style ?? 'none'
+    // Drop reasoning fields that don't apply to the newly selected model's style.
+    const nextEffort = style === 'effort' ? (reasoningEffort ?? 'medium') : null
+    const nextBudget = style === 'budget_tokens' || style === 'thinking_budget' ? thinkingBudget : null
+    onChange(providerId, newModelId, nextEffort, nextBudget)
+  }
 
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4">
@@ -58,7 +85,7 @@ export default function LLMConfigModal({
             value={providerId}
             onChange={(e) => {
               const p = providers.find((x) => x.id === e.target.value)
-              onChange(e.target.value, p?.model_id ?? '')
+              onChange(e.target.value, p?.model_id ?? '', null, null)
             }}
           >
             {providers.length === 0 ? (
@@ -76,7 +103,7 @@ export default function LLMConfigModal({
           <div className="flex gap-1.5 items-center">
             <Select
               value={modelId}
-              onChange={(e) => onChange(providerId, e.target.value)}
+              onChange={(e) => handleModelChange(e.target.value)}
               className="flex-1"
               disabled={!providerId}
             >
@@ -98,6 +125,43 @@ export default function LLMConfigModal({
             <div className="text-[11px] text-rose-400 mt-1">{modelErrors[providerId]}</div>
           )}
         </div>
+        {reasoningStyle === 'effort' && (
+          <FormGroup label="Reasoning effort">
+            <Select
+              value={reasoningEffort ?? 'medium'}
+              onChange={(e) => onChange(providerId, modelId, e.target.value, null)}
+            >
+              <option value="minimal">Minimal</option>
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+              <option value="xhigh">X-High</option>
+            </Select>
+          </FormGroup>
+        )}
+        {(reasoningStyle === 'budget_tokens' || reasoningStyle === 'thinking_budget') && (
+          <FormGroup
+            label="Thinking budget (tokens)"
+            helperText={thinkingBudgetHint(selectedProvider?.kind, reasoningStyle)}
+          >
+            <Input
+              type="number"
+              value={thinkingBudget ?? ''}
+              placeholder="Provider default"
+              onChange={(e) =>
+                onChange(
+                  providerId,
+                  modelId,
+                  null,
+                  e.target.value === '' ? null : Number(e.target.value)
+                )
+              }
+            />
+          </FormGroup>
+        )}
+        {reasoningStyle === 'toggle' && (
+          <Badge variant="info" size="sm">Reasoning always on for this model — no tunable budget</Badge>
+        )}
         <div className="flex justify-end gap-2 pt-2">
           {onConfirmResume && (
             <Button variant="primary" onClick={onConfirmResume} className="text-xs px-4 py-2">Confirm & Resume</Button>

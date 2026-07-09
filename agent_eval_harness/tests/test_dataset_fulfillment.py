@@ -2,10 +2,11 @@ import textwrap
 
 import pytest
 
-from agent_eval_harness.datasets.fulfillment import export_dataset, fulfill_plan
+from agent_eval_harness.datasets.fulfillment import _qa_testset_backend, export_dataset, fulfill_plan
 from agent_eval_harness.datasets.types import DatasetCase
 from agent_eval_harness.llm.client import LLMResponse
 from agent_eval_harness.llm.fake_client import FakeLLMClient
+from agent_eval_harness.metrics.suite import SuiteEntry
 from agent_eval_harness.store import repository
 
 pytestmark = pytest.mark.asyncio
@@ -181,3 +182,25 @@ async def test_export_dataset_excludes_synthetic_never_leaves_aeh():
 
     assert {c.id for c in exported} == {"export_c2", "export_c3"}
     assert all("kind" not in c.input for c in exported)
+
+
+def _entry(metric: str, metric_class: str = "llm_judge") -> SuiteEntry:
+    return SuiteEntry(
+        id=f"c.{metric}.llm0", component="c", metric=metric, metric_class=metric_class,
+        dataset={"required": {"kind": "qa_testset", "min_cases": 20}},
+    )
+
+
+def test_qa_testset_backend_picks_ragas_when_a_consumer_uses_it():
+    entries = [_entry("geval.decomposition_coverage"), _entry("ragas.faithfulness")]
+    assert _qa_testset_backend(entries) == "ragas"
+
+
+def test_qa_testset_backend_defaults_to_deepeval_for_geval_consumers():
+    entries = [_entry("geval.decomposition_coverage"), _entry("geval.audit_output_completeness")]
+    assert _qa_testset_backend(entries) == "deepeval"
+
+
+def test_qa_testset_backend_defaults_to_deepeval_when_no_llm_judge_consumer():
+    entries = [_entry("classifier.guard_rule_accuracy", metric_class="classifier")]
+    assert _qa_testset_backend(entries) == "deepeval"

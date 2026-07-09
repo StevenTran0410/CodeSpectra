@@ -13,6 +13,7 @@ from agent_eval_harness.datasets.generator_utils import seed_cases_to_dataset_ca
 from agent_eval_harness.datasets.registry import get_generator
 from agent_eval_harness.datasets.versioning import next_version
 from agent_eval_harness.llm.client import LLMClient
+from agent_eval_harness.llm.embedding_client import EmbeddingClient
 from agent_eval_harness.metrics.suite import Suite, SuiteEntry, load_suite
 from agent_eval_harness.store import repository
 
@@ -84,6 +85,18 @@ def _derive_guard_categories(group_entries: list[SuiteEntry]) -> list[dict] | No
     return None
 
 
+def _qa_testset_backend(group_entries: list[SuiteEntry]) -> str:
+    """Match the qa_testset synthesis backend to the toolkit the consuming gate(s)
+    actually score with at eval time — llm_judge entries carry it as the metric's
+    namespace prefix (e.g. "ragas.faithfulness", "geval.decomposition_coverage").
+    A group can only be produced once, so a mix of consumers still gets one real
+    backend rather than silently guessing; ragas wins the tie since its metrics are
+    pickier about context/answer shape than deepeval's G-Eval rubric scoring."""
+    if any(e.metric.startswith("ragas.") for e in group_entries):
+        return "ragas"
+    return "deepeval"
+
+
 def _derive_config(
     kind: str,
     dataset_id: str,
@@ -106,7 +119,10 @@ def _derive_config(
         corpus_paths = _qa_corpus_paths(snapshot_local_path)
         if not corpus_paths:
             return None
-        return {"dataset_name": dataset_id, "corpus_paths": corpus_paths, "count": min_cases, "backend": "mock"}
+        return {
+            "dataset_name": dataset_id, "corpus_paths": corpus_paths, "count": min_cases,
+            "backend": _qa_testset_backend(group_entries),
+        }
 
     if kind == "decomposition_gold":
         return {
@@ -152,6 +168,7 @@ async def fulfill_plan(
     model_id: str,
     llm_client: LLMClient,
     instructions: dict[str, dict] | None = None,
+    embedding_client: EmbeddingClient | None = None,
 ) -> dict[str, dict]:
     """Auto-fulfillment walk. Returns {group_key: {status, dataset_id?, reason?}} — every
     group gets exactly one of fulfilled/failed/needs_human, none silently skipped."""
@@ -183,6 +200,13 @@ async def fulfill_plan(
             }
             continue
 
+        if kind == "qa_testset" and not embedding_client:
+            report[group_key] = {
+                "status": "needs_human",
+                "reason": "No embedding provider configured or available — please configure one first",
+            }
+            continue
+
         min_cases = _effective_min_cases(kind, group_entries)
         base_name = f"{kind}_{group_key.split('/', 1)[1]}"
         dataset_id = await next_version(base_name)
@@ -207,7 +231,12 @@ async def fulfill_plan(
 
         generator_fn = get_generator(kind)
         try:
-            generated_cases = await generator_fn(config, llm_client)
+            if kind == "qa_testset":
+                generated_cases = await generator_fn(
+                    config, llm_client, embedding_client=embedding_client
+                )
+            else:
+                generated_cases = await generator_fn(config, llm_client)
         except Exception as e:
             logger.warning(f"fulfillment: generator for {group_key} failed: {e}")
             generated_cases = []
@@ -217,7 +246,12 @@ async def fulfill_plan(
         if len(all_cases) < min_cases:
             # One top-up generation attempt before giving up.
             try:
-                topup_cases = await generator_fn(config, llm_client)
+                if kind == "qa_testset":
+                    topup_cases = await generator_fn(
+                        config, llm_client, embedding_client=embedding_client
+                    )
+                else:
+                    topup_cases = await generator_fn(config, llm_client)
                 all_cases = all_cases + topup_cases
             except Exception as e:
                 logger.warning(f"fulfillment: top-up for {group_key} failed: {e}")

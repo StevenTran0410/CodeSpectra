@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from agent_eval_harness.llm.client import LLMClient
+from agent_eval_harness.llm.embedding_client import EmbeddingClient
 from agent_eval_harness.mapping.system_map import SystemMap, load_system_map
 from agent_eval_harness.metrics.assertions.registry import get_assertion
 from agent_eval_harness.metrics.suite import SuiteEntry, load_suite
@@ -35,6 +36,7 @@ async def run_sweep(
     tier: str = "auto",
     active_defects: list[str] | None = None,
     run_id: str | None = None,
+    embedding_client: EmbeddingClient | None = None,
 ) -> SweepResult:
     """Run the full evaluation sweep for a given target + suite."""
     system_map = load_system_map(map_path)
@@ -65,6 +67,7 @@ async def run_sweep(
                 semaphore,
                 tier,
                 active_defects=active_defects,
+                embedding_client=embedding_client,
             )
             for entry in suite.entries
         ]
@@ -111,6 +114,7 @@ async def _run_entry(
     semaphore: asyncio.Semaphore,
     tier: str,
     active_defects: list[str] | None = None,
+    embedding_client: EmbeddingClient | None = None,
 ) -> list[MetricResult]:
     """Dispatch one SuiteEntry to the appropriate scorer."""
     async with semaphore:
@@ -137,6 +141,7 @@ async def _run_entry(
                 run_id,
                 tier,
                 active_defects=active_defects,
+                embedding_client=embedding_client,
             )
         else:
             raise ValueError(f"Unknown metric_class: {entry.metric_class!r}")
@@ -213,6 +218,7 @@ async def _score_judge_entry(
     run_id: str,
     tier: str,
     active_defects: list[str] | None = None,
+    embedding_client: EmbeddingClient | None = None,
 ) -> list[MetricResult]:
     """Run traces and apply LLM-judge scoring."""
     results: list[MetricResult] = []
@@ -224,7 +230,9 @@ async def _score_judge_entry(
     )
     for query, outcome in zip(queries, outcomes):
         spans = await repository.get_spans_for_trace(outcome.trace_id)
-        mr = await _dispatch_judge(entry, spans, query, llm_client, outcome.trace_id)
+        mr = await _dispatch_judge(
+            entry, spans, query, llm_client, outcome.trace_id, embedding_client=embedding_client
+        )
         if mr:
             results.append(mr)
 
@@ -237,6 +245,7 @@ async def _dispatch_judge(
     query: str,
     llm_client: LLMClient,
     trace_id: str,
+    embedding_client: EmbeddingClient | None = None,
 ) -> MetricResult | None:
     metric = entry.metric
 
@@ -280,6 +289,7 @@ async def _dispatch_judge(
             llm_client=llm_client,
             component_id=entry.component,
             trace_id=trace_id,
+            embedding_client=embedding_client,
         )
 
     elif metric == "tool_correctness":

@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager  # noqa: E402
 
 from agent_eval_harness.config import AEHConfig  # noqa: E402
 from agent_eval_harness.llm.client import LLMClient, LLMResponse  # noqa: E402
+from agent_eval_harness.llm.embedding_client import EmbeddingClient  # noqa: E402
 from agent_eval_harness.llm.fake_client import FakeLLMClient  # noqa: E402
 from agent_eval_harness.llm.proxy_client import CodeSpectraProxyClient  # noqa: E402
 from agent_eval_harness.mapping.system_map import load_system_map  # noqa: E402
@@ -28,6 +29,12 @@ def _add_provider_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--provider-id", dest="provider_id", default=None)
     parser.add_argument("--backend-url", dest="backend_url", default=None)
     parser.add_argument("--backend-token", dest="backend_token", default=None)
+
+
+def _add_embedding_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--embedding-provider-id", dest="embedding_provider_id", default=None)
+    parser.add_argument("--embedding-model-id", dest="embedding_model_id", default=None)
+    parser.add_argument("--use-local-embedding", dest="use_local_embedding", action="store_true")
 
 
 def _add_data_dir_arg(parser: argparse.ArgumentParser) -> None:
@@ -76,6 +83,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     )
     gen_parser.add_argument("--seed", type=int, default=None, help="Random seed for generation")
     _add_provider_args(gen_parser)
+    _add_embedding_args(gen_parser)
     _add_data_dir_arg(gen_parser)
 
     ls_parser = dataset_subparsers.add_parser("ls", help="List all datasets and their summaries")
@@ -171,11 +179,44 @@ def _build_llm_client(args: argparse.Namespace, config: AEHConfig) -> LLMClient:
             raise SystemExit(
                 "--provider-id requires --backend-url/--backend-token (or .aeh/config.yaml)"
             )
-        return CodeSpectraProxyClient(backend_url, backend_token, provider_id, config.model_id)
+        return CodeSpectraProxyClient(
+            backend_url, backend_token, provider_id, config.model_id,
+            reasoning_effort=config.reasoning_effort, thinking_budget=config.thinking_budget,
+        )
 
     return FakeLLMClient(
         LLMResponse(content="This is a fallback offline demo answer.", model="fake-default")
     )
+
+
+def _build_embedding_client(args: argparse.Namespace, config: AEHConfig) -> EmbeddingClient | None:
+    """Resolve the embedding client: live CodeSpectraEmbeddingProxyClient or None."""
+    use_local = getattr(args, "use_local_embedding", False)
+    provider_id = getattr(args, "embedding_provider_id", None)
+    model_id = getattr(args, "embedding_model_id", None)
+
+    # Fail early at argparse/UI resolve level if qa_testset is requested but no embed flags provided
+    if getattr(args, "kind", None) == "qa_testset" and not use_local and not provider_id:
+        raise SystemExit(
+            "[aeh] Error: --kind qa_testset requires either --use-local-embedding or --embedding-provider-id."
+        )
+
+    if use_local or provider_id:
+        backend_url = args.backend_url or config.backend_url
+        backend_token = args.backend_token or config.backend_token
+        if not backend_url or not backend_token:
+            raise SystemExit(
+                "[aeh] Error: embedding configuration requires --backend-url/--backend-token (or .aeh/config.yaml)"
+            )
+        from agent_eval_harness.llm.embedding_client import CodeSpectraEmbeddingProxyClient
+        return CodeSpectraEmbeddingProxyClient(
+            backend_url,
+            backend_token,
+            provider_id=provider_id,
+            model_id=model_id,
+            use_local=use_local,
+        )
+    return None
 
 
 @asynccontextmanager
@@ -244,8 +285,19 @@ async def _dataset_command(args: argparse.Namespace) -> int:
             dataset_id = await next_version(base_name)
             gen_config["dataset_name"] = dataset_id
 
-            generator_fn = get_generator(args.kind)
-            cases = await generator_fn(gen_config, llm_client, args.seed)
+            embedding_client = None
+            try:
+                generator_fn = get_generator(args.kind)
+                if args.kind == "qa_testset":
+                    embedding_client = _build_embedding_client(args, config)
+                    cases = await generator_fn(
+                        gen_config, llm_client, args.seed, embedding_client=embedding_client
+                    )
+                else:
+                    cases = await generator_fn(gen_config, llm_client, args.seed)
+            finally:
+                if embedding_client and hasattr(embedding_client, "aclose"):
+                    await embedding_client.aclose()
 
             output_dir = Path(os.environ.get("AEH_DATA_DIR", "."))
             output_path = output_dir / f"{dataset_id}.jsonl"

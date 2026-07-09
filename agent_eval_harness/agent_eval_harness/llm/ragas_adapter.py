@@ -88,8 +88,11 @@ def make_ragas_llm_adapter(llm_client: LLMClient):
     return LangchainLLMAdapter(client=llm_client)
 
 
-def make_ragas_embeddings():
-    """Returns a Langchain Embeddings that returns constant 1536-dim vectors."""
+def make_ragas_embeddings(embedding_client):
+    """Returns a Langchain Embeddings implementation that delegates to the given EmbeddingClient.
+
+    No dummy vectors — callers must supply a real client.
+    """
     try:
         from langchain_core.embeddings import Embeddings
     except ImportError as exc:
@@ -97,11 +100,13 @@ def make_ragas_embeddings():
             "langchain_core is not installed. Install ragas or the [datasets] optional dependency."
         ) from exc
 
-    class DummyEmbeddings(Embeddings):
+    class RealEmbeddings(Embeddings):
         def embed_documents(self, texts: list[str]) -> list[list[float]]:
-            return [[1.0] + [0.0] * 1535 for _ in texts]
+            return _run_async_blocking(embedding_client.embed_texts, texts)
 
         def embed_query(self, text: str) -> list[float]:
-            return [1.0] + [0.0] * 1535
+            results = _run_async_blocking(embedding_client.embed_texts, [text])
+            return results[0]
 
-    return DummyEmbeddings()
+    return RealEmbeddings()
+

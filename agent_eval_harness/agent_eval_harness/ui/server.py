@@ -454,6 +454,8 @@ async def rerun_run(run_id: str, body: RerunRequest):
                     config.backend_token,
                     config.provider_id,
                     config.model_id,
+                    reasoning_effort=config.reasoning_effort,
+                    thinking_budget=config.thinking_budget,
                 )
             else:
                 default_client = FakeLLMClient(
@@ -488,6 +490,8 @@ async def rerun_run(run_id: str, body: RerunRequest):
                         config.backend_token,
                         provider_id=p_id,
                         model_id=m_id,
+                        reasoning_effort=config.reasoning_effort,
+                        thinking_budget=config.thinking_budget,
                     )
                 else:
                     client = FakeLLMClient(
@@ -539,6 +543,8 @@ class StartDiscoveryRequest(BaseModel):
     model_id: str | None = None
     backend_url: str | None = None
     backend_token: str | None = None
+    reasoning_effort: str | None = None
+    thinking_budget: int | None = None
 
 
 class DiscoverySessionResponse(BaseModel):
@@ -595,7 +601,7 @@ async def _get_expansion_session_or_404(session_id: str) -> dict:
 
 def _resolve_synthesis_config(
     body: StartDiscoveryRequest | ExpandCandidateRequest, config: AEHConfig
-) -> tuple[str, str, str, str | None]:
+) -> tuple[str, str, str, str | None, str | None, int | None]:
     """Resolve provider/backend config for Pass C synthesis LLM calls, or raise 400."""
     provider_id = body.provider_id or config.provider_id
     backend_url = body.backend_url or config.backend_url
@@ -612,15 +618,27 @@ def _resolve_synthesis_config(
             detail="No LLM provider configured for Pass C synthesis. Set up a provider in "
             "Settings, then select it before running Discovery.",
         )
-    return provider_id, backend_url, backend_token, body.model_id or config.model_id
+    return (
+        provider_id,
+        backend_url,
+        backend_token,
+        body.model_id or config.model_id,
+        body.reasoning_effort or config.reasoning_effort,
+        body.thinking_budget if body.thinking_budget is not None else config.thinking_budget,
+    )
 
 
 @app.post("/api/discovery/sessions")
 async def start_discovery(body: StartDiscoveryRequest):
     try:
         config = AEHConfig.load()
-        provider_id, backend_url, backend_token, model_id = _resolve_synthesis_config(body, config)
-        llm_client = CodeSpectraProxyClient(backend_url, backend_token, provider_id, model_id)
+        provider_id, backend_url, backend_token, model_id, reasoning_effort, thinking_budget = (
+            _resolve_synthesis_config(body, config)
+        )
+        llm_client = CodeSpectraProxyClient(
+            backend_url, backend_token, provider_id, model_id,
+            reasoning_effort=reasoning_effort, thinking_budget=thinking_budget,
+        )
 
         client = CodeSpectraClient(backend_url, backend_token)
 
@@ -736,6 +754,8 @@ class ResumeDiscoveryRequest(BaseModel):
     model_id: str | None = None
     backend_url: str | None = None
     backend_token: str | None = None
+    reasoning_effort: str | None = None
+    thinking_budget: int | None = None
 
 
 @app.post("/api/discovery/sessions/{session_id}/resume")
@@ -752,8 +772,19 @@ async def resume_discovery(session_id: str, body: ResumeDiscoveryRequest):
     pause_info = session.get("pause_info") or {}
     provider_id = body.provider_id or pause_info.get("provider_id") or config.provider_id
     model_id = body.model_id if body.model_id is not None else pause_info.get("model_id")
+    reasoning_effort = (
+        body.reasoning_effort or pause_info.get("reasoning_effort") or config.reasoning_effort
+    )
+    thinking_budget = (
+        body.thinking_budget
+        if body.thinking_budget is not None
+        else pause_info.get("thinking_budget", config.thinking_budget)
+    )
 
-    llm_client = CodeSpectraProxyClient(backend_url, backend_token, provider_id, model_id)
+    llm_client = CodeSpectraProxyClient(
+        backend_url, backend_token, provider_id, model_id,
+        reasoning_effort=reasoning_effort, thinking_budget=thinking_budget,
+    )
     client = CodeSpectraClient(backend_url, backend_token)
 
     existing = await repository.get_discovery_candidates(session_id)
@@ -781,10 +812,14 @@ class ExpandCandidateRequest(BaseModel):
     model_id: str | None = None
     backend_url: str | None = None
     backend_token: str | None = None
+    reasoning_effort: str | None = None
+    thinking_budget: int | None = None
     node_budget: int = 100
     hop_cap: int = 3
     classify_provider_id: str | None = None
     classify_model_id: str | None = None
+    classify_reasoning_effort: str | None = None
+    classify_thinking_budget: int | None = None
 
 
 async def run_expansion_background(
@@ -863,16 +898,33 @@ async def start_expansion(candidate_id: str, body: ExpandCandidateRequest):
         snapshot_id = session["snapshot_id"]
 
         config = AEHConfig.load()
-        provider_id, backend_url, backend_token, model_id = _resolve_synthesis_config(body, config)
-        llm_client = CodeSpectraProxyClient(backend_url, backend_token, provider_id, model_id)
+        provider_id, backend_url, backend_token, model_id, reasoning_effort, thinking_budget = (
+            _resolve_synthesis_config(body, config)
+        )
+        llm_client = CodeSpectraProxyClient(
+            backend_url, backend_token, provider_id, model_id,
+            reasoning_effort=reasoning_effort, thinking_budget=thinking_budget,
+        )
 
         classify_provider_id = body.classify_provider_id or provider_id
         classify_model_id = body.classify_model_id or model_id
-        if classify_provider_id == provider_id and classify_model_id == model_id:
+        classify_reasoning_effort = body.classify_reasoning_effort or reasoning_effort
+        classify_thinking_budget = (
+            body.classify_thinking_budget
+            if body.classify_thinking_budget is not None
+            else thinking_budget
+        )
+        if (
+            classify_provider_id == provider_id
+            and classify_model_id == model_id
+            and classify_reasoning_effort == reasoning_effort
+            and classify_thinking_budget == thinking_budget
+        ):
             classify_llm_client = llm_client
         else:
             classify_llm_client = CodeSpectraProxyClient(
-                backend_url, backend_token, classify_provider_id, classify_model_id
+                backend_url, backend_token, classify_provider_id, classify_model_id,
+                reasoning_effort=classify_reasoning_effort, thinking_budget=classify_thinking_budget,
             )
 
         client = CodeSpectraClient(backend_url, backend_token)
@@ -941,6 +993,8 @@ class GeneratePlanRequest(BaseModel):
     model_id: str | None = None
     backend_url: str | None = None
     backend_token: str | None = None
+    reasoning_effort: str | None = None
+    thinking_budget: int | None = None
 
 
 class UpdatePlanRequest(BaseModel):
@@ -983,7 +1037,14 @@ async def generate_plan_route(session_id: str, body: GeneratePlanRequest):
         raise HTTPException(status_code=400, detail="No LLM provider configured.")
 
     model_id = body.model_id or config.model_id
-    llm_client = CodeSpectraProxyClient(backend_url, backend_token, provider_id, model_id)
+    reasoning_effort = body.reasoning_effort or config.reasoning_effort
+    thinking_budget = (
+        body.thinking_budget if body.thinking_budget is not None else config.thinking_budget
+    )
+    llm_client = CodeSpectraProxyClient(
+        backend_url, backend_token, provider_id, model_id,
+        reasoning_effort=reasoning_effort, thinking_budget=thinking_budget,
+    )
     client = CodeSpectraClient(backend_url, backend_token)
 
     try:
@@ -1073,7 +1134,12 @@ class FulfillDatasetsRequest(BaseModel):
     model_id: str | None = None
     backend_url: str | None = None
     backend_token: str | None = None
+    reasoning_effort: str | None = None
+    thinking_budget: int | None = None
     instructions: dict[str, dict] | None = None
+    embedding_provider_id: str | None = None
+    embedding_model_id: str | None = None
+    use_local_embedding: bool = False
 
 
 @app.post("/api/discovery/expansion-sessions/{session_id}/datasets/fulfill")
@@ -1091,8 +1157,27 @@ async def fulfill_datasets_route(session_id: str, body: FulfillDatasetsRequest):
     if not provider_id:
         raise HTTPException(status_code=400, detail="No LLM provider configured.")
     model_id = body.model_id or config.model_id
+    reasoning_effort = body.reasoning_effort or config.reasoning_effort
+    thinking_budget = (
+        body.thinking_budget if body.thinking_budget is not None else config.thinking_budget
+    )
 
-    llm_client = CodeSpectraProxyClient(backend_url, backend_token, provider_id, model_id)
+    llm_client = CodeSpectraProxyClient(
+        backend_url, backend_token, provider_id, model_id,
+        reasoning_effort=reasoning_effort, thinking_budget=thinking_budget,
+    )
+    
+    embedding_client = None
+    if body.use_local_embedding or body.embedding_provider_id:
+        from agent_eval_harness.llm.embedding_client import CodeSpectraEmbeddingProxyClient
+        embedding_client = CodeSpectraEmbeddingProxyClient(
+            backend_url,
+            backend_token,
+            provider_id=body.embedding_provider_id,
+            model_id=body.embedding_model_id,
+            use_local=body.use_local_embedding,
+        )
+
     client = CodeSpectraClient(backend_url, backend_token)
     try:
         from agent_eval_harness.datasets.fulfillment import fulfill_plan
@@ -1105,6 +1190,7 @@ async def fulfill_datasets_route(session_id: str, body: FulfillDatasetsRequest):
         report = await fulfill_plan(
             sess["plan_path"], sess["map_path"], sess["snapshot_id"], local_path_str,
             provider_id, model_id, llm_client, instructions=body.instructions,
+            embedding_client=embedding_client,
         )
         return report
     except HTTPException:
@@ -1116,6 +1202,8 @@ async def fulfill_datasets_route(session_id: str, body: FulfillDatasetsRequest):
         await client.aclose()
         if hasattr(llm_client, "aclose"):
             await llm_client.aclose()
+        if embedding_client and hasattr(embedding_client, "aclose"):
+            await embedding_client.aclose()
 
 
 @app.put("/api/discovery/expansion-sessions/{session_id}/plan")
@@ -1169,6 +1257,8 @@ class AgentFlowRequest(BaseModel):
     model_id: str | None = None
     backend_url: str | None = None
     backend_token: str | None = None
+    reasoning_effort: str | None = None
+    thinking_budget: int | None = None
 
 
 @app.post("/api/discovery/expansion-sessions/{session_id}/agent-flows")
@@ -1188,8 +1278,15 @@ async def generate_agent_flows_route(session_id: str, body: AgentFlowRequest):
     if not provider_id:
         raise HTTPException(status_code=400, detail="No LLM provider configured.")
     model_id = body.model_id or config.model_id
+    reasoning_effort = body.reasoning_effort or config.reasoning_effort
+    thinking_budget = (
+        body.thinking_budget if body.thinking_budget is not None else config.thinking_budget
+    )
 
-    llm_client = CodeSpectraProxyClient(backend_url, backend_token, provider_id, model_id)
+    llm_client = CodeSpectraProxyClient(
+        backend_url, backend_token, provider_id, model_id,
+        reasoning_effort=reasoning_effort, thinking_budget=thinking_budget,
+    )
     client = CodeSpectraClient(backend_url, backend_token)
 
     try:

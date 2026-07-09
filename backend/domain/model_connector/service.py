@@ -16,7 +16,8 @@ from .gemini.adapter import GeminiAdapter
 from .lmstudio.adapter import LMStudioAdapter
 from .ollama.adapter import OllamaAdapter
 from .openai.adapter import OpenAIAdapter
-from .types import ChatRequest, ChatResponse, ProviderCapabilities, ProviderConfig, ProviderKind
+from .reasoning import ModelInfo, classify
+from .types import ChatRequest, ChatResponse, EmbedRequest, EmbedResponse, ProviderCapabilities, ProviderConfig, ProviderKind
 
 
 class TestConnectionResult:
@@ -183,11 +184,15 @@ class ProviderConfigService:
         finally:
             await adapter.aclose()
 
-    async def list_models(self, provider_id: str) -> list[str]:
+    async def list_models(self, provider_id: str) -> list[ModelInfo]:
         config = await self._get_by_id_full(provider_id)
         adapter = _get_adapter(config)
         try:
-            return await adapter.list_models()
+            raw_ids = await adapter.list_models()
+            return [
+                ModelInfo(id=model_id, reasoning_style=classify(config.kind, model_id))
+                for model_id in raw_ids
+            ]
         finally:
             await adapter.aclose()
 
@@ -232,6 +237,21 @@ class ProviderConfigService:
         try:
             async for token in adapter.chat_stream(request):
                 yield token
+        finally:
+            await adapter.aclose()
+
+    async def embed(self, request: EmbedRequest) -> EmbedResponse:
+        """Route an embedding request to the correct provider adapter.
+
+        Only OpenAI and Gemini support embeddings; Anthropic and DeepSeek raise
+        ProviderError with a clear message.
+        """
+        config = await self._get_by_id_full(request.provider_id)
+        if request.model_id:
+            config = config.model_copy(update={"model_id": request.model_id})
+        adapter = _get_adapter(config)
+        try:
+            return await adapter.embed(request)
         finally:
             await adapter.aclose()
 
