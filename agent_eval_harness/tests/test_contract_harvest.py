@@ -113,20 +113,53 @@ def test_run_signature_kwargs_defaults_and_required(tmp_path: Path) -> None:
     assert by_name["repo_name"].required is False
     assert by_name["repo_name"].default_repr == "''"
     assert invocation.constructor_deps == ["ProviderConfigService", "RetrievalService"]
-    assert invocation.invocation_mode == "unsupported"  # live services needed
+    # Live constructor deps, but a validator letter is found ("A") -> a known route exists.
+    assert invocation.invocation_mode == "per_agent_route"
+    assert invocation.route == "/api/analysis/rerun_section"
     assert invocation.citations and "foo_agent.py" in invocation.citations[0]
 
 
-def test_case_binding_and_input_kind(tmp_path: Path) -> None:
+def test_case_binding_uses_route_shape_when_per_agent_route(tmp_path: Path) -> None:
+    """FooAgent has both constructor_deps and a validator letter -> per_agent_route mode,
+    so case_binding must be the route's real body shape, not the raw run() kwargs shape."""
     asts = _parse_files(_write_fixture(tmp_path))
-    invocation, _, _, _, input_kind = harvest_component_contract(_foo_component(), asts, tmp_path)
+    invocation, _, _, notes, input_kind = harvest_component_contract(_foo_component(), asts, tmp_path)
 
     assert invocation is not None
-    assert invocation.case_binding["provider_id"] == "config:provider_id"
-    assert invocation.case_binding["model_id"] == "config:model_id"
-    assert invocation.case_binding["snapshot_id"] == "case:$.input.snapshot_id"
-    assert "repo_name" not in invocation.case_binding  # optional -> default used
+    assert invocation.case_binding == {
+        "report_id": "case:$.input.report_id",
+        "section": "const:A",
+        "provider_id": "config:provider_id",
+        "model_id": "config:model_id",
+    }
     assert input_kind == "structured"
+    assert any("report_id" in n and "snapshot_id" in n for n in notes)
+
+
+def test_case_binding_uses_kwargs_shape_when_no_route_available(tmp_path: Path) -> None:
+    """Constructor deps present but no validator letter found -> no known route; stays
+    'unsupported', and case_binding falls back to the raw kwargs shape (not fabricated)."""
+    (tmp_path / "noletter.py").write_text(
+        "class NoLetterAgent:\n"
+        "    def __init__(self, provider_service: ProviderConfigService):\n"
+        "        self._provider = provider_service\n\n"
+        "    async def run(self, provider_id: str, snapshot_id: str) -> dict:\n"
+        "        return {}\n",
+        encoding="utf-8",
+    )
+    asts = _parse_files([tmp_path / "noletter.py"])
+    comp = Component(id="noletter", role="unknown", entry_point="noletter:NoLetterAgent", file="noletter.py")
+
+    invocation, _, _, _, _ = harvest_component_contract(comp, asts, tmp_path)
+
+    assert invocation is not None
+    assert invocation.constructor_deps == ["ProviderConfigService"]
+    assert invocation.invocation_mode == "unsupported"
+    assert invocation.route is None
+    assert invocation.case_binding == {
+        "provider_id": "config:provider_id",
+        "snapshot_id": "case:$.input.snapshot_id",
+    }
 
 
 def test_typeddict_schema_via_validate_call(tmp_path: Path) -> None:

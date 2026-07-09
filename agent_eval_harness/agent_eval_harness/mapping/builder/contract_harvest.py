@@ -24,6 +24,9 @@ _QUERYISH_PARAMS = frozenset({"query", "question", "prompt", "text", "message", 
 _CONFIG_PARAMS = frozenset({"provider_id", "model_id"})
 _SCHEMA_NAME_RE = re.compile(r"SCHEMA", re.IGNORECASE)
 _DYNAMIC = "<dynamic>"
+# CodeSpectra's own analysis pipeline (v1 harvest target — CS-287 scope) exposes exactly
+# one generic per-section rerun route; `section` accepts any of the 12 section letters.
+_RERUN_SECTION_ROUTE = "/api/analysis/rerun_section"
 
 
 def _parse_files(files: list[Path]) -> dict[Path, ast.Module]:
@@ -429,6 +432,10 @@ def harvest_component_contract(
     if cls is None:
         return None, None, {}, [f"{component.id}: class {class_name!r} not found in {path.name}"], "unknown"
 
+    # Computed early — a validator letter also identifies a per-agent-route invocation
+    # path (see below), not just the output TypedDict.
+    letter = _find_validator_letter(cls)
+
     entry = _find_entry_method(cls)
     invocation: InvocationContract | None = None
     input_kind = "unknown"
@@ -437,13 +444,41 @@ def harvest_component_contract(
         notes.extend(f"{component.id}: {n}" for n in kw_notes)
         constructor_deps = _harvest_constructor_deps(cls)
         input_kind = _derive_input_kind(kwargs)
+        if not constructor_deps:
+            invocation_mode = "in_harness"
+            route = None
+            case_binding = _derive_case_binding(kwargs)
+        elif letter:
+            # CodeSpectra's own analysis pipeline exposes exactly this: rerun one
+            # section by letter through an existing endpoint. Live services the
+            # constructor needs (ProviderConfigService, RetrievalService, ...) run
+            # inside that endpoint's process — AEH never constructs them itself.
+            invocation_mode = "per_agent_route"
+            route = _RERUN_SECTION_ROUTE
+            case_binding = {
+                "report_id": "case:$.input.report_id",
+                "section": f"const:{letter}",
+                "provider_id": "config:provider_id",
+                "model_id": "config:model_id",
+            }
+            notes.append(
+                f"{component.id}: invocation via {route} requires an existing analysis "
+                "report for the snapshot — report_id is not the same identifier as snapshot_id"
+            )
+        else:
+            # Live constructor deps and no known route to reach this component through —
+            # statics genuinely can't resolve an invocation path here.
+            invocation_mode = "unsupported"
+            route = None
+            case_binding = _derive_case_binding(kwargs)
         invocation = InvocationContract(
             callable=component.entry_point,
             method=entry.name,
             kwargs=kwargs,
             constructor_deps=constructor_deps,
-            invocation_mode="in_harness" if not constructor_deps else "unsupported",
-            case_binding=_derive_case_binding(kwargs),
+            invocation_mode=invocation_mode,
+            route=route,
+            case_binding=case_binding,
             source="ast",
             citations=[_rel_cite(path, entry.lineno, files_root)],
         )
@@ -451,7 +486,6 @@ def harvest_component_contract(
         notes.append(f"{component.id}: no run/run_async/__call__ method found")
 
     # Output contract: validator letter -> Section{letter} TypedDict; else SCHEMA_STR-as-JSON.
-    letter = _find_validator_letter(cls)
     json_schema: dict | None = None
     schema_source: str | None = None
     if letter:

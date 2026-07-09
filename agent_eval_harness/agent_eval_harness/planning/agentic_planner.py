@@ -89,6 +89,12 @@ HANDOFF_GATES_SYSTEM = (
     "location gates: fan-out/routing limits, allowed-downstream correctness, and "
     "retry-on-reject behavior between two agents. Prefer assertions wherever the trace can "
     "decide it. `component` MUST be one of the SENDING agent's own component ids.\n"
+    "You will be given a list of known registered metric names for exactly this kind of "
+    "check — REUSE one of them whenever it fits (e.g. a plain fan-out cap or "
+    "retry-on-reject check is almost always already covered by one of them). Only propose "
+    "a brand-new metric name for a check none of the known names can express — inventing a "
+    "new name for something a known name already covers makes the gate permanently "
+    "undispatchable, worse than not proposing it at all.\n"
     'Return JSON only: {"gates": [{"agent_id": "<sending agent id>", "component": "<its '
     'component id>", "property": "<quality checked>", "metric": "<name>", "metric_class": '
     '"assertion|classifier|llm_judge", "toolkit": "assertion|classifier|ragas|deepeval", '
@@ -462,6 +468,11 @@ async def _run_handoff_gates(
             f"component_ids={[c['id'] for c in evidence.owned]} "
             f"output_data={profile.output_data}"
         )
+    lines.append(
+        f"\nKnown registered handoff metric names (reuse these instead of inventing new "
+        f"ones): {sorted(_BASELINE_HANDOFF_METRICS)}\n"
+        f"Other known registered assertion names: {_known_assertion_names()}"
+    )
     user_prompt = "\n".join(lines)
 
     # Scales with agent count — this node fans in ALL agents' evidence, so a fixed

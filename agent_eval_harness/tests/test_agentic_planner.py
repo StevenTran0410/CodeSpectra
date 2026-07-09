@@ -274,6 +274,30 @@ async def test_run_handoff_gates_validates_agent_and_component_ownership() -> No
     assert gates[0].status is None  # allowed_downstream is a registered assertion
 
 
+async def test_run_handoff_gates_prompt_includes_known_metric_vocabulary() -> None:
+    """The LLM must be given the registered handoff metric names so it reuses them
+    instead of inventing new ones — root cause of 3 real dead (metric_not_dispatchable)
+    gates found auditing a real generated plan (allowed_downstream_only,
+    max_downstream_fanout_5, retry_on_schema_reject_only)."""
+    evidence_by_agent = {
+        "a1": ap.AgentEvidence(
+            agent=AgentFlow(id="a1", component_ids=["c1"], downstream_agents=["a2"]),
+            owned=[{"id": "c1", "role": "orchestrator", "model": None, "entry_point": "m:C", "file": "",
+                    "upstream": [], "downstream": [], "constraints": [], "source": ""}],
+        ),
+    }
+    profiles_by_agent = {"a1": AgentDataProfile(agent_id="a1")}
+    llm_client = FakeLLMClient(LLMResponse(content='{"gates": []}', model="fake"))
+
+    await ap._run_handoff_gates(evidence_by_agent, profiles_by_agent, llm_client)
+
+    assert len(llm_client.calls) == 1
+    user_message = llm_client.calls[0][1].content
+    assert "max_items_per_call" in user_message
+    assert "retry_on_reject_required" in user_message
+    assert "allowed_downstream" in user_message
+
+
 async def test_run_critic_defensive_parse() -> None:
     report = EvaluationPlanReport(target_system_id="t", agents=[])
     llm_client = FakeLLMClient(LLMResponse(content="{garbled", model="fake"))
