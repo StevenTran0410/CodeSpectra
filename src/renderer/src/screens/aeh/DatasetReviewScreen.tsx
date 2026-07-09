@@ -1,14 +1,35 @@
 import React, { useEffect, useState, useCallback } from 'react'
-import { useSearchParams } from 'react-router-dom'
-import { Loader2, Sparkles } from 'lucide-react'
+import { useSearchParams, useNavigate } from 'react-router-dom'
+import { Loader2, Sparkles, ArrowLeft, Settings } from 'lucide-react'
 import { Button, Badge, useToastStore } from '../../components/ui'
+import { useProviderStore } from '../../store/provider.store'
+import LLMConfigModal from './LLMConfigModal'
 
 type EditStrings = { input: string; expected: string; labels: string }
 
 export default function DatasetReviewScreen(): React.ReactElement {
+  const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const sessionId = searchParams.get('sessionId')
+  const repoId = searchParams.get('repoId')
+  const snapshotId = searchParams.get('snapshotId')
   const toast = useToastStore()
+
+  const { providers, load: loadProviders } = useProviderStore()
+  const [selectedProviderId, setSelectedProviderId] = useState('')
+  const [selectedModelId, setSelectedModelId] = useState('')
+  const [llmConfigOpen, setLlmConfigOpen] = useState(false)
+
+  useEffect(() => {
+    loadProviders()
+  }, [loadProviders])
+
+  useEffect(() => {
+    if (providers.length > 0 && !selectedProviderId) {
+      setSelectedProviderId(providers[0].id)
+      setSelectedModelId(providers[0].model_id || '')
+    }
+  }, [providers, selectedProviderId])
 
   const [datasets, setDatasets] = useState<AEHDatasetSummary[]>([])
   const [loadingDatasets, setLoadingDatasets] = useState(false)
@@ -127,9 +148,16 @@ export default function DatasetReviewScreen(): React.ReactElement {
       toast.error('No session in context — open this screen from a Stage 3 plan.')
       return
     }
+    if (!selectedProviderId) {
+      toast.error('No LLM provider configured — set one via the gear icon first.')
+      return
+    }
     setFulfilling(true)
     try {
-      const report = await window.api.aeh.fulfillDatasets(sessionId, {})
+      const report = await window.api.aeh.fulfillDatasets(sessionId, {
+        provider_id: selectedProviderId,
+        model_id: selectedModelId || null
+      })
       setFulfillmentReport(report)
       await loadDatasets()
       toast.success('Fulfillment run complete.')
@@ -145,23 +173,55 @@ export default function DatasetReviewScreen(): React.ReactElement {
   return (
     <div className="flex flex-col h-full bg-[#090d16] text-slate-100">
       <div className="screen-header shrink-0 flex items-center justify-between">
-        <div>
-          <h1 className="screen-title">Dataset Review</h1>
-          <p className="screen-subtitle">
-            Auto-generated dataset cases — review before they can be referenced by a plan
-          </p>
+        <div className="flex items-center gap-3 min-w-0">
+          <Button
+            variant="ghost"
+            className="w-8 h-8 p-0 rounded-full flex items-center justify-center border border-slate-800 bg-slate-900/40 text-slate-400 hover:text-slate-200 shrink-0"
+            onClick={() => navigate(`/aeh/analysis/stage3?repoId=${repoId ?? ''}&snapshotId=${snapshotId ?? ''}`)}
+            title="Back to Stage 3"
+          >
+            <ArrowLeft size={16} />
+          </Button>
+          <div>
+            <h1 className="screen-title">Dataset Review</h1>
+            <p className="screen-subtitle">
+              Auto-generated dataset cases — review before they can be referenced by a plan
+            </p>
+          </div>
         </div>
-        <Button
-          variant="primary"
-          onClick={handleFulfill}
-          loading={fulfilling}
-          disabled={!sessionId}
-          className="text-xs h-9 px-3 flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white"
-        >
-          <Sparkles size={13} />
-          <span>Fulfill Datasets</span>
-        </Button>
+        <div className="flex items-center gap-3 shrink-0">
+          <Button
+            variant="primary"
+            onClick={handleFulfill}
+            loading={fulfilling}
+            disabled={!sessionId}
+            className="text-xs h-9 px-3 flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white"
+          >
+            <Sparkles size={13} />
+            <span>Fulfill Datasets</span>
+          </Button>
+          <Button
+            variant="ghost"
+            onClick={() => setLlmConfigOpen(true)}
+            className="w-9 h-9 p-0 flex items-center justify-center border border-slate-800 bg-slate-900/40 hover:bg-slate-900 text-slate-300"
+            title="Configure fulfillment LLM"
+          >
+            <Settings size={15} />
+          </Button>
+        </div>
       </div>
+
+      <LLMConfigModal
+        isOpen={llmConfigOpen}
+        onClose={() => setLlmConfigOpen(false)}
+        providerId={selectedProviderId}
+        modelId={selectedModelId}
+        onChange={(prov, model) => {
+          setSelectedProviderId(prov)
+          setSelectedModelId(model)
+        }}
+        title="Fulfillment LLM Model"
+      />
 
       {fulfillmentReport && (
         <div className="mx-5 mt-3 p-3 border border-slate-800 rounded-lg bg-slate-950/40 text-[11px] space-y-1 max-h-32 overflow-y-auto">

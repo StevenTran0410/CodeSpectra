@@ -11,6 +11,7 @@ import {
   Trash2,
   Layers,
   Workflow,
+  Database,
 } from 'lucide-react'
 import { Button, Select, Badge, useToastStore } from '../../components/ui'
 import { useProviderStore } from '../../store/provider.store'
@@ -422,6 +423,23 @@ export default function Stage3Screen(): React.ReactElement {
                 </option>
               ))}
             </Select>
+          )}
+
+          {!viewingAgent && (
+            <Button
+              variant="ghost"
+              onClick={() =>
+                navigate(
+                  `/aeh/analysis/datasets?repoId=${repoId}&snapshotId=${snapshotId}&sessionId=${expansionSession?.id ?? ''}`
+                )
+              }
+              disabled={!expansionSession}
+              className="text-xs h-9 px-3 flex items-center gap-1.5 border border-slate-800 bg-slate-900/40 hover:bg-slate-900 text-slate-300 disabled:opacity-40"
+              title="Review and fulfill datasets referenced by this plan"
+            >
+              <Database size={13} />
+              <span>Datasets</span>
+            </Button>
           )}
 
           <Button
