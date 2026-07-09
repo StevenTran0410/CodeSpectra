@@ -66,7 +66,10 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     gen_parser.add_argument(
         "--kind",
         required=True,
-        choices=["guard_classification", "qa_testset", "decomposition_gold", "sufficiency_labeled"],
+        choices=[
+            "guard_classification", "qa_testset", "decomposition_gold", "sufficiency_labeled",
+            "snapshot_fixture", "field_match_gold",
+        ],
     )
     gen_parser.add_argument(
         "--config", required=True, help="Path to generator configuration YAML file"
@@ -74,10 +77,6 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     gen_parser.add_argument("--seed", type=int, default=None, help="Random seed for generation")
     _add_provider_args(gen_parser)
     _add_data_dir_arg(gen_parser)
-
-    rev_parser = dataset_subparsers.add_parser("review", help="Review synthetic cases in a dataset")
-    rev_parser.add_argument("dataset_id", help="Dataset ID to review")
-    _add_data_dir_arg(rev_parser)
 
     ls_parser = dataset_subparsers.add_parser("ls", help="List all datasets and their summaries")
     _add_data_dir_arg(ls_parser)
@@ -256,11 +255,6 @@ async def _dataset_command(args: argparse.Namespace) -> int:
 
             print(f"[aeh] Generated {len(cases)} cases for dataset {dataset_id}")
             print(f"[aeh] JSONL written to {output_path}")
-            return 0
-
-        elif args.dataset_command == "review":
-            from agent_eval_harness.datasets.review import run_review_loop
-            await run_review_loop(args.dataset_id)
             return 0
 
         elif args.dataset_command == "ls":

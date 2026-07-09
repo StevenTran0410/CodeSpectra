@@ -22,15 +22,14 @@ from agent_eval_harness.store import repository
 
 logger = logging.getLogger("agent_eval_harness.planning.validation")
 
-# Stable reason-code strings — CS-282 wires dataset_unreviewed; §6b wires bind_unresolvable.
 _REASON_NO_QUERIES = "no_queries"
 _REASON_DATASET_UNFULFILLED = "dataset_unfulfilled"
-_REASON_DATASET_UNREVIEWED = "dataset_unreviewed"  # reserved for CS-282
+_REASON_DATASET_UNREVIEWED = "dataset_unreviewed"
 _REASON_MISSING_PARAMS = "missing_params"
 _REASON_NOT_DISPATCHABLE = "metric_not_dispatchable"
 _REASON_CLASSIFIER_UNBOUND = "classifier_unbound"
 _REASON_INVALID_DATASET_KIND = "invalid_dataset_kind"
-_REASON_BIND_UNRESOLVABLE = "bind_unresolvable"  # reserved for §6b / post CS-284
+_REASON_BIND_UNRESOLVABLE = "bind_unresolvable"  # not wired yet
 
 # Prefix, not "<TODO>" — the real placeholder is "<TODO: add a representative query
 # for this target>" (planner.py:304,385), which never contains a literal "<TODO>".
@@ -68,9 +67,11 @@ async def validate_plan(plan_path: str | Path) -> PlanValidationReport:
     try:
         db_datasets = await repository.list_dataset_ids()
         existing_ds_ids = {ds["dataset_id"] for ds in db_datasets}
+        review_complete_by_id = {ds["dataset_id"]: ds["review_complete"] for ds in db_datasets}
     except Exception as e:
         logger.warning("Could not fetch dataset IDs from DB: %s", e)
         existing_ds_ids = set()
+        review_complete_by_id = {}
 
     for entry in suite.entries:
         blocked_reasons: list[str] = []
@@ -159,6 +160,9 @@ async def validate_plan(plan_path: str | Path) -> PlanValidationReport:
                     "does not exist in the database. "
                     "Must create the dataset or waive/mark as required."
                 )
+                blocked_reasons.append(_REASON_DATASET_UNFULFILLED)
+            elif ref and not review_complete_by_id.get(ref, True):
+                blocked_reasons.append(_REASON_DATASET_UNREVIEWED)
         elif entry.metric_class == "classifier":
             errors.append(
                 f"Entry '{entry.id}': classifier metrics require a dataset reference."

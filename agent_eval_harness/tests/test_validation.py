@@ -203,6 +203,37 @@ async def test_validation_real_todo_placeholder_blocks_no_queries(tmp_path) -> N
     assert "no_queries" in report.readiness["architecture.allowed_downstream"].reasons
 
 
+async def test_validation_dataset_unreviewed_blocks_ref(tmp_path) -> None:
+    """A ref pointing at a real dataset that still has synthetic cases left is
+    blocked(dataset_unreviewed) — CS-282 §5 wires this reason into the readiness lint."""
+    from agent_eval_harness.datasets.types import DatasetCase
+    from agent_eval_harness.store import repository
+
+    await repository.insert_dataset_cases_bulk("qa_unreviewed_v1", [
+        DatasetCase(id="c1", dataset="qa_unreviewed_v1", kind="qa_testset",
+                    input={"query": "q"}, expected=None, labels=None, provenance="synthetic"),
+    ])
+    await repository.insert_dataset_metadata("qa_unreviewed_v1", "qa_testset", min_cases=1)
+
+    plan_content = textwrap.dedent("""
+        entries:
+          - id: writer.faithfulness
+            component: writer
+            metric: ragas.faithfulness
+            metric_class: llm_judge
+            dataset:
+              ref: qa_unreviewed_v1
+            rationale: "valid"
+            provenance: rule
+    """)
+    plan_path = tmp_path / "unreviewed.yaml"
+    plan_path.write_text(plan_content, encoding="utf-8")
+
+    report = await validate_plan(plan_path)
+    assert report.readiness["writer.faithfulness"].status == "blocked"
+    assert "dataset_unreviewed" in report.readiness["writer.faithfulness"].reasons
+
+
 async def test_validation_invalid_dataset_kind(tmp_path) -> None:
     """Invented dataset kinds are flagged as invalid_dataset_kind."""
     plan_content = textwrap.dedent("""

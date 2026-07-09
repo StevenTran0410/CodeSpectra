@@ -311,6 +311,52 @@ async def get_dataset_cases(dataset_id: str):
     return cases
 
 
+@app.get("/api/datasets")
+async def list_datasets_route():
+    return await repository.list_dataset_ids()
+
+
+class CaseVerdictRequest(BaseModel):
+    verdict: str  # accept | edit | reject
+    input_json: dict | None = None
+    expected_json: dict | None = None
+    labels_json: dict | None = None
+
+
+@app.post("/api/datasets/cases/{case_id}/verdict")
+async def case_verdict_route(case_id: str, body: CaseVerdictRequest):
+    case = await repository.get_dataset_case_by_id(case_id)
+    if case is None:
+        raise HTTPException(status_code=404, detail="Case not found.")
+
+    if body.verdict == "reject":
+        await repository.delete_dataset_case(case_id)
+        remaining = await repository.get_dataset_cases(case["dataset_id"])
+        metadata = await repository.get_dataset_metadata(case["dataset_id"])
+        min_cases = metadata["min_cases"] if metadata else 1
+        return {"success": True, "remaining": len(remaining), "shortfall": max(0, min_cases - len(remaining))}
+
+    if body.verdict in ("accept", "edit"):
+        metadata = await repository.get_dataset_metadata(case["dataset_id"])
+        if metadata and metadata["kind"] == "snapshot_regression_baseline":
+            labels = json.loads(case["labels_json"]) if case["labels_json"] else {}
+            if not (labels.get("schema_valid_passed") and labels.get("fallback_sentinel_passed")):
+                raise HTTPException(
+                    status_code=400,
+                    detail="schema_valid and fallback_sentinel must both pass before approving a baseline case.",
+                )
+        await repository.update_case_provenance(
+            case_id,
+            "generated+reviewed",
+            expected_json=json.dumps(body.expected_json) if body.expected_json is not None else None,
+            input_json=json.dumps(body.input_json) if body.input_json is not None else None,
+            labels_json=json.dumps(body.labels_json) if body.labels_json is not None else None,
+        )
+        return {"success": True}
+
+    raise HTTPException(status_code=400, detail=f"Unknown verdict: {body.verdict}")
+
+
 class ProviderSummary(BaseModel):
     provider_id: str
     display_name: str
@@ -1022,6 +1068,56 @@ async def get_plan_route(session_id: str):
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to load plan: {e}")
+
+
+class FulfillDatasetsRequest(BaseModel):
+    provider_id: str | None = None
+    model_id: str | None = None
+    backend_url: str | None = None
+    backend_token: str | None = None
+    instructions: dict[str, dict] | None = None
+
+
+@app.post("/api/discovery/expansion-sessions/{session_id}/datasets/fulfill")
+async def fulfill_datasets_route(session_id: str, body: FulfillDatasetsRequest):
+    sess = await _get_expansion_session_or_404(session_id)
+    if not sess.get("plan_path") or not Path(sess["plan_path"]).exists():
+        raise HTTPException(status_code=400, detail="No plan for this session — generate a plan first.")
+
+    config = AEHConfig.load()
+    provider_id = body.provider_id or config.provider_id
+    backend_url = body.backend_url or config.backend_url
+    backend_token = body.backend_token or config.backend_token
+    if not backend_url or not backend_token:
+        raise HTTPException(status_code=400, detail="Missing backend connection config.")
+    if not provider_id:
+        raise HTTPException(status_code=400, detail="No LLM provider configured.")
+    model_id = body.model_id or config.model_id
+
+    llm_client = CodeSpectraProxyClient(backend_url, backend_token, provider_id, model_id)
+    client = CodeSpectraClient(backend_url, backend_token)
+    try:
+        from agent_eval_harness.datasets.fulfillment import fulfill_plan
+
+        snapshot = await client.get_snapshot(sess["snapshot_id"])
+        local_path_str = snapshot.get("local_path")
+        if not local_path_str:
+            raise HTTPException(status_code=400, detail="Snapshot is missing local_path context.")
+
+        report = await fulfill_plan(
+            sess["plan_path"], sess["map_path"], sess["snapshot_id"], local_path_str,
+            provider_id, model_id, llm_client, instructions=body.instructions,
+        )
+        return report
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"fulfill_datasets failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        await client.aclose()
+        if hasattr(llm_client, "aclose"):
+            await llm_client.aclose()
 
 
 @app.put("/api/discovery/expansion-sessions/{session_id}/plan")

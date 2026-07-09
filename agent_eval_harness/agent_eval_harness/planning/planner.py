@@ -98,21 +98,10 @@ async def _resolve_dataset_ref(
     if not dataset_kind:
         return None
 
-    # Step 1: Query DB to find matching datasets of this kind
-    candidates = []
-    for ds in db_datasets:
-        dataset_id = ds["dataset_id"]
-        # Fetch cases to check the kind
-        cases = await repository.get_dataset_cases(dataset_id)
-        if not cases:
-            continue
-        try:
-            first_case_input = json.loads(cases[0].get("input_json") or "{}")
-            case_kind = first_case_input.get("kind")
-            if case_kind == dataset_kind:
-                candidates.append(dataset_id)
-        except Exception:
-            continue
+    # CS-282 §2: `db_datasets` (repository.list_dataset_ids()) is now left-joined against
+    # the `datasets` metadata table and carries `kind` directly — no more fetching every
+    # case of every dataset just to sniff `input_json["kind"]`.
+    candidates = [ds["dataset_id"] for ds in db_datasets if ds.get("kind") == dataset_kind]
 
     if not candidates:
         min_cases = 40 if dataset_kind == "guard_classification" else 20

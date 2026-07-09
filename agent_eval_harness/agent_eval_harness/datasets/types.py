@@ -2,9 +2,11 @@ from typing import Any, Literal
 
 from pydantic import BaseModel
 
+from agent_eval_harness.metrics.registry import DATASET_KINDS
+
 Provenance = Literal["synthetic", "handwritten", "generated+reviewed"]
 
-DATASET_KINDS = ("guard_classification", "qa_testset", "decomposition_gold", "sufficiency_labeled")
+__all__ = ["DATASET_KINDS", "DatasetCase", "Provenance"]
 
 class DatasetCase(BaseModel):
     id: str

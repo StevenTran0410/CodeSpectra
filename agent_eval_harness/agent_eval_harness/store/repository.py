@@ -203,38 +203,99 @@ async def get_dataset_cases(dataset_id: str) -> list[dict]:
     return [dict(row) for row in rows]
 
 
+async def get_dataset_case_by_id(case_id: str) -> dict | None:
+    db = get_db()
+    async with db.execute(
+        "SELECT * FROM dataset_cases WHERE id = ?", (case_id,)
+    ) as cur:
+        row = await cur.fetchone()
+    return dict(row) if row else None
+
+
 async def list_dataset_ids() -> list[dict]:
+    """Per-dataset case counts, left-joined with the CS-282 `datasets` metadata table.
+    A dataset with no metadata row (pre-CS-282 legacy data) gets kind=None, min_cases=1
+    — review_complete then just depends on synthetic_count, same as before."""
     db = get_db()
     async with db.execute(
         """
         SELECT
-            dataset_id,
+            c.dataset_id,
             COUNT(*) as total_count,
-            SUM(CASE WHEN provenance = 'synthetic' THEN 1 ELSE 0 END) as synthetic_count,
-            SUM(CASE WHEN provenance = 'handwritten' THEN 1 ELSE 0 END) as handwritten_count,
-            SUM(CASE WHEN provenance = 'generated+reviewed' THEN 1 ELSE 0 END) as reviewed_count
-        FROM dataset_cases
-        GROUP BY dataset_id
+            SUM(CASE WHEN c.provenance = 'synthetic' THEN 1 ELSE 0 END) as synthetic_count,
+            SUM(CASE WHEN c.provenance = 'handwritten' THEN 1 ELSE 0 END) as handwritten_count,
+            SUM(CASE WHEN c.provenance = 'generated+reviewed' THEN 1 ELSE 0 END) as reviewed_count,
+            d.kind as kind,
+            COALESCE(d.min_cases, 1) as min_cases
+        FROM dataset_cases c
+        LEFT JOIN datasets d ON d.dataset_id = c.dataset_id
+        GROUP BY c.dataset_id
         """
     ) as cur:
         rows = await cur.fetchall()
-    return [dict(row) for row in rows]
+    results = [dict(row) for row in rows]
+    for r in results:
+        r["review_complete"] = r["synthetic_count"] == 0 and r["total_count"] >= r["min_cases"]
+    return results
+
+
+async def insert_dataset_metadata(
+    dataset_id: str,
+    kind: str,
+    *,
+    instructions: dict | None = None,
+    source_gate_ids: list[str] | None = None,
+    min_cases: int = 1,
+) -> None:
+    db = get_db()
+    await db.execute(
+        "INSERT OR REPLACE INTO datasets "
+        "(dataset_id, kind, instructions_json, source_gate_ids_json, min_cases, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (
+            dataset_id,
+            kind,
+            json.dumps(instructions or {}),
+            json.dumps(source_gate_ids or []),
+            min_cases,
+            utc_now_iso(),
+        ),
+    )
+    await db.commit()
+
+
+async def get_dataset_metadata(dataset_id: str) -> dict | None:
+    db = get_db()
+    async with db.execute(
+        "SELECT * FROM datasets WHERE dataset_id = ?", (dataset_id,)
+    ) as cur:
+        row = await cur.fetchone()
+    return dict(row) if row else None
 
 
 async def update_case_provenance(
-    case_id: str, provenance: str, expected_json: str | None = None
+    case_id: str,
+    provenance: str,
+    *,
+    expected_json: str | None = None,
+    input_json: str | None = None,
+    labels_json: str | None = None,
 ) -> None:
+    """Flip a case's provenance, optionally editing any of its three JSON fields
+    (CS-282 §5 — review UI edit action; originally only expected_json was editable)."""
+    fields = ["provenance = ?"]
+    values: list[str] = [provenance]
+    for col, val in (("expected_json", expected_json), ("input_json", input_json), ("labels_json", labels_json)):
+        if val is not None:
+            fields.append(f"{col} = ?")
+            values.append(val)
+    values.append(case_id)
+
     db = get_db()
-    if expected_json is not None:
-        await db.execute(
-            "UPDATE dataset_cases SET provenance = ?, expected_json = ? WHERE id = ?",
-            (provenance, expected_json, case_id),
-        )
-    else:
-        await db.execute(
-            "UPDATE dataset_cases SET provenance = ? WHERE id = ?",
-            (provenance, case_id),
-        )
+    await db.execute(
+        f"UPDATE dataset_cases SET {', '.join(fields)} WHERE id = ?",
+        values,
+    )
     await db.commit()
 
 

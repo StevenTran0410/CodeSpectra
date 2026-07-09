@@ -4,6 +4,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from agent_eval_harness.datasets.generator_utils import (
+    apply_painpoint,
     parse_json_with_fallback,
     strip_markdown_code_block,
 )
@@ -18,6 +19,7 @@ class DecompositionGoldConfig(BaseModel):
     system_map_path: str
     component_id: str = "planner"
     count: int = 15  # Total count. Will be divided among clean, rambling, over_limit.
+    painpoint: str | None = None  
 
 async def generate(
     config: dict, llm_client: LLMClient | None, seed: int | None = None
@@ -103,6 +105,7 @@ async def generate(
     ]
 
     for category, prompt in prompts:
+        prompt = apply_painpoint(prompt, parsed_config.painpoint)
         resp = await llm_client.complete(
             [LLMMessage(role="user", content=prompt)],
             max_tokens=2048,
@@ -133,7 +136,10 @@ async def generate(
             # Ensure intents are strings
             intents = [str(it) for it in intents]
 
-            expected: dict[str, Any] = {"intents": intents}
+            # "expected_response" is CS-286's GroundTruth reserved key for the gold
+            # decomposition (direction §6 — dataset synthesis emits the ground-truth
+            # sidecar CS-286's deterministic gates read as primary).
+            expected: dict[str, Any] = {"intents": intents, "expected_response": intents}
             
             # If over-limit, compute call split math using plain Python
             if len(intents) > limit:

@@ -6,6 +6,39 @@ from agent_eval_harness.datasets.types import DatasetCase
 from agent_eval_harness.store.repository import new_id
 
 
+def apply_painpoint(prompt: str, painpoint: str | None) -> str:
+    """CS-282 §3 — append a targeted-adversarial section steering generation toward a
+    user-reported real-world painpoint. No painpoint -> byte-identical prompt (the
+    default-generation path must never change when nobody supplies one)."""
+    if not painpoint:
+        return prompt
+    return (
+        f"{prompt}\n\n"
+        f"IMPORTANT — also specifically generate cases probing this real-world "
+        f"painpoint a user reported: {painpoint}\n"
+        "At least one generated case must exercise this painpoint directly."
+    )
+
+
+def seed_cases_to_dataset_cases(
+    dataset_name: str, kind: str, seed_cases: list[dict]
+) -> list[DatasetCase]:
+    """CS-282 §3 — user-supplied concrete examples land verbatim as `handwritten`
+    (skip review — a human already wrote them by hand)."""
+    return [
+        DatasetCase(
+            id=new_id(),
+            dataset=dataset_name,
+            kind=kind,
+            input=sc.get("input", {}),
+            expected=sc.get("expected"),
+            labels=sc.get("labels"),
+            provenance="handwritten",
+        )
+        for sc in seed_cases
+    ]
+
+
 def strip_markdown_code_block(content: str) -> str:
     """Strip markdown code block markers (```json, ```, etc) from content."""
     if content.startswith("```"):
@@ -45,7 +78,10 @@ def build_qa_testset_case(
         dataset=dataset_name,
         kind="qa_testset",
         input={"query": query},
-        expected={"answer": answer},
+        # "answer" kept for existing consumers; "expected_response" is CS-286's
+        # GroundTruth reserved key (direction §6 — dataset synthesis emits the
+        # ground-truth sidecar CS-286's deterministic gates read as primary).
+        expected={"answer": answer, "expected_response": answer},
         labels={"contexts": contexts},
         provenance="synthetic"
     )

@@ -161,6 +161,10 @@ DATASET_KINDS: frozenset[str] = frozenset(
         "field_match_gold",
         "retrieval_grounded",
         "multi_turn_session",
+        # CS-282 — repo-input snapshot kinds, added to the registry that already shipped
+        # the 3 kinds above; not a rename of anything, these didn't exist before.
+        "snapshot_fixture",
+        "snapshot_regression_baseline",
     }
 )
 

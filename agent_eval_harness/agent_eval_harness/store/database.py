@@ -261,6 +261,23 @@ _MIGRATIONS: list[dict[str, Any]] = [
             ALTER TABLE evaluations ADD COLUMN agent_id TEXT;
         """,
     },
+    {
+        "version": 16,
+        "description": "Add datasets metadata table (CS-282 §2) — kills the kind-sniffing "
+        "hack (_resolve_dataset_ref reading input_json['kind'] off every case of every "
+        "dataset); dataset_cases has no FK to it (pre-existing rows have no metadata row, "
+        "left as-is — repository functions treat a missing metadata row as legacy/unknown-kind)",
+        "sql": """
+            CREATE TABLE IF NOT EXISTS datasets (
+                dataset_id           TEXT PRIMARY KEY,
+                kind                 TEXT NOT NULL,
+                instructions_json    TEXT NOT NULL DEFAULT '{}',
+                source_gate_ids_json TEXT NOT NULL DEFAULT '[]',
+                min_cases            INTEGER NOT NULL DEFAULT 1,
+                created_at           TEXT NOT NULL
+            );
+        """,
+    },
 ]
 
 TARGET_VERSION = len(_MIGRATIONS) - 1

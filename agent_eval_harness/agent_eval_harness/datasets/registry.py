@@ -19,5 +19,14 @@ def get_generator(kind: str) -> GeneratorFn:
     elif kind == "sufficiency_labeled":
         from agent_eval_harness.datasets.generators.sufficiency_labeled import generate
         return generate
+    elif kind == "snapshot_fixture":
+        from agent_eval_harness.datasets.generators.snapshot_fixture import generate
+        return generate
+    elif kind == "snapshot_regression_baseline":
+        from agent_eval_harness.datasets.generators.snapshot_regression_baseline import generate
+        return generate
+    elif kind == "field_match_gold":
+        from agent_eval_harness.datasets.generators.field_match_gold import generate
+        return generate
     else:
         raise ValueError(f"Unknown dataset kind: {kind}")

@@ -301,3 +301,86 @@ def test_no_unnecessary_calls_fail_unused_result() -> None:
     result = no_unnecessary_calls(spans, "worker", {})
     assert result.passed is False
     assert any(f["span_id"] == "tool1" for f in result.details["flagged_tool_calls"])
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# schema_valid
+# ────────────────────────────────────────────────────────────────────────────
+
+def test_schema_valid_pass() -> None:
+    from agent_eval_harness.metrics.assertions.schema_valid import schema_valid
+
+    schema = {"type": "object", "properties": {"repo_name": {"type": "string"}}, "required": ["repo_name"]}
+    spans = [
+        _span(span_id="s1", component_id="project_identity", span_type="agent",
+              output_json=json.dumps({"repo_name": "foo"})),
+    ]
+    result = schema_valid(spans, "project_identity", {"schema": schema})
+    assert result.passed is True
+
+
+def test_schema_valid_fail() -> None:
+    from agent_eval_harness.metrics.assertions.schema_valid import schema_valid
+
+    schema = {"type": "object", "properties": {"repo_name": {"type": "string"}}, "required": ["repo_name"]}
+    spans = [
+        _span(span_id="s1", component_id="project_identity", span_type="agent",
+              output_json=json.dumps({"wrong": 1})),
+    ]
+    result = schema_valid(spans, "project_identity", {"schema": schema})
+    assert result.passed is False
+
+
+def test_schema_valid_ignores_tool_call_spans() -> None:
+    from agent_eval_harness.metrics.assertions.schema_valid import schema_valid
+
+    spans = [
+        _span(span_id="s1", component_id="project_identity", span_type="tool_call",
+              output_json=json.dumps({"whatever": 1})),
+    ]
+    result = schema_valid(spans, "project_identity", {"schema": {"required": ["repo_name"]}})
+    assert result.passed is False  # no agent/llm_call span found to check -> nothing checked
+    assert result.details["checked_spans"] == 0
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# fallback_sentinel
+# ────────────────────────────────────────────────────────────────────────────
+
+def test_fallback_sentinel_pass_real_output() -> None:
+    from agent_eval_harness.metrics.assertions.fallback_sentinel import fallback_sentinel
+
+    fallback = {"domain": "unknown", "confidence": "low"}
+    spans = [
+        _span(span_id="s1", component_id="project_identity", span_type="agent",
+              output_json=json.dumps({"domain": "billing", "confidence": "high"})),
+    ]
+    result = fallback_sentinel(spans, "project_identity", {"fallback": fallback})
+    assert result.passed is True
+
+
+def test_fallback_sentinel_fail_matches_fallback_literal() -> None:
+    from agent_eval_harness.metrics.assertions.fallback_sentinel import fallback_sentinel
+
+    fallback = {"domain": "unknown", "confidence": "low"}
+    spans = [
+        _span(span_id="s1", component_id="project_identity", span_type="agent",
+              output_json=json.dumps({"domain": "unknown", "confidence": "low", "repo_name": "x"})),
+    ]
+    result = fallback_sentinel(spans, "project_identity", {"fallback": fallback})
+    assert result.passed is False
+    assert any(h["span_id"] == "s1" for h in result.details["fallback_hits"])
+
+
+def test_fallback_sentinel_dynamic_marker_ignored_in_comparison() -> None:
+    """A field marked '<dynamic>' in the harvested fallback varies per-call — presence
+    alone shouldn't cause a false pass just because the field differs from a fixed value."""
+    from agent_eval_harness.metrics.assertions.fallback_sentinel import fallback_sentinel
+
+    fallback = {"repo_name": "<dynamic>", "confidence": "low"}
+    spans = [
+        _span(span_id="s1", component_id="project_identity", span_type="agent",
+              output_json=json.dumps({"repo_name": "snap-123", "confidence": "low"})),
+    ]
+    result = fallback_sentinel(spans, "project_identity", {"fallback": fallback})
+    assert result.passed is False  # confidence="low" still matches -> this IS a fallback hit

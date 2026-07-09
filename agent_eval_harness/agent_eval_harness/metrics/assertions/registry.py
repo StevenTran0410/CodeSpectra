@@ -28,10 +28,12 @@ def _import_all() -> None:
     from agent_eval_harness.metrics.assertions import (  # noqa: F401
         allowed_downstream,
         arg_schema,
+        fallback_sentinel,
         max_items_per_call,
         max_retries,
         no_unnecessary_calls,
         retry_on_reject_required,
+        schema_valid,
     )
 
 
