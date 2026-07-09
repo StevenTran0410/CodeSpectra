@@ -1,1 +1,1 @@
-"""Assertion engine package (CS-263 §4)."""
+"""Assertion engine package."""

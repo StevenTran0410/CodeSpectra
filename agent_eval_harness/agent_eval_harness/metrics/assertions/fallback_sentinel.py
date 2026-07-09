@@ -1,6 +1,6 @@
-"""Assertion: fallback_sentinel — output is not the contract's fallback literal
-(CS-281 §2). A fallback dict passes schema_valid by construction (it's built to match
-the same schema) so this is the only deterministic way to catch a silently-degraded run."""
+"""Assertion: fallback_sentinel — output is not the contract's fallback literal. A fallback
+dict passes schema_valid by construction (it's built to match the same schema), so this is
+the only deterministic way to catch a silently-degraded run."""
 from __future__ import annotations
 
 import json

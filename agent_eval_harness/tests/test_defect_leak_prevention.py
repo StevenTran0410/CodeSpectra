@@ -1,4 +1,4 @@
-"""Test that active defects do not leak into insert_run for non-test-target runs (CS-266)."""
+"""Test that active defects do not leak into insert_run for non-test-target runs."""
 from __future__ import annotations
 
 import json
@@ -20,7 +20,6 @@ async def _setup_db(tmp_path, monkeypatch):
 
 
 async def test_insert_run_defect_leak_prevention(monkeypatch) -> None:
-    # Set a defect environment variable
     monkeypatch.setenv("AEH_DEFECT_GUARD_LEAK", "1")
 
     # 1. Insert a run targeting a generic system, passing no active_defects.

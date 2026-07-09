@@ -65,7 +65,8 @@ def _patched_current_span(mock_span):
 
 @pytest.mark.asyncio
 async def test_routing_llm_client_haystack_automatic_component_span() -> None:
-    """Haystack's OWN automatic per-component spans (base.py's"""
+    """Haystack's own automatic per-component span tag (haystack.component.name) must be
+    picked up for routing, not just the manual span tag."""
     default_client = FakeLLMClient(LLMResponse(content="default", model="default-model"))
     override_client = FakeLLMClient(LLMResponse(content="override", model="override-model"))
     routing_client = RoutingLLMClient(default=default_client, overrides={"writer": override_client})
@@ -79,7 +80,8 @@ async def test_routing_llm_client_haystack_automatic_component_span() -> None:
 
 @pytest.mark.asyncio
 async def test_routing_llm_client_manual_span_tag() -> None:
-    """Every real T1/T2 test-target component wraps its LLM call in"""
+    """Every real T1/T2 test-target component wraps its LLM call in a manual span
+    carrying the component_name tag; routing must key off that tag too."""
     default_client = FakeLLMClient(LLMResponse(content="default", model="default-model"))
     override_client = FakeLLMClient(LLMResponse(content="override", model="override-model"))
     routing_client = RoutingLLMClient(default=default_client, overrides={"writer": override_client})
@@ -93,7 +95,8 @@ async def test_routing_llm_client_manual_span_tag() -> None:
 
 @pytest.mark.asyncio
 async def test_routing_llm_client_real_target_tier1_e2e(tmp_path, monkeypatch) -> None:
-    """End-to-end regression guard: run T1's REAL Haystack pipeline (not a mock"""
+    """End-to-end regression guard: run T1's real Haystack pipeline (not a mocked
+    component) to verify the writer's model override actually reaches its LLM call span."""
     import os
 
     from agent_eval_harness.metrics.sweep import run_sweep

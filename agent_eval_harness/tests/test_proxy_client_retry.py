@@ -1,4 +1,4 @@
-"""Tests for CodeSpectraProxyClient's rate-limit retry/backoff (CS-263 §8)."""
+"""Tests for CodeSpectraProxyClient's rate-limit retry/backoff."""
 from __future__ import annotations
 
 import httpx

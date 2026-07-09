@@ -1,4 +1,4 @@
-"""RAGAS metric judges (CS-263 §6.2)."""
+"""RAGAS metric judges."""
 from __future__ import annotations
 
 import json

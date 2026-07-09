@@ -1,4 +1,4 @@
-"""CS-287 — per-agent EvaluationContract models, harvested statically (AST) from the target."""
+"""Per-agent EvaluationContract models, harvested statically (AST) from the target."""
 from __future__ import annotations
 
 from typing import Any, Literal

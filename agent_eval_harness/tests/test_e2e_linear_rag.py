@@ -1,4 +1,4 @@
-"""Full stubbed end-to-end test for T1 linear_rag (CS-261 §7)."""
+"""Full stubbed end-to-end test for T1 linear_rag."""
 from __future__ import annotations
 
 from pathlib import Path

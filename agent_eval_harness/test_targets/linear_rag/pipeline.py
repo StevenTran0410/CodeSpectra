@@ -31,12 +31,8 @@ def build_pipeline(llm_client: LLMClient, defects: DefectConfig | None = None) -
     )
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Tier-2 boundary-wrapper demo entry points — plain async functions sharing the
-# SAME underlying component logic, so tier-1 vs tier-2 differ only in span
-# granularity, not content (CS-261 §7 acceptance: "Tier-2 demonstrated by
-# running T1 through it").
-# ──────────────────────────────────────────────────────────────────────────────
+# Tier-2 boundary-wrapper demo entry points — plain async functions sharing the same
+# underlying component logic, so tier-1 vs tier-2 differ only in span granularity.
 _default_llm_client: LLMClient | None = None
 
 

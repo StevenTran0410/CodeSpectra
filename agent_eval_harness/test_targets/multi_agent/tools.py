@@ -1,4 +1,4 @@
-"""T2 worker tools — one relevant, one decoy (CS-261 §6)."""
+"""T2 worker tools — one relevant, one decoy."""
 from __future__ import annotations
 
 

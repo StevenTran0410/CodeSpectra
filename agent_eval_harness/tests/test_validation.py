@@ -1,4 +1,4 @@
-"""Tests for Evaluation Plan Validation Engine (CS-281 updated)."""
+"""Tests for the evaluation plan validation engine."""
 from __future__ import annotations
 
 import textwrap
@@ -179,10 +179,8 @@ async def test_validation_no_queries_blocked(tmp_path) -> None:
 
 
 async def test_validation_real_todo_placeholder_blocks_no_queries(tmp_path) -> None:
-    """The literal placeholder planner.py actually emits ('<TODO: add a
-    representative query for this target>', planner.py:304,385) must be recognized
-    as a bad query — not just the bare '<TODO>' — or gates silently pass readiness
-    while still carrying an unusable placeholder."""
+    """A real generated query placeholder (not just the bare '<TODO>') must still be
+    recognized as a bad query, so it doesn't silently pass readiness."""
     plan_content = textwrap.dedent("""
         entries:
           - id: architecture.allowed_downstream
@@ -204,8 +202,8 @@ async def test_validation_real_todo_placeholder_blocks_no_queries(tmp_path) -> N
 
 
 async def test_validation_dataset_unreviewed_blocks_ref(tmp_path) -> None:
-    """A ref pointing at a real dataset that still has synthetic cases left is
-    blocked(dataset_unreviewed) — CS-282 §5 wires this reason into the readiness lint."""
+    """A ref pointing at a real dataset that still has only synthetic cases left is
+    blocked with dataset_unreviewed."""
     from agent_eval_harness.datasets.types import DatasetCase
     from agent_eval_harness.store import repository
 

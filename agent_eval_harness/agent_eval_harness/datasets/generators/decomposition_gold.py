@@ -136,9 +136,7 @@ async def generate(
             # Ensure intents are strings
             intents = [str(it) for it in intents]
 
-            # "expected_response" is CS-286's GroundTruth reserved key for the gold
-            # decomposition (direction §6 — dataset synthesis emits the ground-truth
-            # sidecar CS-286's deterministic gates read as primary).
+            # "expected_response" is the GroundTruth-reserved key; downstream deterministic gates read it as primary.
             expected: dict[str, Any] = {"intents": intents, "expected_response": intents}
             
             # If over-limit, compute call split math using plain Python

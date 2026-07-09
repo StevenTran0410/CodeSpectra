@@ -1,4 +1,4 @@
-"""Classifier scorer — sklearn-based evaluation over CS-262 labeled datasets (CS-263 §5)."""
+"""Classifier scorer — sklearn-based evaluation over labeled datasets."""
 from __future__ import annotations
 
 import json
@@ -19,7 +19,8 @@ async def score_classifier(
     component_id: str | None = None,
     metric_name: str = "classifier.accuracy",
 ) -> MetricResult:
-    """Run every case in ``dataset_id`` through the resolved component function,"""
+    """Run every case in ``dataset_id`` through the resolved component function, then score
+    predictions against gold labels via sklearn."""
     try:
         from sklearn.metrics import classification_report, confusion_matrix
     except ImportError as exc:

@@ -14,12 +14,9 @@ _T1_MAP = str(Path(__file__).parent.parent / "test_targets" / "linear_rag" / "sy
 
 @pytest.fixture(autouse=True)
 def _restore_shared_db_after_cli_closes_it():
-    """cli.main() runs its own init_db()/close_db() lifecycle (correct for a
-    real standalone process) — but that close_db() call tears down the SAME
-    module-level connection the session-scoped test fixture opened, breaking
-    every test that runs afterward. Reopen it once this test's process-lifecycle
-    simulation is done.
-    """
+    """cli.main() tears down the module-level DB connection via its own close_db()
+    lifecycle, breaking later tests; reopen it once this test's process-lifecycle
+    simulation is done."""
     yield
     asyncio.run(init_db())
 

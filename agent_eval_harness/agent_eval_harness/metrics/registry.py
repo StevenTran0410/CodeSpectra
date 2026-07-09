@@ -1,11 +1,8 @@
-"""CS-281 §2 — Unified metric registry: validate ⟺ dispatchable.
+"""Unified metric registry: validate <=> dispatchable.
 
-Single source of truth replacing three divergent copies in:
-- planning/validation.py (inline valid_judges set)
-- planning/agentic_planner.py (_validate_metric / _KNOWN_RAGAS_METRICS)
-- metrics/sweep.py (_dispatch_judge if/elif chain)
-
-A metric is only representable if it is registered here.
+Single source of truth replacing three divergent copies (planning/validation.py's inline
+valid_judges set, planning/agentic_planner.py's _validate_metric, and metrics/sweep.py's
+_dispatch_judge if/elif chain). A metric is only representable if registered here;
 ragas.context_precision is intentionally absent — it has no dispatch handler.
 """
 from __future__ import annotations
@@ -26,7 +23,7 @@ class MetricSpec:
     # ObservabilityContract boolean fields that make this metric meaningless when False/None.
     # Evaluated as: getattr(obs, slot) is False or getattr(obs, slot) is None  → meaningless.
     meaningless_when: list[str] = field(default_factory=list)
-    # Required slots from the CS-287 contract that must be non-None at plan time.
+    # Required slots from the contract that must be non-None at plan time.
     required_slots: list[str] = field(default_factory=list)
     # "free" = deterministic/no LLM call; "llm_per_case" = one LLM call per case.
     cost_class: Literal["free", "llm_per_case"] = "free"
@@ -76,7 +73,7 @@ METRIC_REGISTRY: dict[str, MetricSpec] = {
         description="Agent retries when a downstream component rejects its output.",
         cost_class="free",
     ),
-    # ── New deterministic metrics (CS-281 §2) ─────────────────────────────────
+    # ── Deterministic metrics ──────────────────────────────────────────────────
     "schema_valid": MetricSpec(
         metric_class="assertion",
         required_params=["schema"],
@@ -161,8 +158,8 @@ DATASET_KINDS: frozenset[str] = frozenset(
         "field_match_gold",
         "retrieval_grounded",
         "multi_turn_session",
-        # CS-282 — repo-input snapshot kinds, added to the registry that already shipped
-        # the 3 kinds above; not a rename of anything, these didn't exist before.
+        # Repo-input snapshot kinds — added to the registry that already shipped the 3
+        # kinds above; not a rename, these didn't exist before.
         "snapshot_fixture",
         "snapshot_regression_baseline",
     }

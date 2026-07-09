@@ -1,7 +1,7 @@
 """LLM system prompts for the map builder."""
 from __future__ import annotations
 
-# v1 — role taxonomy per CS-260 §3 (7 concrete roles + unknown)
+# Role taxonomy: 7 concrete roles + unknown
 ROLE_CLASSIFICATION_SYSTEM = """You classify a single source-code component into exactly \
 one role from this taxonomy. Return JSON only: {"role": "<role>", "confidence": <0.0-1.0>, \
 "reasoning": "<one sentence>"}.
@@ -19,7 +19,7 @@ Roles:
 If uncertain, prefer a lower confidence score and let the caller apply the threshold —
 never guess a specific role just to avoid "unknown"."""
 
-# v1 — constraint mining: extract machine-checkable limits from prompt-embedded text
+# Constraint mining: extract machine-checkable limits from prompt-embedded text
 CONSTRAINT_EXTRACTION_SYSTEM = """A source code component contains one or more string \
 literals that look like LLM prompts. Read them for machine-checkable numeric limits \
 (max items per call, retry caps, allowed route counts). Return JSON only: a list of \
@@ -27,7 +27,7 @@ objects {"name": "<snake_case_name>", "value": <number>, "quote": "<the exact su
 of the literal that states the limit>"}. If no such limit is stated, return an empty list \
 []. Never invent a limit that is not explicitly stated in the text."""
 
-# v1 — agent-flow separation: one holistic pass over the whole map, not per-component
+# Agent-flow separation: one holistic pass over the whole map, not per-component
 AGENT_FLOW_SYSTEM = """You are given every component of ONE agentic system: its id, a role \
 hint, file, entry point, upstream/downstream component-id edges, mined constraints, and a \
 source code snippet. Group these components into AGENTS.

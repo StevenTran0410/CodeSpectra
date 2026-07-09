@@ -1,4 +1,4 @@
-"""Unit tests for the FastAPI UI backend server endpoints (CS-266)."""
+"""Unit tests for the FastAPI UI backend server endpoints."""
 from __future__ import annotations
 
 import pytest
@@ -62,13 +62,11 @@ async def test_ui_api_endpoints() -> None:
         cost_tokens=100,
     )
 
-    # Complete run
     await repository.finish_run(run_id, "completed")
 
     # 2. Test API client
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-        # GET /api/runs
         res = await client.get("/api/runs")
         assert res.status_code == 200
         runs_list = res.json()
@@ -77,7 +75,6 @@ async def test_ui_api_endpoints() -> None:
         assert runs_list[0]["pass_rate"] == 1.0
         assert runs_list[0]["judge_cost"] == 100
 
-        # GET /api/runs/{run_id}
         res = await client.get(f"/api/runs/{run_id}")
         assert res.status_code == 200
         run_detail = res.json()
@@ -86,7 +83,6 @@ async def test_ui_api_endpoints() -> None:
         assert run_detail["component_aggregates"]["writer"]["total"] == 1
         assert run_detail["component_aggregates"]["writer"]["passed"] == 1
 
-        # GET /api/runs/{run_id}/components/{component_id}
         res = await client.get(f"/api/runs/{run_id}/components/writer")
         assert res.status_code == 200
         component_evals = res.json()
@@ -95,7 +91,6 @@ async def test_ui_api_endpoints() -> None:
         assert component_evals[0]["root_input"] == "hello query"
         assert component_evals[0]["passed"] is True
 
-        # GET /api/traces/{trace_id}
         res = await client.get(f"/api/traces/{trace_id}")
         assert res.status_code == 200
         trace_detail = res.json()

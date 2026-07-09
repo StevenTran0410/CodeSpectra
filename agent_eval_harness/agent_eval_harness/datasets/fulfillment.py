@@ -1,6 +1,5 @@
-"""CS-282 §2 — auto-fulfillment walk: turn a plan's unfulfilled `dataset.required`
-blocks into real, versioned datasets, one per (kind, agent-or-component) group, or an
-explicit failed/needs_human reason. Never silently skips a group."""
+"""Auto-fulfillment walk: turns a plan's unfulfilled `dataset.required` blocks into real
+datasets, one per (kind, agent-or-component) group, or an explicit failed/needs_human reason."""
 from __future__ import annotations
 
 import json
@@ -19,8 +18,7 @@ from agent_eval_harness.store import repository
 
 logger = logging.getLogger("agent_eval_harness.datasets.fulfillment")
 
-# Some kinds' cases are structurally 1:1 with an execution, not a text-sample pool —
-# min_cases scales differently for them (§2 table).
+# Some kinds are 1:1 with an execution, not a text-sample pool — min_cases scales differently.
 _MIN_CASES_OVERRIDE: dict[str, int] = {
     "snapshot_fixture": 1,
     "snapshot_regression_baseline": 1,
@@ -28,9 +26,7 @@ _MIN_CASES_OVERRIDE: dict[str, int] = {
 }
 _DEFAULT_MIN_CASES: dict[str, int] = {"guard_classification": 40}
 
-# sufficiency_labeled consumes a same-run qa_testset dataset's id; process producers
-# before consumers. snapshot_regression_baseline is listed for completeness but is
-# never actually generated yet (see below) — always marked needs_human.
+# Producers must run before consumers (sufficiency_labeled needs a same-run qa_testset id).
 _TOPO_ORDER = [
     "qa_testset", "decomposition_gold", "guard_classification",
     "snapshot_fixture", "field_match_gold",
@@ -66,8 +62,8 @@ def _effective_min_cases(kind: str, group_entries: list[SuiteEntry]) -> int:
 
 
 def _qa_corpus_paths(local_path: str) -> list[str]:
-    """corpus = **/*.md + **/*.txt under the snapshot, always excluding .aeh/** — a RAG
-    target must never be able to retrieve its own generated answer key (risk §9.4)."""
+    """corpus = **/*.md + **/*.txt under the snapshot, excluding .aeh/** — a RAG target
+    must never be able to retrieve its own generated answer key."""
     root = Path(local_path)
     paths: list[str] = []
     for pattern in ("**/*.md", "**/*.txt"):
@@ -157,9 +153,8 @@ async def fulfill_plan(
     llm_client: LLMClient,
     instructions: dict[str, dict] | None = None,
 ) -> dict[str, dict]:
-    """Auto-fulfillment walk (CS-282 §2). Returns {group_key: {status, dataset_id?, reason?}},
-    status one of "fulfilled" | "failed" | "needs_human" — every group gets exactly one,
-    zero silently skipped."""
+    """Auto-fulfillment walk. Returns {group_key: {status, dataset_id?, reason?}} — every
+    group gets exactly one of fulfilled/failed/needs_human, none silently skipped."""
     suite = load_suite(plan_path)
     groups = _collect_unfulfilled_groups(suite)
     instructions = instructions or {}
@@ -183,7 +178,7 @@ async def fulfill_plan(
                 "status": "needs_human",
                 "reason": (
                     "snapshot_regression_baseline requires a live target-execution seam "
-                    "that doesn't exist yet (CS-283/284) — cannot auto-generate"
+                    "that doesn't exist yet — cannot auto-generate"
                 ),
             }
             continue
@@ -261,9 +256,8 @@ async def fulfill_plan(
 
 
 async def export_dataset(dataset_id: str) -> list:
-    """CS-282 §7 — only `generated+reviewed`/`handwritten` cases ever leave AEH;
-    `synthetic` never does. CS-284 calls this at inject time, refusing injection when a
-    plan-referenced dataset is not review-complete."""
+    """Only `generated+reviewed`/`handwritten` cases ever leave AEH; `synthetic` never does.
+    Called at inject time — injection refuses when the dataset isn't review-complete."""
     from agent_eval_harness.datasets.types import DatasetCase
 
     metadata = await repository.get_dataset_metadata(dataset_id)
@@ -275,7 +269,7 @@ async def export_dataset(dataset_id: str) -> list:
         if db_case["provenance"] not in ("generated+reviewed", "handwritten"):
             continue
         input_data = json.loads(db_case["input_json"])
-        input_data.pop("kind", None)  # kind-sniffing artifact from the pre-CS-282 storage shape
+        input_data.pop("kind", None)  # kind-sniffing artifact from an older storage shape
         out.append(
             DatasetCase(
                 id=db_case["id"],

@@ -1,4 +1,4 @@
-"""Assertion function registry (CS-263 §4.1)."""
+"""Assertion function registry."""
 from __future__ import annotations
 
 from collections.abc import Callable

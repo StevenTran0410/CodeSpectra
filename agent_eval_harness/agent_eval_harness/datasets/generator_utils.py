@@ -7,9 +7,8 @@ from agent_eval_harness.store.repository import new_id
 
 
 def apply_painpoint(prompt: str, painpoint: str | None) -> str:
-    """CS-282 §3 — append a targeted-adversarial section steering generation toward a
-    user-reported real-world painpoint. No painpoint -> byte-identical prompt (the
-    default-generation path must never change when nobody supplies one)."""
+    """Append a targeted-adversarial section steering generation toward a user-reported
+    painpoint. No painpoint -> byte-identical prompt."""
     if not painpoint:
         return prompt
     return (
@@ -23,8 +22,8 @@ def apply_painpoint(prompt: str, painpoint: str | None) -> str:
 def seed_cases_to_dataset_cases(
     dataset_name: str, kind: str, seed_cases: list[dict]
 ) -> list[DatasetCase]:
-    """CS-282 §3 — user-supplied concrete examples land verbatim as `handwritten`
-    (skip review — a human already wrote them by hand)."""
+    """User-supplied concrete examples land verbatim as `handwritten` (skip review —
+    a human already wrote them)."""
     return [
         DatasetCase(
             id=new_id(),
@@ -78,9 +77,8 @@ def build_qa_testset_case(
         dataset=dataset_name,
         kind="qa_testset",
         input={"query": query},
-        # "answer" kept for existing consumers; "expected_response" is CS-286's
-        # GroundTruth reserved key (direction §6 — dataset synthesis emits the
-        # ground-truth sidecar CS-286's deterministic gates read as primary).
+        # "answer" kept for existing consumers; "expected_response" is the GroundTruth-reserved
+        # key that downstream deterministic gates read as primary.
         expected={"answer": answer, "expected_response": answer},
         labels={"contexts": contexts},
         provenance="synthetic"

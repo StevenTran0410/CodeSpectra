@@ -1,4 +1,4 @@
-"""DeepEval G-Eval and Tool Correctness judges (CS-263 §6.1)."""
+"""DeepEval G-Eval and Tool Correctness judges."""
 from __future__ import annotations
 
 import json

@@ -1,4 +1,4 @@
-"""Defect Gauntlet Driven by Generated Plan (CS-265 §5)."""
+"""Defect Gauntlet driven by a generated plan."""
 from __future__ import annotations
 
 import json
@@ -85,7 +85,6 @@ async def test_defect_planner_overpack_via_generated_plan() -> None:
     llm_client = FakeLLMClient(LLMResponse(content="Rubric text", model="fake"))
     plan = await generate_plan(_MAP_PATH, llm_client)
 
-    # Retrieve max_items_per_call entry from the generated plan
     entry = [e for e in plan.entries if e.metric == "max_items_per_call"][0]
 
     from agent_eval_harness.metrics.assertions.max_items_per_call import max_items_per_call
@@ -117,7 +116,6 @@ async def test_defect_no_retry_via_generated_plan() -> None:
     llm_client = FakeLLMClient(LLMResponse(content="Rubric text", model="fake"))
     plan = await generate_plan(_MAP_PATH, llm_client)
 
-    # Retrieve retry_on_reject_required entry from the generated plan
     entry = [e for e in plan.entries if e.metric == "retry_on_reject_required"][0]
 
     from agent_eval_harness.metrics.assertions.retry_on_reject_required import (

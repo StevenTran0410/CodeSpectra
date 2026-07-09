@@ -1,1 +1,1 @@
-"""AEH metric engines package (CS-263)."""
+"""AEH metric engines package."""

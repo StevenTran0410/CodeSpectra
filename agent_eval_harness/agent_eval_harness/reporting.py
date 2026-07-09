@@ -1,4 +1,4 @@
-"""Span-tree stdout printer + unmatched-rate warnings (CS-261 §5)."""
+"""Span-tree stdout printer + unmatched-rate warnings."""
 from __future__ import annotations
 
 from agent_eval_harness.instrumentation.base import CapturedSpan, TraceResult

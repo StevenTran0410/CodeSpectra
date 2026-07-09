@@ -1,4 +1,4 @@
-"""Tests for CS-287 static evaluation-contract harvest."""
+"""Tests for static evaluation-contract harvest."""
 from __future__ import annotations
 
 from pathlib import Path

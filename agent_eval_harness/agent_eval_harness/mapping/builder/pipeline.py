@@ -319,5 +319,21 @@ class SystemMapBuilder:
     async def _reconcile_docs(
         self, docs_path: Path | None, components: list[Component]
     ) -> list[str]:
-        """Stub for doc reconciliation (not implemented for MVP)."""
-        return []
+        """Check if discovered components are mentioned in the hand-written docs."""
+        if not docs_path or not docs_path.exists():
+            return []
+        try:
+            content = docs_path.read_text(encoding="utf-8")
+        except Exception as e:
+            logger.warning("Could not read docs file %s: %s", docs_path, e)
+            return [f"Could not read docs file '{docs_path.name}': {e}"]
+
+        content_lower = content.lower()
+        discrepancies = []
+        for comp in components:
+            if comp.id.lower() not in content_lower:
+                discrepancies.append(
+                    f"Component '{comp.id}' is discovered in code but not mentioned "
+                    f"in the documentation '{docs_path.name}'"
+                )
+        return discrepancies

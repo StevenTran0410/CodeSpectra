@@ -1,4 +1,4 @@
-"""Sweep runner — orchestrates `aeh eval` (CS-263 §8)."""
+"""Sweep runner — orchestrates `aeh eval`."""
 from __future__ import annotations
 
 import asyncio
@@ -164,7 +164,7 @@ async def _score_assertion_entry(
         if component:
             params["allowed"] = component.downstream
 
-    # Batch all queries into one execute_run call rather than one call per query —
+    # Batch all queries into one execute_run call rather than one call per query.
     results: list[MetricResult] = []
     outcomes = await execute_run(
         target, map_path, llm_client, queries, tier, active_defects=active_defects, run_id=run_id

@@ -50,7 +50,8 @@ class _HaystackPipelineLike(Protocol):
 
 @dataclass
 class PipelineHandle:
-    """What a test target's build_pipeline() hands back to the runner/adapter —"""
+    """What a test target's build_pipeline() hands back to the runner/adapter — the
+    pipeline object, its entry-node input keys, and its exit node name."""
 
     pipeline: _HaystackPipelineLike
     entry_inputs: dict[str, str]

@@ -1,5 +1,5 @@
 """Assertion: schema_valid — validates an agent's own output span against a JSON Schema
-seeded from the CS-287 contract's harvested `output.json_schema` (CS-281 §2)."""
+seeded from the contract's harvested `output.json_schema`."""
 from __future__ import annotations
 
 import json

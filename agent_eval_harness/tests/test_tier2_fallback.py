@@ -1,4 +1,4 @@
-"""Tier-2 boundary-wrapper fallback demo — T1 only (CS-261 §7 acceptance:"""
+"""Tier-2 boundary-wrapper fallback demo — T1 only."""
 from __future__ import annotations
 
 from pathlib import Path

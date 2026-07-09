@@ -1,4 +1,4 @@
-"""Tests for the Stage 3 DAG LLM orchestrator (CS-265 redesign)."""
+"""Tests for the Stage 3 DAG LLM orchestrator."""
 from __future__ import annotations
 
 import json
@@ -276,9 +276,7 @@ async def test_run_handoff_gates_validates_agent_and_component_ownership() -> No
 
 async def test_run_handoff_gates_prompt_includes_known_metric_vocabulary() -> None:
     """The LLM must be given the registered handoff metric names so it reuses them
-    instead of inventing new ones — root cause of 3 real dead (metric_not_dispatchable)
-    gates found auditing a real generated plan (allowed_downstream_only,
-    max_downstream_fanout_5, retry_on_schema_reject_only)."""
+    instead of inventing new dead (metric_not_dispatchable) ones."""
     evidence_by_agent = {
         "a1": ap.AgentEvidence(
             agent=AgentFlow(id="a1", component_ids=["c1"], downstream_agents=["a2"]),
@@ -311,8 +309,7 @@ async def test_run_critic_defensive_parse() -> None:
 
 
 async def test_complete_json_recovers_on_retry_after_truncated_first_response() -> None:
-    """First response is truncated mid-string (the observed handoff_gates failure
-    mode); the retry at a bumped token budget succeeds."""
+    """A truncated first response recovers on retry at a bumped token budget."""
     llm_client = FakeLLMClient([
         LLMResponse(content='{"notes": ["unterminat', model="fake"),
         LLMResponse(content='{"notes": ["ok"]}', model="fake"),
@@ -340,9 +337,8 @@ async def test_complete_json_surfaces_dag_note_when_both_attempts_fail() -> None
 
 
 async def test_run_critic_recovers_via_retry_and_generate_plan_surfaces_dag_notes() -> None:
-    """run_critic recovers a truncated-then-fixed response; when a node fails
-    outright even after retry, generate_plan_agentic surfaces it in advisory_notes
-    instead of the round silently vanishing."""
+    """run_critic recovers a truncated-then-fixed response; a node that still fails
+    after retry surfaces in advisory_notes instead of vanishing silently."""
     report = EvaluationPlanReport(target_system_id="t", agents=[])
     llm_client = FakeLLMClient([
         LLMResponse(content='{"notes": ["truncat', model="fake"),
@@ -447,9 +443,9 @@ async def test_generate_plan_agentic_end_to_end_smoke() -> None:
 
 
 async def test_generate_plan_agentic_matches_flat_baseline_metric_set() -> None:
-    """Regression parity (CS-265 §5, adapted to the agentic planner): every (component,
-    metric) the flat rule-based generate_plan() produces must also appear in the agentic
-    plan, when the AgentFlowMap fully covers the map's components."""
+    """Regression parity: every (component, metric) pair the flat rule-based
+    generate_plan() produces must also appear in the agentic plan, when the
+    AgentFlowMap fully covers the map's components."""
     system_map_path = _MULTI_AGENT_MAP
     system_map = load_system_map(system_map_path)
     agent_flow_map = _multi_agent_flow_map()

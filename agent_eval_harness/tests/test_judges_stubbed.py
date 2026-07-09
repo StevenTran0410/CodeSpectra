@@ -7,7 +7,7 @@ import pytest
 
 from agent_eval_harness.llm.ragas_adapter import stub_missing_langchain_community_vertexai
 
-# Must run before any `pytest.importorskip("ragas")`/`import ragas` below — see
+# Must run before any pytest.importorskip("ragas")/import ragas below, to patch the missing optional dependency.
 stub_missing_langchain_community_vertexai()
 
 pytestmark = pytest.mark.asyncio

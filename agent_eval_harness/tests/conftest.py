@@ -1,4 +1,4 @@
-"""CRITICAL: Haystack tracing env vars must be set before `haystack` is"""
+"""CRITICAL: Haystack tracing env vars must be set before `haystack` is imported."""
 import os
 
 os.environ.setdefault("HAYSTACK_CONTENT_TRACING_ENABLED", "true")
@@ -16,7 +16,7 @@ from agent_eval_harness.store.database import close_db, init_db  # noqa: E402
 
 @pytest.fixture(scope="session", autouse=True)
 async def _init_test_db() -> AsyncGenerator[None, None]:
-    """Mirrors backend/tests/conftest.py's own pattern: one fresh temp-dir"""
+    """One fresh temp-dir DB per test session, mirroring backend/tests/conftest.py's pattern."""
     tmpdir = tempfile.mkdtemp()
     os.environ["AEH_DATA_DIR"] = tmpdir
     await init_db()
@@ -26,7 +26,7 @@ async def _init_test_db() -> AsyncGenerator[None, None]:
 
 @pytest.fixture(autouse=True)
 def _isolate_aeh_config(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """Tests must never be influenced by an ambient .aeh/config.yaml sitting in"""
+    """Tests must never be influenced by an ambient .aeh/config.yaml on disk."""
     monkeypatch.setattr(AEHConfig, "load", classmethod(lambda cls, path=None: cls()))
     yield
 

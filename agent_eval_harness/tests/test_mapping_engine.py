@@ -74,7 +74,8 @@ def test_ambiguous_match_assigns_first_and_records_all_candidates() -> None:
 
 
 def test_rename_component_id_changes_mapping_with_zero_code_edits() -> None:
-    """The literal CS-261 acceptance test: the same captured spans, mapped"""
+    """Renaming a component id in the system map changes the mapping outcome with
+    zero code edits on the span-emitting side."""
     original_map = load_system_map(_T1_MAP_PATH)
     renamed_map = load_system_map(_RENAMED_MAP_PATH)
 

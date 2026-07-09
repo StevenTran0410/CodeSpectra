@@ -1,8 +1,5 @@
-"""Test that Suite/SuiteEntry schema matches the CS-265 Evaluation Plan shape exactly.
-
-CS-263 §7 requirement: every field CS-265's ticket §2 example uses must be
-representable in this schema. This test round-trips the example YAML from the
-spec through the Suite/SuiteEntry pydantic models.
+"""Test that the Suite/SuiteEntry schema can represent every field the evaluation
+plan spec's example YAML uses, by round-tripping it through the pydantic models.
 """
 from __future__ import annotations
 
@@ -47,7 +44,7 @@ CS265_EXAMPLE_YAML = textwrap.dedent("""\
 
 
 def test_suite_schema_accepts_cs265_example() -> None:
-    """All fields from the CS-265 example YAML must parse without error."""
+    """All fields from the example YAML must parse without error."""
     from agent_eval_harness.metrics.suite import Suite
 
     data = yaml.safe_load(CS265_EXAMPLE_YAML)
@@ -58,7 +55,7 @@ def test_suite_schema_accepts_cs265_example() -> None:
 
 def test_suite_entry_has_all_cs265_fields() -> None:
     """Each SuiteEntry must carry id, component, metric, metric_class, dataset, params,
-    rationale, and provenance — the exact CS-265 field set."""
+    rationale, and provenance."""
     from agent_eval_harness.metrics.suite import SuiteEntry
 
     entry = SuiteEntry(

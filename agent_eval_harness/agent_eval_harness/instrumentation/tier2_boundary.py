@@ -21,12 +21,22 @@ from agent_eval_harness.mapping.system_map import SystemMap
 
 
 def _resolve_entry_point(entry_point: str) -> Callable[..., Awaitable[Any]]:
-    """entry_point is "module.path:function_name" (the Python-callable form;"""
+    """entry_point is "module.path:function_name" (the Python-callable form)
+    or HTTP entry points (starts with http:// or https://)."""
     if entry_point.startswith(("http://", "https://")):
-        raise NotImplementedError(
-            f"HTTP entry_point '{entry_point}' is reserved for a future adapter — "
-            "not implemented in CS-261"
-        )
+        import httpx
+
+        async def _http_callable(query: str, prior_output: Any = None) -> Any:
+            async with httpx.AsyncClient() as client:
+                payload = {"query": query}
+                if prior_output is not None:
+                    payload["prior_output"] = prior_output
+                resp = await client.post(entry_point, json=payload, timeout=60.0)
+                resp.raise_for_status()
+                return resp.json()
+
+        return _http_callable
+
     module_path, _, func_name = entry_point.partition(":")
     module = importlib.import_module(module_path)
     return getattr(module, func_name)

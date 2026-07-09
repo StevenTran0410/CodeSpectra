@@ -59,8 +59,7 @@ pipeline.connect("conventions.output", "risk.input")
     assert by_alias["risk"].class_name == "RiskAgent"
     assert by_alias["risk"].source_hint_file == "backend/domain/analysis/agents/agent_risk.py"
 
-    # The two components must resolve to DIFFERENT files — this is the actual bug:
-    # both used to collapse onto the orchestrator file itself.
+    # The two components must resolve to DIFFERENT files (regression: both used to collapse onto the orchestrator file).
     assert by_alias["conventions"].source_hint_file != by_alias["risk"].source_hint_file
 
 

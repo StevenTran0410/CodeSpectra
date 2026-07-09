@@ -1,4 +1,4 @@
-"""System Map schema (CS-260 §4c) — pydantic models + YAML loader."""
+"""System Map schema — pydantic models + YAML loader."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -20,7 +20,7 @@ class SpanMatchBlock(BaseModel):
 class Constraint(BaseModel):
     name: str
     value: Any = None
-    source: str  # file:line citation — required per epic convention
+    source: str  # file:line citation (required)
 
 
 class Component(BaseModel):
@@ -48,7 +48,7 @@ class SystemMap(BaseModel):
 
 
 def load_system_map(path: str | Path) -> SystemMap:
-    """Schema validation is a hard gate — invalid shape fails loudly (CS-264 §epic convention)."""
+    """Schema validation is a hard gate — invalid shape fails loudly."""
     data = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
     return SystemMap.model_validate(data)
 

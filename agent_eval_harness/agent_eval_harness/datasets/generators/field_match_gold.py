@@ -1,11 +1,6 @@
-"""CS-282 §2 — field_match_gold: objective per-field gold for repo-input agents
-(repo_name, tech_stack, runtime_type — never subjective fields like "purpose").
-
-Derived directly from the snapshot's own working tree on disk (its most reliable
-"manifest") rather than parsing a rendered report — tech markers are a deliberately
-small, common set; a human confirms/corrects via review before this is usable
-(provenance starts `synthetic`).
-"""
+"""field_match_gold: objective per-field gold for repo-input agents (repo_name, tech_stack,
+runtime_type — never subjective fields), derived from the snapshot's own working tree on
+disk rather than a rendered report; provenance starts `synthetic` until reviewed."""
 from __future__ import annotations
 
 from pathlib import Path

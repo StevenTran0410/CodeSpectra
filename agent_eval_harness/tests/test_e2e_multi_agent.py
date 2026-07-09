@@ -50,7 +50,7 @@ async def test_happy_path_no_defects() -> None:
     assert len(_spans_for(result, "judge")) == 1
     assert len(_spans_for(result, "case_law_search_tool")) == 1
     assert len(_spans_for(result, "decoy_tool")) == 1
-    # guard's own top-level wrapper span legitimately has no span_match rule of
+    # guard's own top-level wrapper span legitimately has no span_match rule and stays unmatched.
     assert len(result.unmatched) == 1
 
 

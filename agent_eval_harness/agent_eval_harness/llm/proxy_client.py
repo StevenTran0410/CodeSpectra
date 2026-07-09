@@ -34,7 +34,7 @@ class CodeSpectraProxyClient:
         temperature: float | None = 0.2,
         json_mode: bool = False,
     ) -> LLMResponse:
-        """CS-263 §8: modest fan-out needs provider-rate-limit backoff — retries"""
+        """Modest fan-out needs provider-rate-limit backoff — retries on 429."""
         last_exc: httpx.HTTPStatusError | None = None
         for attempt in range(_MAX_RATE_LIMIT_RETRIES + 1):
             resp = await self._http.post(

@@ -55,7 +55,8 @@ class HarnessSpan(HaystackSpan):
 
 
 class HarnessTracer(HaystackTracer):
-    """Captures every span flowing through haystack.tracing.tracer — both"""
+    """Captures every span flowing through haystack.tracing.tracer — both Haystack's own
+    component spans and AEH's manual aeh.llm_call/tool_call/validator_decision spans."""
 
     def __init__(self) -> None:
         self.captured: list[HarnessSpan] = []
@@ -98,7 +99,8 @@ def _classify_span_type(span: HarnessSpan) -> SpanType:
 
 
 def _normalize(span: HarnessSpan) -> CapturedSpan:
-    """Manual spans (aeh.llm_call/tool_call/validator_decision) that need to record"""
+    """Manual spans (aeh.llm_call/tool_call/validator_decision) that need to record
+    output/input via `aeh.output`/`aeh.input` tags instead of Haystack's own component tags."""
     span_type = _classify_span_type(span)
 
     haystack_output = span.tags.get("haystack.component.output")
@@ -130,7 +132,8 @@ def _normalize(span: HarnessSpan) -> CapturedSpan:
 
 
 def _extract_final_output(result: dict[str, dict[str, Any]], exit_node: str) -> str:
-    """Duck-typed: exit_node's output may be Haystack-ChatMessage-shaped"""
+    """Duck-typed: exit_node's output may be Haystack-ChatMessage-shaped (a replies list)
+    or a plain dict with an "answer" key."""
     node_output = result.get(exit_node, {})
     replies = node_output.get("replies")
     if isinstance(replies, list) and replies:
@@ -144,7 +147,8 @@ def _extract_final_output(result: dict[str, dict[str, Any]], exit_node: str) -> 
 
 
 class HaystackAdapter(InstrumentationAdapter):
-    """Tier-1: attaches a HarnessTracer to Haystack's global tracing hook, runs"""
+    """Tier-1: attaches a HarnessTracer to Haystack's global tracing hook, runs the
+    pipeline, and normalizes captured spans into a TraceResult."""
 
     def __init__(self, handle: PipelineHandle, system_map: SystemMap) -> None:
         self._handle = handle

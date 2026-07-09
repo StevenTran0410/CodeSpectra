@@ -45,7 +45,7 @@ def format_sweep_results(
 
 
 def results_to_json(results: list[MetricResult], run_id: str) -> str:
-    """Serialize MetricResults to machine-readable JSON (for CI consumption, CS-266)."""
+    """Serialize MetricResults to machine-readable JSON (for CI consumption)."""
     data: dict[str, Any] = {
         "run_id": run_id,
         "total_results": len(results),

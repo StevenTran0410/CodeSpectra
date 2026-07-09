@@ -1,4 +1,4 @@
-"""Core metric result type used by all metric classes (CS-263)."""
+"""Core metric result type used by all metric classes."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field

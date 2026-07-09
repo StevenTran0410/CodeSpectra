@@ -1,8 +1,4 @@
-"""Tests for `aeh eval` and `aeh report` CLI subcommands.
-
-Mirrors test_cli_run.py's style: synchronous def tests that call cli.main()
-directly (which internally calls asyncio.run()). Uses capsys.
-"""
+"""Tests for `aeh eval` and `aeh report` CLI subcommands (synchronous, via cli.main())."""
 from __future__ import annotations
 
 import asyncio

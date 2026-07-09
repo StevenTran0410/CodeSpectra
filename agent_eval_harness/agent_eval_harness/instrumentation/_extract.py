@@ -1,4 +1,4 @@
-"""Shared, tier-agnostic helpers: JSON-safe serialization, UTC timestamps,"""
+"""Shared, tier-agnostic helpers: JSON-safe serialization, UTC timestamps, model/token extraction."""
 from __future__ import annotations
 
 import json
@@ -23,7 +23,8 @@ def safe_json(value: Any) -> str | None:
 def extract_model_and_tokens(
     payload: Any,
 ) -> tuple[str | None, int | None, int | None, str | None]:
-    """Two duck-typed shapes recognized, opportunistically:"""
+    """Two duck-typed shapes recognized, opportunistically: a Haystack replies-list-with-meta,
+    or a flat dict with model/tokens_in keys."""
     if not isinstance(payload, dict):
         return None, None, None, None
 

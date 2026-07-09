@@ -1,4 +1,4 @@
-"""Suite config schema — designed to match the CS-265 Evaluation Plan format exactly."""
+"""Suite config schema — designed to match the Evaluation Plan format exactly."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -23,9 +23,9 @@ class SuiteEntry(BaseModel):
     component: str
     metric: str
     metric_class: Literal["assertion", "classifier", "llm_judge"]
-    # Representability only — nothing consumes level at run-time yet (CS-286 will).
+    # Representability only — nothing consumes level at run-time yet.
     level: Literal["component", "trace", "session"] = "component"
-    # CS-284 codegen keys off execution="entrypoint" for in-process classifier injection.
+    # codegen keys off execution="entrypoint" for in-process classifier injection.
     execution: Literal["harness", "entrypoint"] = "harness"
     dataset: DatasetRef | None = None
     params: dict[str, Any] = Field(default_factory=dict)

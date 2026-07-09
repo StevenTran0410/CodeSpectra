@@ -36,7 +36,6 @@ components:
         source: "test"
 """, encoding="utf-8")
 
-    # Configs
     config_2 = {
         "dataset_name": "test_decomp_2",
         "system_map_path": str(map_path_2),
@@ -51,13 +50,8 @@ components:
         "count": 3
     }
 
-    # Fake LLM client to return JSON lists of queries and their intents
-    # Since count=3, it splits into 3 categories: clean, rambling, over_limit. So it does 3 prompts.
-    # Each category gets count // 3 = 1 case.
-    # For clean: returns 1 case with 2 intents: ["I1", "I2"]
-    # For rambling: returns 1 case with 1 intent: ["I1"]
-    # For over_limit: returns 1 case with 5 intents (limit 2+1=3 for map_2,
-    # limit 3+1=4 for map_3. Let's return 5 intents to be safe).
+    # count=3 splits into 3 categories (clean, rambling, over_limit), 1 case each via 3 prompts.
+    # over_limit's intent count (5) must exceed both maps' max_items_per_call limit to test the split.
     mock_clean = '[{"query": "Do X and Y", "intents": ["I1", "I2"]}]'
     mock_rambling = '[{"query": "Please do X", "intents": ["I1"]}]'
     mock_over_limit = '[{"query": "Do 1 2 3 4 5", "intents": ["I1", "I2", "I3", "I4", "I5"]}]'

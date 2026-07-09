@@ -1,4 +1,4 @@
-"""Tests for CS-281: Metric Registry, Plan-gate Readiness, Params Completion, Feasibility, and Rebalancing."""
+"""Tests for the metric registry, plan-gate readiness, params completion, feasibility, and rebalancing."""
 from __future__ import annotations
 
 import textwrap
@@ -105,9 +105,9 @@ async def test_validate_plan_readiness_reasons(tmp_path) -> None:
 
 
 def test_reconcile_params_completion_and_feasibility() -> None:
-    """Test parameters completion (allowed downstream, expected tools, arg_schema conversion)
-    and feasibility (replacing ragas.faithfulness if has_separable_context is False,
-    dropping relevancy if not query, replacing tool correctness if has_tools is False)."""
+    """Params completion (allowed_downstream, expected tools, arg_schema conversion) and
+    feasibility replacement rules (faithfulness needs separable context, relevancy needs
+    query input, tool_correctness needs tools)."""
     # 1. Setup system map
     system_map = SystemMap(
         target_system_id="test_sys",
@@ -151,12 +151,7 @@ def test_reconcile_params_completion_and_feasibility() -> None:
 
     contracts = {"agent1": contract}
 
-    # Propose gates to test:
-    # - allowed_downstream (will fill allowed)
-    # - tool_correctness (will fill expected_tools AND then feasibility drops it since has_tools=False)
-    # - arg_schema (replaced by schema_valid from contract)
-    # - ragas.faithfulness (feasibility replaces because has_separable_context=False)
-    # - ragas.answer_relevancy (dropped because input_kind != query)
+    # Gates to test: allowed_downstream, tool_correctness, arg_schema, ragas.faithfulness, ragas.answer_relevancy.
     gates = [
         EvaluationGate(
             id="g.allowed", agent_id="agent1", component="agent_comp",
@@ -221,10 +216,8 @@ def test_reconcile_params_completion_and_feasibility() -> None:
 
 
 def test_reconcile_rebalance_rules() -> None:
-    """Test rebalance rules:
-    1) Prefer assertion if same component + property
-    2) Merge near-dup geval rubrics
-    3) Cap LLM-suggested judges to 3 (baseline exempt)"""
+    """Rebalance rules: prefer assertion over a duplicate llm_judge on the same property,
+    merge near-duplicate geval rubrics, and cap LLM-suggested judges at 3 (baseline exempt)."""
     agent_flow_map = AgentFlowMap(
         target_system_id="test_rebalance",
         agents=[
@@ -232,11 +225,8 @@ def test_reconcile_rebalance_rules() -> None:
         ]
     )
 
-    # We propose:
-    # - an assertion checking 'output_schema'
-    # - an llm_judge checking 'output_schema' (should be dropped in favor of assertion)
-    # - 2 geval gates with similarity 0.90 rubric_text (should merge)
-    # - 3 additional suggested geval gates (exceeding cap of 3 suggested)
+    # An assertion + duplicate llm_judge on 'output_schema', 2 near-dup geval gates (should
+    # merge), plus 3 more suggested geval gates (exceeding the cap of 3 suggested).
     gates = [
         EvaluationGate(
             id="g.assert", agent_id="agent1", component="agent_comp",
@@ -297,8 +287,6 @@ def test_reconcile_rebalance_rules() -> None:
     assert "g.geval_sim2" not in final_gate_ids
     assert "g.geval_sim1" in final_gate_ids
 
-    # 3. Cap: We have geval_sim1, geval_extra1, geval_extra2 as suggested LLM judges (3).
-    # If we had more, the excess suggested judges would be dropped to satisfy MAX_LLM_JUDGE_GATES_PER_AGENT = 3.
-    # Let's count actual suggested LLM judges in rep.gates:
+    # 3. Cap: at most 3 suggested LLM judges per agent (MAX_LLM_JUDGE_GATES_PER_AGENT).
     suggested_llm_judges = [g for g in rep.gates if g.metric_class == "llm_judge" and g.provenance != "rule"]
     assert len(suggested_llm_judges) <= 3

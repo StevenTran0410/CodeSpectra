@@ -86,9 +86,9 @@ async def test_guard_classification_semantic():
     cases = await generate(config, llm_client=fake_client)
     # We requested 30 + 25 = 55 cases.
     assert len(cases) == 55
-    
+
     off_topic_cases = [c for c in cases if c.labels.get("category") == "off_topic"]
-    # If the response list was smaller than count (which our mock lists of size 2 are),
+    # The mock response list has only 2 items; the generator must cycle it to reach the full count.
     assert len(off_topic_cases) == 30
     for c in off_topic_cases:
         assert c.expected == {"verdict": "reject", "category": "off_topic"}

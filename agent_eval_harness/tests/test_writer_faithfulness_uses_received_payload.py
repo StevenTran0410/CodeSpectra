@@ -1,4 +1,5 @@
-"""Explicit test for the load-bearing correctness property (CS-263 §6.2, §11)."""
+"""Explicit test for the load-bearing correctness property: faithfulness must be
+judged against what the writer actually received, not the gold/corpus context."""
 from __future__ import annotations
 
 import json
@@ -8,7 +9,7 @@ import pytest
 
 from agent_eval_harness.llm.ragas_adapter import stub_missing_langchain_community_vertexai
 
-# Must run before any `pytest.importorskip("ragas")`/`import ragas` below — see
+# Must run before any pytest.importorskip("ragas")/import ragas below, to patch the missing optional dependency.
 stub_missing_langchain_community_vertexai()
 
 pytestmark = pytest.mark.asyncio

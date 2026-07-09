@@ -1,8 +1,7 @@
-"""CS-281 — Evaluation Plan Validation Engine.
+"""Evaluation Plan Validation Engine.
 
-validate_plan() now returns PlanValidationReport {errors, readiness} instead of
-a bare list[str].  The errors list is backward-compatible (hard gate for callers
-in cli.py and existing tests); readiness is the new per-gate sidecar.
+validate_plan() returns PlanValidationReport {errors, readiness} — errors is the
+backward-compatible hard gate (used by cli.py and tests); readiness is the per-gate sidecar.
 """
 from __future__ import annotations
 
@@ -92,7 +91,7 @@ async def validate_plan(plan_path: str | Path) -> PlanValidationReport:
             )
             continue
 
-        # ── §2 Metric registry check ───────────────────────────────────────────
+        # ── Metric registry check ───────────────────────────────────────────────
         spec = get_spec(entry.metric)
         if spec is None:
             errors.append(

@@ -1,4 +1,4 @@
-"""Unit and integration tests for Evaluation Planner (CS-265)."""
+"""Unit and integration tests for the evaluation planner."""
 from __future__ import annotations
 
 import json
@@ -94,5 +94,5 @@ async def test_generate_plan_t3_generalization() -> None:
     assert "writer.faithfulness" in suite_entries
     assert "writer.answer_relevancy" in suite_entries
 
-    # retriever and reranker have no downstream tools in T3 map, so no
+    # retriever and reranker have no downstream tools in the T3 map, so only writer-level gates are expected.
     assert len(plan.entries) >= 2

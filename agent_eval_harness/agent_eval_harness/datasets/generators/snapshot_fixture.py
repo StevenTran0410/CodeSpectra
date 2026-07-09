@@ -1,9 +1,6 @@
-"""CS-282 §2 — snapshot_fixture: zero-LLM dataset kind for repo-input agents.
-
-One case = one full multi-agent pipeline run, kwargs-shaped exactly as the CS-287
-InvocationContract's case_binding expects (report_id/snapshot_id/provider_id/model_id).
-force_rerun is mandatory because CodeSpectra caches results by (snapshot_id, model_id, mode).
-"""
+"""snapshot_fixture: zero-LLM dataset kind for repo-input agents. One case = one full
+pipeline run; force_rerun is mandatory because CodeSpectra caches results by
+(snapshot_id, model_id, mode)."""
 from __future__ import annotations
 
 from pydantic import BaseModel

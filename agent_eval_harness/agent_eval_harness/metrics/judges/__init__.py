@@ -1,1 +1,1 @@
-"""LLM judge adapters package (CS-263 §6)."""
+"""LLM judge adapters package."""

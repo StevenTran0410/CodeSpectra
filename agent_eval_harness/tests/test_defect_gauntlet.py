@@ -1,4 +1,4 @@
-"""Defect Gauntlet — Phase 0 exit gate (CS-263 §10)."""
+"""Defect Gauntlet — Phase 0 exit gate."""
 from __future__ import annotations
 
 import json
@@ -85,7 +85,7 @@ async def test_defect_planner_overpack_moves_max_items_assertion() -> None:
     spans_clean = await _collect_spans(responses_clean, DefectConfig())
     spans_defect = await _collect_spans(responses_defect, DefectConfig(planner_overpack=True))
 
-    # NOTE: The assertion checks the WORKER component's output_json.intents —
+    # The assertion checks the WORKER component's output_json.intents.
     result_clean = max_items_per_call(spans_clean, "worker", {"limit": 2})
     result_defect = max_items_per_call(spans_defect, "worker", {"limit": 2})
 
@@ -156,7 +156,8 @@ async def test_defect_no_retry_does_not_move_max_retries() -> None:
 # ────────────────────────────────────────────────────────────────────────────
 
 async def test_defect_wrong_tool_flags_no_unnecessary_calls() -> None:
-    """T2's WorkerComponent always calls BOTH tools unconditionally (only the"""
+    """T2's WorkerComponent always calls both tools unconditionally; WRONG_TOOL only
+    changes which tool is called first."""
     from agent_eval_harness.metrics.assertions.no_unnecessary_calls import no_unnecessary_calls
 
     responses = [
@@ -180,7 +181,7 @@ async def test_defect_wrong_tool_flags_no_unnecessary_calls() -> None:
     assert _first_tool_name(spans_clean) == "case_law_search"
     assert _first_tool_name(spans_defect) == "decoy_lookup"
 
-    # no_unnecessary_calls itself: consistently flags the unused decoy result in
+    # no_unnecessary_calls flags the unused decoy result in both clean and defect runs.
     result_clean = no_unnecessary_calls(spans_clean, "worker", {})
     result_defect = no_unnecessary_calls(spans_defect, "worker", {})
     assert len(result_clean.details.get("flagged_tool_calls", [])) >= 1
@@ -257,7 +258,7 @@ async def test_defect_writer_hallucinate_moves_output_not_upstream() -> None:
         "Writer hallucinate defect must inject 'full refund' into output"
     )
 
-    # Upstream assertion (fan-out limit, checked against worker's span — see
+    # Upstream assertion (fan-out limit) checked against the worker's span, unaffected by hallucination.
     from agent_eval_harness.metrics.assertions.max_items_per_call import max_items_per_call
 
     spans = [

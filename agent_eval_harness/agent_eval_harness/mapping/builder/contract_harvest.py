@@ -1,4 +1,4 @@
-"""CS-287 — static (AST-only) harvest of per-agent EvaluationContracts; never imports target code."""
+"""Static (AST-only) harvest of per-agent EvaluationContracts; never imports target code."""
 from __future__ import annotations
 
 import ast
@@ -24,8 +24,8 @@ _QUERYISH_PARAMS = frozenset({"query", "question", "prompt", "text", "message", 
 _CONFIG_PARAMS = frozenset({"provider_id", "model_id"})
 _SCHEMA_NAME_RE = re.compile(r"SCHEMA", re.IGNORECASE)
 _DYNAMIC = "<dynamic>"
-# CodeSpectra's own analysis pipeline (v1 harvest target — CS-287 scope) exposes exactly
-# one generic per-section rerun route; `section` accepts any of the 12 section letters.
+# CodeSpectra's own analysis pipeline exposes exactly one generic per-section rerun route;
+# `section` accepts any of the 12 section letters.
 _RERUN_SECTION_ROUTE = "/api/analysis/rerun_section"
 
 
@@ -219,15 +219,10 @@ def _find_module_str_constant(
     *,
     own_file: Path | None = None,
 ) -> tuple[str, str] | None:
-    """Find a module-level `NAME = <str literal>` assignment.
-
-    Resolution order: the file an explicit `from x.y import NAME` in `own_file`
-    points to, then `own_file` itself, then (last resort) every other parsed
-    file. Stops at the FIRST file where `name` is assigned at all — even if
-    that assignment is dynamic (non-literal) — rather than skipping past it to
-    grab a same-named constant from an unrelated file, which would silently
-    misattribute one component's schema to another.
-    """
+    """Find a module-level `NAME = <str literal>` assignment. Resolution order: own_file's
+    explicit import source, then own_file itself, then any other parsed file — stops at the
+    first file where `name` is assigned at all (even if dynamic) to avoid misattributing a
+    same-named constant from an unrelated file."""
     search_order: list[Path] = []
     if own_file is not None and own_file in asts:
         imported_from = _import_source_file(asts[own_file], name, asts)
@@ -350,13 +345,9 @@ def _harvest_fallback(
     cls: ast.ClassDef, path: Path, files_root: Path | None
 ) -> tuple[dict | None, str | None, bool]:
     """A *fallback* method returning a dict literal; non-constant values become '<dynamic>'.
-
-    A class can have more than one method with "fallback" in its name (e.g. an output
-    fallback alongside an unrelated `_fallback_provider` config helper). Disambiguate by
-    preferring the method actually called from the entry point, then an exact
-    `fallback`/`_fallback` name, then declaration order. Returns whether the pick was
-    genuinely ambiguous (>1 candidate) so the caller can flag it for human review.
-    """
+    Disambiguates multiple same-ish-named candidates by preferring the one actually called
+    from the entry point, then exact name match, then declaration order; the returned bool
+    flags genuine ambiguity (>1 candidate) for human review."""
     candidates = [
         node for node in cls.body
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and "fallback" in node.name.lower()
@@ -449,10 +440,9 @@ def harvest_component_contract(
             route = None
             case_binding = _derive_case_binding(kwargs)
         elif letter:
-            # CodeSpectra's own analysis pipeline exposes exactly this: rerun one
-            # section by letter through an existing endpoint. Live services the
-            # constructor needs (ProviderConfigService, RetrievalService, ...) run
-            # inside that endpoint's process — AEH never constructs them itself.
+            # Rerun via the pipeline's per-section endpoint — live constructor deps
+            # (ProviderConfigService, RetrievalService, ...) run inside that endpoint's
+            # process, not in AEH.
             invocation_mode = "per_agent_route"
             route = _RERUN_SECTION_ROUTE
             case_binding = {
@@ -466,8 +456,8 @@ def harvest_component_contract(
                 "report for the snapshot — report_id is not the same identifier as snapshot_id"
             )
         else:
-            # Live constructor deps and no known route to reach this component through —
-            # statics genuinely can't resolve an invocation path here.
+            # Live constructor deps with no known route to reach this component —
+            # statics can't resolve an invocation path here.
             invocation_mode = "unsupported"
             route = None
             case_binding = _derive_case_binding(kwargs)

@@ -1,9 +1,8 @@
-# Evaluation suite for T2 (multi_agent) — CS-263 §7
+# Evaluation suite for T2 (multi_agent).
 #
-# Schema matches CS-265 Evaluation Plan format exactly (forward-compatible).
 # Fields: id, component, metric, metric_class, dataset, params, rationale, provenance
 #
-# Role → metric class mapping (CS-260 §3):
+# Role → metric class mapping:
 #   input_guard.rule  → classifier
 #   input_guard.llm   → classifier
 #   orchestrator      → assertion + llm_judge
@@ -37,7 +36,7 @@ entries:
       entry_point: "test_targets.multi_agent.components:GuardComponent"
     rationale: >
       role=input_guard.llm ⇒ LLM-assisted guard stage; same sklearn scoring approach
-      as rule stage. Both guard stages use classifier, not DeepEval (per CS-260 §3).
+      as rule stage. Both guard stages use classifier, not DeepEval.
     provenance: rule
 
   # --- Planner: assertions (from System Map constraints) ---
@@ -157,7 +156,7 @@ entries:
       queries:
         - "Can I get a refund and also change my shipping address?"
     rationale: >
-      role=writer ⇒ faithfulness is the central CS-263 claim: writer must not
+      role=writer ⇒ faithfulness is the central claim: writer must not
       hallucinate beyond the context it RECEIVED (writer span's input_json), not
       the full corpus or gold context. DEFECT_WRITER_HALLUCINATE should drop this score.
     provenance: rule

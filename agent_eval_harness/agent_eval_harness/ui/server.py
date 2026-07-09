@@ -959,10 +959,8 @@ class AdvanceSessionRequest(BaseModel):
 
 @app.post("/api/discovery/expansion-sessions/{session_id}/plan")
 async def generate_plan_route(session_id: str, body: GeneratePlanRequest):
-    """Stage 3's own DAG orchestrator (CS-265 redesign). Hard-gated on Stage 2's
-    agent-flow separation having already run — the agent is the planning unit, so
-    there is no flat-component fallback (see repo_atlas_plan/
-    aeh_stage3_agentic_eval_planner_plan.md §2)."""
+    """Stage 3's own DAG orchestrator. Hard-gated on Stage 2's agent-flow separation having
+    already run — the agent is the planning unit, so there is no flat-component fallback."""
     sess = await _get_expansion_session_or_404(session_id)
     if sess["status"] != "completed":
         raise HTTPException(status_code=400, detail="Expansion has not completed.")
@@ -1134,7 +1132,7 @@ async def update_plan_route(session_id: str, body: UpdatePlanRequest):
     old_suite = load_suite(plan_path_str)
     old_by_id = {e.id: e for e in old_suite.entries}
 
-    # Validate via Suite.model_validate - hard gate per CS-273 spec
+    # Validate via Suite.model_validate — hard gate
     try:
         new_suite = Suite.model_validate({"entries": body.entries})
     except Exception as e:

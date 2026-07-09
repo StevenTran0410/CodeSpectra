@@ -18,7 +18,8 @@ def _run_async_blocking(coro_fn, *args, **kwargs):
 
 
 def stub_missing_langchain_community_vertexai() -> None:
-    """Ragas's internal imports (ragas.llms.base) reference an optional"""
+    """Ragas's internal imports (ragas.llms.base) reference an optional
+    langchain_community.chat_models.vertexai module; stub it out if not installed."""
     import sys
     import types
 

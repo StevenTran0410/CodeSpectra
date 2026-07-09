@@ -1,4 +1,4 @@
-"""CS-270 — Discovery engine golden + negative-control tests."""
+"""Discovery engine golden + negative-control tests."""
 from __future__ import annotations
 
 import pytest
@@ -206,8 +206,8 @@ async def test_wiring_llm_fallback_has_its_own_smaller_budget() -> None:
     communities = [{"community_id": i, "hub_paths": [f"agents/crew_{i}.py"]} for i in range(n_clusters)]
     client = _StubClient(evidences, node_index, communities)
 
-    # One response shape that satisfies both Pass C's schema and Pass D's wiring
-    # schema at once — high confidence so needs_human never suppresses the fallback.
+    # One response shape satisfies both Pass C's and Pass D's wiring schema at once;
+    # high confidence keeps needs_human from suppressing the fallback.
     combined_response = LLMResponse(
         content='{"is_agentic_system": true, "name": "Crew Setup", "frameworks": ["crewai"], '
         '"entry_points": [], "confidence": "high", "framework": "llm_inferred", '

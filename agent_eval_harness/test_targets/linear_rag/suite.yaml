@@ -1,9 +1,8 @@
-# Evaluation suite for T1 (linear_rag) — CS-263 §7
+# Evaluation suite for T1 (linear_rag).
 #
-# Schema matches CS-265 Evaluation Plan format exactly (forward-compatible).
 # Fields: id, component, metric, metric_class, dataset, params, rationale, provenance
 #
-# Role → metric class mapping (CS-260 §3):
+# Role → metric class mapping:
 #   retrieval_agent (retriever) → llm_judge (faithfulness, relevancy from trace)
 #   writer                      → llm_judge (faithfulness/relevancy — T1's primary signal)
 
@@ -20,7 +19,7 @@ entries:
     rationale: >
       role=writer ⇒ faithfulness is the core contract: writer must not fabricate
       facts beyond what its received context contains. retrieved_contexts is built
-      from the writer span's input_json (not the gold), per CS-260's per-component
+      from the writer span's input_json (not the gold), per the per-component
       grounding principle.
     provenance: rule
 

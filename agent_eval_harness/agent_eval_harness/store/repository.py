@@ -213,9 +213,9 @@ async def get_dataset_case_by_id(case_id: str) -> dict | None:
 
 
 async def list_dataset_ids() -> list[dict]:
-    """Per-dataset case counts, left-joined with the CS-282 `datasets` metadata table.
-    A dataset with no metadata row (pre-CS-282 legacy data) gets kind=None, min_cases=1
-    — review_complete then just depends on synthetic_count, same as before."""
+    """Per-dataset case counts, left-joined with the `datasets` metadata table. A dataset
+    with no metadata row (legacy data) gets kind=None, min_cases=1 — review_complete then
+    just depends on synthetic_count, same as before."""
     db = get_db()
     async with db.execute(
         """
@@ -282,7 +282,7 @@ async def update_case_provenance(
     labels_json: str | None = None,
 ) -> None:
     """Flip a case's provenance, optionally editing any of its three JSON fields
-    (CS-282 §5 — review UI edit action; originally only expected_json was editable)."""
+    (review UI edit action; originally only expected_json was editable)."""
     fields = ["provenance = ?"]
     values: list[str] = [provenance]
     for col, val in (("expected_json", expected_json), ("input_json", input_json), ("labels_json", labels_json)):
@@ -689,21 +689,17 @@ async def finish_expansion_session(
 
     if status == "completed":
         try:
-            # 1. Get current expansion session to find candidate_id
             async with db.execute("SELECT candidate_id FROM expansion_sessions WHERE id = ?", (session_id,)) as cur:
                 row = await cur.fetchone()
             if row:
                 candidate_id = row[0]
-                # 2. Get discovery candidate to find session_id (parent discovery session ID)
                 candidate = await get_discovery_candidate(candidate_id)
                 if candidate:
                     parent_session_id = candidate["session_id"]
-                    # 3. Get all candidates for the parent session
                     all_candidates = await get_discovery_candidates(parent_session_id)
                     confirmed_cands = [c for c in all_candidates if c["verdict"] == "confirmed"]
 
                     if confirmed_cands:
-                        # 4. Check if every confirmed candidate has a completed expansion session
                         all_completed = True
                         for cand in confirmed_cands:
                             async with db.execute(
@@ -776,10 +772,9 @@ async def update_expansion_session_plan_report_path(session_id: str, plan_report
 
 
 async def cancel_orphaned_running_sessions() -> None:
-    """Mark any status='running' session as failed. AEH's background tasks are plain
-    asyncio.create_task() calls with no persistence across process restarts, so a 'running'
-    row at server startup can only be left over from a previous process that died mid-task —
-    never one that's genuinely still in progress."""
+    """Mark any status='running' session as failed — AEH's background tasks don't persist
+    across process restarts, so a 'running' row at startup can only be a leftover from a
+    process that died mid-task, never one still genuinely in progress."""
     db = get_db()
     now = utc_now_iso()
     error = "Interrupted: app closed before this run finished."

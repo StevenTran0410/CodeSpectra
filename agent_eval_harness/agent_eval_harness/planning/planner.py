@@ -1,4 +1,4 @@
-"""planner.py — Evaluation Plan Generator (CS-265 §3)."""
+"""planner.py — Evaluation Plan Generator."""
 from __future__ import annotations
 
 import json
@@ -40,7 +40,7 @@ SUITE_SUGGESTION_SYSTEM = (
 
 
 def get_component_info(entry_point: str, search_roots: list[Path] | None = None) -> dict[str, str]:
-    """Static (AST) docstring/source extraction — never imports target code (CS-287)."""
+    """Static (AST) docstring/source extraction — never imports target code."""
     info = {"docstring": "", "source_snippet": ""}
     if not entry_point or entry_point.startswith(("http://", "https://")):
         return info
@@ -98,9 +98,8 @@ async def _resolve_dataset_ref(
     if not dataset_kind:
         return None
 
-    # CS-282 §2: `db_datasets` (repository.list_dataset_ids()) is now left-joined against
-    # the `datasets` metadata table and carries `kind` directly — no more fetching every
-    # case of every dataset just to sniff `input_json["kind"]`.
+    # `db_datasets` is left-joined against the `datasets` metadata table and carries `kind`
+    # directly — no more fetching every case of every dataset just to sniff `input_json["kind"]`.
     candidates = [ds["dataset_id"] for ds in db_datasets if ds.get("kind") == dataset_kind]
 
     if not candidates:

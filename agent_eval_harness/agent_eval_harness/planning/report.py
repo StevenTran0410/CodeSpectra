@@ -1,4 +1,4 @@
-"""Stage 3 agentic planner's per-agent report — the auditable "why" behind the plan (CS-265 redesign)."""
+"""Stage 3 agentic planner's per-agent report — the auditable "why" behind the plan."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -23,7 +23,7 @@ class AgentDataProfile(BaseModel):
     internal_tools: list[str] = Field(default_factory=list)
     failure_modes: list[str] = Field(default_factory=list)
     consistency_notes: list[str] = Field(default_factory=list)
-    # Structured observability mirrors (CS-287) — None = analyst didn't answer.
+    # Structured observability mirrors — None = analyst didn't answer.
     input_kind: str | None = None
     has_separable_context: bool | None = None
     context_location: str | None = None

@@ -1,6 +1,5 @@
-"""Route-level tests for the Stage 3 agentic planner endpoints (POST .../plan,
-GET .../plan-report). Mirrors test_agent_flow_routes.py's fake-the-two-external-
-boundaries pattern (snapshot lookup + LLM calls); everything else runs for real."""
+"""Route-level tests for the Stage 3 agentic planner endpoints; fakes the snapshot
+lookup and LLM calls, everything else runs for real."""
 from __future__ import annotations
 
 from pathlib import Path

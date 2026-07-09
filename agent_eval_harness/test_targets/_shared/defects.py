@@ -1,4 +1,4 @@
-"""6 planted-defect switches shared by T1/T2 (CS-261 §6)."""
+"""6 planted-defect switches shared by T1/T2."""
 from __future__ import annotations
 
 import os

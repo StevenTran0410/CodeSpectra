@@ -1,4 +1,5 @@
-"""Stage 3 — DAG LLM orchestrator (CS-265 redesign): per-agent nodes fan out, handoff_gates fans in, reconcile joins against the baseline, critic reviews. See aeh_stage3_agentic_eval_planner_plan.md §4."""
+"""Stage 3 — DAG LLM orchestrator: per-agent nodes fan out, handoff_gates fans in, reconcile
+joins against the baseline, critic reviews."""
 from __future__ import annotations
 
 import asyncio
@@ -29,12 +30,12 @@ from agent_eval_harness.store import repository
 
 logger = logging.getLogger("agent_eval_harness.planning.agentic_planner")
 
-# ragas.context_precision removed — no dispatch handler (CS-281 §2).
+# ragas.context_precision removed — no dispatch handler.
 _KNOWN_RAGAS_METRICS = {"ragas.faithfulness", "ragas.answer_relevancy"}
 _BASELINE_HANDOFF_METRICS = {
     "allowed_downstream", "max_items_per_call", "max_retries", "retry_on_reject_required",
 }
-MAX_LLM_JUDGE_GATES_PER_AGENT = 3  # §5 cap; baseline judges exempt
+MAX_LLM_JUDGE_GATES_PER_AGENT = 3  # cap on LLM-judge gates per agent; baseline judges exempt
 
 ANALYST_SYSTEM = (
     "You are an AI evaluation-planning analyst. Given one agent's real source code, its "
@@ -263,8 +264,8 @@ def _evidence_user_prompt(evidence: AgentEvidence) -> str:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Shared LLM-JSON call: retry once with a much larger budget on truncation, and
-# surface a fully-failed round into dag_notes instead of vanishing silently.
+# Shared LLM-JSON call: retries once with a larger budget on truncation, and records a
+# fully-failed round in dag_notes instead of vanishing silently.
 # ──────────────────────────────────────────────────────────────────────────────
 
 _RETRY_TOKEN_MULTIPLIER = 4  # unparseable JSON is almost always truncation, not garbage
@@ -279,10 +280,9 @@ async def _complete_json(
     label: str,
     dag_notes: list[str] | None = None,
 ) -> dict | None:
-    """Calls the LLM in json_mode, retrying once at `max_tokens * _RETRY_TOKEN_MULTIPLIER`
-    if the first response is unparseable. Returns None (never raises) if both attempts
-    fail, appending a note to `dag_notes` so the caller's degraded-default round is
-    visible in the plan report instead of looking identical to a legitimate empty result."""
+    """Calls the LLM in json_mode, retrying once at `max_tokens * _RETRY_TOKEN_MULTIPLIER` if
+    the first response is unparseable. Returns None (never raises) on repeated failure, but
+    appends a note to `dag_notes` so a degraded round is visible in the plan report."""
     last_error: Exception | None = None
     for attempt, tokens in enumerate((max_tokens, max_tokens * _RETRY_TOKEN_MULTIPLIER)):
         try:
@@ -361,7 +361,7 @@ def _known_assertion_names() -> list[str]:
 
 
 def _validate_metric(metric: str, metric_class: str) -> bool:
-    """Delegate to the unified METRIC_REGISTRY (CS-281 §2)."""
+    """Delegate to the unified METRIC_REGISTRY."""
     return validate_metric(metric, metric_class)
 
 
@@ -381,7 +381,7 @@ def _parse_gates(raw: Any, *, valid_toolkits: frozenset[str] = frozenset({"asser
             continue
         if g.get("toolkit") not in valid_toolkits:
             continue
-        # CS-281 §2: closed dataset_kind vocabulary — unknown kind → needs_human
+        # Closed dataset_kind vocabulary — unknown kind → needs_human
         dk = g.get("dataset_kind")
         if dk and dk not in DATASET_KINDS:
             g = dict(g, status="needs_human", dataset_kind=dk)
@@ -536,7 +536,7 @@ def _gate_to_suite_entry(gate: EvaluationGate) -> SuiteEntry:
         dataset_ref = DatasetRef(required={"kind": gate.dataset_kind, "min_cases": 20})
     else:
         dataset_ref = None
-    # CS-281 §6: classifier gates run in entrypoint mode (CS-284 codegen key).
+    # classifier gates run in entrypoint mode.
     execution = "entrypoint" if gate.metric_class == "classifier" else "harness"
     return SuiteEntry(
         id=gate.id,
@@ -587,7 +587,7 @@ def _merge_observability(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# CS-281 §4 — params completion pass
+# Params completion pass
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _derive_expected_tools(component: Component, system_map: SystemMap) -> list[str]:
@@ -610,7 +610,7 @@ def _complete_params(
     contract: EvaluationContract | None,
     report_notes: list[str],
 ) -> EvaluationGate:
-    """Fill registry-required params from the CS-287 contract / system map.
+    """Fill registry-required params from the contract / system map.
     Returns a (possibly new) gate. Sets status='needs_human' when underivable."""
     if system_map is None and contract is None:
         return gate
@@ -670,7 +670,7 @@ def _complete_params(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# CS-281 §4 — feasibility pass
+# Feasibility pass
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _apply_feasibility(
@@ -679,7 +679,7 @@ def _apply_feasibility(
     agent_id: str,
     report_notes: list[str],
 ) -> list[EvaluationGate]:
-    """Evaluate meaningless_when against the CS-287 contract; replace/drop/needs_human.
+    """Evaluate meaningless_when against the contract; replace/drop/needs_human.
     Baseline gates (provenance='rule') are NEVER dropped.
     LLM-only observability flags (in llm_fields) demote to needs_human; static flags execute."""
     if contract is None:
@@ -777,7 +777,7 @@ def _apply_feasibility(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# CS-281 §5 — judge/assertion rebalance
+# Judge/assertion rebalance
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _rebalance_gates(
@@ -860,7 +860,7 @@ def reconcile(
     system_map: SystemMap | None = None,
 ) -> tuple[Suite, EvaluationPlanReport]:
     """Baseline always wins on (component, metric) conflict and is never dropped.
-    CS-281: runs params completion, feasibility, and judge rebalance after merge."""
+    Runs params completion, feasibility, and judge rebalance after merge."""
     handoff_by_agent: dict[str, list[EvaluationGate]] = {}
     for gate in handoff_gates:
         handoff_by_agent.setdefault(gate.agent_id, []).append(gate)
@@ -909,22 +909,22 @@ def reconcile(
         contract = (contracts or {}).get(agent.id)
         post_notes: list[str] = []
 
-        # CS-281 §4 — merge observability
+        # Merge observability
         if contract is not None:
             conflict_notes = _merge_observability(contract, profiles_by_agent.get(agent.id))
             contract.needs_human.extend(conflict_notes)
             post_notes.extend(conflict_notes)
 
-        # CS-281 §4 — params completion
+        # Params completion
         agent_gates = [
             _complete_params(g, system_map, contract, post_notes)
             for g in agent_gates
         ]
 
-        # CS-281 §4 — feasibility pass
+        # Feasibility pass
         agent_gates = _apply_feasibility(agent_gates, contract, agent.id, post_notes)
 
-        # CS-281 §5 — rebalance
+        # Rebalance
         agent_gates = _rebalance_gates(agent_gates, agent.id, post_notes)
 
         all_suite_entries.extend(_gate_to_suite_entry(g) for g in agent_gates)
@@ -990,14 +990,14 @@ async def generate_plan_agentic(
 ) -> tuple[Suite, EvaluationPlanReport]:
     """Builds and executes the Stage-3 DAG; every agent gets its own gate set."""
     agents = agent_flow_map.agents
-    # Shared across all concurrent DAG nodes — plain list.append() is safe here since
-    # asyncio coroutines only interleave at await points, never mid-statement.
+    # Shared across all concurrent DAG nodes — list.append() is safe since asyncio
+    # coroutines only interleave at await points, never mid-statement.
     dag_notes: list[str] = []
 
     async def _gather(_: dict[str, Any]) -> tuple[dict[str, AgentEvidence], dict[str, list[SuiteEntry]]]:
         return await gather_evidence(system_map, agent_flow_map, source_by_component, accepted_edges, llm_client)
 
-    # Contract harvest is pure AST over already-fetched files — no LLM, runs inline (CS-287).
+    # Contract harvest is pure AST over already-fetched files — no LLM, runs inline.
     contracts: dict[str, EvaluationContract] = {}
     if files:
         from agent_eval_harness.mapping.builder.contract_harvest import harvest_contracts
