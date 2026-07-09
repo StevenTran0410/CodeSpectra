@@ -1,1 +1,1 @@
-"""Retrieval domain package (RPA-034)."""
+"""Retrieval domain package."""

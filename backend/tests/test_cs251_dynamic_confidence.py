@@ -1,4 +1,4 @@
-"""CS-251 — Dynamic Confidence Scoring + Real Consumption Test Suite.
+"""Dynamic Confidence Scoring + Real Consumption Test Suite.
 
 Acceptance gate for dynamic ambiguous-confidence formula, min_confidence wiring,
 path_confidence multiplicative compounding, and tentative file tracking.

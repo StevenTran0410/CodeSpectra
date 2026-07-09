@@ -1,7 +1,7 @@
 """Analysis budget profiles for normal and large-codebase modes.
 
 All agent retrieval and token budgets are centralised here.
-Normal mode must not regress from pre-CS-012 behaviour.
+Normal mode must not regress from the original hard-coded behaviour.
 Large mode applies multipliers and raises retrieval depth.
 
 Provider hard limits (conservative maximums):
@@ -63,7 +63,7 @@ def _clamp_tokens(n: int) -> int:
 
 
 # ---------------------------------------------------------------------------
-# NORMAL_PROFILE — baseline, identical to pre-CS-012 hard-coded values
+# NORMAL_PROFILE — baseline, identical to the original hard-coded values
 # ---------------------------------------------------------------------------
 NORMAL_PROFILE = AnalysisProfile(
     mode="normal",

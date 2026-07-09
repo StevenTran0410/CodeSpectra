@@ -1,4 +1,4 @@
-"""Repo map and symbol extraction types (RPA-032)."""
+"""Repo map and symbol extraction types."""
 from enum import Enum
 
 from pydantic import BaseModel

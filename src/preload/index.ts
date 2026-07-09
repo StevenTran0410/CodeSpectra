@@ -337,11 +337,7 @@ const api = {
   }
 }
 
-// Note: contextBridge.exposeInMainWorld does NOT support Proxy objects —
-// Proxies are stripped/cloned across the context isolation boundary, causing
-// window.api.* access to return undefined in the renderer. TypeScript types
-// already enforce channel declarations at compile time; runtime assertion
-// would need a different mechanism (e.g. wrap each leaf function individually).
+// contextBridge.exposeInMainWorld doesn't support Proxy objects — they get stripped across the context isolation boundary, so window.api.* would be undefined in the renderer.
 if (process.contextIsolated) {
   contextBridge.exposeInMainWorld('electron', electronAPI)
   contextBridge.exposeInMainWorld('api', api)

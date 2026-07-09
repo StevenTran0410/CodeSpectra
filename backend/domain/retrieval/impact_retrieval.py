@@ -1,4 +1,4 @@
-"""Impact-aware retrieval pipeline (RPA-060).
+"""Impact-aware retrieval pipeline.
 
 Runs concurrent reverse-BFS cone queries and symbol call-chain traces for each
 seed file, then ranks and budgets chunks using structural graph signals.

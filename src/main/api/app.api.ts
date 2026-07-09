@@ -9,7 +9,7 @@ export function registerAppHandlers(client: BackendClient): void {
   ipcMain.handle('app:get-logs-path', () => log.transports.file.getFile().path)
   ipcMain.handle('app:get-diagnostics', () => client.get('/api/app/diagnostics'))
 
-  // Allow manual backend restart retry (CS-229)
+  // Allow manual backend restart retry
   ipcMain.handle('app:retry-backend', async () => {
     const manager = getPythonProcessManager()
     await manager.start().catch((err) => {

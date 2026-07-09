@@ -1,4 +1,4 @@
-"""LLM agent that generates a semantic cache descriptor for one analysis section (CS-225)."""
+"""LLM agent that generates a semantic cache descriptor for one analysis section."""
 
 from __future__ import annotations
 

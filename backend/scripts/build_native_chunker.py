@@ -1,4 +1,4 @@
-"""Build native AST chunker merge extension in-place (pybind11, CS-101)."""
+"""Build native AST chunker merge extension in-place (pybind11)."""
 from __future__ import annotations
 
 import platform

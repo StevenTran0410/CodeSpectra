@@ -459,7 +459,7 @@ CREATE INDEX IF NOT EXISTS idx_retrieval_chunks_snapshot_path
 -- Covers report history queries ordered by creation time.
 -- NOTE: DESC on the second column requires SQLite 3.37+; this project targets
 -- Python 3.11+ which bundles SQLite 3.39+, so DESC is safe here.
--- TODO(CS-229): extend this index if a soft-delete column is added to analysis_reports.
+-- TODO: extend this index if a soft-delete column is added to analysis_reports.
 CREATE INDEX IF NOT EXISTS idx_analysis_reports_repo_created
     ON analysis_reports(repo_id, created_at DESC);
 """,

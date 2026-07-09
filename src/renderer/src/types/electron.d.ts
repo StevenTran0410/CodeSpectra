@@ -3,7 +3,7 @@
 export interface SectionDoneEvent {
   type?: string
   section: string
-  status: 'done' | 'error'
+  status: 'running' | 'done' | 'error'
   duration_ms?: number
   data?: unknown
   error?: string | null
@@ -266,7 +266,7 @@ export interface CyclesResponse {
   cycles: string[][]
 }
 
-// ── CS-250: function-level symbol edge drill-down (graph viewer) ─────────────
+// ── Function-level symbol edge drill-down (graph viewer) ─────────────────────
 
 export interface SymbolEdgeInfo {
   src_symbol: string

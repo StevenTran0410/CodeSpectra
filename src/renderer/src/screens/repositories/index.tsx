@@ -53,10 +53,8 @@ export default function RepositoriesScreen(): React.ReactElement {
 
   useEffect(() => { load(activeWorkspaceId ?? undefined, mode) }, [load, activeWorkspaceId, mode])
 
-  // AEH mode only: repos already imported under Code Analysis, not yet
-  // registered for AEH — "Use for AEH" reuses the on-disk clone (a plain
-  // add() by known path, no git clone) instead of requiring the user to
-  // re-enter a URL/folder in Code Hosts (CS-272 lazy-activation UX).
+  // AEH mode only: repos already imported under Code Analysis but not yet registered for
+  // AEH — "Use for AEH" reuses the on-disk clone instead of re-cloning via Code Hosts.
   const [caReposAvailable, setCaReposAvailable] = useState<LocalRepo[]>([])
   const [activatingPath, setActivatingPath] = useState<string | null>(null)
 

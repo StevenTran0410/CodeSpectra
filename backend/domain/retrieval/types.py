@@ -1,4 +1,4 @@
-"""Retrieval types (RPA-034)."""
+"""Retrieval types."""
 
 from __future__ import annotations
 
@@ -148,7 +148,7 @@ class TwoStageBundle(BaseModel):
     stage3: TwoStageStage3Result
 
 
-# ── Impact retrieval types (RPA-060) ─────────────────────────────────────────
+# ── Impact retrieval types ────────────────────────────────────────────────────
 
 
 class ImpactRankedChunk(BaseModel):
@@ -190,7 +190,7 @@ class ImpactRetrievalBundle(BaseModel):
     risk_summary: dict  # high_risk_files, total_affected, affected_community_count
 
 
-# ── RRF Multi-Signal Fusion Types (CS-252) ──────────────────────────────────
+# ── RRF Multi-Signal Fusion Types ───────────────────────────────────────────
 
 
 class SignalRankEntry(BaseModel):
@@ -213,7 +213,7 @@ class FusedRankEntry(BaseModel):
 
 
 class RerankedEntry(BaseModel):
-    """Result from cross-encoder reranking of fused entries (CS-254)."""
+    """Result from cross-encoder reranking of fused entries."""
 
     chunk_id: str
     rel_path: str

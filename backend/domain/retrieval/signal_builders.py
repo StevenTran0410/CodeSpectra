@@ -1,4 +1,4 @@
-"""Signal builders for RRF multi-signal fusion (CS-252/CS-253).
+"""Signal builders for RRF multi-signal fusion.
 
 Constructs ranked signal lists from BM25, graph-confidence, module-proximity,
 and category-hint heuristics.
@@ -137,9 +137,9 @@ async def _load_confidence_weighted_edges(
     signal.
 
     The seed-file filter is pushed into the SQL WHERE clause (substr-based prefix match,
-    same collision-safe convention as CS-249's copy_unchanged_symbol_edges -- "foo.py" never
+    same collision-safe convention as copy_unchanged_symbol_edges -- "foo.py" never
     matches "foo2.py::..."), chunked at 200 paths per round-trip, instead of fetching every
-    edge in the snapshot and filtering in Python (CS-255).
+    edge in the snapshot and filtering in Python.
     """
     if not seed_files:
         return {}

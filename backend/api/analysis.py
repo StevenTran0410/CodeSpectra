@@ -1,4 +1,4 @@
-"""Analysis run endpoints (RPA-035)."""
+"""Analysis run endpoints."""
 from fastapi import APIRouter, Query
 
 from domain.analysis.service import AnalysisService

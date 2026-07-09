@@ -1,8 +1,4 @@
-"""Function-level 1-hop graph expansion for cross-encoder reranking (CS-256).
-
-Expands retrieval candidate pools with callees/callers of top-ranked functions,
-resolving symbols to specific code chunks for code-level retrieval.
-"""
+"""Function-level 1-hop graph expansion for cross-encoder reranking: expands retrieval candidate pools with callees/callers of top-ranked functions, resolving symbols to specific code chunks."""
 
 from __future__ import annotations
 
@@ -16,20 +12,7 @@ def _resolve_symbol_for_chunk(
     all_rows_dicts: list[dict],
     symbol_index: dict[str, list[tuple[str, int, int]]] | None,
 ) -> str | None:
-    """Resolve a chunk to its enclosing symbol name via overlap matching.
-
-    Given a chunk (identified by chunk_id), find its [start_line, end_line] in all_rows_dicts,
-    then look up which symbol's definition range (from symbol_index) overlaps that chunk.
-
-    Args:
-        chunk_id: The chunk's ID to resolve
-        all_rows_dicts: All chunk rows as dicts (must have id, rel_path, start_line, end_line)
-        symbol_index: dict[name_lower, list[(rel_path, start_line, end_line)]] from load_symbol_index
-
-    Returns:
-        The symbol name (as it appears in the call graph, e.g., "ClassName.method_name"),
-        or None if no chunk matches or no symbol overlaps the chunk.
-    """
+    """Resolve a chunk to its enclosing symbol name (e.g., "ClassName.method_name") via line-range overlap between the chunk and symbol_index; None if no match."""
     if not symbol_index:
         return None
 
@@ -50,8 +33,7 @@ def _resolve_symbol_for_chunk(
     if chunk_start == 0 and chunk_end == 0:
         return None
 
-    # Find the first symbol whose definition range overlaps this chunk
-    # (reusing the exact overlap predicate from _symbol_overlap_fallback: sym_start >= chunk_start and sym_end <= chunk_end)
+    # Find the first symbol whose definition range overlaps this chunk (same overlap predicate as _symbol_overlap_fallback: sym_start >= chunk_start and sym_end <= chunk_end).
     for symbol_name, ranges in symbol_index.items():
         for rel_path, sym_start, sym_end in ranges:
             if rel_path == chunk_rel_path and sym_start >= chunk_start and sym_end <= chunk_end:
@@ -65,20 +47,7 @@ def _resolve_chunk_for_symbol(
     all_rows_dicts: list[dict],
     symbol_index: dict[str, list[tuple[str, int, int]]] | None,
 ) -> dict | None:
-    """Resolve a symbol to the chunk containing its definition.
-
-    Given a file and symbol name, look up the symbol's line range in symbol_index,
-    then find the chunk in that file whose [start_line, end_line] overlaps the symbol.
-
-    Args:
-        file_path: The file where the symbol is defined
-        symbol_name: The symbol name (lower-cased or exact as stored in symbol_index)
-        all_rows_dicts: All chunk rows as dicts
-        symbol_index: dict[name_lower, list[(rel_path, start_line, end_line)]]
-
-    Returns:
-        The chunk dict that contains this symbol's definition, or None if no match.
-    """
+    """Resolve a symbol to the chunk containing its definition: look up the symbol's line range in symbol_index, then find the chunk in that file whose [start_line, end_line] overlaps it. Returns the chunk dict, or None if no match."""
     if not symbol_index:
         return None
 
@@ -108,11 +77,7 @@ def _resolve_chunk_for_symbol(
 
 
 def _rerank_coverage_target(total_fused: int) -> int:
-    """Compute target number of fused entries to seed function-level 1-hop expansion.
-
-    At least 100 candidates when available, but never more than 3/4 of the total fused pool
-    (rerank is meant to refine a top slice, not replace RRF fusion's own judgment over the long tail).
-    """
+    """Compute target number of fused entries to seed function-level 1-hop expansion: at least 100 when available, but never more than 3/4 of the total fused pool (rerank refines a top slice, not the long tail)."""
     _RERANK_COVERAGE_MIN = 100
     _RERANK_COVERAGE_MAX_FRACTION = 0.75
     return min(total_fused, max(_RERANK_COVERAGE_MIN, round(total_fused * _RERANK_COVERAGE_MAX_FRACTION)))
@@ -125,26 +90,7 @@ async def _expand_function_level_1hop(
     all_rows_dicts: list[dict],
     cap: int,
 ) -> list[FusedRankEntry]:
-    """Collect function-level 1-hop expansion candidates (callees and callers of top-ranked functions).
-
-    Expands the candidate pool by finding functions that call or are called by the top N fused entries,
-    where N = _rerank_coverage_target(len(fused)). For each seed, fetches callees and callers via
-    symbol graph edges, then resolves each to a specific chunk (not whole file). Synthetic
-    FusedRankEntry placeholders are created for expansion-only candidates (never seen in original `fused`).
-
-    Iteration is in rank order (best-first), so if the cap is hit, expansion priority deterministically
-    favors the query's currently-best candidates.
-
-    Args:
-        snapshot_id: Snapshot to query
-        fused: The original fused rank list
-        symbol_index: Symbol definition index from load_symbol_index
-        all_rows_dicts: All chunk rows as dicts
-        cap: Maximum number of NEW (expansion-only) chunks to add
-
-    Returns:
-        List of synthetic FusedRankEntry for expansion-only chunks (NOT including the original fused entries).
-    """
+    """Collect function-level 1-hop expansion candidates (callees/callers of the top _rerank_coverage_target(len(fused)) fused entries), resolving each to a specific chunk. Creates synthetic FusedRankEntry placeholders for expansion-only chunks (not in the original `fused`). Iterates best-first so a hit cap favors the query's currently-best candidates. Returns only the new expansion entries, not the original fused list."""
     if not fused or not symbol_index:
         return []
 

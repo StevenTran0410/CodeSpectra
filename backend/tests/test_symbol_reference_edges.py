@@ -1,13 +1,4 @@
-"""CS-213 — Symbol Reference Edge Verification Test Suite.
-
-Acceptance gate for CS-202 (symbol_graph.py).  Every test here MUST pass
-before CS-202 is considered shippable.
-
-Extended for CS-240: Verification that confidence_score and resolution_method
-are correctly assigned to each edge per the documented resolver branches.
-
-This file is now part of the permanent test suite (CS-240 extended its scope).
-"""
+"""Symbol reference edge verification test suite: acceptance gate for symbol_graph.py resolution, including confidence_score/resolution_method assignment."""
 from __future__ import annotations
 
 import pytest

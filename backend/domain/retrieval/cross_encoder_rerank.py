@@ -1,8 +1,4 @@
-"""Cross-encoder reranking using jinaai/jina-reranker-v3 (CS-254).
-
-GPU-only reranker that rescores fused entries using a local cross-encoder model.
-Lazy-loaded singleton, 4-bit quantization via bitsandbytes, uses trust_remote_code=True.
-"""
+"""Cross-encoder reranking using jinaai/jina-reranker-v3: a GPU-only reranker that rescores fused entries using a local cross-encoder model. Lazy-loaded singleton, 4-bit quantization via bitsandbytes, uses trust_remote_code=True."""
 
 from __future__ import annotations
 
@@ -24,16 +20,11 @@ _MIN_VRAM_GB = 2.0
 # This is the maximum tokens the model can accept for both query + passages combined
 _MAX_SEQ_LENGTH = 8192
 
-# torch/transformers are an optional extra ([reranker] in pyproject.toml) — most
-# installs (including the default npm postinstall hook) do NOT have them. Every
-# import of torch/transformers in this module must be deferred into function
-# bodies so this module can be imported (and the whole retrieval pipeline keeps
-# working, rerank simply unavailable) on a machine without the extra installed.
+# torch/transformers are an optional extra ([reranker] in pyproject.toml); most installs don't have them, so every import of torch/transformers here must be deferred into function bodies to keep this module (and the whole retrieval pipeline) importable without it.
 
 
 def detect_gpu(min_vram_gb: float = _MIN_VRAM_GB) -> tuple[bool, float | None]:
-    """Returns (meets_min_vram, vram_gb). Never raises — any torch/CUDA
-    import or probing error is treated as 'no usable GPU', not a crash."""
+    """Returns (meets_min_vram, vram_gb). Never raises — any torch/CUDA import or probing error is treated as 'no usable GPU', not a crash."""
     global _gpu_available, _vram_gb
     if _gpu_available is not None:
         return _gpu_available, _vram_gb
@@ -52,8 +43,7 @@ def detect_gpu(min_vram_gb: float = _MIN_VRAM_GB) -> tuple[bool, float | None]:
 
 
 def _check_gpu_available() -> bool:
-    """Check if CUDA GPU is available (cached). Kept for backward compatibility
-    with callers that only need the boolean."""
+    """Check if CUDA GPU is available (cached). Kept for backward compatibility with callers that only need the boolean."""
     available, _ = detect_gpu()
     return available
 

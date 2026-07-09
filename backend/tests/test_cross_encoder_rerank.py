@@ -1,12 +1,4 @@
-"""Tests for cross-encoder reranking (CS-254).
-
-Covers:
-- Mocked-boundary regression test: real _louvain_fallback.py content fed as passage
-- Assertion: passage is longer than 200 chars and contains 'sigma_tot'
-- Assertion: rerank_fused_entries output is sorted by rerank_score descending
-- Unit test: passage passed to .rerank() differs from excerpt for same chunk_id
-- GPU-gated real end-to-end smoke test (requires CUDA)
-"""
+"""Tests for cross-encoder reranking: mocked-boundary regression, sort-order, error-handling, and GPU-gated end-to-end smoke tests."""
 
 from __future__ import annotations
 
@@ -30,17 +22,7 @@ class TestRerankerMockedBoundary:
     """Mocked .rerank() boundary tests with real file content."""
 
     def test_louvain_fallback_real_content_fed_to_stub(self):
-        """Regression test (CS-254 claim #1): real _louvain_fallback.py content is fed
-        to the reranker, proving full content (not just 200-char excerpt) reaches the
-        model.
-
-        The test:
-        1. Loads real _louvain_fallback.py content via Path.read_text()
-        2. Mocks the model's .rerank() method to capture what's passed
-        3. Asserts the passage is longer than 200 chars (exceeds old excerpt cap)
-        4. Asserts it contains 'sigma_tot' (confirmed present at line 100, past char 200)
-        5. Returns a high rerank_score from the stub to test rank promotion
-        """
+        """Regression test (claim #1): real _louvain_fallback.py content must reach the reranker as the full passage, not just the 200-char excerpt."""
         louvain_path = (
             Path(__file__).parent.parent / "domain" / "structural_graph" / "_louvain_fallback.py"
         )
@@ -109,9 +91,7 @@ class TestRerankerMockedBoundary:
                 assert reranked[0].rerank_score == 0.95
 
     def test_passage_longer_than_excerpt_for_same_chunk(self):
-        """Unit test (anti-regression guard for claim #1): the passage passed to
-        .rerank() must be longer than the FusedRankEntry.excerpt for the same chunk_id.
-        """
+        """Anti-regression guard (claim #1): the passage passed to .rerank() must be longer than the FusedRankEntry.excerpt for the same chunk_id."""
         long_content = "X" * 500  # 500 chars
         short_excerpt = "X" * 200  # 200-char excerpt
 
@@ -157,11 +137,8 @@ class TestRerankerSortOrder:
     """Regression tests for claim #2: output must be sorted by rerank_score descending."""
 
     def test_rerank_output_sorted_by_rerank_score_descending(self):
-        """Regression test (CS-254 claim #2): rerank_fused_entries() must sort its output
-        by rerank_score descending before returning, not return in insertion order.
-        """
-        # Build 3 entries with distinct fused_scores but we'll give them rerank_scores
-        # in different order via the stub
+        """Regression test (claim #2): rerank_fused_entries() must sort its output by rerank_score descending before returning, not return in insertion order."""
+        # Build 3 entries with distinct fused_scores, but give them rerank_scores in different order via the stub.
         fused_entries = [
             FusedRankEntry(
                 chunk_id="chunk_1",
@@ -200,8 +177,7 @@ class TestRerankerSortOrder:
                 "domain.retrieval.cross_encoder_rerank._check_gpu_available",
                 return_value=True,
             ):
-                # Stub returns scores in reverse order compared to fused_score
-                # (to prove the final sort is actually happening)
+                # Stub returns scores in reverse order vs fused_score, to prove the final sort actually happens.
                 def stub_rerank(query, passages, top_n=None):
                     return [
                         {"index": 2, "relevance_score": 0.9},  # chunk_3 gets high rerank_score
@@ -225,8 +201,7 @@ class TestRerankerSortOrder:
 
                 # Fused scores should be preserved (side-by-side comparison)
                 fused_scores = [e.fused_score for e in reranked]
-                # After reranking and sorting by rerank_score, order is: chunk_3 (0.9), chunk_2 (0.5), chunk_1 (0.1)
-                # So fused_scores should be: [1.0, 5.0, 10.0] (in that new order)
+                # After reranking/sorting by rerank_score, order is chunk_3, chunk_2, chunk_1 -> fused_scores [1.0, 5.0, 10.0].
                 expected_fused_order = [1.0, 5.0, 10.0]
                 assert fused_scores == expected_fused_order, (
                     f"Fused scores must be preserved in reranked order. "
@@ -348,8 +323,7 @@ class TestRerankerPreservesMetadata:
                 assert status == "ok"
                 assert len(reranked) == 2
 
-                # After sorting by rerank_score, order should be [chunk_2, chunk_1]
-                # But fused_rank should still reflect original positions
+                # After sorting by rerank_score, order is [chunk_2, chunk_1], but fused_rank should still reflect original positions.
                 assert reranked[0].chunk_id == "chunk_2"
                 assert reranked[0].fused_rank == 2  # Was position 2 in fused list
 
@@ -401,11 +375,7 @@ class TestRerankerGPUEndToEnd:
     """Real GPU end-to-end smoke test (requires CUDA + RUN_GPU_SMOKE_TEST=1)."""
 
     def test_real_model_inference_smoke_test(self):
-        """Smoke test: load the real model and run inference on 2-3 docs.
-
-        Opt-in only (RUN_GPU_SMOKE_TEST=1) — never fires in a routine `pytest`
-        run even on a machine with CUDA, since it downloads/loads a real model.
-        """
+        """Smoke test: load the real model and run inference on 2-3 docs; opt-in only (RUN_GPU_SMOKE_TEST=1) since it downloads/loads a real model."""
         from domain.retrieval.cross_encoder_rerank import load_reranker
 
         # Try to load the real model
@@ -468,7 +438,7 @@ class TestRerankerGPUEndToEnd:
 
 
 class TestGpuRerankerGlobalToggle:
-    """Tests for the global GPU Reranker on/off flag (app_metadata, CS-254 follow-up)."""
+    """Tests for the global GPU Reranker on/off flag (app_metadata)."""
 
     async def _set_flag(self, value: str | None) -> None:
         db = get_db()
@@ -497,8 +467,7 @@ class TestGpuRerankerGlobalToggle:
         await self._set_flag(None)
 
     async def test_disabled_when_flag_true_but_no_gpu(self):
-        """A stale 'true' flag (e.g. carried over from a different machine) must
-        never be trusted blindly — GPU availability is re-checked every time."""
+        """A stale 'true' flag (e.g. carried over from a different machine) must never be trusted blindly — GPU availability is re-checked every time."""
         await self._set_flag("true")
         with patch(
             "domain.retrieval.cross_encoder_rerank.detect_gpu", return_value=(False, None)

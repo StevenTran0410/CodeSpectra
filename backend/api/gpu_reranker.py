@@ -1,4 +1,4 @@
-"""GPU reranker global toggle — stored as a flag in app_metadata (CS-254 follow-up).
+"""GPU reranker global toggle — stored as a flag in app_metadata.
 
 Mirrors the cloud-consent pattern (api/consent.py): a single global boolean
 flag in app_metadata, not workspace-scoped, since this controls a machine-wide

@@ -1,4 +1,4 @@
-"""BM25 scorer tests for CS-201."""
+"""BM25 scorer tests."""
 from __future__ import annotations
 
 from domain.retrieval.bm25_scorer import BM25Scorer
@@ -35,14 +35,9 @@ def test_bm25_scorer_idf_penalizes_common_terms() -> None:
     ]
     idf = BM25Scorer.build_idf(corpus, 4)
 
-    # "the" and "common" appear in all docs -> low IDF (but "the" is filtered as hapax for df=1 edge)
-    # "rare" appears in 1 doc -> filtered out by hapax rule (df < 2)
-    # Let's use terms that actually appear in the IDF
     scorer = BM25Scorer(idf, avgdl=3.0)
 
-    # "word" appears in 1 doc -> filtered (hapax)
-    # "common" appears in 4 docs -> low IDF
-    # Let's check that a term appearing in 1 doc is not in the IDF
+    # "word" appears in only 1 doc -> filtered by the hapax rule (df < 2).
     assert "word" not in idf
 
     # "common" is in idf (appears in all 4 docs, df=4)

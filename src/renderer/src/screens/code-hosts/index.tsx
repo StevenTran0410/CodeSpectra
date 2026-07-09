@@ -583,10 +583,8 @@ export default function CodeHostsSetup(): React.ReactElement {
   const toast = useToastStore()
   const [panel, setPanel] = useState<'none' | 'folder' | 'clone'>('none')
   const [confirmRemoveId, setConfirmRemoveId] = useState<string | null>(null)
-  // Code Hosts is a single shared screen (not namespaced /ca vs /aeh like Repositories/Ask,
-  // which derive mode from the route) — there's no URL to read mode from here, so the user
-  // picks explicitly which lineage (CA excludes test files; AEH includes them, CS-272) they're
-  // importing into or browsing. Without this, AEH-mode repos could never be created at all.
+  // Code Hosts is a shared screen with no route-based mode (unlike Repositories/Ask) — the
+  // user must pick CA vs AEH lineage explicitly here, or AEH repos could never be created.
   const [hostMode, setHostMode] = useState<'code_analysis' | 'aeh'>('code_analysis')
 
   useEffect(() => { load(activeWorkspaceId ?? undefined, hostMode) }, [load, activeWorkspaceId, hostMode])

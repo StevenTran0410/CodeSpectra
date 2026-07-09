@@ -1,14 +1,4 @@
-"""CS-240 — Confidence-Scored Graph Edges Test Suite.
-
-Acceptance gate for confidence scoring on symbol_graph_edges (CS-240).
-
-Tests:
-  1. Known-ambiguous case (two same-named functions, different files, no import)
-     → resolver returns [] (unchanged EC-9/EC-6 behavior).
-  2. Each resolver branch emits expected confidence_score and resolution_method.
-  3. Legacy confidence string filters still work (backward-compat).
-  4. min_confidence filtering in graph_queries and two_stage_retrieval works.
-"""
+"""Confidence-scored graph edges test suite: resolver branch mapping, legacy string filters, and min_confidence filtering."""
 from __future__ import annotations
 
 import asyncio
@@ -23,7 +13,7 @@ from infrastructure.db.database import get_db
 
 
 # ---------------------------------------------------------------------------
-# Unit Tests: Resolver Branch Confidence Mapping (CS-240)
+# Unit Tests: Resolver Branch Confidence Mapping
 # ---------------------------------------------------------------------------
 
 def _builder() -> SymbolGraphBuilder:
@@ -132,9 +122,8 @@ class Runner:
         alpha_edge = _find(edges, "reassign.py::Runner.execute", "reassign.py::Alpha.run")
         beta_edge = _find(edges, "reassign.py::Runner.execute", "reassign.py::Beta.run")
 
-        # Should have both edges, both marked as low confidence
-        # With 2 assigned types, _ambiguous_confidence(2) = 0.6/2 = 0.3
-        expected_score = 0.3  # _ambiguous_confidence(2)
+        # Both edges marked low confidence: _ambiguous_confidence(2) = 0.6/2 = 0.3
+        expected_score = 0.3
         if alpha_edge:
             assert alpha_edge.confidence_score == expected_score, f"Expected {expected_score} for Alpha, got {alpha_edge.confidence_score}"
             assert alpha_edge.resolution_method == "name_heuristic_ambiguous"

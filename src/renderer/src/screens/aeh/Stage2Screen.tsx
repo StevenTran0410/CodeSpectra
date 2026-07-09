@@ -113,7 +113,7 @@ export default function Stage2Screen(): React.ReactElement {
     return candidates.find((c) => c.id === selectedCandidateId) || null
   }, [candidates, selectedCandidateId])
 
-  // null (not yet generated) just means "not generated yet" — never triggers a fresh LLM-2 call or an error.
+  // A null result just means the map hasn't been generated yet — not an error.
   const tryLoadAgentFlowMap = useCallback(async (sessionId: string) => {
     try {
       const flows = await window.api.aeh.getAgentFlowMap(sessionId)

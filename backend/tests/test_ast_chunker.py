@@ -1,4 +1,4 @@
-"""Tests for AST-based semantic chunker (CS-101).
+"""Tests for AST-based semantic chunker.
 
 Sections:
   1. Unit tests — flat chunking, merge pass, fallback, short-circuit

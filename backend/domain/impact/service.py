@@ -1,4 +1,4 @@
-"""ImpactService — blast_radius and plan endpoints (RPA-060)."""
+"""ImpactService — blast_radius and plan endpoints."""
 from __future__ import annotations
 
 import json
@@ -43,13 +43,10 @@ class ImpactService:
         # Build subgraph: filter edge_tuples to edges where both endpoints are in cone
         ctx = await _load_graph_context(body.snapshot_id)
 
-        # Git-history co-change hint (CS-246) — additive, does not replace the
-        # graph-based cone. Best-effort: empty dict if repo path is unavailable
-        # or git fails.
+        # Git-history co-change hint — additive, does not replace the graph-based cone.
         cochange_hints = await _load_cochange_hints(body.snapshot_id, body.changed_files)
 
-        # Convention-violation wiring (CS-246) — Section E findings from an
-        # existing analysis report, filtered to files in the impact cone.
+        # Convention-violation wiring — Section E findings from an existing analysis report, filtered to files in the impact cone.
         convention_violations = await _load_convention_violations(body.report_id, cone_files)
         subgraph_edges = [
             {"src": src, "dst": dst, "edge_type": etype, "is_external": bool(is_ext)}
@@ -98,7 +95,7 @@ class ImpactService:
         )
 
     async def plan(self, body: PlanRequest) -> PlanResponse:
-        # v1: structured data only — no LLM synthesis (deferred to RPA-061)
+        # v1: structured data only — no LLM synthesis (deferred)
         bundle = await retrieve_impact(
             snapshot_id=body.snapshot_id,
             seed_files=[],
@@ -133,8 +130,7 @@ class ImpactService:
             for c in bundle.affected_communities[:5]
         ]
 
-        # Convention-violation wiring (CS-246): Section E findings from the
-        # report, filtered to the files this plan suggests touching.
+        # Convention-violation wiring — Section E findings from the report, filtered to the files this plan suggests touching.
         violations_to_avoid = await _load_convention_violations(body.report_id, set(seen_paths))
 
         return PlanResponse(
@@ -165,8 +161,7 @@ def _chunk_reason(chunk) -> str:
 
 
 async def _load_cochange_hints(snapshot_id: str, seed_files: list[str]) -> dict[str, list[dict]]:
-    """Git-history co-change signal (CS-246). Best-effort: {} if snapshot has
-    no resolvable local_path or git fails for any reason."""
+    """Git-history co-change signal. Best-effort: {} if snapshot has no resolvable local_path or git fails for any reason."""
     db = get_db()
     async with db.execute(
         "SELECT local_path FROM repo_snapshots WHERE id=?", (snapshot_id,)
@@ -178,13 +173,7 @@ async def _load_cochange_hints(snapshot_id: str, seed_files: list[str]) -> dict[
 
 
 async def _load_convention_violations(report_id: str | None, files: set[str]) -> list[dict]:
-    """Pulls Section E (`violations_found`) from an existing analysis report
-    and filters to entries whose `file` matches one of `files` (CS-246).
-
-    Best-effort: returns [] if report_id is absent, the report doesn't exist,
-    or Section E has no findings — this is an additive hint on top of the
-    already-shipped impact cone, not a hard dependency.
-    """
+    """Pulls Section E (`violations_found`) from an existing analysis report and filters to entries whose `file` matches one of `files`. Best-effort: returns [] if report_id is absent, the report doesn't exist, or Section E has no findings."""
     if not report_id or not files:
         return []
     db = get_db()

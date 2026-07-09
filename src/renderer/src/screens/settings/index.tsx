@@ -124,7 +124,7 @@ export default function SettingsScreen(): React.ReactElement {
   const [diagError, setDiagError] = useState<string | null>(null)
   const [showNativePopup, setShowNativePopup] = useState(false)
 
-  // GPU reranker state (CS-254)
+  // GPU reranker state
   const [gpuReranker, setGpuReranker] = useState<GpuRerankerStatus | null>(null)
   const [gpuRerankerError, setGpuRerankerError] = useState<string | null>(null)
   const [gpuRerankerToggling, setGpuRerankerToggling] = useState(false)
@@ -282,7 +282,7 @@ export default function SettingsScreen(): React.ReactElement {
           </p>
         </section>
 
-        {/* ── GPU Reranker (CS-254) ────────────────────────────────────────── */}
+        {/* ── GPU Reranker ─────────────────────────────────────────────────── */}
         <section className="card p-4 space-y-3">
           <h2 className="text-sm font-medium text-gray-300 flex items-center gap-2">
             <Cpu className="w-4 h-4" />

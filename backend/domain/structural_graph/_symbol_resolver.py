@@ -1,4 +1,4 @@
-"""Symbol resolver — CS-202.
+"""Symbol resolver.
 
 Resolves call sites to concrete SymbolEdge objects using import namespace
 tracking, constructor-assignment analysis, and MRO-style inheritance walking.
@@ -8,7 +8,7 @@ Confidence levels:
   CONF_LOW   — multiple candidates or interface-typed receiver
   CONF_NONE  — unresolvable; caller MUST NOT emit an edge for these
 
-Resolution method mapping (CS-240):
+Resolution method mapping:
   Each SymbolEdge is assigned a confidence_score (0.0-1.0 float) and a
   resolution_method label indicating how the resolution succeeded:
 

@@ -1,4 +1,4 @@
-"""Retrieval service (RPA-034): chunking + lexical + hybrid/vectorless retrieval."""
+"""Retrieval service: chunking + lexical + hybrid/vectorless retrieval."""
 
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ from .types import (
 _WS = re.compile(r"\s+")
 _WORD = re.compile(r"[A-Za-z0-9_]+")
 
-# Languages that get AST-based semantic chunking (CS-101).
+# Languages that get AST-based semantic chunking.
 _AST_LANGS: frozenset[str] = frozenset(
     {
         "python",
@@ -77,9 +77,7 @@ _AST_LANGS: frozenset[str] = frozenset(
 _ast_chunker = ASTChunker()
 
 _SECTION_BUDGETS: dict[RetrievalSection, int] = {
-    # Modern LLMs have large context windows (128K-200K tokens), so use larger
-    # evidence budgets. Budget = tokens reserved for evidence only (system prompt +
-    # user preamble add ~800 on top).
+    # Budget = tokens reserved for evidence only; system prompt + user preamble add ~800 more.
     RetrievalSection.ARCHITECTURE: 14_000,
     RetrievalSection.CONVENTIONS: 10_000,
     RetrievalSection.FEATURE_MAP: 14_000,
@@ -98,9 +96,7 @@ _SECTION_CATEGORY_HINTS: dict[RetrievalSection, set[str]] = {
 }
 
 
-# Column lists for retrieval_chunks SELECT queries — avoids loading `content`
-# when only metadata is needed (metadata-only queries save 50-250 MB bandwidth
-# on large codebases since content can be many KB per row).
+# Avoids loading `content` when only metadata is needed, saving bandwidth on large codebases.
 _CHUNK_FULL_COLS = "id, snapshot_id, rel_path, language, category, chunk_index, content, token_estimate, chunk_type, start_line, end_line"
 
 
@@ -184,12 +180,7 @@ _BRACE_LANGS = {
 
 
 def _ends_mid_function(content: str, language: str | None) -> bool:
-    """Return True if the chunk likely ends in the middle of a function/class body.
-
-    For brace languages: unbalanced { > } means we're still inside a block.
-    For Python: a def/class whose body indentation never returned to col-0.
-    For unknown: fall back to brace counting.
-    """
+    """Return True if the chunk likely ends in the middle of a function/class body."""
     if not content.strip():
         return False
 
@@ -230,14 +221,7 @@ def _maybe_expand_to_boundary(
     ev: RetrievalEvidence,
     chunk_lookup: dict[tuple[str, int], dict],
 ) -> RetrievalEvidence:
-    """If the chunk ends mid-function, append the next adjacent chunk once.
-
-    Rules:
-    - Expand at most ONE hop — we never chain expansions.
-    - If the next chunk exists and merging completes (or partially completes) the
-      function, we include it. Even if the next chunk starts another function, we
-      stop there (don't expand further).
-    """
+    """If the chunk ends mid-function, append the next adjacent chunk once (at most one hop, never chained)."""
     cur_row = chunk_lookup.get((ev.rel_path, ev.chunk_index))
     language = cur_row["language"] if cur_row is not None else None
     if not _ends_mid_function(ev.excerpt, language):
@@ -272,19 +256,7 @@ async def _apply_incremental_idf_update(
     tokenized_corpus: list[list[str]],
     avgdl: float,
 ) -> tuple[dict, int]:
-    """
-    Attempt incremental IDF update by detecting changed chunks via content hash.
-    Returns (idf_dict, next_index_version).
-    If incremental is feasible (<=10% changes and within drift guard), applies delta.
-    Else: full rebuild.
-
-    Args:
-        db: database connection
-        snapshot_id: snapshot being indexed
-        chunk_hash_map: dict[chunk_id] -> new_content_hash
-        tokenized_corpus: list of tokenized chunks
-        avgdl: average document length
-    """
+    """Attempt incremental IDF update via content-hash diff (full rebuild if change ratio too high). Returns (idf_dict, next_index_version)."""
     # Fetch prior BM25 stats
     async with db.execute(
         "SELECT idf_json, index_version FROM retrieval_bm25_stats WHERE snapshot_id=?",
@@ -353,8 +325,7 @@ async def _apply_incremental_idf_update(
         new_idf = prior_idf
         logger.debug("[build_index] No changed chunks; reusing prior IDF")
     else:
-        # Some chunks changed — full rebuild is safer than tracking deltas
-        # (delta tracking requires matching old→new chunk positions, which is error-prone)
+        # Some chunks changed — full rebuild is safer than tracking deltas (error-prone position matching).
         new_idf = BM25Scorer.build_idf(tokenized_corpus, len(tokenized_corpus))
         logger.debug("[build_index] Chunks changed; rebuilding IDF from corpus")
 
@@ -476,11 +447,9 @@ class RetrievalService:
         files_indexed = 0
         chunk_count = 0
         tokenized_corpus: list[list[str]] = []
-        chunk_hash_map: dict[str, str] = {}  # chunk_id -> content_hash (CS-229)
+        chunk_hash_map: dict[str, str] = {}  # chunk_id -> content_hash
 
-        # Accumulate rows per file; flush together after each file's chunks are ready.
-        # Using the file loop as the natural batch boundary: rows per file are bounded
-        # and flushing per-file avoids holding a very large in-memory list.
+        # Flush rows per file to avoid holding a very large in-memory list.
         for f in files:
             rel_path = f["rel_path"]
             language = f["language"]
@@ -520,7 +489,7 @@ class RetrievalService:
                 tokenized_corpus.append(tokens)
                 chunk_id = new_id()
                 content_hash = _compute_content_hash(piece)
-                chunk_hash_map[chunk_id] = content_hash  # Track for incremental IDF (CS-229)
+                chunk_hash_map[chunk_id] = content_hash  # Track for incremental IDF
                 file_chunk_rows.append(
                     (
                         chunk_id,
@@ -549,7 +518,7 @@ class RetrievalService:
                         now,
                     )
                 )
-                # Token frequency rows for incremental IDF updates (CS-229).
+                # Token frequency rows for incremental IDF updates.
                 token_freq = Counter(tokens)
                 for term, tf in token_freq.items():
                     file_token_rows.append((chunk_id, term, int(tf)))
@@ -557,7 +526,7 @@ class RetrievalService:
 
             await _batch_insert_chunks(db, file_chunk_rows, file_index_rows)
 
-            # Batch insert token frequencies (CS-229).
+            # Batch insert token frequencies.
             if file_token_rows:
                 await db.executemany(
                     """INSERT OR IGNORE INTO retrieval_chunk_tokens
@@ -565,7 +534,7 @@ class RetrievalService:
                     file_token_rows,
                 )
 
-        # Compute and store BM25 IDF stats with incremental tracking (CS-229).
+        # Compute and store BM25 IDF stats with incremental tracking.
         if tokenized_corpus:
             avgdl = sum(len(t) for t in tokenized_corpus) / len(tokenized_corpus)
             idf, next_index_version = await _apply_incremental_idf_update(

@@ -1,11 +1,4 @@
-"""Git-history co-change signal for blast-radius (CS-246).
-
-Confirmed gap vs Greptile: ImpactService's blast_radius/plan relied solely on
-the structural graph (cone/BFS, centrality, communities, call chains) with no
-git-log integration. This module adds an additive "files that historically
-changed together with the seed files" hint — it does not replace or alter the
-existing graph-based impact cone.
-"""
+"""Git-history co-change signal for blast-radius: an additive hint of files that historically changed together with the seed files, without altering the existing graph-based impact cone."""
 from __future__ import annotations
 
 import asyncio
@@ -89,12 +82,7 @@ async def get_cochange_files(
     limit: int = 10,
     max_commits: int = _MAX_COMMITS,
 ) -> dict[str, list[dict]]:
-    """Returns seed_file -> list of {rel_path, cochange_count}, sorted by count desc.
-
-    Best-effort: returns {} on any git failure (missing repo, not a git repo,
-    git not installed, timeout) rather than raising — this is an additive hint,
-    not a required signal.
-    """
+    """Returns seed_file -> list of {rel_path, cochange_count}, sorted by count desc. Best-effort: returns {} on any git failure rather than raising."""
     if not seed_files:
         return {}
     root = Path(local_path)

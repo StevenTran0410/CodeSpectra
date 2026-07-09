@@ -6,7 +6,7 @@ import { is } from '@electron-toolkit/utils'
 import { logger } from '../../shared/logger'
 import { BackendClient } from './client'
 
-const STARTUP_TIMEOUT_MS = 60_000  // Bumped from 20s for slower machines (CS-229)
+const STARTUP_TIMEOUT_MS = 60_000  // Bumped from 20s for slower machines
 const HEALTH_POLL_INTERVAL_MS = 300
 const READY_SIGNAL = 'BACKEND_READY:'
 
@@ -17,9 +17,7 @@ export function getExternalApiToken(): string {
   return externalApiToken
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// PythonProcessManager: encapsulates process lifecycle with crash recovery (CS-229)
-// ────────────────────────────────────────────────────────────────────────────
+// PythonProcessManager: encapsulates process lifecycle with crash recovery
 
 class PythonProcessManager {
   private process: ChildProcess | null = null
@@ -95,7 +93,7 @@ class PythonProcessManager {
     this.client = new BackendClient(port)
     logger.info(`[PythonProcessManager] Python backend ready on port ${port}`)
 
-    // Emit ready event to renderer (CS-229)
+    // Emit ready event to renderer
     const mainWindow = BrowserWindow.getAllWindows()[0]
     if (mainWindow) {
       mainWindow.webContents.send('backend:ready')

@@ -1,4 +1,4 @@
-"""AST-based semantic chunker for code files (CS-101).
+"""AST-based semantic chunker for code files.
 
 Replaces flat line-count chunking with syntax-aware chunking via Tree-sitter.
 Functions, classes, and other logical units are never split mid-body.
@@ -30,7 +30,7 @@ def _load_native_chunker() -> Any:
 _native_chunker = _load_native_chunker()
 
 # ---------------------------------------------------------------------------
-# Pre-pass filters: applied to source before AST chunking (CS-229)
+# Pre-pass filters: applied to source before AST chunking
 # ---------------------------------------------------------------------------
 
 def _strip_license_header_pass(source: str, language: str) -> tuple[str, str | None]:
@@ -1090,7 +1090,7 @@ class ASTChunker:
         """
         lang_key = language.lower() if language else ""
 
-        # Apply pre-passes (CS-229).
+        # Apply pre-passes.
         pre_pass_chunk_type_override = None
         for pre_pass in _PRE_PASSES:
             try:

@@ -1,4 +1,4 @@
-"""Persistent graph.json serialization for structural graphs (RPA-058 Part B).
+"""Persistent graph.json serialization for structural graphs.
 
 Schema version: 1.0
   nodes: list of {path, type, indegree, outdegree, score, community_id}

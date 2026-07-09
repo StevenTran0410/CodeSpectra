@@ -1,4 +1,4 @@
-"""PlantUML C4 syntax parser → {nodes, edges} JSON (CS-219).
+"""PlantUML C4 syntax parser → {nodes, edges} JSON.
 
 Converts LLM-generated PlantUML C4 text into the structured dict format
 consumed by the React Flow + ELK renderer on the frontend.
@@ -150,8 +150,7 @@ def parse_plantuml_c4(text: str) -> dict[str, Any]:
         edges = edges[:_MAX_EDGES]
 
     # ── filter orphan nodes ───────────────────────────────────────────────────
-    # Remove nodes that appear in no edge (neither source nor target).
-    # This keeps the diagram clean when the LLM forgets to generate some Rel() calls.
+    # Remove nodes with no edge — keeps the diagram clean if the LLM forgets a Rel() call.
     if edges:
         connected: set[str] = set()
         for e in edges:

@@ -1,4 +1,4 @@
-"""Structural graph service (RPA-033)."""
+"""Structural graph service."""
 from __future__ import annotations
 
 import ast
@@ -34,7 +34,7 @@ from .types import (
     SymbolEdgeInfo,
 )
 
-# Kill switch for SymbolGraphBuilder wiring (CS-240)
+# Kill switch for SymbolGraphBuilder wiring
 _SYMBOL_GRAPH_BUILDER_ENABLED = os.getenv("SYMBOL_GRAPH_BUILDER_ENABLED", "1").strip().lower() not in (
     "0",
     "false",
@@ -298,7 +298,7 @@ class StructuralGraphService:
             )
             logger.info("[structural_graph] copied %d edges from cache for unchanged files", copied)
 
-        # Copy symbol graph edges for unchanged files (CS-249)
+        # Copy symbol graph edges for unchanged files
         if _SYMBOL_GRAPH_BUILDER_ENABLED and cache_result.previous_snapshot_id and cache_result.unchanged_paths:
             copied_symbols = await copy_unchanged_symbol_edges(
                 db,
@@ -392,7 +392,7 @@ class StructuralGraphService:
             _edge_rows,
         )
 
-        # Wire SymbolGraphBuilder into the pipeline (CS-240)
+        # Wire SymbolGraphBuilder into the pipeline
         _symbol_edge_rows: list[tuple] = []
         if _SYMBOL_GRAPH_BUILDER_ENABLED:
             from .symbol_graph import SymbolGraphBuilder
@@ -651,7 +651,7 @@ class StructuralGraphService:
             edges=edges,
         )
 
-    # ── CS-102: community detection ───────────────────────────────────────────
+    # ── Community detection ───────────────────────────────────────────
 
     async def detect_communities(
         self, snapshot_id: str, resolution: float = 1.0
@@ -958,17 +958,17 @@ class StructuralGraphService:
         return CyclesResponse(snapshot_id=snapshot_id, cycles=sccs)
 
     async def symbol_edges_for_file(self, snapshot_id: str, file_path: str) -> FileSymbolEdgesResponse:
-        """Function-level drill-down (CS-250): symbol_graph_edges for one file.
+        """Function-level drill-down: symbol_graph_edges for one file.
 
         Uses an exact length-bounded prefix match (not LIKE) on "file_path::",
-        same collision-safe convention as CS-249's copy_unchanged_symbol_edges,
+        same collision-safe convention as copy_unchanged_symbol_edges,
         so "foo.py" never matches "foo2.py::...".
         """
         db = get_db()
         prefix = f"{file_path}::"
         plen = len(prefix)
 
-        # CS-255: combined into one UNION ALL round-trip instead of two separate
+        # Combined into one UNION ALL round-trip instead of two separate
         # queries. A direction discriminator distinguishes outgoing vs incoming rows
         # (UNION ALL, not UNION, so a self-referential edge -- a symbol in this file
         # calling another symbol in the same file -- correctly appears in BOTH halves,

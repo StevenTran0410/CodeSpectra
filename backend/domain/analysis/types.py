@@ -1,4 +1,4 @@
-"""Analysis runtime types (RPA-035)."""
+"""Analysis runtime types."""
 
 from collections.abc import Awaitable, Callable
 from enum import StrEnum

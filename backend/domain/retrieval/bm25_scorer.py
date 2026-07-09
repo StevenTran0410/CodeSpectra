@@ -1,4 +1,4 @@
-"""BM25 scorer for retrieval (CS-201, CS-227).
+"""BM25 scorer for retrieval.
 
 Pre-computed IDF is loaded from retrieval_bm25_stats at query time.
 Corpus tokenization uses the same _WORD regex and identifier splitting
@@ -17,7 +17,7 @@ _WORD = re.compile(r"[A-Za-z0-9_]+")
 _NATIVE_BM25 = None
 _NATIVE_BM25_LOADED = False
 
-# Chunk type weights for code-aware retrieval (CS-227, CS-229)
+# Chunk type weights for code-aware retrieval
 CHUNK_TYPE_WEIGHT: dict[str, float] = {
     "function":     1.5,
     "class":        1.5,
@@ -90,7 +90,7 @@ def split_identifier(token: str) -> list[str]:
 
 
 def _query_terms(q: str) -> list[str]:
-    """Extract and deduplicate query terms with identifier splitting (CS-227).
+    """Extract and deduplicate query terms with identifier splitting.
 
     Returns lowercased terms in order, with sub-tokens from split_identifier().
     """
@@ -134,7 +134,7 @@ class BM25Scorer:
         path_low: str,
         chunk_type: str = "block",
     ) -> float:
-        """BM25 score for a chunk against query terms, with type weighting (CS-227).
+        """BM25 score for a chunk against query terms, with type weighting.
 
         Terms must already be lowercased (same as _query_terms() output).
         content_low and path_low must be lowercased.
@@ -172,7 +172,7 @@ class BM25Scorer:
             path_contrib = idf * 1.0 if term in path_low else 0.0
             total += content_contrib + path_contrib
 
-        # Apply chunk type weight multiplier (CS-227)
+        # Apply chunk type weight multiplier
         weight = CHUNK_TYPE_WEIGHT.get(chunk_type, 1.0)
         return total * weight
 
@@ -183,7 +183,7 @@ class BM25Scorer:
         min_score_abs: float = 0.0,
         min_score_relative: float = 0.0,
     ) -> list[tuple[str, float]]:
-        """Score multiple chunks with type weighting and cutoff (CS-227).
+        """Score multiple chunks with type weighting and cutoff.
 
         chunks: list of (chunk_id, content, path) or (chunk_id, content, path, chunk_type).
                 If 3-tuple, chunk_type defaults to "block".

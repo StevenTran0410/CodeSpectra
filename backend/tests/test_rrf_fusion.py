@@ -1,12 +1,4 @@
-"""Tests for RRF Multi-Signal Fusion (CS-252).
-
-Covers:
-- Numeric-exact test of _reciprocal_rank_fusion with real Haystack Documents.
-- Disagreement acceptance: BM25 and graph-confidence signals producing different orderings,
-  with RRF fused output being neither pure-BM25 nor pure-graph.
-- Capped-SUM anti-gaming property: high-confidence edges outranking many low-confidence ones,
-  and CAP engagement at high fan-out.
-"""
+"""Tests for RRF Multi-Signal Fusion: numeric-exact RRF scoring, signal disagreement acceptance, and the capped-SUM anti-gaming property."""
 
 from __future__ import annotations
 
@@ -86,13 +78,7 @@ class TestReciprocalRankFusion:
         assert fused_by_id_biased["chunk_1"] > fused_by_id_eq["chunk_1"]
 
     def test_fuse_signal_lists_output_is_sorted_by_fused_score_descending(self):
-        """Regression test: _reciprocal_rank_fusion() returns documents_map.values()
-        in insertion order (~= first signal list's order), NOT sorted by the fused
-        score it just computed. fuse_signal_lists() must explicitly sort its own
-        output, otherwise "fused" results are just the first signal's order with
-        extra metadata attached -- this exact bug shipped in CS-252 and was only
-        caught by manual testing in the running app, not by any prior test.
-        """
+        """Regression test: _reciprocal_rank_fusion() returns documents_map.values() in insertion order (~= first signal list's order), NOT sorted by the fused score it just computed. fuse_signal_lists() must explicitly sort its own output, otherwise "fused" results are just the first signal's order with extra metadata attached -- this exact bug shipped in production and was only caught by manual testing, not by any prior test."""
         # Deliberately construct lists where the signal that determines insertion
         # order (bm25, first in the list) disagrees with the true fused winner.
         # "weak_overall" is bm25's #1 pick but appears in no other signal.
@@ -209,7 +195,7 @@ async def test_rrf_fusion_disagreement_acceptance():
             excerpt="some other content here",
         ),
     ]
-    # Precompute best_chunk_by_file (new in CS-253)
+    # Precompute best_chunk_by_file
     best_chunk_by_file = _best_chunk_per_file(rows, bm25_candidates, None)
 
     bm25_signal = build_bm25_rank_list(bm25_candidates, best_chunk_by_file, top_k=10)
@@ -452,26 +438,13 @@ async def test_capped_sum_with_centrality_boost():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Test Class D: CS-253 Join-Key Fix (3a) — Regression Test
+# Test Class D: Join-Key Fix (3a) — Regression Test
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
 async def test_join_key_fix_collapses_to_one_row_per_file():
-    """Regression test for CS-253 3a: join-key bug fix.
-
-    Construct fixture where:
-    - file_a.py has two chunks: chunk_a1 (chunk_index=0, bm25_score=10.0)
-                                chunk_a2 (chunk_index=1, bm25_score=0.0)
-    - The OLD bug would pick chunk_a2 for graph_signal (max by chunk_index)
-    - The fix must pick chunk_a1 (best BM25 chunk) for BOTH bm25_signal and graph_signal
-
-    Assert:
-    1. bm25_signal and graph_signal both reference chunk_a1 (same chunk_id)
-    2. fuse_signal_lists produces exactly ONE FusedRankEntry for file_a.py
-       (not two separate rows, one for each signal's chunk_id mismatch)
-    3. per_signal_ranks has both 'bm25' and 'graph_confidence' keys
-    """
+    """Regression test (join-key bug fix): the OLD bug picked the max-chunk_index chunk for graph_signal instead of the best-BM25 chunk, causing bm25_signal and graph_signal to reference different chunk_ids for the same file and produce duplicate FusedRankEntry rows. Asserts both signals reference the same chunk and fuse_signal_lists produces exactly one row per file."""
     rows = [
         {
             "id": "chunk_a1",
@@ -563,7 +536,7 @@ async def test_join_key_fix_collapses_to_one_row_per_file():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Test Class E: CS-253 Module-Proximity Signal (3b)
+# Test Class E: Module-Proximity Signal (3b)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -679,7 +652,7 @@ async def test_build_module_proximity_rank_list_no_community():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Test Class F: CS-253 Category-Hint Signal (3c)
+# Test Class F: Category-Hint Signal (3c)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -851,7 +824,7 @@ async def test_build_category_hint_rank_list_empty_section_hints():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Test Class G: CS-253 Fallback Mechanisms (_best_chunk_per_file)
+# Test Class G: Fallback Mechanisms (_best_chunk_per_file)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -1015,17 +988,13 @@ async def test_symbol_overlap_fallback_empty_symbol_index():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Test Class C (CS-255): seed-file filter push-down in _load_confidence_weighted_edges
+# Test Class C: seed-file filter push-down in _load_confidence_weighted_edges
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
 async def test_load_confidence_weighted_edges_filters_to_seed_files_in_sql():
-    """CS-255: _load_confidence_weighted_edges must only fetch edges originating from
-    seed_files, pushed into the SQL WHERE clause -- not fetch every edge in the snapshot
-    and filter in Python. Also verifies the collision guard (seed.py vs seed2.py) and
-    that an empty seed set short-circuits to {} without querying.
-    """
+    """_load_confidence_weighted_edges must only fetch edges originating from seed_files, pushed into the SQL WHERE clause -- not fetch every edge in the snapshot and filter in Python. Also verifies the collision guard (seed.py vs seed2.py) and that an empty seed set short-circuits to {} without querying."""
     db = get_db()
     snap_id = new_id()
     rows = [
@@ -1063,7 +1032,7 @@ async def test_load_confidence_weighted_edges_filters_to_seed_files_in_sql():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Test Class F: Rerank batching (CS-254 follow-up — VRAM-scaled batch loop)
+# Test Class F: Rerank batching (VRAM-scaled batch loop)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -1092,7 +1061,7 @@ class TestRerankCoverageTarget:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Test Class G: CS-256 Function-Level 1-Hop Expansion + Final RRF-Fuse
+# Test Class G: Function-Level 1-Hop Expansion + Final RRF-Fuse
 # ─────────────────────────────────────────────────────────────────────────────
 
 

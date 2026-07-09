@@ -54,7 +54,7 @@
   html:not(.dark) body { color: #111827; }
 
   /* gray-* text — dark-first design uses gray-100 as primary, gray-400 as muted */
-  /* Verified CS-230: contrast ratio ≥7:1 */
+  /* Verified: contrast ratio >=7:1 */
   html:not(.dark) .text-gray-100 { color: #111827; }
   html:not(.dark) .text-gray-200 { color: #1f2937; }
   html:not(.dark) .text-gray-300 { color: #374151; }

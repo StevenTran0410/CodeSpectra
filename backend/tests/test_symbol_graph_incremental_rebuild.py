@@ -1,4 +1,4 @@
-"""Tests for CS-249: symbol_graph_edges incremental rebuild with carry-forward.
+"""Tests for symbol_graph_edges incremental rebuild with carry-forward.
 
 Covers:
 - Fresh snapshot: symbol edges computed fresh (no carry-forward).
@@ -73,7 +73,7 @@ async def test_copy_unchanged_symbol_edges_basic():
 
 @pytest.mark.asyncio
 async def test_symbol_edges_for_file_cs250():
-    """CS-250: symbol_edges_for_file returns defined symbols + outgoing/incoming
+    """Verify that symbol_edges_for_file returns defined symbols + outgoing/incoming
     cross-file edges with confidence_score/resolution_method, using the same
     collision-safe prefix match as copy_unchanged_symbol_edges (foo.py vs foo2.py)."""
     from domain.structural_graph.service import StructuralGraphService
@@ -88,7 +88,7 @@ async def test_symbol_edges_for_file_cs250():
         (snap_id, "bar.py::other", "foo.py::util", "calls", 0.4, "name_heuristic_ambiguous", "low", json.dumps([2])),
         # foo2.py edges must never leak into foo.py's results (collision guard)
         (snap_id, "foo2.py::unrelated", "bar.py::helper", "calls", 0.9, "mro_resolved", "high", json.dumps([3])),
-        # Self-referential: foo.py calling another symbol in foo.py itself. CS-255's
+        # Self-referential: foo.py calling another symbol in foo.py itself. The
         # UNION ALL (not UNION) must surface this in BOTH outgoing and incoming --
         # a plain UNION with identical-looking rows could silently dedupe it.
         (snap_id, "foo.py::caller", "foo.py::local_helper", "calls", 0.85,
@@ -124,7 +124,7 @@ async def test_symbol_edges_for_file_cs250():
     assert incoming_by_src["bar.py::other"].dst_symbol == "foo.py::util"
     assert incoming_by_src["bar.py::other"].confidence_score == 0.4
     assert incoming_by_src["bar.py::other"].resolution_method == "name_heuristic_ambiguous"
-    # CS-255: same self-referential edge must ALSO appear in incoming (foo.py -> foo.py) --
+    # Same self-referential edge must ALSO appear in incoming (foo.py -> foo.py) --
     # UNION ALL must not collapse it just because outgoing already has an identical-looking row.
     assert incoming_by_src["foo.py::caller"].dst_symbol == "foo.py::local_helper"
     assert incoming_by_src["foo.py::caller"].confidence_score == 0.85

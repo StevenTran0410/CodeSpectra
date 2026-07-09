@@ -55,7 +55,7 @@ def render_bundle(bundle: RetrievalBundle, limit: int = 40, excerpt_chars: int =
     limit: max evidence items to include (default 40).
     excerpt_chars: max chars per chunk. boundary-expanded chunks get 2× room.
 
-    Within-bundle dedup (CS-229, relaxed 2026-04-24): only consolidate when
+    Within-bundle dedup (relaxed 2026-04-24): only consolidate when
     the SAME chunk appears twice in one bundle's evidence list (e.g. via
     multi-query retrieval returning overlapping hits). Same file at different
     chunk positions is kept — different chunks usually represent different

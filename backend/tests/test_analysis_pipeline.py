@@ -2,7 +2,7 @@
 
 Merged from:
   - test_agents_contract.py     (agent A–K output contracts, JSON repair logic)
-  - test_pipeline_memory_context.py (prefetch pipeline context, CS-012 profiles)
+  - test_pipeline_memory_context.py (prefetch pipeline context, agent profiles)
   - test_retrieval_scoring.py   (retrieval helpers, model guard, profile integration)
 """
 from __future__ import annotations
@@ -219,7 +219,7 @@ async def test_chat_json_attempt1_happy_path_single_call(mock_retrieval: MagicMo
 
 
 # ===========================================================================
-# Pipeline memory context — prefetch + CS-012 profiles
+# Pipeline memory context — prefetch + agent profiles
 # ===========================================================================
 
 
@@ -277,7 +277,7 @@ def test_get_profile_large_returns_large_profile() -> None:
 
 
 def test_normal_profile_values_unchanged() -> None:
-    """NORMAL_PROFILE must match pre-CS-012 hardcoded values exactly."""
+    """NORMAL_PROFILE must match legacy hardcoded values exactly."""
     assert NORMAL_PROFILE.retrieval_max_results == 30
     assert NORMAL_PROFILE.retrieval_manifest_char_limit == 3000
     assert NORMAL_PROFILE.tokens_project_identity == 2000
@@ -424,7 +424,7 @@ def test_check_model_capability_larger_ok() -> None:
 
 
 # ===========================================================================
-# CS-012: agent profile integration with retrieval max_results
+# Agent profile integration with retrieval max_results
 # ===========================================================================
 
 

@@ -1,4 +1,4 @@
-"""Base agent with JSON chat path for typed section schemas (RPA-053)."""
+"""Base agent with JSON chat path for typed section schemas."""
 
 from __future__ import annotations
 

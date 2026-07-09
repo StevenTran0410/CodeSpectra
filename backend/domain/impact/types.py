@@ -1,4 +1,4 @@
-"""Service-layer Pydantic models for impact analysis (RPA-060)."""
+"""Service-layer Pydantic models for impact analysis."""
 from __future__ import annotations
 
 from pydantic import BaseModel
@@ -20,8 +20,7 @@ class RiskFile(BaseModel):
 
 class BlastRadiusResponse(BaseModel):
     changed_files: list[str]
-    # total_affected, by_hop, affected_communities, high_risk_files, call_chains,
-    # cochange_hints (git-history co-change, CS-246), convention_violations (CS-246)
+    # total_affected, by_hop, affected_communities, high_risk_files, call_chains, cochange_hints, convention_violations
     blast_radius: dict
     subgraph: dict      # nodes, edges, seed_files, hop_colors
     context_chunks: list[dict]  # ImpactRankedChunk serialized

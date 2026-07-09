@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { SectionDoneEvent } from '../types/electron'
 
-type SectionStatus = 'pending' | 'done' | 'error'
+type SectionStatus = 'pending' | 'running' | 'done' | 'error'
 export type AnalysisSectionId = 'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G' | 'H' | 'I' | 'J' | 'K' | 'L'
 
 const ALL_SECTIONS: AnalysisSectionId[] = [

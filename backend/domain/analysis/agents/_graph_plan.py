@@ -1,4 +1,4 @@
-"""Graph-aware retrieval planning helper (CS-103).
+"""Graph-aware retrieval planning helper.
 
 Adds a lightweight "plan step" before main retrieval in agents D, F, J:
 one small LLM call decomposes a broad analysis goal into 1-3 focused

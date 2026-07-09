@@ -1,4 +1,4 @@
-"""Structural graph types (RPA-033, CS-102)."""
+"""Structural graph types."""
 from pydantic import BaseModel
 
 
@@ -50,7 +50,7 @@ class GraphNeighborsResponse(BaseModel):
     edges: list[GraphEdge]
 
 
-# ── CS-102: community detection types ────────────────────────────────────────
+# ── Community detection types ────────────────────────────────────────
 
 class CommunityInfo(BaseModel):
     community_id: int
@@ -87,7 +87,7 @@ class CyclesResponse(BaseModel):
     cycles: list[list[str]]
 
 
-# ── CS-250: function-level symbol edge drill-down (graph viewer) ─────────────
+# ── Function-level symbol edge drill-down (graph viewer) ─────────────
 
 class SymbolEdgeInfo(BaseModel):
     src_symbol: str

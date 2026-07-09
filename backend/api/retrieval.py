@@ -1,4 +1,4 @@
-"""Retrieval endpoints (RPA-034)."""
+"""Retrieval endpoints."""
 
 from fastapi import APIRouter
 

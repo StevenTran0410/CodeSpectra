@@ -1,13 +1,4 @@
-"""CS-270 — thin-delegation tests for the new /api/external/* read routes.
-
-These routes exist purely so AEH's discovery engine can query CodeSpectra's
-already-built indexes over HTTP (CS-260 §4 REST boundary). Each handler must
-do nothing but call the corresponding domain service method and return its
-result unchanged — this test proves exactly that (no route reimplements any
-logic), matching this codebase's existing convention of testing at the
-service-call boundary via mocks rather than spinning up a live HTTP server
-(no existing backend test does the latter).
-"""
+"""Thin-delegation tests for /api/external/* read routes: each handler must call the service method and return its result unchanged, verified via mocks at the service-call boundary (matching existing test convention, no live HTTP server)."""
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
@@ -19,10 +10,7 @@ import api.external as external
 
 @pytest.mark.asyncio
 async def test_search_retrieval_delegates_to_retrieval_service() -> None:
-    """Wraps retrieve_rrf_fusion (unbounded, BM25-weighted), not the plain
-    budget-capped retrieve() — a budget cap can silently drop a chunk with an
-    exact fingerprint match below an unrelated higher-scoring chunk, confirmed
-    empirically against this repo's own real haystack import."""
+    """Wraps retrieve_rrf_fusion (unbounded, BM25-weighted), not the plain budget-capped retrieve() — a budget cap can silently drop a chunk with an exact fingerprint match below an unrelated higher-scoring chunk, confirmed empirically against this repo's own real haystack import."""
     from domain.retrieval.types import RrfFusionRequest, RetrievalSection
 
     sentinel = object()
@@ -147,9 +135,7 @@ async def test_list_local_repos_delegates() -> None:
 
 @pytest.mark.asyncio
 async def test_all_new_routes_are_token_gated() -> None:
-    """Every new route must depend on require_external_token — a route that
-    forgets this dependency would leak CodeSpectra's index to any local process
-    without the bearer token, defeating the entire narrow-slice design."""
+    """Every new route must depend on require_external_token — a route that forgets this dependency would leak CodeSpectra's index to any local process without the bearer token, defeating the entire narrow-slice design."""
     gated_paths = {
         "/retrieval/search",
         "/graph/{snapshot_id}/neighbors",

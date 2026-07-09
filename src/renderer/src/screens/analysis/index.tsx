@@ -504,22 +504,29 @@ const [starting, setStarting] = useState(false)
                     className={`rounded-lg border px-3 py-2 ${
                       st === 'error'
                         ? 'border-rose-800/50 bg-rose-950/20'
+                        : st === 'running'
+                        ? 'border-indigo-800/50 bg-indigo-950/20 animate-pulse'
                         : 'border-zinc-800 bg-zinc-950/50'
                     }`}
                   >
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-xs font-mono text-zinc-300">{letter}</span>
                       <span className="text-[10px] uppercase text-zinc-500">
-                        {st === 'error' ? 'failed' : 'pending'}
+                        {st === 'error' ? 'failed' : st === 'running' ? 'running' : 'pending'}
                       </span>
                     </div>
+                    {st === 'running' && (
+                      <div className="mt-2 flex items-center gap-2">
+                        <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-400" />
+                        <span className="text-[11px] text-indigo-300/90">Agent is analyzing repository...</span>
+                      </div>
+                    )}
                     {st === 'pending' && (
                       <div className="mt-2 space-y-2">
                         <div className="h-2 animate-pulse rounded bg-zinc-800/60" />
                         <div className="h-2 animate-pulse rounded bg-zinc-800/60 w-4/5" />
                       </div>
                     )}
-                    {/* TODO(CS-231+): real per-section progress requires backend IPC emitting numeric progress */}
                     {st === 'error' && (
                       <div className="mt-2 text-[11px] text-rose-300/90">Section agent failed.</div>
                     )}

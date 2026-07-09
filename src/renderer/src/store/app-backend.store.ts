@@ -31,7 +31,7 @@ export const useAppBackendStore = create<AppBackendState>((set) => ({
     }),
 }))
 
-// Initialize IPC event listeners on module load (CS-229)
+// Initialize IPC event listeners on module load
 let listenersAttached = false
 
 export function attachBackendListeners(): void {

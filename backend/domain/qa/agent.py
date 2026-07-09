@@ -419,15 +419,7 @@ class QAAgent(BaseTypedAgent):
         section_scores: dict[str, float],
         token_budget: int,
     ) -> str:
-        """Render only the matched sections as structured text, respecting token_budget.
-
-        Sections are rendered in order of descending score. Each rendered block is
-        estimated at 4 chars/token. If the cumulative estimate exceeds token_budget,
-        that section and all remaining ones are dropped.
-
-        Reuses the per-section rendering logic from the original _render_analysis_context
-        but applied only to the matched subset.
-        """
+        """Render matched sections as structured text, score-descending, dropping sections once the token_budget (est. 4 chars/token) is exceeded."""
         sections = report.get("sections", {})
         if not sections:
             return ""
@@ -638,11 +630,7 @@ class QAAgent(BaseTypedAgent):
     def _extract_hint_files_from_sections(
         self, report: dict, matched_section_ids: list[str]
     ) -> list[str]:
-        """Extract hint file paths only from matched sections G and F.
-
-        Same logic as the former _extract_hint_files() but gated on matched_section_ids
-        so unmatched sections do not contribute hint files.
-        """
+        """Extract hint file paths from matched sections G and F only."""
         if not report or not matched_section_ids:
             return []
         sections = report.get("sections", {})
@@ -675,7 +663,7 @@ class QAAgent(BaseTypedAgent):
         return out
 
     # ------------------------------------------------------------------
-    # Hint chunk injection (unchanged from CS-223)
+    # Hint chunk injection
     # ------------------------------------------------------------------
 
     async def _inject_hint_chunks(

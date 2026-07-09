@@ -1,10 +1,4 @@
-"""External-agent-facing API (CS-235 narrow slice, for AEH's CodeSpectraProxyClient).
-
-Not full CS-235: no external_call_log table, no generalized multi-endpoint auth
-framework — just a bearer-token-gated LLM passthrough so an external harness
-(starting with AEH) can reuse whatever provider the user already configured
-here, without AEH ever holding a provider API key of its own.
-"""
+"""External-agent-facing API (narrow slice, for AEH's CodeSpectraProxyClient). Not a full implementation: no external_call_log table, no generalized multi-endpoint auth framework — just a bearer-token-gated LLM passthrough so an external harness (starting with AEH) can reuse whatever provider the user already configured here, without AEH ever holding a provider API key of its own."""
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel
 
@@ -117,14 +111,7 @@ async def list_llm_providers() -> list[ProviderSummary]:
     dependencies=[Depends(require_external_token)],
 )
 async def search_retrieval(body: RrfFusionRequest) -> RrfFusionBundle:
-    """Wraps retrieve_rrf_fusion (CS-252/253's debug/comparison path), not the
-    plain budget-capped retrieve() — deliberately, for AEH's discovery
-    fingerprinting (CS-270), which needs "does this term appear anywhere in
-    the repo" over a bare keyword query. retrieve()'s section-budget cap can
-    silently drop a chunk containing an exact match below a differently-scored
-    chunk for the same query (confirmed empirically against this repo's own
-    agent_pipeline.py — a real haystack import). retrieve_rrf_fusion's fused
-    list is unbounded and BM25-weighted, reliably surfacing exact-term hits."""
+    """Wraps retrieve_rrf_fusion (debug/comparison path), not the plain budget-capped retrieve() — deliberately, for AEH's discovery fingerprinting, which needs "does this term appear anywhere in the repo" over a bare keyword query. retrieve()'s section-budget cap can silently drop a chunk containing an exact match below a differently-scored chunk for the same query (confirmed empirically against this repo's own agent_pipeline.py — a real haystack import). retrieve_rrf_fusion's fused list is unbounded and BM25-weighted, reliably surfacing exact-term hits."""
     return await _retrieval_service.retrieve_rrf_fusion(body)
 
 

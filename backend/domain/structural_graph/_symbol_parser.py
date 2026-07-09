@@ -1,4 +1,4 @@
-"""Symbol parser — CS-202.
+"""Symbol parser.
 
 Extracts symbol definitions, imports, call sites, and attribute assignments
 from Python and TypeScript source files.
@@ -541,8 +541,7 @@ def _parse_ts_calls(
     interface_names: set[str],
 ) -> None:
     """Walk the TS AST to collect call sites and constructor assignments."""
-    # Build a map: method body node -> caller FQN
-    # We do a full walk keeping track of class/method context
+    # Track class/method context via stacks to compute each call site's caller FQN.
     class_stack: list[str] = []
     method_stack: list[str] = []
 

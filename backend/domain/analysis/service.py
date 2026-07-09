@@ -1,4 +1,4 @@
-"""Analysis runtime service (RPA-035)."""
+"""Analysis runtime service."""
 
 from __future__ import annotations
 
@@ -1098,6 +1098,8 @@ RULES:
         try:
             await self._jobs.start(job_id)
 
+            completed_sections = set()
+
             async def _on_section_done(
                 section: str,
                 status: str,
@@ -1121,6 +1123,16 @@ RULES:
                     status,
                     duration_ms,
                 )
+
+                if status in ("done", "error"):
+                    completed_sections.add(section)
+                    pct = int(70 + (len(completed_sections) / 12) * 29)  # up to 99%
+                    await self._jobs.update_step(
+                        job_id,
+                        StepName.GENERATE.value,
+                        pct,
+                        f"Running analysis agents ({len(completed_sections)}/12)",
+                    )
 
             async def _cancelled() -> bool:
                 if self._jobs.is_cancelled(job_id):

@@ -1,6 +1,4 @@
-"""Tests for CS-272: AEH must have an independent local_repos lineage from Code
-Analysis for the same folder path (own include_tests, own mode-scoped listing).
-"""
+"""AEH must have an independent local_repos lineage from Code Analysis for the same folder path (own include_tests, own mode-scoped listing)."""
 import pytest
 
 from domain.local_repo.service import LocalRepoService

@@ -1,4 +1,4 @@
-"""Two-stage retrieval pipeline (CS-203): BM25 stage1 → graph expansion stage2 → rank_and_budget stage3."""
+"""Two-stage retrieval pipeline: BM25 stage1 → graph expansion stage2 → rank_and_budget stage3."""
 from __future__ import annotations
 
 import importlib
@@ -83,7 +83,7 @@ def _get_native():
 
 
 async def _load_file_size_stats(snapshot_id: str) -> dict[str, tuple[int, int]]:
-    """Fetch size_bytes + symbol_count per file in ONE joined query (CS-229).
+    """Fetch size_bytes + symbol_count per file in ONE joined query.
 
     Returns: dict[rel_path, (size_bytes, symbol_count)].
 
@@ -163,7 +163,7 @@ def _compute_file_caps(
         if total >= 20 and (n / total) >= 0.3:
             cap += 1
 
-        # Size + symbol signals (CS-229 smart cap extension).
+        # Size + symbol signals (smart cap extension).
         size_bytes, symbol_count = file_size_stats.get(rel_path, (0, 0))
         if symbol_count >= 10:
             cap += 1  # function-dense file → information-dense
@@ -183,7 +183,7 @@ def _apply_diversity_filter(
     file_total_chunks: dict[str, int] | None = None,
     file_size_stats: dict[str, tuple[int, int]] | None = None,
 ) -> list[RankedChunk]:
-    """Light diversity pass: smart per-file cap + soft MMR (CS-229).
+    """Light diversity pass: smart per-file cap + soft MMR.
 
     Tuned 2026-04-24 with smart cap after feedback that a fixed max_per_file
     was blunt. Cap now scales per-file based on:
@@ -536,7 +536,7 @@ def _rank_and_budget(
                     token_estimate=int(r["token_estimate"] or 1),
                     excerpt=r["content"] or "",
                 ))
-            # Apply diversity filter with smart per-file caps (CS-229).
+            # Apply diversity filter with smart per-file caps.
             out = _apply_diversity_filter(
                 out,
                 central_files=central_files,
@@ -569,7 +569,7 @@ def _rank_and_budget(
             excerpt=r["content"] or "",
         ))
         used += tok
-    # Apply diversity filter with smart per-file caps (CS-229).
+    # Apply diversity filter with smart per-file caps.
     out = _apply_diversity_filter(
         out,
         central_files=central_files,
@@ -672,7 +672,7 @@ async def retrieve_two_stage(
             _RERANK_MIN_SCORE, len(all_scored),
         )
 
-    # Build per-file total chunk counts + size/symbol stats for smart cap (CS-229).
+    # Build per-file total chunk counts + size/symbol stats for smart cap.
     file_total_chunks: dict[str, int] = {path: len(rows) for path, rows in file_rows.items()}
     file_size_stats = await _load_file_size_stats(snapshot_id)
     ranked, used_cpp = _rank_and_budget(

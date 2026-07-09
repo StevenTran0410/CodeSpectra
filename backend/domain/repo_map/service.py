@@ -1,4 +1,4 @@
-"""Repo map and symbol extraction service (RPA-032)."""
+"""Repo map and symbol extraction service."""
 import json
 from pathlib import Path
 

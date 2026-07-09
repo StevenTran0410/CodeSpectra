@@ -1020,7 +1020,7 @@ function AnalysisOverview(): React.ReactElement {
             setSelectedProviderId(prov)
             setSelectedModelId(model)
           }}
-          title="Planning LLM Model (CS-274)"
+          title="Planning LLM Model"
         />
       </div>
     </div>

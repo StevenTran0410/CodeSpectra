@@ -28,11 +28,7 @@ export function wiringBlockFileEdges(wiringBlock: AEHDiscoveryCandidate['wiring_
   return edges
 }
 
-/** Sub-graph for ONE agent: its own components (component-id keyed, not file-keyed like the
- * full graph — a file basename rarely reads as "this agent"), its supporting files/tools (no
- * component identity of their own, pulled from LLM 1's own BFS file graph rather than
- * re-detected), plus neighbor agents collapsed into dashed boundary nodes; click one to walk
- * to that agent's own view. */
+/** Sub-graph for ONE agent: its own components, its supporting files/tools (pulled from LLM 1's file graph), plus neighbor agents collapsed into dashed boundary nodes you can click to walk to. */
 export function AgentSubGraphPanel({
   agent,
   agentFlowMap,
@@ -70,8 +66,8 @@ export function AgentSubGraphPanel({
     return m
   }, [ownedIds, componentById])
 
-  // Which agent (if any) owns each file, system-wide — tells a helper file (owned by no agent)
-  // apart from a neighbor agent's own file (already shown as a boundary node).
+  // Which agent (if any) owns each file, system-wide — distinguishes an unowned helper file
+  // from a neighbor agent's file (already shown as a boundary node).
   const fileToOwningAgent = useMemo(() => {
     const m = new Map<string, string>()
     for (const a of agentFlowMap.agents) {

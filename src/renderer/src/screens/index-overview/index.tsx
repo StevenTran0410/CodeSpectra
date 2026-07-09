@@ -30,11 +30,7 @@ function csvEscape(value: string | number): string {
   return s
 }
 
-/**
- * Builds one combined CSV from both query systems' FINAL results only
- * (Stage 3 re-ranked for 2-stage, fused results for RRF) — capped at
- * QUERY_CSV_MAX_ROWS entries per system, not the full debug breakdown.
- */
+/** Builds one combined CSV from both query systems' FINAL results only, capped at QUERY_CSV_MAX_ROWS rows per system. */
 function buildQueryComparisonCsv(
   twoStageBundle: TwoStageDebugBundle | null,
   rrfFusionBundle: RrfFusionDebugBundle | null
@@ -122,8 +118,7 @@ function dedupeEvidences(
   return Array.from(seen.values()).sort((a, b) => b.score - a.score)
 }
 
-/** Adapt RRF's FusedRankEntry list into RetrievalResultPanel's expected shape, so
- * "Run retrieval" can reuse the same display component when wired to RRF fusion. */
+/** Adapts RRF's FusedRankEntry list into RetrievalResultPanel's expected shape, so "Run retrieval" can reuse the same display component. */
 function adaptFusedEntriesForPanel(
   fused: FusedRankEntry[]
 ): Array<{ rel_path: string; chunk_index: number; reason_codes: string[]; score: number; token_estimate: number; excerpt: string }> {
@@ -480,7 +475,6 @@ function RrfFusedPanel({ entries }: { entries: FusedRankEntry[] }): React.ReactE
 function RerankedPanel({ entries, status }: { entries: RerankedEntry[], status?: string }): React.ReactElement {
   const [expanded, setExpanded] = React.useState<string | null>(null)
 
-  // Show disabled state if reranker unavailable
   if (status && status !== 'ok') {
     return (
       <div className="p-4 space-y-2">
@@ -845,9 +839,8 @@ export default function IndexOverviewScreen(): React.ReactElement {
                     setRetrievalCompare(null)
                     try {
                       await window.api.retrieval.buildIndex(snapshotId, false)
-                      // Same call as the "Run RRF fusion" button below -- shares the
-                      // full per-signal breakdown panel (rrfFusionBundle) so both
-                      // buttons show identical detail, not just this summary view.
+                      // Same call as the "Run RRF fusion" button below — shares the same
+                      // breakdown panel so both buttons show identical detail.
                       const out = await window.api.retrieval.retrieveRrfFusion({
                         snapshot_id: snapshotId,
                         query: retrievalQuery.trim(),
@@ -1089,7 +1082,7 @@ export default function IndexOverviewScreen(): React.ReactElement {
                   <details open className="border border-zinc-800 rounded">
                     <summary className="px-2 py-1 text-[11px] text-zinc-400 cursor-pointer hover:text-zinc-200">
                       Final Ranked Results — {rrfFusionBundle.final?.length ?? 0} entries
-                      <span className="text-zinc-600"> (CS-256: 1-hop expansion + fused_rank/cross_encoder_rank RRF-fuse, 0.6/0.4)</span>
+                      <span className="text-zinc-600"> (1-hop expansion + fused_rank/cross_encoder_rank RRF-fuse, 0.6/0.4)</span>
                     </summary>
                     <RrfFusedPanel entries={rrfFusionBundle.final ?? []} />
                   </details>

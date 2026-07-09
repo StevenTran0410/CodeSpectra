@@ -216,27 +216,12 @@ interface ForceNode extends d3force.SimulationNodeDatum {
   communityId: number
 }
 
-/**
- * Force-directed layout with community clustering, following the standard
- * technique from D3 creator Mike Bostock's reference "Clustered Force Layout"
- * (https://gist.github.com/mbostock/7881887): differential collision padding,
- * not competing global forces.
- *
- * The key idea: use ONE collision rule where the minimum allowed distance
- * between two nodes depends on whether they share a community — small padding
- * for same-cluster pairs (tight packing), much larger padding for different-
- * cluster pairs (visible gaps). That single rule does both "don't overlap
- * within a cluster" and "keep clusters apart" at once. Bostock's own example
- * sets charge to 0 entirely, since generic repulsion fighting a separate
- * separation force is exactly what caused this layout's earlier overcorrection
- * (clusters either flew apart or crushed together depending on which force won).
- */
+/** Force-directed layout with community clustering: one differential-collision rule gives tight same-cluster packing and wide gaps between clusters, instead of a separate repulsion force fighting for the same job. */
 function applyForceClusterLayout(nodes: Node[], edges: Edge[]): Node[] {
   const n = nodes.length
   if (n === 0) return nodes
 
-  // Seed positions on a circle so the simulation starts from a reasonable
-  // spread instead of every node collapsing onto the origin.
+  // Seed positions on a circle so the simulation doesn't start with every node at the origin.
   const seedRadius = Math.max(300, n * 4)
   const forceNodes: ForceNode[] = nodes.map((node, i) => {
     const angle = (2 * Math.PI * i) / n
@@ -253,17 +238,13 @@ function applyForceClusterLayout(nodes: Node[], edges: Edge[]): Node[] {
     .filter((e) => nodeById.has(e.source) && nodeById.has(e.target))
     .map((e) => ({ source: e.source, target: e.target }))
 
-  // Padding distances, sized for this app's ~160x36 node boxes (vs. Bostock's
-  // small circular dots) -- same-cluster pairs get just enough room to avoid
-  // label overlap; different-cluster pairs get a much wider gap so distinct
-  // blobs are visually obvious.
+  // Padding sized for this app's ~160x36 node boxes: same-cluster pairs get just enough
+  // room to avoid label overlap, different-cluster pairs get a much wider gap.
   const SAME_CLUSTER_PADDING = 100
   const DIFF_CLUSTER_PADDING = 230
 
-  // Brute-force O(n^2) pairwise collision check. Fine at this scale (a few
-  // hundred nodes, run for a bounded number of ticks) -- a quadtree-accelerated
-  // version (what Bostock's example actually uses) only pays off at much larger
-  // node counts than this app's graphs reach.
+  // Brute-force O(n^2) pairwise collision check — fine at this app's node-count scale;
+  // a quadtree-accelerated version only pays off on much larger graphs.
   function differentialCollide(alpha: number): void {
     for (let i = 0; i < forceNodes.length; i++) {
       const a = forceNodes[i]
@@ -304,9 +285,7 @@ function applyForceClusterLayout(nodes: Node[], edges: Edge[]): Node[] {
 
   const simulation = d3force
     .forceSimulation(forceNodes)
-    // No generic repulsion (matches Bostock's reference) -- differential
-    // collision below already does all the separation work, so adding charge
-    // on top would just be a second force fighting for the same job again.
+    // No generic repulsion — differential collision below already does all the separation work.
     .force(
       'link',
       d3force
@@ -315,18 +294,14 @@ function applyForceClusterLayout(nodes: Node[], edges: Edge[]): Node[] {
         .distance(70)
         .strength(0.3)
     )
-    // Very weak per-node gravity -- just a safety net so a fully-disconnected
-    // node doesn't sail off to infinity, far too weak to compete with the
-    // collision/cohesion forces above.
+    // Very weak per-node gravity — just a safety net against disconnected nodes drifting off.
     .force('gravityX', d3force.forceX(0).strength(0.004))
     .force('gravityY', d3force.forceY(0).strength(0.004))
     .velocityDecay(0.45) // dampens oscillation for a more stable settled layout
     .stop()
 
-  // Run synchronously to a settled state (no live animation needed — React
-  // Flow just needs final positions). Differential collision runs multiple
-  // passes per tick (mirrors forceCollide's own "iterations" option) since a
-  // single pass per tick is too few to fully resolve overlaps in a dense graph.
+  // Run synchronously to a settled state — React Flow only needs final positions. Multiple
+  // collision passes per tick are needed to fully resolve overlaps in a dense graph.
   for (let tick = 0; tick < 300; tick++) {
     simulation.tick()
     const alpha = simulation.alpha()
@@ -391,14 +366,13 @@ function LeftPanel({
 
   const blastRadiusFiles = neighborData?.nodes.filter((n) => n !== selectedNode) ?? []
 
-  // Centrality score, computed client-side from already-loaded edges using the
-  // same formula as the backend's _compute_scores_python: indegree*3 + outdegree.
+  // Centrality score, computed client-side using the same formula as the backend's
+  // _compute_scores_python: indegree*3 + outdegree.
   const indegree = incomingEdges.length
   const outdegree = outgoingEdges.length
   const centralityScore = indegree * 3 + outdegree
 
-  // Cross-file function calls only (drop same-file self-references, which are
-  // noise for "who else does this file talk to").
+  // Cross-file function calls only — same-file self-references are noise here.
   const outgoingCalls = (symbolEdgesData?.outgoing ?? []).filter(
     (e) => symbolFile(e.dst_symbol) !== selectedNode
   )
@@ -508,7 +482,7 @@ function LeftPanel({
         </div>
       )}
 
-      {/* Function-level drill-down (CS-250, backed by CS-240/CS-249's symbol_graph_edges) */}
+      {/* Function-level drill-down, backed by symbol_graph_edges */}
       {symbolEdgesData && !symbolEdgesLoading && (
         <div>
           <div className="text-zinc-400 font-semibold mb-2">
@@ -867,8 +841,7 @@ export default function GraphScreen(): React.ReactElement {
         const res = await window.api.graph.symbolEdges(snapshotId, path)
         setSymbolEdgesData(res)
       } catch {
-        // Not every file has function-level data (e.g. non-Python/TS files,
-        // or the graph predates CS-240) — treat as "nothing to show", not an error.
+        // Not every file has function-level data — treat as "nothing to show", not an error.
         setSymbolEdgesData(null)
       } finally {
         setSymbolEdgesLoading(false)
@@ -910,9 +883,8 @@ export default function GraphScreen(): React.ReactElement {
     return layoutMode === 'cluster' ? applyForceClusterLayout(rawNodes, edges) : applyDagreLayout(rawNodes, edges)
   }, [rawNodes, edges, layoutMode])
 
-  // User-dragged positions override the auto-layout's computed position, keyed by
-  // node id. Cleared whenever layoutMode changes so switching layouts re-lays-out
-  // fresh instead of keeping stale drags from a different algorithm.
+  // User-dragged positions override the auto-layout, keyed by node id; cleared when
+  // layoutMode changes so switching layouts doesn't keep stale drags around.
   const [manualPositions, setManualPositions] = useState<Record<string, { x: number; y: number }>>({})
   useEffect(() => {
     setManualPositions({})

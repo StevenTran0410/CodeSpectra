@@ -1,4 +1,4 @@
-"""Structural graph endpoints (RPA-033, CS-102)."""
+"""Structural graph endpoints."""
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
 
@@ -49,7 +49,7 @@ async def graph_neighbors(
     return await _service.neighbors(snapshot_id, seed_path=path, hops=hops, limit=limit)
 
 
-# ── CS-102: community detection endpoints ─────────────────────────────────────
+# ── Community detection endpoints ─────────────────────────────────────
 
 @router.get("/communities/{snapshot_id}", response_model=GraphCommunitiesResponse)
 async def list_communities(snapshot_id: str) -> GraphCommunitiesResponse:
@@ -86,11 +86,11 @@ async def symbol_edges_for_file(
     snapshot_id: str,
     file_path: str = Query(..., description="File path to drill into (function-level edges)"),
 ) -> FileSymbolEdgesResponse:
-    """Function-level drill-down (CS-250): symbol_graph_edges for one file.
+    """Function-level drill-down: symbol_graph_edges for one file.
 
     Returns the functions/classes defined in this file plus their cross-file
     call edges (outgoing = this file's functions calling elsewhere, incoming =
-    other files' functions calling into this file), each with the CS-240
+    other files' functions calling into this file), each with the
     confidence_score/resolution_method.
     """
     try:
@@ -116,7 +116,7 @@ async def export_graph_json(snapshot_id: str) -> dict:
 async def download_graph_json(snapshot_id: str):
     """Download the serialized structural graph as graph.json.
 
-    Returns 404 if graph has not been built or predates RPA-058.
+    Returns 404 if graph has not been built.
     Note: community_id fields may be null if community detection has not yet completed.
     """
     path = await _service.get_graph_json_path(snapshot_id)

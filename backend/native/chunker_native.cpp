@@ -1,5 +1,5 @@
 /**
- * chunker_native.cpp — Native merge-pass hotspot for AST chunker (CS-101).
+ * chunker_native.cpp — Native merge-pass hotspot for AST chunker.
  *
  * merge_spans(spans, target_size) -> list[list[int]]
  *   Greedy accumulation: collect consecutive spans into a group until adding
@@ -72,7 +72,7 @@ py::list merge_spans(const py::list& spans, int target_size) {
 }
 
 PYBIND11_MODULE(_native_chunker, m) {
-    m.doc() = "Native merge-pass hotspot for AST-based semantic chunker (CS-101)";
+    m.doc() = "Native merge-pass hotspot for AST-based semantic chunker";
     m.def(
         "merge_spans",
         &merge_spans,

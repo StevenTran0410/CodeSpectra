@@ -316,8 +316,7 @@ class LocalRepoService:
         repo = await self.get_by_id(repo_id)
         await delete_repo_artifacts(repo_id)
 
-        # If this path is inside CodeSpectra-managed clone root, delete it from disk first.
-        # For managed clones, deletion is strict to avoid silent leftovers causing clone conflicts.
+        # If this path is inside CodeSpectra's managed clone root, delete it strictly first to avoid silent leftovers causing clone conflicts.
         managed_root = Path.home() / "CodeSpectra" / "repos"
         repo_path = Path(repo.path)
         if _is_under_path(repo_path, managed_root):
@@ -466,13 +465,7 @@ class LocalRepoService:
                 if remote and remote.rstrip("/") == req.url.rstrip("/"):
                     logger.info(f"Destination already contains same repo, reusing: {normalized_dest_path}")
                     try:
-                        # CS-272: mode must be threaded through here too — this is
-                        # exactly the path that fires when the SAME URL is cloned
-                        # again under a different mode (e.g. CA already cloned it,
-                        # user now wants it for AEH). Without mode=req.mode this
-                        # always registered as 'code_analysis' regardless of what
-                        # was actually requested, and the on-disk clone is
-                        # correctly reused either way — no second `git clone` runs.
+                        # mode must be threaded through here too: this exact path fires when the same URL is re-cloned under a different mode, and without req.mode it always registered as 'code_analysis' regardless of what was requested.
                         return await self.add(
                             AddLocalRepoRequest(
                                 path=normalized_dest_path,

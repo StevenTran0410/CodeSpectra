@@ -183,8 +183,7 @@ export default function Stage3Screen(): React.ReactElement {
             if (!cancelled) setLoadingAgentFlow(false)
           }
 
-          // getPlan/getPlanReport resolve to null (not an error) when nothing has been
-          // generated yet — only a thrown error is a real failure.
+          // getPlan/getPlanReport resolve to null when nothing's generated yet — not an error.
           setLoadingPlan(true)
           try {
             const suite = await window.api.aeh.getPlan(latest.id)
@@ -561,7 +560,7 @@ export default function Stage3Screen(): React.ReactElement {
           setSelectedProviderId(prov)
           setSelectedModelId(model)
         }}
-        title="Planning LLM Model (CS-273)"
+        title="Planning LLM Model"
       />
 
       {confirmModalOpen && (
@@ -754,9 +753,7 @@ function AgentCard({
   )
 }
 
-/** The agent-detail "page": Back header, top row (data-flow text + its component sub-graph
- * side by side), bottom row (the full-width evaluation-gates table). Hovering/clicking a
- * graph node highlights the matching table row via a shared highlight id. */
+/** The agent-detail "page": data-flow text + component sub-graph on top, evaluation-gates table below. Hovering/clicking a graph node highlights the matching table row via a shared highlight id. */
 function AgentDetailView({
   agent,
   agentReport,
@@ -1078,7 +1075,7 @@ function AgentDetailView({
   )
 }
 
-/** CS-287 — statically harvested per-agent contract: what Stage 4 will invoke/consume. */
+/** Statically harvested per-agent contract: what Stage 4 will invoke/consume. */
 function EvaluationContractPanel({
   contract,
   bordered,
