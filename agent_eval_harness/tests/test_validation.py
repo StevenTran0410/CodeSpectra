@@ -178,6 +178,31 @@ async def test_validation_no_queries_blocked(tmp_path) -> None:
     assert "no_queries" in report.readiness["writer.faithfulness"].reasons
 
 
+async def test_validation_real_todo_placeholder_blocks_no_queries(tmp_path) -> None:
+    """The literal placeholder planner.py actually emits ('<TODO: add a
+    representative query for this target>', planner.py:304,385) must be recognized
+    as a bad query — not just the bare '<TODO>' — or gates silently pass readiness
+    while still carrying an unusable placeholder."""
+    plan_content = textwrap.dedent("""
+        entries:
+          - id: architecture.allowed_downstream
+            component: architecture
+            metric: allowed_downstream
+            metric_class: assertion
+            rationale: "orchestrator fan-out"
+            provenance: rule
+            params:
+              allowed: ["auditor"]
+              queries: ["<TODO: add a representative query for this target>"]
+    """)
+    plan_path = tmp_path / "real_todo.yaml"
+    plan_path.write_text(plan_content, encoding="utf-8")
+
+    report = await validate_plan(plan_path)
+    assert report.readiness["architecture.allowed_downstream"].status == "blocked"
+    assert "no_queries" in report.readiness["architecture.allowed_downstream"].reasons
+
+
 async def test_validation_invalid_dataset_kind(tmp_path) -> None:
     """Invented dataset kinds are flagged as invalid_dataset_kind."""
     plan_content = textwrap.dedent("""

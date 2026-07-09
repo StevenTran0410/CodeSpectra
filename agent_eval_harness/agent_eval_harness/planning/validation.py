@@ -32,7 +32,9 @@ _REASON_CLASSIFIER_UNBOUND = "classifier_unbound"
 _REASON_INVALID_DATASET_KIND = "invalid_dataset_kind"
 _REASON_BIND_UNRESOLVABLE = "bind_unresolvable"  # reserved for §6b / post CS-284
 
-_TODO_PATTERN = "<TODO>"
+# Prefix, not "<TODO>" — the real placeholder is "<TODO: add a representative query
+# for this target>" (planner.py:304,385), which never contains a literal "<TODO>".
+_TODO_PATTERN = "<TODO"
 
 
 class GateReadiness(BaseModel):

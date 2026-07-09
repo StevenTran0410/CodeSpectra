@@ -257,25 +257,71 @@ def _evidence_user_prompt(evidence: AgentEvidence) -> str:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Shared LLM-JSON call: retry once with a much larger budget on truncation, and
+# surface a fully-failed round into dag_notes instead of vanishing silently.
+# ──────────────────────────────────────────────────────────────────────────────
+
+_RETRY_TOKEN_MULTIPLIER = 4  # unparseable JSON is almost always truncation, not garbage
+
+
+async def _complete_json(
+    llm_client: LLMClient,
+    system: str,
+    user_prompt: str,
+    *,
+    max_tokens: int,
+    label: str,
+    dag_notes: list[str] | None = None,
+) -> dict | None:
+    """Calls the LLM in json_mode, retrying once at `max_tokens * _RETRY_TOKEN_MULTIPLIER`
+    if the first response is unparseable. Returns None (never raises) if both attempts
+    fail, appending a note to `dag_notes` so the caller's degraded-default round is
+    visible in the plan report instead of looking identical to a legitimate empty result."""
+    last_error: Exception | None = None
+    for attempt, tokens in enumerate((max_tokens, max_tokens * _RETRY_TOKEN_MULTIPLIER)):
+        try:
+            response = await llm_client.complete(
+                [
+                    LLMMessage(role="system", content=system),
+                    LLMMessage(role="user", content=user_prompt),
+                ],
+                max_tokens=tokens,
+                json_mode=True,
+            )
+            parsed = json.loads(response.content)
+            if not isinstance(parsed, dict):
+                raise ValueError(f"{label} response was not a JSON object")
+            return parsed
+        except (json.JSONDecodeError, TypeError, ValueError) as e:
+            last_error = e
+            logger.warning(
+                f"agentic_planner: {label} unparseable response "
+                f"(attempt {attempt + 1}/2, max_tokens={tokens}): {e}"
+            )
+    if dag_notes is not None:
+        dag_notes.append(
+            f"{label}: LLM response unparseable after retry ({last_error}) — this round "
+            "produced nothing; review manually or regenerate the plan."
+        )
+    return None
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # analyst[i] — per-agent data-flow profile (parallel fan-out)
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-async def _run_analyst(agent_id: str, evidence: AgentEvidence, llm_client: LLMClient) -> AgentDataProfile:
-    try:
-        response = await llm_client.complete(
-            [
-                LLMMessage(role="system", content=ANALYST_SYSTEM),
-                LLMMessage(role="user", content=_evidence_user_prompt(evidence)),
-            ],
-            max_tokens=1536,
-            json_mode=True,
-        )
-        parsed = json.loads(response.content)
-        if not isinstance(parsed, dict):
-            raise ValueError("analyst response was not a JSON object")
-    except (json.JSONDecodeError, TypeError, ValueError) as e:
-        logger.warning(f"agentic_planner: analyst[{agent_id}] unparseable response: {e}")
+async def _run_analyst(
+    agent_id: str,
+    evidence: AgentEvidence,
+    llm_client: LLMClient,
+    dag_notes: list[str] | None = None,
+) -> AgentDataProfile:
+    parsed = await _complete_json(
+        llm_client, ANALYST_SYSTEM, _evidence_user_prompt(evidence),
+        max_tokens=3072, label=f"analyst[{agent_id}]", dag_notes=dag_notes,
+    )
+    if parsed is None:
         return AgentDataProfile(agent_id=agent_id)
 
     def _str_list(key: str) -> list[str]:
@@ -343,6 +389,7 @@ async def _run_gate_designer(
     profile: AgentDataProfile,
     baseline: list[SuiteEntry],
     llm_client: LLMClient,
+    dag_notes: list[str] | None = None,
 ) -> list[EvaluationGate]:
     owned_ids = {c["id"] for c in evidence.owned}
     already_covered = [f"{e.component}.{e.metric}" for e in baseline]
@@ -358,19 +405,13 @@ async def _run_gate_designer(
         + f"Known registered assertion names: {_known_assertion_names()}"
     )
 
-    try:
-        response = await llm_client.complete(
-            [
-                LLMMessage(role="system", content=GATE_DESIGNER_SYSTEM),
-                LLMMessage(role="user", content=user_prompt),
-            ],
-            max_tokens=2048,
-            json_mode=True,
-        )
-        parsed_gates = _parse_gates(json.loads(response.content))
-    except (json.JSONDecodeError, TypeError, ValueError) as e:
-        logger.warning(f"agentic_planner: agent_gates[{agent_id}] unparseable response: {e}")
+    parsed = await _complete_json(
+        llm_client, GATE_DESIGNER_SYSTEM, user_prompt,
+        max_tokens=4096, label=f"agent_gates[{agent_id}]", dag_notes=dag_notes,
+    )
+    if parsed is None:
         return []
+    parsed_gates = _parse_gates(parsed)
 
     result: list[EvaluationGate] = []
     for i, g in enumerate(parsed_gates):
@@ -411,6 +452,7 @@ async def _run_handoff_gates(
     evidence_by_agent: dict[str, AgentEvidence],
     profiles_by_agent: dict[str, AgentDataProfile],
     llm_client: LLMClient,
+    dag_notes: list[str] | None = None,
 ) -> list[EvaluationGate]:
     lines = []
     for agent_id, evidence in evidence_by_agent.items():
@@ -422,22 +464,18 @@ async def _run_handoff_gates(
         )
     user_prompt = "\n".join(lines)
 
-    try:
-        response = await llm_client.complete(
-            [
-                LLMMessage(role="system", content=HANDOFF_GATES_SYSTEM),
-                LLMMessage(role="user", content=user_prompt),
-            ],
-            max_tokens=2048,
-            json_mode=True,
-        )
-        raw = json.loads(response.content)
-        gates = raw.get("gates", []) if isinstance(raw, dict) else []
-        if not isinstance(gates, list):
-            gates = []
-    except (json.JSONDecodeError, TypeError, ValueError) as e:
-        logger.warning(f"agentic_planner: handoff_gates unparseable response: {e}")
+    # Scales with agent count — this node fans in ALL agents' evidence, so a fixed
+    # small budget truncates on larger systems (observed: 2048 truncating at ~12 agents).
+    token_budget = max(6144, 500 * len(evidence_by_agent))
+    parsed = await _complete_json(
+        llm_client, HANDOFF_GATES_SYSTEM, user_prompt,
+        max_tokens=token_budget, label="handoff_gates", dag_notes=dag_notes,
+    )
+    if parsed is None:
         return []
+    gates = parsed.get("gates", [])
+    if not isinstance(gates, list):
+        gates = []
 
     result: list[EvaluationGate] = []
     for i, g in enumerate(gates):
@@ -905,28 +943,22 @@ def reconcile(
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-async def run_critic(report: EvaluationPlanReport, llm_client: LLMClient) -> list[str]:
+async def run_critic(
+    report: EvaluationPlanReport, llm_client: LLMClient, dag_notes: list[str] | None = None
+) -> list[str]:
     lines = []
     for agent_report in report.agents:
         gate_summary = [f"{g.metric}({g.metric_class})" for g in agent_report.gates]
         lines.append(f"Agent {agent_report.agent_id} (role={agent_report.role}): {gate_summary}")
     user_prompt = "\n".join(lines)
 
-    try:
-        response = await llm_client.complete(
-            [
-                LLMMessage(role="system", content=CRITIC_SYSTEM),
-                LLMMessage(role="user", content=user_prompt),
-            ],
-            max_tokens=1024,
-            json_mode=True,
-        )
-        parsed = json.loads(response.content)
-        notes = parsed.get("notes", []) if isinstance(parsed, dict) else []
-        return [n for n in notes if isinstance(n, str)] if isinstance(notes, list) else []
-    except (json.JSONDecodeError, TypeError, ValueError) as e:
-        logger.warning(f"agentic_planner: critic unparseable response: {e}")
+    parsed = await _complete_json(
+        llm_client, CRITIC_SYSTEM, user_prompt, max_tokens=1536, label="critic", dag_notes=dag_notes,
+    )
+    if parsed is None:
         return []
+    notes = parsed.get("notes", [])
+    return [n for n in notes if isinstance(n, str)] if isinstance(notes, list) else []
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -947,6 +979,9 @@ async def generate_plan_agentic(
 ) -> tuple[Suite, EvaluationPlanReport]:
     """Builds and executes the Stage-3 DAG; every agent gets its own gate set."""
     agents = agent_flow_map.agents
+    # Shared across all concurrent DAG nodes — plain list.append() is safe here since
+    # asyncio coroutines only interleave at await points, never mid-statement.
+    dag_notes: list[str] = []
 
     async def _gather(_: dict[str, Any]) -> tuple[dict[str, AgentEvidence], dict[str, list[SuiteEntry]]]:
         return await gather_evidence(system_map, agent_flow_map, source_by_component, accepted_edges, llm_client)
@@ -965,7 +1000,7 @@ async def generate_plan_agentic(
 
         async def _analyst(results: dict[str, Any], agent_id: str = agent.id) -> AgentDataProfile:
             evidence_by_agent, _ = results["gather"]
-            return await _run_analyst(agent_id, evidence_by_agent[agent_id], llm_client)
+            return await _run_analyst(agent_id, evidence_by_agent[agent_id], llm_client, dag_notes=dag_notes)
 
         nodes.append(DagNode(analyst_name, ["gather"], _analyst))
 
@@ -975,7 +1010,8 @@ async def generate_plan_agentic(
             evidence_by_agent, baseline_by_agent = results["gather"]
             profile = results[analyst_name]
             return await _run_gate_designer(
-                agent_id, evidence_by_agent[agent_id], profile, baseline_by_agent[agent_id], llm_client
+                agent_id, evidence_by_agent[agent_id], profile, baseline_by_agent[agent_id], llm_client,
+                dag_notes=dag_notes,
             )
 
         nodes.append(DagNode(gates_name, ["gather", analyst_name], _gates))
@@ -985,7 +1021,7 @@ async def generate_plan_agentic(
     async def _handoff(results: dict[str, Any]) -> list[EvaluationGate]:
         evidence_by_agent, _ = results["gather"]
         profiles_by_agent = {a.id: results[f"analyst:{a.id}"] for a in agents}
-        return await _run_handoff_gates(evidence_by_agent, profiles_by_agent, llm_client)
+        return await _run_handoff_gates(evidence_by_agent, profiles_by_agent, llm_client, dag_notes=dag_notes)
 
     nodes.append(DagNode("handoff_gates", analyst_names, _handoff))
 
@@ -1006,12 +1042,12 @@ async def generate_plan_agentic(
 
         async def _critic(results: dict[str, Any]) -> list[str]:
             _, report = results["reconcile"]
-            return await run_critic(report, llm_client)
+            return await run_critic(report, llm_client, dag_notes=dag_notes)
 
         nodes.append(DagNode("critic", ["reconcile"], _critic))
 
     results = await run_dag(nodes)
     suite, report = results["reconcile"]
-    if run_critic_pass:
-        report = report.model_copy(update={"advisory_notes": results["critic"]})
+    critic_notes = results["critic"] if run_critic_pass else []
+    report = report.model_copy(update={"advisory_notes": dag_notes + critic_notes})
     return suite, report

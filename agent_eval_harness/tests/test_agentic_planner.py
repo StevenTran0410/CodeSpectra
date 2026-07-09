@@ -282,6 +282,53 @@ async def test_run_critic_defensive_parse() -> None:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# _complete_json — truncation retry
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+async def test_complete_json_recovers_on_retry_after_truncated_first_response() -> None:
+    """First response is truncated mid-string (the observed handoff_gates failure
+    mode); the retry at a bumped token budget succeeds."""
+    llm_client = FakeLLMClient([
+        LLMResponse(content='{"notes": ["unterminat', model="fake"),
+        LLMResponse(content='{"notes": ["ok"]}', model="fake"),
+    ])
+
+    parsed = await ap._complete_json(
+        llm_client, "sys", "user", max_tokens=100, label="test_node",
+    )
+
+    assert parsed == {"notes": ["ok"]}
+
+
+async def test_complete_json_surfaces_dag_note_when_both_attempts_fail() -> None:
+    llm_client = FakeLLMClient(LLMResponse(content="not json at all", model="fake"))
+    dag_notes: list[str] = []
+
+    parsed = await ap._complete_json(
+        llm_client, "sys", "user", max_tokens=100, label="test_node", dag_notes=dag_notes,
+    )
+
+    assert parsed is None
+    assert len(dag_notes) == 1
+    assert "test_node" in dag_notes[0]
+    assert "unparseable after retry" in dag_notes[0]
+
+
+async def test_run_critic_recovers_via_retry_and_generate_plan_surfaces_dag_notes() -> None:
+    """run_critic recovers a truncated-then-fixed response; when a node fails
+    outright even after retry, generate_plan_agentic surfaces it in advisory_notes
+    instead of the round silently vanishing."""
+    report = EvaluationPlanReport(target_system_id="t", agents=[])
+    llm_client = FakeLLMClient([
+        LLMResponse(content='{"notes": ["truncat', model="fake"),
+        LLMResponse(content='{"notes": ["looks fine"]}', model="fake"),
+    ])
+    notes = await ap.run_critic(report, llm_client)
+    assert notes == ["looks fine"]
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # _validate_metric
 # ──────────────────────────────────────────────────────────────────────────────
 
