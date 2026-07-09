@@ -844,8 +844,17 @@ declare global {
             model_id?: string | null
           }
         ) => Promise<AEHPlanSuite>
-        getPlan: (sessionId: string) => Promise<AEHPlanSuite>
+        getPlan: (sessionId: string) => Promise<AEHPlanSuite | null>
         updatePlan: (sessionId: string, body: { entries: AEHPlanEntry[] }) => Promise<{ success: boolean }>
+        getPlanReport: (sessionId: string) => Promise<AEHEvaluationPlanReport | null>
+        generateAgentFlowMap: (
+          sessionId: string,
+          body: {
+            provider_id?: string | null
+            model_id?: string | null
+          }
+        ) => Promise<AEHAgentFlowMap>
+        getAgentFlowMap: (sessionId: string) => Promise<AEHAgentFlowMap | null>
         advanceSession: (
           sessionId: string,
           body: {
@@ -896,6 +905,24 @@ declare global {
     target_system_id: string
     discrepancies: string[]
     components: AEHSystemMapComponent[]
+  }
+
+  export interface AEHAgentFlow {
+    id: string
+    role: string
+    label: string
+    summary: string
+    component_ids: string[]
+    upstream_agents: string[]
+    downstream_agents: string[]
+    parent_agent: string | null
+  }
+
+  export interface AEHAgentFlowMap {
+    target_system_id: string
+    agents: AEHAgentFlow[]
+    entry_agent_ids: string[]
+    unassigned_component_ids: string[]
   }
 
   export interface AEHRunDetailResponse extends AEHRunSummaryBase {
@@ -1008,6 +1035,8 @@ declare global {
     accepted_edges: { src: string; dst: string }[]
     stop_reason: string | null
     plan_path: string | null
+    agent_flows_path: string | null
+    plan_report_path: string | null
   }
 
   export interface AEHDatasetRef {
@@ -1026,9 +1055,100 @@ declare global {
     rationale?: string
     provenance?: 'rule' | 'human_added' | 'llm_suggested'
     status?: string | null
+    agent_id?: string | null
   }
 
   export interface AEHPlanSuite {
     entries: AEHPlanEntry[]
+  }
+
+  export interface AEHAgentDataProfile {
+    agent_id: string
+    input_data: string
+    output_data: string
+    internal_tools: string[]
+    failure_modes: string[]
+    consistency_notes: string[]
+  }
+
+  export interface AEHEvaluationGate {
+    id: string
+    agent_id: string
+    component: string
+    location: 'input' | 'output' | 'handoff' | 'internal_tool'
+    property: string
+    metric: string
+    metric_class: 'assertion' | 'classifier' | 'llm_judge'
+    toolkit: 'assertion' | 'classifier' | 'ragas' | 'deepeval'
+    params?: Record<string, any>
+    dataset_kind?: string | null
+    rationale?: string
+    provenance?: 'rule' | 'human_added' | 'llm_suggested'
+    status?: string | null
+  }
+
+  export interface AEHKwargSpec {
+    name: string
+    annotation: string | null
+    default_repr: string | null
+    required: boolean
+  }
+
+  export interface AEHInvocationContract {
+    callable: string
+    method: string
+    kwargs: AEHKwargSpec[]
+    constructor_deps: string[]
+    invocation_mode: 'pipeline_entry' | 'per_agent_route' | 'in_harness' | 'unsupported'
+    route: string | null
+    case_binding: Record<string, string>
+    source: 'ast' | 'llm' | 'human'
+    citations: string[]
+  }
+
+  export interface AEHOutputContract {
+    json_schema: Record<string, any> | null
+    schema_source: string | null
+    fallback_literal: Record<string, any> | null
+    fallback_source: string | null
+    validated_in_target: boolean
+  }
+
+  export interface AEHObservabilityContract {
+    has_tools: boolean
+    has_separable_context: boolean | null
+    context_location: string | null
+    input_kind: 'query' | 'structured' | 'unknown'
+    is_multi_turn: boolean
+    spans_have_usage: boolean
+    llm_call_budget: number | null
+    llm_fields: string[]
+  }
+
+  export interface AEHEvaluationContract {
+    agent_id: string
+    component_id: string
+    invocation: AEHInvocationContract | null
+    output: AEHOutputContract | null
+    observability: AEHObservabilityContract
+    constants: Record<string, number>
+    connect_edges: { src: string; dst: string }[]
+    needs_human: string[]
+  }
+
+  export interface AEHAgentPlanReport {
+    agent_id: string
+    role: string
+    label: string
+    data_profile: AEHAgentDataProfile | null
+    contract: AEHEvaluationContract | null
+    gates: AEHEvaluationGate[]
+    needs_human: string[]
+  }
+
+  export interface AEHEvaluationPlanReport {
+    target_system_id: string
+    agents: AEHAgentPlanReport[]
+    advisory_notes: string[]
   }
 }

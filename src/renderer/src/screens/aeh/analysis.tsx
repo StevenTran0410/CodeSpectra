@@ -256,7 +256,7 @@ function AnalysisOverview(): React.ReactElement {
         return []
       })
       .then((cands) => { if (!cancelled) setCandidates(cands) })
-      .catch(() => {})
+      .catch(() => { })
     return () => { cancelled = true }
   }, [snapshotId, selectedRepo?.path, startAEH])
   // Load expansion stats (completed and planned sessions) across confirmed candidates
@@ -310,7 +310,6 @@ function AnalysisOverview(): React.ReactElement {
     if (confirmedCands.length === 0) {
       return 'awaiting_candidate_review'
     }
-
     if (completedExpansionsCount === 0) {
       return 'expanding'
     }
@@ -339,7 +338,7 @@ function AnalysisOverview(): React.ReactElement {
         const sess = await window.api.aeh.getDiscoverySession(pollingSessionId)
         if (cancelled) return
         setDiscoverySession(sess)
-        
+
         // Also fetch candidates if not fingerprinting
         if (sess.pipeline_stage !== 'fingerprinting') {
           const cands = await window.api.aeh.listDiscoveryCandidates(pollingSessionId)
@@ -385,7 +384,7 @@ function AnalysisOverview(): React.ReactElement {
       }
       await window.api.aeh.advanceSession(discoverySession.id, { confirmed_candidates: confirmedIds })
       toast.success('Candidates confirmed. Advancing pipeline to Stage 2: Expansion.')
-      
+
       const updated = await window.api.aeh.getDiscoverySession(discoverySession.id)
       setDiscoverySession(updated)
 
@@ -437,7 +436,7 @@ function AnalysisOverview(): React.ReactElement {
       }
       await window.api.aeh.advanceSession(discoverySession.id, { confirmed_map_session_id: mapSessionId })
       toast.success('System Map blueprint confirmed. Advancing to Stage 3: Planning.')
-      
+
       const updated = await window.api.aeh.getDiscoverySession(discoverySession.id)
       setDiscoverySession(updated)
 
@@ -585,63 +584,61 @@ function AnalysisOverview(): React.ReactElement {
     const stage = effectiveStage
 
     if (!discoverySession) {
-      if (stageNum === 1) return <Badge variant="neutral" size="sm" className="bg-slate-900 border border-slate-800 text-slate-400 font-normal">Not Started</Badge>
-      return <Badge variant="neutral" size="sm" className="bg-slate-900 border border-slate-800 text-slate-400 font-normal">Pending</Badge>
+      return <Badge variant="neutral" size="sm">{stageNum === 1 ? 'Not Started' : 'Pending'}</Badge>
     }
 
     if (stageNum === 1) {
       if (stage === 'fingerprinting') {
         return (
-          <Badge variant="neutral" size="sm" className="bg-slate-900 border border-slate-800 text-slate-400 font-normal flex items-center gap-1.5 animate-pulse">
-            <Loader2 className="animate-spin w-3 h-3 text-indigo-400" />
+          <Badge variant="progress" size="sm" className="flex items-center gap-1.5">
+            <Loader2 className="animate-spin w-3 h-3" />
             <span>Running</span>
           </Badge>
         )
       }
       if (stage === 'awaiting_candidate_review') {
-        return <Badge variant="neutral" size="sm" className="bg-amber-950/30 border border-amber-800/40 text-amber-400 font-normal">Needs Review</Badge>
+        return <Badge variant="warning" size="sm">Needs Review</Badge>
       }
-      return <Badge variant="neutral" size="sm" className="bg-emerald-950/30 border border-emerald-800/40 text-emerald-400 font-normal">Complete</Badge>
+      return <Badge variant="success" size="sm">Complete</Badge>
     }
 
     if (stageNum === 2) {
       if (['fingerprinting', 'awaiting_candidate_review'].includes(stage)) {
-        return <Badge variant="neutral" size="sm" className="bg-slate-900 border border-slate-800 text-slate-400 font-normal">Pending</Badge>
+        return <Badge variant="neutral" size="sm">Pending</Badge>
       }
-      if (stage === 'expanding') {
-        const progText = totalConfirmedCandidates > 0 ? ` (${completedExpansionsCount}/${totalConfirmedCandidates})` : ''
+      // "Complete" must mean ALL confirmed candidates finished, not just the lead one.
+      if (completedExpansionsCount < totalConfirmedCandidates) {
         return (
-          <Badge variant="neutral" size="sm" className="bg-indigo-950/30 border border-indigo-800/40 text-indigo-400 font-normal flex items-center gap-1.5">
-            <Loader2 className="animate-spin w-3 h-3 text-indigo-400 animate-spin" />
-            <span>Expanding{progText}</span>
+          <Badge variant="progress" size="sm">
+            Expanded {completedExpansionsCount}/{totalConfirmedCandidates}
           </Badge>
         )
       }
       if (stage === 'awaiting_map_review') {
-        return <Badge variant="neutral" size="sm" className="bg-amber-950/30 border border-amber-800/40 text-amber-400 font-normal">Needs Review</Badge>
+        return <Badge variant="warning" size="sm">Needs Review</Badge>
       }
-      return <Badge variant="neutral" size="sm" className="bg-emerald-950/30 border border-emerald-800/40 text-emerald-400 font-normal">Complete</Badge>
+      return <Badge variant="success" size="sm">Complete</Badge>
     }
 
     if (stageNum === 3) {
       if (['fingerprinting', 'awaiting_candidate_review', 'expanding', 'awaiting_map_review'].includes(stage)) {
-        return <Badge variant="neutral" size="sm" className="bg-slate-900 border border-slate-800 text-slate-400 font-normal">Pending</Badge>
+        return <Badge variant="neutral" size="sm">Pending</Badge>
       }
       if (stage === 'planning') {
         return (
-          <Badge variant="neutral" size="sm" className="bg-indigo-950/30 border border-indigo-800/40 text-indigo-400 font-normal flex items-center gap-1.5">
-            <Loader2 className="animate-spin w-3 h-3 text-indigo-400 animate-spin" />
+          <Badge variant="progress" size="sm" className="flex items-center gap-1.5">
+            <Loader2 className="animate-spin w-3 h-3" />
             <span>Planning</span>
           </Badge>
         )
       }
       if (stage === 'awaiting_plan_review') {
-        return <Badge variant="neutral" size="sm" className="bg-amber-950/30 border border-amber-800/40 text-amber-400 font-normal">Needs Review</Badge>
+        return <Badge variant="warning" size="sm">Needs Review</Badge>
       }
-      return <Badge variant="neutral" size="sm" className="bg-emerald-950/30 border border-emerald-800/40 text-emerald-400 font-normal">Complete</Badge>
+      return <Badge variant="success" size="sm">Complete</Badge>
     }
 
-    return <Badge variant="neutral" size="sm" className="bg-slate-900 border border-slate-800 text-slate-400 font-normal">Pending</Badge>
+    return <Badge variant="neutral" size="sm">Pending</Badge>
   }
 
   return (
@@ -699,20 +696,19 @@ function AnalysisOverview(): React.ReactElement {
 
         {/* CA Sibling report banner */}
         {selectedRepo && (
-          <div className={`flex items-center justify-between gap-3 px-4 py-3 rounded-xl border text-xs backdrop-blur-sm ${
-            reportExists
+          <div className={`flex items-center justify-between gap-3 px-4 py-3 rounded-xl border text-xs backdrop-blur-sm ${reportExists
               ? 'bg-emerald-950/20 border-emerald-800/40 text-emerald-300'
               : siblingCARepo
-              ? 'bg-amber-950/20 border-amber-800/40 text-amber-300'
-              : 'bg-slate-900/40 border-slate-800/60 text-slate-400'
-          }`}>
+                ? 'bg-amber-950/20 border-amber-800/40 text-amber-300'
+                : 'bg-slate-900/40 border-slate-800/60 text-slate-400'
+            }`}>
             <div className="flex items-center gap-2">
               <Info className="w-3.5 h-3.5 shrink-0" />
               {reportExists
                 ? 'Code Analysis report found for this snapshot — will be used as context during discovery.'
                 : siblingCARepo
-                ? 'No CA report found for this snapshot. Discovery works without it, but a CA report improves accuracy.'
-                : 'No CA-mode sibling import found. Import this repo in Code Analysis mode to enable report context.'}
+                  ? 'No CA report found for this snapshot. Discovery works without it, but a CA report improves accuracy.'
+                  : 'No CA-mode sibling import found. Import this repo in Code Analysis mode to enable report context.'}
             </div>
             {siblingCARepo && !reportExists && (
               <Button
@@ -804,240 +800,227 @@ function AnalysisOverview(): React.ReactElement {
           </div>
         </div>
 
-      {/* Orchestrator Control Panel */}
-      {repoId && snapshotId && (
-        <div className="bg-[#0f172a]/60 border border-slate-800/80 rounded-xl p-5 space-y-4 backdrop-blur-sm shadow-xl flex items-center justify-between">
-          <div className="space-y-1">
-            <h3 className="text-sm font-semibold text-slate-200">Pipeline Orchestrator</h3>
-            <p className="text-[11px] text-slate-500">Trigger the full evaluation harness generation pipeline sequentially.</p>
-          </div>
-          <div className="flex items-center gap-3">
-            <Button
-              variant="ghost"
-              onClick={() => setLlmConfigOpen(true)}
-              className="w-9 h-9 p-0 flex items-center justify-center border border-slate-800 bg-slate-950 text-slate-400 hover:text-slate-200"
-              title="Configure pipeline models"
-            >
-              <Settings size={15} />
-            </Button>
-            <Button
-              variant="primary"
-              onClick={handleRunAll}
-              loading={runningAll || !!pollingSessionId}
-              className="text-xs h-9 px-4 flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 font-semibold"
-            >
-              <Play size={13} />
-              <span>Run All Pipeline</span>
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {/* Pipeline Stage Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-start">
-        {/* Stage 1 Card */}
-        <div className={`border rounded-xl p-5 space-y-4 backdrop-blur-sm transition-all ${
-          effectiveStage === 'fingerprinting' || effectiveStage === 'awaiting_candidate_review'
-            ? 'bg-[#0f172a]/70 border-amber-500/50 shadow-amber-500/5 shadow-lg'
-            : 'bg-[#0f172a]/40 border-slate-800/80'
-        }`}>
-          <div className="flex flex-col gap-3">
-            <div className="flex items-center gap-3">
-              <div className="w-8 h-8 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-300 text-xs font-bold shrink-0">1</div>
-              <div className="min-w-0">
-                <h4 className="text-xs font-semibold text-slate-200">Stage 1: Candidate Discovery</h4>
-                <p className="text-[10px] text-slate-500">Scan code repository structure for component candidates.</p>
-              </div>
+        {/* Orchestrator Control Panel */}
+        {repoId && snapshotId && (
+          <div className="bg-[#0f172a]/60 border border-slate-800/80 rounded-xl p-5 space-y-4 backdrop-blur-sm shadow-xl flex items-center justify-between">
+            <div className="space-y-1">
+              <h3 className="text-sm font-semibold text-slate-200">Pipeline Orchestrator</h3>
+              <p className="text-[11px] text-slate-500">Trigger the full evaluation harness generation pipeline sequentially.</p>
             </div>
-
-            <div className="flex items-center justify-between gap-2">
-              {renderPipelineBadge(1)}
+            <div className="flex items-center gap-3">
               <Button
                 variant="ghost"
-                onClick={handleStage1Click}
-                disabled={!repoId || !snapshotId}
-                className="text-[10px] h-7 px-3 border border-slate-800 bg-slate-950 hover:bg-slate-900 text-slate-300"
+                onClick={() => setLlmConfigOpen(true)}
+                className="w-9 h-9 p-0 flex items-center justify-center border border-slate-800 bg-slate-950 text-slate-400 hover:text-slate-200"
+                title="Configure pipeline models"
               >
-                <span>Open Screen</span>
-                <ArrowRight className="w-3 h-3 ml-1" />
+                <Settings size={15} />
+              </Button>
+              <Button
+                variant="primary"
+                onClick={handleRunAll}
+                loading={runningAll || !!pollingSessionId}
+                className="text-xs h-9 px-4 flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 font-semibold"
+              >
+                <Play size={13} />
+                <span>Run All Pipeline</span>
               </Button>
             </div>
           </div>
+        )}
 
-          {effectiveStage === 'awaiting_candidate_review' && (
-            <div className="border-t border-slate-850 pt-4 space-y-3">
-              <div className="text-xs text-amber-300 flex items-center gap-1.5 font-semibold">
-                <AlertCircle size={14} className="text-amber-400" />
-                <span>Human Triage Required</span>
+        {/* Pipeline Stage Cards */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-start">
+          {/* Stage 1 Card */}
+          <div
+            onClick={handleStage1Click}
+            className={`border rounded-xl p-5 space-y-4 backdrop-blur-sm transition-all ${repoId && snapshotId ? 'cursor-pointer hover:border-indigo-500/40' : 'cursor-not-allowed opacity-70'
+              } ${effectiveStage === 'fingerprinting' || effectiveStage === 'awaiting_candidate_review'
+                ? 'bg-[#0f172a]/70 border-amber-500/50 shadow-amber-500/5 shadow-lg'
+                : 'bg-[#0f172a]/40 border-slate-800/80'
+              }`}
+          >
+            <div className="flex flex-col gap-3">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-300 text-xs font-bold shrink-0">1</div>
+                <div className="min-w-0">
+                  <h4 className="text-xs font-semibold text-slate-200">Stage 1: Candidate Discovery</h4>
+                  <p className="text-[10px] text-slate-500">Scan code repository structure for component candidates.</p>
+                </div>
               </div>
-              <p className="text-[11px] text-slate-400">
-                Found {candidates.length} candidate(s). Review and confirm component candidates on the Stage 1 interactive screen, then click Confirm & Continue below.
-              </p>
-              <div className="flex items-center gap-2.5 text-[10px] font-mono text-slate-500">
-                <span>Confirmed: {candidates.filter(c => c.verdict === 'confirmed').length}</span>
-                <span>•</span>
-                <span>Rejected: {candidates.filter(c => c.verdict === 'rejected').length}</span>
-                <span>•</span>
-                <span>Proposed: {candidates.filter(c => c.verdict === 'proposed').length}</span>
-              </div>
-              <div className="flex flex-wrap justify-end gap-2">
-                <Button
-                  variant="ghost"
-                  onClick={() => navigate(`stage1?repoId=${repoId}&snapshotId=${snapshotId}`)}
-                  className="text-[10px] h-7 px-3 border border-slate-800 bg-slate-950 text-slate-300"
-                >
-                  Go to Graph Review
-                </Button>
-                <Button
-                  variant="primary"
-                  onClick={handleConfirmCandidates}
-                  disabled={candidates.filter(c => c.verdict === 'confirmed').length === 0}
-                  className="text-[10px] h-7 px-4 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold"
-                >
-                  Confirm & Continue
-                </Button>
-              </div>
-            </div>
-          )}
-        </div>
 
-        {/* Stage 2 Card */}
-        <div className={`border rounded-xl p-5 space-y-4 backdrop-blur-sm transition-all ${
-          effectiveStage === 'expanding' || effectiveStage === 'awaiting_map_review'
-            ? 'bg-[#0f172a]/70 border-amber-500/50 shadow-amber-500/5 shadow-lg'
-            : 'bg-[#0f172a]/40 border-slate-800/80'
-        }`}>
-          <div className="flex flex-col gap-3">
-            <div className="flex items-center gap-3">
-              <div className="w-8 h-8 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-300 text-xs font-bold shrink-0">2</div>
-              <div className="min-w-0">
-                <h4 className="text-xs font-semibold text-slate-200">Stage 2: Iterative Expansion to System Map</h4>
-                <p className="text-[10px] text-slate-500">Perform BFS neighborhood search to compile the full component map.</p>
+              <div className="flex items-center justify-between gap-2">
+                {renderPipelineBadge(1)}
+                {repoId && snapshotId && <ArrowRight className="w-3.5 h-3.5 text-indigo-400 shrink-0" />}
               </div>
             </div>
 
-            <div className="flex items-center justify-between gap-2">
-              {renderPipelineBadge(2)}
-              <Button
-                variant="ghost"
-                onClick={() => {
-                  if (repoId && snapshotId && candidates.some((c) => c.verdict === 'confirmed')) {
-                    navigate(`stage2?repoId=${repoId}&snapshotId=${snapshotId}`)
-                  }
-                }}
-                disabled={!repoId || !snapshotId || !candidates.some((c) => c.verdict === 'confirmed')}
-                className="text-[10px] h-7 px-3 border border-slate-800 bg-slate-950 hover:bg-slate-900 text-slate-300 disabled:opacity-40"
-              >
-                <span>Open Screen</span>
-                <ArrowRight className="w-3 h-3 ml-1" />
-              </Button>
-            </div>
+            {effectiveStage === 'awaiting_candidate_review' && (
+              <div className="border-t border-slate-850 pt-4 space-y-3">
+                <div className="text-xs text-amber-300 flex items-center gap-1.5 font-semibold">
+                  <AlertCircle size={14} className="text-amber-400" />
+                  <span>Human Triage Required</span>
+                </div>
+                <p className="text-[11px] text-slate-400">
+                  Found {candidates.length} candidate(s). Review and confirm component candidates on the Stage 1 interactive screen, then click Confirm & Continue below.
+                </p>
+                <div className="flex items-center gap-2.5 text-[10px] font-mono text-slate-500">
+                  <span>Confirmed: {candidates.filter(c => c.verdict === 'confirmed').length}</span>
+                  <span>•</span>
+                  <span>Rejected: {candidates.filter(c => c.verdict === 'rejected').length}</span>
+                  <span>•</span>
+                  <span>Proposed: {candidates.filter(c => c.verdict === 'proposed').length}</span>
+                </div>
+                <div className="flex flex-wrap justify-end gap-2">
+                  <Button
+                    variant="ghost"
+                    onClick={(e) => { e.stopPropagation(); navigate(`stage1?repoId=${repoId}&snapshotId=${snapshotId}`) }}
+                    className="text-[10px] h-7 px-3 border border-slate-800 bg-slate-950 text-slate-300"
+                  >
+                    Go to Graph Review
+                  </Button>
+                  <Button
+                    variant="primary"
+                    onClick={(e) => { e.stopPropagation(); handleConfirmCandidates() }}
+                    disabled={candidates.filter(c => c.verdict === 'confirmed').length === 0}
+                    className="text-[10px] h-7 px-4 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold"
+                  >
+                    Confirm & Continue
+                  </Button>
+                </div>
+              </div>
+            )}
           </div>
 
-          {effectiveStage === 'awaiting_map_review' && (
-            <div className="border-t border-slate-850 pt-4 space-y-3">
-              <div className="text-xs text-amber-300 flex items-center gap-1.5 font-semibold">
-                <AlertCircle size={14} className="text-amber-400" />
-                <span>Human Triage Required</span>
-              </div>
-              <p className="text-[11px] text-slate-400">
-                Neighborhood expansion complete. Review system map connections and framework constraints on the Stage 2 interactive screen, then click Confirm & Continue below.
-              </p>
-              <div className="flex flex-wrap justify-end gap-2">
-                <Button
-                  variant="ghost"
-                  onClick={() => navigate(`stage2?repoId=${repoId}&snapshotId=${snapshotId}`)}
-                  className="text-[10px] h-7 px-3 border border-slate-800 bg-slate-950 text-slate-300"
-                >
-                  Go to Blueprint Review
-                </Button>
-                <Button
-                  variant="primary"
-                  onClick={handleConfirmMap}
-                  className="text-[10px] h-7 px-4 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold"
-                >
-                  Confirm & Continue
-                </Button>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Stage 3 Card */}
-        <div className={`border rounded-xl p-5 space-y-4 backdrop-blur-sm transition-all ${
-          effectiveStage === 'planning' || effectiveStage === 'awaiting_plan_review'
-            ? 'bg-[#0f172a]/70 border-amber-500/50 shadow-amber-500/5 shadow-lg'
-            : 'bg-[#0f172a]/40 border-slate-800/80'
-        }`}>
-          <div className="flex flex-col gap-3">
-            <div className="flex items-center gap-3">
-              <div className="w-8 h-8 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-300 text-xs font-bold shrink-0">3</div>
-              <div className="min-w-0">
-                <h4 className="text-xs font-semibold text-slate-200">Stage 3: Build Evaluation Plan</h4>
-                <p className="text-[10px] text-slate-500">Propose custom metric assertions, judges, and classifier test suites.</p>
-              </div>
-            </div>
-
-            <div className="flex items-center justify-between gap-2">
-              {renderPipelineBadge(3)}
-              <Button
-                variant="ghost"
-                onClick={() => {
-                  const stage = effectiveStage
-                  if (repoId && snapshotId && !['fingerprinting', 'awaiting_candidate_review', 'expanding', 'awaiting_map_review'].includes(stage)) {
-                    navigate(`stage3?repoId=${repoId}&snapshotId=${snapshotId}`)
-                  }
-                }}
-                disabled={!repoId || !snapshotId || ['fingerprinting', 'awaiting_candidate_review', 'expanding', 'awaiting_map_review'].includes(effectiveStage)}
-                className="text-[10px] h-7 px-3 border border-slate-800 bg-slate-950 hover:bg-slate-900 text-slate-300 disabled:opacity-40"
+          {/* Stage 2 Card */}
+          {(() => {
+            const stage2Enabled = !!repoId && !!snapshotId && candidates.some((c) => c.verdict === 'confirmed')
+            return (
+              <div
+                onClick={() => stage2Enabled && navigate(`stage2?repoId=${repoId}&snapshotId=${snapshotId}`)}
+                className={`border rounded-xl p-5 space-y-4 backdrop-blur-sm transition-all ${stage2Enabled ? 'cursor-pointer hover:border-indigo-500/40' : 'cursor-not-allowed opacity-70'
+                  } ${effectiveStage === 'expanding' || effectiveStage === 'awaiting_map_review'
+                    ? 'bg-[#0f172a]/70 border-amber-500/50 shadow-amber-500/5 shadow-lg'
+                    : 'bg-[#0f172a]/40 border-slate-800/80'
+                  }`}
               >
-                <span>Open Screen</span>
-                <ArrowRight className="w-3 h-3 ml-1" />
-              </Button>
-            </div>
-          </div>
+                <div className="flex flex-col gap-3">
+                  <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-300 text-xs font-bold shrink-0">2</div>
+                    <div className="min-w-0">
+                      <h4 className="text-xs font-semibold text-slate-200">Stage 2: Iterative Expansion to System Map</h4>
+                      <p className="text-[10px] text-slate-500">Perform BFS neighborhood search to compile the full component map.</p>
+                    </div>
+                  </div>
 
-          {effectiveStage === 'awaiting_plan_review' && (
-            <div className="border-t border-slate-850 pt-4 space-y-3">
-              <div className="text-xs text-amber-300 flex items-center gap-1.5 font-semibold">
-                <AlertCircle size={14} className="text-amber-400" />
-                <span>Human Triage Required</span>
+                  <div className="flex items-center justify-between gap-2">
+                    {renderPipelineBadge(2)}
+                    {stage2Enabled && <ArrowRight className="w-3.5 h-3.5 text-indigo-400 shrink-0" />}
+                  </div>
+                </div>
+
+                {effectiveStage === 'awaiting_map_review' && (
+                  <div className="border-t border-slate-850 pt-4 space-y-3">
+                    <div className="text-xs text-amber-300 flex items-center gap-1.5 font-semibold">
+                      <AlertCircle size={14} className="text-amber-400" />
+                      <span>Human Triage Required</span>
+                    </div>
+                    <p className="text-[11px] text-slate-400">
+                      Neighborhood expansion complete. Review system map connections and framework constraints on the Stage 2 interactive screen, then click Confirm & Continue below.
+                    </p>
+                    <div className="flex flex-wrap justify-end gap-2">
+                      <Button
+                        variant="ghost"
+                        onClick={(e) => { e.stopPropagation(); navigate(`stage2?repoId=${repoId}&snapshotId=${snapshotId}`) }}
+                        className="text-[10px] h-7 px-3 border border-slate-800 bg-slate-950 text-slate-300"
+                      >
+                        Go to Blueprint Review
+                      </Button>
+                      <Button
+                        variant="primary"
+                        onClick={(e) => { e.stopPropagation(); handleConfirmMap() }}
+                        className="text-[10px] h-7 px-4 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold"
+                      >
+                        Confirm & Continue
+                      </Button>
+                    </div>
+                  </div>
+                )}
               </div>
-              <p className="text-[11px] text-slate-400">
-                Metric plan entries successfully tailored. Review individual assertions on the Stage 3 plan screen, customize as needed, and click Confirm & Continue to finalize.
-              </p>
-              <div className="flex flex-wrap justify-end gap-2">
-                <Button
-                  variant="ghost"
-                  onClick={() => navigate(`stage3?repoId=${repoId}&snapshotId=${snapshotId}`)}
-                  className="text-[10px] h-7 px-3 border border-slate-800 bg-slate-950 text-slate-300"
-                >
-                  Go to Plan Review
-                </Button>
-                <Button
-                  variant="primary"
-                  onClick={handleConfirmPlan}
-                  className="text-[10px] h-7 px-4 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold"
-                >
-                  Confirm & Continue
-                </Button>
+            )
+          })()}
+
+          {/* Stage 3 Card */}
+          {(() => {
+            const stage3Blocked = ['fingerprinting', 'awaiting_candidate_review', 'expanding', 'awaiting_map_review'].includes(effectiveStage)
+            const stage3Enabled = !!repoId && !!snapshotId && !stage3Blocked
+            return (
+              <div
+                onClick={() => stage3Enabled && navigate(`stage3?repoId=${repoId}&snapshotId=${snapshotId}`)}
+                className={`border rounded-xl p-5 space-y-4 backdrop-blur-sm transition-all ${stage3Enabled ? 'cursor-pointer hover:border-indigo-500/40' : 'cursor-not-allowed opacity-70'
+                  } ${effectiveStage === 'planning' || effectiveStage === 'awaiting_plan_review'
+                    ? 'bg-[#0f172a]/70 border-amber-500/50 shadow-amber-500/5 shadow-lg'
+                    : 'bg-[#0f172a]/40 border-slate-800/80'
+                  }`}
+              >
+                <div className="flex flex-col gap-3">
+                  <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-300 text-xs font-bold shrink-0">3</div>
+                    <div className="min-w-0">
+                      <h4 className="text-xs font-semibold text-slate-200">Stage 3: Build Evaluation Plan</h4>
+                      <p className="text-[10px] text-slate-500">Propose custom metric assertions, judges, and classifier test suites.</p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-2">
+                    {renderPipelineBadge(3)}
+                    {stage3Enabled && <ArrowRight className="w-3.5 h-3.5 text-indigo-400 shrink-0" />}
+                  </div>
+                </div>
+
+                {effectiveStage === 'awaiting_plan_review' && (
+                  <div className="border-t border-slate-850 pt-3 space-y-2.5">
+                    <div className="text-xs text-amber-300 flex items-center gap-1.5 font-semibold">
+                      <AlertCircle size={14} className="text-amber-400" />
+                      <span>Human Triage Required</span>
+                    </div>
+                    <p className="text-[11px] text-slate-400">
+                      Metric plan ready — review assertions on the plan screen, then confirm to finalize.
+                    </p>
+                    <div className="flex flex-wrap justify-end gap-2">
+                      <Button
+                        variant="ghost"
+                        onClick={(e) => { e.stopPropagation(); navigate(`stage3?repoId=${repoId}&snapshotId=${snapshotId}`) }}
+                        className="text-[10px] h-7 px-3 border border-slate-800 bg-slate-950 text-slate-300"
+                      >
+                        Go to Plan Review
+                      </Button>
+                      <Button
+                        variant="primary"
+                        onClick={(e) => { e.stopPropagation(); handleConfirmPlan() }}
+                        className="text-[10px] h-7 px-4 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold"
+                      >
+                        Confirm & Continue
+                      </Button>
+                    </div>
+                  </div>
+                )}
               </div>
-            </div>
-          )}
+            )
+          })()}
         </div>
-      </div>
 
-      <LLMConfigModal
-        isOpen={llmConfigOpen}
-        onClose={() => setLlmConfigOpen(false)}
-        providerId={selectedProviderId}
-        modelId={selectedModelId}
-        onChange={(prov, model) => {
-          setSelectedProviderId(prov)
-          setSelectedModelId(model)
-        }}
-        title="Planning LLM Model (CS-274)"
-      />
+        <LLMConfigModal
+          isOpen={llmConfigOpen}
+          onClose={() => setLlmConfigOpen(false)}
+          providerId={selectedProviderId}
+          modelId={selectedModelId}
+          onChange={(prov, model) => {
+            setSelectedProviderId(prov)
+            setSelectedModelId(model)
+          }}
+          title="Planning LLM Model (CS-274)"
+        />
       </div>
     </div>
   )

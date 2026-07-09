@@ -1,6 +1,6 @@
 import { ipcMain } from 'electron'
 import { getAEHProcessManager } from '../infrastructure/aeh-server/server'
-import { BackendClient } from '../infrastructure/python-server/client'
+import { BackendClient, BackendHttpError } from '../infrastructure/python-server/client'
 import { getBackendPort, getExternalApiToken } from '../infrastructure/python-server/server'
 
 function aehClient(): BackendClient {
@@ -9,6 +9,17 @@ function aehClient(): BackendClient {
     throw new Error('AEH server is not running')
   }
   return new BackendClient(port)
+}
+
+/** For "might not exist yet" GET resources: 404 -> null instead of a thrown error the
+ *  renderer would otherwise have to pattern-match out of an IPC-serialized message. */
+async function getOrNull<T>(path: string): Promise<T | null> {
+  try {
+    return await aehClient().get<T>(path)
+  } catch (err) {
+    if (err instanceof BackendHttpError && err.status === 404) return null
+    throw err
+  }
 }
 
 // backend_url/backend_token are injected here since AEH's own subprocess never holds them.
@@ -120,11 +131,23 @@ export function registerAEHHandlers(): void {
   )
 
   ipcMain.handle('aeh:getPlan', (_e, sessionId: string) =>
-    aehClient().get(`/api/discovery/expansion-sessions/${sessionId}/plan`)
+    getOrNull(`/api/discovery/expansion-sessions/${sessionId}/plan`)
   )
 
   ipcMain.handle('aeh:updatePlan', (_e, sessionId: string, body: unknown) =>
     aehClient().put(`/api/discovery/expansion-sessions/${sessionId}/plan`, body)
+  )
+
+  ipcMain.handle('aeh:getPlanReport', (_e, sessionId: string) =>
+    getOrNull(`/api/discovery/expansion-sessions/${sessionId}/plan-report`)
+  )
+
+  ipcMain.handle('aeh:generateAgentFlowMap', (_e, sessionId: string, body: unknown) =>
+    aehClient().post(`/api/discovery/expansion-sessions/${sessionId}/agent-flows`, withBackendConnection(body))
+  )
+
+  ipcMain.handle('aeh:getAgentFlowMap', (_e, sessionId: string) =>
+    getOrNull(`/api/discovery/expansion-sessions/${sessionId}/agent-flows`)
   )
 
   ipcMain.handle('aeh:advanceSession', (_e, sessionId: string, body: unknown) =>

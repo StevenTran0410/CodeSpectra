@@ -816,6 +816,8 @@ export default function Stage1GraphScreen(): React.ReactElement {
         } else if (latest.status === 'running') {
           setRunningDiscovery(true)
           startPolling(latest.id)
+        } else if (latest.status === 'failed') {
+          setDiscoveryError(latest.error ?? 'Discovery failed.')
         }
       }
     } catch (e) {

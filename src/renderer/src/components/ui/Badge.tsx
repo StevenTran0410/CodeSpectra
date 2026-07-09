@@ -1,6 +1,6 @@
 import React from 'react'
 
-type BadgeVariant = 'success' | 'warning' | 'error' | 'info' | 'neutral'
+type BadgeVariant = 'success' | 'warning' | 'error' | 'info' | 'neutral' | 'progress'
 
 interface BadgeProps {
   variant?: BadgeVariant
@@ -15,7 +15,8 @@ const variantMap: Record<BadgeVariant, string> = {
   warning: 'bg-amber-900/40 text-amber-200 border-amber-800',
   error: 'bg-red-900/40 text-red-300 border-red-800',
   info: 'bg-sky-900/50 text-sky-300 border-sky-800',
-  neutral: 'bg-zinc-800 text-zinc-300 border-zinc-700'
+  neutral: 'bg-zinc-800 text-zinc-300 border-zinc-700',
+  progress: 'bg-indigo-900/40 text-indigo-300 border-indigo-800'
 }
 
 const sizeMap: Record<'sm' | 'md', string> = {

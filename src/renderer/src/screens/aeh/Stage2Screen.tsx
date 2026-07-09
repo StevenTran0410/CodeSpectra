@@ -5,9 +5,10 @@ import {
   AlertCircle,
   Play,
   ArrowLeft,
-  Save,
   CheckCircle2,
   Workflow,
+  ChevronRight,
+  RefreshCw,
 } from 'lucide-react'
 import { Button, Select, Badge, useToastStore } from '../../components/ui'
 import {
@@ -15,34 +16,13 @@ import {
   Background,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import { getDagreGraphLayout } from './graphLayout'
+import { getDagreGraphLayout, type GraphLayoutNode, type GraphLayoutEdge } from './graphLayout'
+import { ROLE_COLORS, wiringBlockFileEdges, AgentSubGraphPanel } from './AgentSubGraphPanel'
 import { useAEHStore } from '../../store/aeh.store'
 import { useProviderStore } from '../../store/provider.store'
 import LLMConfigModal, { LLMModelButton } from './LLMConfigModal'
 import { useSessionPolling } from './useSessionPolling'
-// AEHDiscoveryCandidate/AEHExpansionSession/AEHSystemMap/AEHSystemMapComponent are global ambient types.
-
-const VALID_ROLES = [
-  'unknown',
-  'input_guard.rule',
-  'input_guard.llm',
-  'orchestrator',
-  'retrieval_agent',
-  'tool',
-  'validator',
-  'writer',
-]
-
-const ROLE_COLORS: Record<string, string> = {
-  orchestrator: '#6366f1',
-  retrieval_agent: '#0ea5e9',
-  tool: '#f59e0b',
-  writer: '#10b981',
-  validator: '#ec4899',
-  'input_guard.rule': '#ef4444',
-  'input_guard.llm': '#ef4444',
-  unknown: '#475569',
-}
+// AEHDiscoveryCandidate/AEHExpansionSession/AEHSystemMap/AEHAgentFlow/AEHAgentFlowMap are global ambient types.
 
 export default function Stage2Screen(): React.ReactElement {
   const [searchParams] = useSearchParams()
@@ -69,16 +49,20 @@ export default function Stage2Screen(): React.ReactElement {
   const [selectedModelId, setSelectedModelId] = useState('')
   const [llmConfigOpen, setLlmConfigOpen] = useState(false)
 
-  // Classify LLM Config (optional)
-  const [classifyProviderId, setClassifyProviderId] = useState('')
-  const [classifyModelId, setClassifyModelId] = useState('')
-  const [classifyLlmConfigOpen, setClassifyLlmConfigOpen] = useState(false)
+  // Flow Analysis LLM Config (LLM 2 — holistic agent-flow separation pass, needs a strong model)
+  const [flowProviderId, setFlowProviderId] = useState('')
+  const [flowModelId, setFlowModelId] = useState('')
+  const [flowLlmConfigOpen, setFlowLlmConfigOpen] = useState(false)
 
   // System Map State
   const [systemMap, setSystemMap] = useState<AEHSystemMap | null>(null)
-  const [mapView, setMapView] = useState<'table' | 'graph'>('table')
   const [selectedGraphNode, setSelectedGraphNode] = useState<string | null>(null)
-  const [savingMap, setSavingMap] = useState(false)
+
+  // Agent Flow Map State (LLM 2 output — groups the expanded map into per-agent sub-flows)
+  const [agentFlowMap, setAgentFlowMap] = useState<AEHAgentFlowMap | null>(null)
+  const [generatingFlows, setGeneratingFlows] = useState(false)
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
+  const [graphScope, setGraphScope] = useState<'agent' | 'full'>('agent')
 
   // Load providers on mount
   useEffect(() => {
@@ -129,16 +113,48 @@ export default function Stage2Screen(): React.ReactElement {
     return candidates.find((c) => c.id === selectedCandidateId) || null
   }, [candidates, selectedCandidateId])
 
-  // Start polling
+  // null (not yet generated) just means "not generated yet" — never triggers a fresh LLM-2 call or an error.
+  const tryLoadAgentFlowMap = useCallback(async (sessionId: string) => {
+    try {
+      const flows = await window.api.aeh.getAgentFlowMap(sessionId)
+      setAgentFlowMap(flows)
+      setSelectedAgentId(flows ? flows.entry_agent_ids[0] ?? flows.agents[0]?.id ?? null : null)
+    } catch {
+      setAgentFlowMap(null)
+    }
+  }, [])
+
+  const generateAgentFlowsFor = useCallback(
+    async (sessionId: string) => {
+      setGeneratingFlows(true)
+      try {
+        const flows = await window.api.aeh.generateAgentFlowMap(sessionId, {
+          provider_id: flowProviderId || selectedProviderId,
+          model_id: (flowProviderId ? flowModelId : selectedModelId) || null,
+        })
+        setAgentFlowMap(flows)
+        setSelectedAgentId(flows.entry_agent_ids[0] ?? flows.agents[0]?.id ?? null)
+        setGraphScope('agent')
+        toast.success('Agent flows separated.')
+      } catch (err: any) {
+        toast.error(err?.message ?? 'Failed to separate agent flows.')
+      } finally {
+        setGeneratingFlows(false)
+      }
+    },
+    [flowProviderId, flowModelId, selectedProviderId, selectedModelId, toast]
+  )
+
   const startPolling = useSessionPolling<AEHExpansionSession>({
     fetchSession: (sessionId) => window.api.aeh.getExpansionSession(sessionId),
     onUpdate: setExpansionSession,
     onDone: async (session) => {
       setRunning(false)
       if (session.status === 'completed') {
-        toast.success('Expansion complete. Loading system map...')
+        toast.success('Expansion complete. Separating agent flows...')
         const map = await window.api.aeh.getExpansionMap(session.id)
         setSystemMap(map)
+        await generateAgentFlowsFor(session.id)
       } else if (session.status === 'failed') {
         setError(session.error ?? 'Expansion failed.')
       }
@@ -155,6 +171,8 @@ export default function Stage2Screen(): React.ReactElement {
     let cancelled = false
     setExpansionSession(null)
     setSystemMap(null)
+    setAgentFlowMap(null)
+    setSelectedAgentId(null)
     setError(null)
     ;(async () => {
       try {
@@ -164,7 +182,9 @@ export default function Stage2Screen(): React.ReactElement {
         setExpansionSession(latest)
         if (latest.status === 'completed') {
           const map = await window.api.aeh.getExpansionMap(latest.id)
-          if (!cancelled) setSystemMap(map)
+          if (cancelled) return
+          setSystemMap(map)
+          await tryLoadAgentFlowMap(latest.id)
         } else if (latest.status === 'running') {
           setRunning(true)
           startPolling(latest.id)
@@ -178,7 +198,7 @@ export default function Stage2Screen(): React.ReactElement {
     return () => {
       cancelled = true
     }
-  }, [selectedCandidateId, startPolling])
+  }, [selectedCandidateId, startPolling, tryLoadAgentFlowMap])
 
   const countKnownFiles = (candidate: AEHDiscoveryCandidate | null): number => {
     if (!candidate) return 0
@@ -199,9 +219,9 @@ export default function Stage2Screen(): React.ReactElement {
   const computeNodeBudget = (candidate: AEHDiscoveryCandidate | null): number =>
     budgetForFileCount(countKnownFiles(candidate))
 
-  // Trigger Expansion
-  const handleRunExpansion = async () => {
-    if (!selectedCandidateId || running) return
+  // Chains into agent-flow separation via startPolling's onDone once expansion completes.
+  const handleRun = async () => {
+    if (!selectedCandidateId || running || generatingFlows) return
     if (!selectedProviderId) {
       toast.error('Please configure and select an LLM provider.')
       return
@@ -211,6 +231,8 @@ export default function Stage2Screen(): React.ReactElement {
     setError(null)
     setSystemMap(null)
     setExpansionSession(null)
+    setAgentFlowMap(null)
+    setSelectedAgentId(null)
 
     try {
       await startAEH()
@@ -220,8 +242,6 @@ export default function Stage2Screen(): React.ReactElement {
         model_id: selectedModelId || null,
         node_budget: nodeBudget,
         hop_cap: 3,
-        classify_provider_id: classifyProviderId || null,
-        classify_model_id: classifyModelId || null,
       })
       const session = await window.api.aeh.getExpansionSession(res.session_id)
       setExpansionSession(session)
@@ -230,29 +250,6 @@ export default function Stage2Screen(): React.ReactElement {
       setRunning(false)
       setError(err?.message ?? 'Failed to trigger candidate expansion.')
       toast.error(err?.message ?? 'Expansion failed.')
-    }
-  }
-
-  // Update component role locally
-  const handleRoleChange = (componentId: string, newRole: string) => {
-    if (!systemMap) return
-    const updatedComponents = systemMap.components.map((c) =>
-      c.id === componentId ? { ...c, role: newRole } : c
-    )
-    setSystemMap({ ...systemMap, components: updatedComponents })
-  }
-
-  // Save Map back to the YAML file
-  const handleSaveMap = async () => {
-    if (!expansionSession || !systemMap) return
-    setSavingMap(true)
-    try {
-      await window.api.aeh.updateExpansionMap(expansionSession.id, systemMap)
-      toast.success('System map saved successfully.')
-    } catch (err: any) {
-      toast.error(err?.message ?? 'Failed to save system map.')
-    } finally {
-      setSavingMap(false)
     }
   }
 
@@ -278,8 +275,9 @@ export default function Stage2Screen(): React.ReactElement {
             providerId={selectedProviderId}
             modelId={selectedModelId}
             providers={providers}
-            disabled={running}
+            disabled={running || generatingFlows}
             onClick={() => setLlmConfigOpen(true)}
+            labelPrefix="LLM 1"
           />
           <LLMConfigModal
             isOpen={llmConfigOpen}
@@ -290,35 +288,35 @@ export default function Stage2Screen(): React.ReactElement {
               setSelectedProviderId(pid)
               setSelectedModelId(mid)
             }}
-            title="Expansion Model (this stage only)"
+            title="LLM 1 — Expansion & Classification Model (this stage only)"
           />
 
           <LLMModelButton
-            providerId={classifyProviderId}
-            modelId={classifyModelId}
+            providerId={flowProviderId}
+            modelId={flowModelId}
             providers={providers}
-            disabled={running}
-            onClick={() => setClassifyLlmConfigOpen(true)}
-            labelPrefix="Classifier"
-            emptyLabel="Classifier: Default"
+            disabled={running || generatingFlows}
+            onClick={() => setFlowLlmConfigOpen(true)}
+            labelPrefix="LLM 2"
+            emptyLabel="LLM 2: Same as LLM 1"
             emptyVariant="neutral"
           />
           <LLMConfigModal
-            isOpen={classifyLlmConfigOpen}
-            onClose={() => setClassifyLlmConfigOpen(false)}
-            providerId={classifyProviderId}
-            modelId={classifyModelId}
+            isOpen={flowLlmConfigOpen}
+            onClose={() => setFlowLlmConfigOpen(false)}
+            providerId={flowProviderId}
+            modelId={flowModelId}
             onChange={(pid, mid) => {
-              setClassifyProviderId(pid)
-              setClassifyModelId(mid)
+              setFlowProviderId(pid)
+              setFlowModelId(mid)
             }}
-            title="Chunk Classifier Model (optional — defaults to main model, pick something fast/cheap)"
+            title="LLM 2 — Agent-Flow Analysis Model (optional — reasons over the whole map at once, needs a strong model)"
           />
 
           <Button
             variant="primary"
-            disabled={running || !selectedCandidateId || providers.length === 0}
-            onClick={handleRunExpansion}
+            disabled={running || generatingFlows || !selectedCandidateId || providers.length === 0}
+            onClick={handleRun}
             className="text-[10px] h-7 px-3.5 flex items-center gap-1.5"
           >
             {running ? (
@@ -326,10 +324,15 @@ export default function Stage2Screen(): React.ReactElement {
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
                 <span>Expanding...</span>
               </>
+            ) : generatingFlows ? (
+              <>
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                <span>Separating Flows...</span>
+              </>
             ) : (
               <>
                 <Play className="w-3 h-3 ml-0.5" />
-                <span>Run Expansion</span>
+                <span>Run</span>
               </>
             )}
           </Button>
@@ -412,6 +415,13 @@ export default function Stage2Screen(): React.ReactElement {
                   {expansionSession.status}
                 </Badge>
               </div>
+
+              {generatingFlows && (
+                <div className="flex items-center gap-1.5 text-[10px] text-indigo-300">
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                  <span>Separating agent flows (LLM 2)...</span>
+                </div>
+              )}
 
               <div className="space-y-1.5 text-[10px] font-mono text-slate-400">
                 <div className="flex justify-between">
@@ -501,44 +511,54 @@ export default function Stage2Screen(): React.ReactElement {
                     </Badge>
                   </div>
                   <p className="text-[10px] text-slate-500">
-                    Review and override roles dynamically before planning evaluation suites.
+                    {agentFlowMap
+                      ? 'Browse the system as per-agent flows, or switch to the full component graph.'
+                      : generatingFlows
+                        ? 'Separating agent flows...'
+                        : 'Browsing the full component graph.'}
                   </p>
                 </div>
 
-                <div className="flex items-center gap-3">
-                  {/* View Toggle */}
-                  <div className="flex items-center bg-slate-950 border border-slate-800 rounded-lg p-0.5 shrink-0">
-                    <button
-                      onClick={() => setMapView('table')}
-                      className={`text-[10px] px-2.5 py-1 rounded-md transition-colors ${
-                        mapView === 'table'
-                          ? 'bg-slate-800 text-slate-200 font-semibold'
-                          : 'text-slate-400 hover:text-slate-200'
-                      }`}
-                    >
-                      Table
-                    </button>
-                    <button
-                      onClick={() => setMapView('graph')}
-                      className={`text-[10px] px-2.5 py-1 rounded-md transition-colors ${
-                        mapView === 'graph'
-                          ? 'bg-slate-800 text-slate-200 font-semibold'
-                          : 'text-slate-400 hover:text-slate-200'
-                      }`}
-                    >
-                      Graph
-                    </button>
-                  </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  {/* Agent / Full graph scope toggle — only meaningful once agent flows exist */}
+                  {agentFlowMap && (
+                    <div className="flex items-center bg-slate-950 border border-slate-800 rounded-lg p-0.5 shrink-0">
+                      <button
+                        onClick={() => setGraphScope('agent')}
+                        disabled={!selectedAgentId}
+                        className={`text-[10px] px-2.5 py-1 rounded-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                          graphScope === 'agent'
+                            ? 'bg-slate-800 text-slate-200 font-semibold'
+                            : 'text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        Agent View
+                      </button>
+                      <button
+                        onClick={() => setGraphScope('full')}
+                        className={`text-[10px] px-2.5 py-1 rounded-md transition-colors ${
+                          graphScope === 'full'
+                            ? 'bg-slate-800 text-slate-200 font-semibold'
+                            : 'text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        Full Graph
+                      </button>
+                    </div>
+                  )}
 
-                  <Button
-                    variant="primary"
-                    onClick={handleSaveMap}
-                    loading={savingMap}
-                    className="text-[10px] h-8 px-4 flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 text-white"
-                  >
-                    <Save className="w-3.5 h-3.5" />
-                    <span>Save Blueprint Map</span>
-                  </Button>
+                  {/* Small, secondary — retry JUST the LLM-2 pass without re-running expansion. */}
+                  {expansionSession?.status === 'completed' && (
+                    <button
+                      onClick={() => generateAgentFlowsFor(expansionSession.id)}
+                      disabled={running || generatingFlows}
+                      title="Retry agent-flow separation only (LLM 2), keeping the existing map"
+                      className="flex items-center gap-1 h-[26px] px-2 rounded-md border border-slate-800 text-[9px] text-slate-500 hover:text-slate-300 hover:border-slate-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shrink-0"
+                    >
+                      <RefreshCw className={`w-3 h-3 ${generatingFlows ? 'animate-spin' : ''}`} />
+                      <span>Retry flows</span>
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -557,195 +577,162 @@ export default function Stage2Screen(): React.ReactElement {
                 </div>
               )}
 
-              {/* Components List Table OR Graph View */}
-              {mapView === 'table' ? (
-                <div className="flex-1 overflow-y-auto px-6 py-4">
-                  <div className="border border-slate-850 rounded-xl overflow-hidden bg-slate-950/20">
-                    <table className="w-full text-left border-collapse text-xs">
-                      <thead>
-                        <tr className="border-b border-slate-850 bg-slate-900/30 text-slate-400 font-medium">
-                          <th className="p-3">Component / Class ID</th>
-                          <th className="p-3">Role</th>
-                          <th className="p-3">Model</th>
-                          <th className="p-3">Entry Point</th>
-                          <th className="p-3">Topology</th>
-                          <th className="p-3 text-right">Constraints</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-850">
-                        {systemMap.components.map((comp) => {
-                          const isUnknown = comp.role === 'unknown'
-                          return (
-                            <tr
-                              key={comp.id}
-                              className={`hover:bg-slate-900/25 transition-colors ${
-                                isUnknown ? 'bg-amber-950/5' : ''
-                              }`}
-                            >
-                              <td className="p-3 font-mono font-medium text-slate-200">
-                                <div className="flex items-center gap-2">
-                                  <span className="truncate max-w-[160px]" title={comp.id}>
-                                    {comp.id}
-                                  </span>
-                                  {isUnknown && (
-                                    <Badge variant="error" size="sm" className="bg-amber-900/30 border border-amber-800/40 text-amber-400 animate-pulse">
-                                      Triage
-                                    </Badge>
-                                  )}
-                                </div>
-                              </td>
-                              <td className="p-3">
-                                <Select
-                                  value={comp.role}
-                                  onChange={(e) => handleRoleChange(comp.id, e.target.value)}
-                                  className={`text-[11px] h-7 px-2 py-0.5 ${
-                                    isUnknown ? 'border-amber-700 bg-amber-950/20 text-amber-300' : ''
-                                  }`}
-                                >
-                                  {VALID_ROLES.map((r) => (
-                                    <option key={r} value={r}>
-                                      {r}
-                                    </option>
-                                  ))}
-                                </Select>
-                              </td>
-                              <td className="p-3">
-                                <span className="text-[10px] px-2 py-0.5 rounded font-mono bg-slate-900 border border-slate-800 text-slate-400">
-                                  {comp.model || 'None'}
-                                </span>
-                              </td>
-                              <td className="p-3 font-mono text-[10px] text-slate-400 break-all select-text max-w-[200px]" title={comp.entry_point || ''}>
-                                {comp.entry_point || '-'}
-                              </td>
-                              <td className="p-3 text-slate-400">
-                                <div className="flex items-center gap-2">
-                                  <span title={`Upstream: ${comp.upstream.join(', ') || 'none'}`}>
-                                    In: {comp.upstream.length}
-                                  </span>
-                                  <span className="text-slate-650">•</span>
-                                  <span title={`Downstream: ${comp.downstream.join(', ') || 'none'}`}>
-                                    Out: {comp.downstream.length}
-                                  </span>
-                                </div>
-                              </td>
-                              <td className="p-3 text-right text-slate-400 font-mono font-medium">
-                                {comp.constraints.length > 0 ? (
-                                  <span
-                                    className="underline cursor-help text-indigo-400"
-                                    title={comp.constraints.map((c) => `${c.name}: ${c.value} (${c.source})`).join('\n')}
-                                  >
-                                    {comp.constraints.length} citation{comp.constraints.length !== 1 ? 's' : ''}
-                                  </span>
-                                ) : (
-                                  '0'
-                                )}
-                              </td>
-                            </tr>
-                          )
-                        })}
-                      </tbody>
-                    </table>
+              {/* Agent List + Graph */}
+              <div className="flex-1 flex min-h-0">
+                {agentFlowMap && (
+                  <div className="w-72 border-r border-slate-850 shrink-0 min-h-0">
+                    <AgentFlowListPanel
+                      agentFlowMap={agentFlowMap}
+                      selectedAgentId={selectedAgentId}
+                      onSelectAgent={(id) => {
+                        setSelectedAgentId(id)
+                        setGraphScope('agent')
+                        setSelectedGraphNode(null)
+                      }}
+                    />
                   </div>
-                </div>
-              ) : (
+                )}
+
                 <div className="flex-1 flex min-h-0 relative">
                   <div className="flex-1 min-h-0 relative">
                     {expansionSession && (
-                      <SystemMapGraphPanel
-                        expansionSession={expansionSession}
-                        systemMap={systemMap}
-                        candidate={activeCandidate}
-                        selectedGraphNode={selectedGraphNode}
-                        onSelectGraphNode={setSelectedGraphNode}
-                      />
+                      graphScope === 'agent' && agentFlowMap && selectedAgentId ? (
+                        <AgentSubGraphPanel
+                          agent={agentFlowMap.agents.find((a) => a.id === selectedAgentId) ?? null}
+                          agentFlowMap={agentFlowMap}
+                          systemMap={systemMap}
+                          expansionSession={expansionSession}
+                          candidate={activeCandidate}
+                          selectedNode={selectedGraphNode}
+                          onSelectNode={setSelectedGraphNode}
+                          onNavigateToAgent={(id) => {
+                            setSelectedAgentId(id)
+                            setSelectedGraphNode(null)
+                          }}
+                        />
+                      ) : (
+                        <SystemMapGraphPanel
+                          expansionSession={expansionSession}
+                          systemMap={systemMap}
+                          candidate={activeCandidate}
+                          selectedGraphNode={selectedGraphNode}
+                          onSelectGraphNode={setSelectedGraphNode}
+                        />
+                      )
                     )}
                   </div>
 
-                  {/* Graph Detail Side Panel */}
-                  {selectedGraphNode && (
-                    <div className="w-80 border-l border-slate-850 bg-slate-950/80 backdrop-blur-sm p-4 overflow-y-auto space-y-4 text-xs shrink-0 flex flex-col justify-between">
-                      <div className="space-y-4">
-                        <div className="flex items-center justify-between">
-                          <span className="text-[9px] uppercase tracking-wider font-bold text-slate-500">File Details</span>
-                          <button
-                            onClick={() => setSelectedGraphNode(null)}
-                            className="text-slate-400 hover:text-slate-200 text-sm font-bold px-1"
-                          >
-                            &times;
-                          </button>
-                        </div>
+                  {/* selectedGraphNode is a file path (full graph) or component id (agent graph) */}
+                  {selectedGraphNode && (() => {
+                    const comp = systemMap.components.find(
+                      (c) => c.file === selectedGraphNode || c.id === selectedGraphNode
+                    )
+                    const byId = comp?.id === selectedGraphNode
+                    const componentNeighbors = byId ? [...comp!.upstream, ...comp!.downstream] : []
+                    const fileNeighbors = new Set<string>()
+                    if (!byId && expansionSession) {
+                      for (const e of expansionSession.accepted_edges || []) {
+                        if (e.src === selectedGraphNode) fileNeighbors.add(e.dst)
+                        if (e.dst === selectedGraphNode) fileNeighbors.add(e.src)
+                      }
+                    }
 
-                        <div>
-                          <div className="text-[10px] text-slate-400 mb-0.5">File Path</div>
-                          <div className="font-mono text-[10px] text-slate-200 break-all select-all font-semibold bg-slate-900/50 border border-slate-900 rounded-lg p-2">
-                            {selectedGraphNode}
+                    return (
+                      <div className="w-80 border-l border-slate-850 bg-slate-950/80 backdrop-blur-sm p-4 overflow-y-auto space-y-4 text-xs shrink-0 flex flex-col justify-between">
+                        <div className="space-y-4">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[9px] uppercase tracking-wider font-bold text-slate-500">
+                              {byId ? 'Component Details' : 'File Details'}
+                            </span>
+                            <button
+                              onClick={() => setSelectedGraphNode(null)}
+                              className="text-slate-400 hover:text-slate-200 text-sm font-bold px-1"
+                            >
+                              &times;
+                            </button>
                           </div>
-                        </div>
 
-                        {(() => {
-                          const comp = systemMap.components.find((c) => c.file === selectedGraphNode)
-                          if (comp) {
-                            return (
-                              <div className="space-y-3 border-t border-slate-900 pt-3">
+                          <div>
+                            <div className="text-[10px] text-slate-400 mb-0.5">{byId ? 'Component ID' : 'File Path'}</div>
+                            <div className="font-mono text-[10px] text-slate-200 break-all select-all font-semibold bg-slate-900/50 border border-slate-900 rounded-lg p-2">
+                              {selectedGraphNode}
+                            </div>
+                          </div>
+
+                          {comp ? (
+                            <div className="space-y-3 border-t border-slate-900 pt-3">
+                              {!byId && (
                                 <div>
                                   <div className="text-[10px] text-slate-400 mb-0.5">Component ID</div>
                                   <div className="font-semibold text-indigo-400 truncate font-mono">{comp.id}</div>
                                 </div>
+                              )}
+                              <div>
+                                <div className="text-[10px] text-slate-400 mb-0.5">Role</div>
+                                <div className="font-medium text-slate-200 capitalize">{comp.role}</div>
+                              </div>
+                              {comp.model && (
                                 <div>
-                                  <div className="text-[10px] text-slate-400 mb-0.5">Role</div>
-                                  <div className="font-medium text-slate-200 capitalize">{comp.role}</div>
+                                  <div className="text-[10px] text-slate-400 mb-0.5">Model</div>
+                                  <div className="font-mono text-[10px] text-slate-300 bg-slate-900 border border-slate-850 px-1.5 py-0.5 rounded inline-block">
+                                    {comp.model}
+                                  </div>
                                 </div>
-                                {comp.model && (
-                                  <div>
-                                    <div className="text-[10px] text-slate-400 mb-0.5">Model</div>
-                                    <div className="font-mono text-[10px] text-slate-300 bg-slate-900 border border-slate-850 px-1.5 py-0.5 rounded inline-block">
-                                      {comp.model}
-                                    </div>
+                              )}
+                              {comp.entry_point && (
+                                <div>
+                                  <div className="text-[10px] text-slate-400 mb-0.5">Entry Point</div>
+                                  <div className="font-mono text-[9px] text-slate-400 break-all">{comp.entry_point}</div>
+                                </div>
+                              )}
+                              {byId && comp.file && (
+                                <div>
+                                  <div className="text-[10px] text-slate-400 mb-0.5">File</div>
+                                  <div className="font-mono text-[9px] text-slate-400 break-all">{comp.file}</div>
+                                </div>
+                              )}
+                              {comp.constraints.length > 0 && (
+                                <div>
+                                  <div className="text-[10px] text-slate-400 mb-1">Constraints ({comp.constraints.length})</div>
+                                  <div className="space-y-1.5 font-mono text-[9px]">
+                                    {comp.constraints.map((cons, i) => (
+                                      <div key={i} className="bg-slate-900/55 border border-slate-900 p-1.5 rounded text-slate-400">
+                                        <div className="text-slate-300 font-semibold">{cons.name}: {String(cons.value)}</div>
+                                        <div className="text-[8px] text-slate-500 truncate mt-0.5" title={cons.source}>{cons.source.split('/').pop()}</div>
+                                      </div>
+                                    ))}
                                   </div>
-                                )}
-                                {comp.entry_point && (
-                                  <div>
-                                    <div className="text-[10px] text-slate-400 mb-0.5">Entry Point</div>
-                                    <div className="font-mono text-[9px] text-slate-400 break-all">{comp.entry_point}</div>
-                                  </div>
-                                )}
-                                {comp.constraints && comp.constraints.length > 0 && (
-                                  <div>
-                                    <div className="text-[10px] text-slate-400 mb-1">Constraints ({comp.constraints.length})</div>
-                                    <div className="space-y-1.5 font-mono text-[9px]">
-                                      {comp.constraints.map((cons, i) => (
-                                        <div key={i} className="bg-slate-900/55 border border-slate-900 p-1.5 rounded text-slate-400">
-                                          <div className="text-slate-300 font-semibold">{cons.name}: {String(cons.value)}</div>
-                                          <div className="text-[8px] text-slate-500 truncate mt-0.5" title={cons.source}>{cons.source.split('/').pop()}</div>
-                                        </div>
-                                      ))}
-                                    </div>
-                                  </div>
-                                )}
-                              </div>
-                            )
-                          } else {
-                            return (
-                              <div className="border-t border-slate-900 pt-3 text-[10px] text-slate-500 italic">
-                                Not classified as a recognized framework component.
-                              </div>
-                            )
-                          }
-                        })()}
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            <div className="border-t border-slate-900 pt-3 text-[10px] text-slate-500 italic">
+                              Not classified as a recognized framework component.
+                            </div>
+                          )}
 
-                        {(() => {
-                          if (expansionSession) {
-                            const neighbors = new Set<string>()
-                            for (const e of (expansionSession.accepted_edges || [])) {
-                              if (e.src === selectedGraphNode) neighbors.add(e.dst)
-                              if (e.dst === selectedGraphNode) neighbors.add(e.src)
-                            }
-                            if (neighbors.size > 0) {
-                              return (
+                          {byId
+                            ? componentNeighbors.length > 0 && (
                                 <div className="border-t border-slate-900 pt-3">
-                                  <div className="text-[10px] text-slate-400 mb-1.5">Direct Neighbors ({neighbors.size})</div>
+                                  <div className="text-[10px] text-slate-400 mb-1.5">Direct Neighbors ({componentNeighbors.length})</div>
                                   <div className="space-y-1 max-h-48 overflow-y-auto pr-1">
-                                    {Array.from(neighbors).map((nPath) => (
+                                    {componentNeighbors.map((nid) => (
+                                      <button
+                                        key={nid}
+                                        onClick={() => setSelectedGraphNode(nid)}
+                                        className="w-full text-left font-mono text-[9px] text-slate-400 hover:text-slate-200 truncate hover:underline"
+                                      >
+                                        {nid}
+                                      </button>
+                                    ))}
+                                  </div>
+                                </div>
+                              )
+                            : fileNeighbors.size > 0 && (
+                                <div className="border-t border-slate-900 pt-3">
+                                  <div className="text-[10px] text-slate-400 mb-1.5">Direct Neighbors ({fileNeighbors.size})</div>
+                                  <div className="space-y-1 max-h-48 overflow-y-auto pr-1">
+                                    {Array.from(fileNeighbors).map((nPath) => (
                                       <button
                                         key={nPath}
                                         onClick={() => setSelectedGraphNode(nPath)}
@@ -757,35 +744,19 @@ export default function Stage2Screen(): React.ReactElement {
                                     ))}
                                   </div>
                                 </div>
-                              )
-                            }
-                          }
-                          return null
-                        })()}
+                              )}
+                        </div>
                       </div>
-                    </div>
-                  )}
+                    )
+                  })()}
                 </div>
-              )}
+              </div>
             </div>
           )}
         </div>
       </div>
     </div>
   )
-}
-
-function wiringBlockFileEdges(wiringBlock: AEHDiscoveryCandidate['wiring_block']): { src: string; dst: string }[] {
-  if (!wiringBlock) return []
-  const aliasToFile = new Map<string, string>()
-  for (const n of wiringBlock.nodes) aliasToFile.set(n.alias, n.source_hint_file)
-  const edges: { src: string; dst: string }[] = []
-  for (const e of wiringBlock.edges) {
-    const src = aliasToFile.get(e.src)
-    const dst = aliasToFile.get(e.dst)
-    if (src && dst && src !== dst) edges.push({ src, dst })
-  }
-  return edges
 }
 
 function SystemMapGraphPanel({
@@ -890,3 +861,89 @@ function SystemMapGraphPanel({
     </div>
   )
 }
+
+/** Hierarchical agent list — roots = agents with no valid parent, children under parent_agent. */
+function AgentFlowListPanel({
+  agentFlowMap,
+  selectedAgentId,
+  onSelectAgent,
+}: {
+  agentFlowMap: AEHAgentFlowMap
+  selectedAgentId: string | null
+  onSelectAgent: (agentId: string) => void
+}): React.ReactElement {
+  const agentById = useMemo(() => new Map(agentFlowMap.agents.map((a) => [a.id, a])), [agentFlowMap])
+
+  // '__root__' bucket = agents with no valid parent, i.e. the tree's root set.
+  const childrenByParent = useMemo(() => {
+    const m = new Map<string, AEHAgentFlow[]>()
+    for (const a of agentFlowMap.agents) {
+      const key = a.parent_agent && agentById.has(a.parent_agent) ? a.parent_agent : '__root__'
+      if (!m.has(key)) m.set(key, [])
+      m.get(key)!.push(a)
+    }
+    return m
+  }, [agentFlowMap, agentById])
+
+  if (agentFlowMap.agents.length === 0) {
+    return (
+      <div className="h-full flex items-center justify-center p-6 text-center text-slate-500 text-[10px] select-none">
+        No agents identified — every component landed in unassigned_component_ids.
+      </div>
+    )
+  }
+
+  const renderRow = (agent: AEHAgentFlow, depth: number): React.ReactNode => {
+    const children = childrenByParent.get(agent.id) ?? []
+    const isSelected = agent.id === selectedAgentId
+    return (
+      <div key={agent.id}>
+        <button
+          onClick={() => onSelectAgent(agent.id)}
+          style={{ paddingLeft: `${10 + depth * 14}px` }}
+          className={`w-full text-left pr-3 py-2.5 hover:bg-slate-900/30 transition-colors flex flex-col gap-1 border-l-2 ${
+            isSelected ? 'bg-indigo-950/25 border-l-indigo-400' : 'border-l-transparent'
+          }`}
+        >
+          <div className="flex items-center gap-1.5 min-w-0">
+            {depth > 0 && <ChevronRight className="w-3 h-3 text-slate-700 shrink-0" />}
+            <span
+              className="w-2 h-2 rounded-full shrink-0"
+              style={{ background: ROLE_COLORS[agent.role] ?? ROLE_COLORS.unknown }}
+              title={agent.role}
+            />
+            <span className="text-[11px] font-semibold text-slate-200 truncate flex-1">
+              {agent.label || agent.id}
+            </span>
+            <span className="text-[8px] text-slate-500 font-mono shrink-0" title="components owned">
+              {agent.component_ids.length}
+            </span>
+          </div>
+          {agent.summary && (
+            <p className="text-[9px] text-slate-500 leading-snug line-clamp-2">{agent.summary}</p>
+          )}
+        </button>
+        {children.map((child) => renderRow(child, depth + 1))}
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex flex-col h-full bg-[#090d16] overflow-y-auto">
+      <div className="px-3 py-2 border-b border-slate-800 shrink-0">
+        <span className="text-[9px] uppercase tracking-wider font-bold text-slate-500">
+          Agents ({agentFlowMap.agents.length})
+        </span>
+      </div>
+      <div className="divide-y divide-slate-900/40">
+        {(childrenByParent.get('__root__') ?? []).map((agent) => renderRow(agent, 0))}
+      </div>
+      {agentFlowMap.unassigned_component_ids.length > 0 && (
+        <div className="p-2.5 border-t border-slate-850 text-[9px] text-slate-600">
+          {agentFlowMap.unassigned_component_ids.length} component(s) unassigned
+        </div>
+      )}
+    </div>
+  )
+}
+

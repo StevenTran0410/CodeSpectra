@@ -319,6 +319,12 @@ const api = {
       ipcRenderer.invoke('aeh:getPlan', sessionId),
     updatePlan: (sessionId: string, body: unknown) =>
       ipcRenderer.invoke('aeh:updatePlan', sessionId, body),
+    getPlanReport: (sessionId: string) =>
+      ipcRenderer.invoke('aeh:getPlanReport', sessionId),
+    generateAgentFlowMap: (sessionId: string, body: unknown) =>
+      ipcRenderer.invoke('aeh:generateAgentFlowMap', sessionId, body),
+    getAgentFlowMap: (sessionId: string) =>
+      ipcRenderer.invoke('aeh:getAgentFlowMap', sessionId),
     advanceSession: (sessionId: string, body: unknown) =>
       ipcRenderer.invoke('aeh:advanceSession', sessionId, body)
   }

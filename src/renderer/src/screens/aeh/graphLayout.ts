@@ -10,15 +10,25 @@ export interface GraphLayoutNode {
 export interface GraphLayoutEdge {
   src: string
   dst: string
-  kind?: 'wiring' | 'symbol'
+  kind?: 'wiring' | 'symbol' | 'agent-flow'
+  /** Force this edge to span >=N ranks, pushing its target into its own column instead of
+   * sharing a rank with other same-distance siblings. Default 1 (dagre's normal behavior). */
+  minlen?: number
+}
+
+const EDGE_STYLE: Record<string, { stroke: string; strokeWidth: number; strokeDasharray?: string }> = {
+  wiring: { stroke: '#818cf8', strokeWidth: 2.0 },
+  symbol: { stroke: '#475569', strokeWidth: 1.25 },
+  'agent-flow': { stroke: '#a78bfa', strokeWidth: 2.25, strokeDasharray: '4 3' },
 }
 
 export function getDagreGraphLayout(
   nodes: GraphLayoutNode[],
-  edges: GraphLayoutEdge[]
+  edges: GraphLayoutEdge[],
+  spacing?: { nodesep?: number; ranksep?: number }
 ): { layoutNodes: Node[]; layoutEdges: Edge[] } {
   const g = new dagre.graphlib.Graph()
-  g.setGraph({ rankdir: 'LR', nodesep: 30, ranksep: 50 })
+  g.setGraph({ rankdir: 'LR', nodesep: spacing?.nodesep ?? 30, ranksep: spacing?.ranksep ?? 50 })
   g.setDefaultEdgeLabel(() => ({}))
 
   const layoutNodes: Node[] = nodes.map((n) => {
@@ -56,15 +66,12 @@ export function getDagreGraphLayout(
   })
 
   const layoutEdges: Edge[] = edges.map((e, idx) => {
-    g.setEdge(e.src, e.dst)
-    const isWiring = e.kind === 'wiring'
+    g.setEdge(e.src, e.dst, { minlen: e.minlen ?? 1 })
     return {
       id: `edge-${idx}`,
       source: e.src,
       target: e.dst,
-      style: isWiring
-        ? { stroke: '#818cf8', strokeWidth: 2.0 }
-        : { stroke: '#475569', strokeWidth: 1.25 },
+      style: EDGE_STYLE[e.kind ?? 'symbol'],
     } as Edge
   })
 

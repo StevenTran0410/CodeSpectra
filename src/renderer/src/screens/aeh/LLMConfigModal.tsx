@@ -61,7 +61,11 @@ export default function LLMConfigModal({
               onChange(e.target.value, p?.model_id ?? '')
             }}
           >
-            {providers.length === 0 && <option value="">No providers configured</option>}
+            {providers.length === 0 ? (
+              <option value="">No providers configured</option>
+            ) : (
+              !providerId && <option value="">Select a provider…</option>
+            )}
             {providers.map((p) => (
               <option key={p.id} value={p.id}>{p.display_name}</option>
             ))}

@@ -1,3 +1,10 @@
+/** Thrown by BackendClient on a non-2xx response; `status` lets callers branch on 404 without parsing message text. */
+export class BackendHttpError extends Error {
+  constructor(message: string, public readonly status: number) {
+    super(message)
+  }
+}
+
 /** HTTP client for communicating with the Python FastAPI backend. */
 export class BackendClient {
   private readonly base: string
@@ -23,9 +30,13 @@ export class BackendClient {
     }
   }
 
+  private async _throwHttpError(res: Response): Promise<never> {
+    throw new BackendHttpError(await this._errorMessage(res), res.status)
+  }
+
   async get<T>(path: string): Promise<T> {
     const res = await fetch(`${this.base}${path}`)
-    if (!res.ok) throw new Error(await this._errorMessage(res))
+    if (!res.ok) await this._throwHttpError(res)
     return res.json() as Promise<T>
   }
 
@@ -35,7 +46,7 @@ export class BackendClient {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
     })
-    if (!res.ok) throw new Error(await this._errorMessage(res))
+    if (!res.ok) await this._throwHttpError(res)
     return res.json() as Promise<T>
   }
 
@@ -45,13 +56,13 @@ export class BackendClient {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
     })
-    if (!res.ok) throw new Error(await this._errorMessage(res))
+    if (!res.ok) await this._throwHttpError(res)
     return res.json() as Promise<T>
   }
 
   async del(path: string): Promise<void> {
     const res = await fetch(`${this.base}${path}`, { method: 'DELETE' })
-    if (!res.ok) throw new Error(await this._errorMessage(res))
+    if (!res.ok) await this._throwHttpError(res)
   }
 
   /** Consume a Server-Sent Events stream. Calls `onEvent` for every parsed data frame.
