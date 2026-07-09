@@ -865,6 +865,25 @@ declare global {
             model_id?: string | null
           }
         ) => Promise<{ pipeline_stage: string }>
+        fulfillDatasets: (
+          sessionId: string,
+          body: {
+            provider_id?: string | null
+            model_id?: string | null
+            instructions?: Record<string, { painpoint?: string; seed_cases?: unknown[] }> | null
+          }
+        ) => Promise<Record<string, AEHFulfillmentGroupResult>>
+        listDatasets: () => Promise<AEHDatasetSummary[]>
+        getDatasetCases: (datasetId: string) => Promise<AEHDatasetCase[]>
+        caseVerdict: (
+          caseId: string,
+          body: {
+            verdict: 'accept' | 'edit' | 'reject'
+            input_json?: Record<string, any>
+            expected_json?: Record<string, any>
+            labels_json?: Record<string, any>
+          }
+        ) => Promise<{ success: boolean; remaining?: number; shortfall?: number }>
       }
     }
   }
@@ -1150,5 +1169,31 @@ declare global {
     target_system_id: string
     agents: AEHAgentPlanReport[]
     advisory_notes: string[]
+  }
+
+  export interface AEHDatasetSummary {
+    dataset_id: string
+    total_count: number
+    synthetic_count: number
+    handwritten_count: number
+    reviewed_count: number
+    kind: string | null
+    min_cases: number
+    review_complete: boolean
+  }
+
+  export interface AEHDatasetCase {
+    id: string
+    dataset_id: string
+    input_json: string
+    expected_json: string | null
+    labels_json: string | null
+    provenance: 'synthetic' | 'handwritten' | 'generated+reviewed'
+  }
+
+  export interface AEHFulfillmentGroupResult {
+    status: 'fulfilled' | 'failed' | 'needs_human'
+    dataset_id?: string
+    reason?: string
   }
 }

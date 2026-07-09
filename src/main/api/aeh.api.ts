@@ -153,4 +153,21 @@ export function registerAEHHandlers(): void {
   ipcMain.handle('aeh:advanceSession', (_e, sessionId: string, body: unknown) =>
     aehClient().post(`/api/discovery/sessions/${sessionId}/advance`, withBackendConnection(body))
   )
+
+  ipcMain.handle('aeh:fulfillDatasets', (_e, sessionId: string, body: unknown) =>
+    aehClient().post(
+      `/api/discovery/expansion-sessions/${sessionId}/datasets/fulfill`,
+      withBackendConnection(body)
+    )
+  )
+
+  ipcMain.handle('aeh:listDatasets', () => aehClient().get('/api/datasets'))
+
+  ipcMain.handle('aeh:getDatasetCases', (_e, datasetId: string) =>
+    aehClient().get(`/api/datasets/${datasetId}/cases`)
+  )
+
+  ipcMain.handle('aeh:caseVerdict', (_e, caseId: string, body: unknown) =>
+    aehClient().post(`/api/datasets/cases/${caseId}/verdict`, body)
+  )
 }

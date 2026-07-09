@@ -29,6 +29,7 @@ import type { RepoSnapshot, LocalRepo } from '../../types/electron'
 import Stage1GraphScreen from './Stage1GraphScreen'
 import Stage2Screen from './Stage2Screen'
 import Stage3Screen from './Stage3Screen'
+import DatasetReviewScreen from './DatasetReviewScreen'
 import LLMConfigModal from './LLMConfigModal'
 
 function AnalysisOverview(): React.ReactElement {
@@ -1033,6 +1034,7 @@ export default function AEHAnalysisScreen(): React.ReactElement {
       <Route path="stage1" element={<Stage1GraphScreen />} />
       <Route path="stage2" element={<Stage2Screen />} />
       <Route path="stage3" element={<Stage3Screen />} />
+      <Route path="datasets" element={<DatasetReviewScreen />} />
     </Routes>
   )
 }

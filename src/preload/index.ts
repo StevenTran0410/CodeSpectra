@@ -326,7 +326,14 @@ const api = {
     getAgentFlowMap: (sessionId: string) =>
       ipcRenderer.invoke('aeh:getAgentFlowMap', sessionId),
     advanceSession: (sessionId: string, body: unknown) =>
-      ipcRenderer.invoke('aeh:advanceSession', sessionId, body)
+      ipcRenderer.invoke('aeh:advanceSession', sessionId, body),
+    fulfillDatasets: (sessionId: string, body: unknown) =>
+      ipcRenderer.invoke('aeh:fulfillDatasets', sessionId, body),
+    listDatasets: () => ipcRenderer.invoke('aeh:listDatasets'),
+    getDatasetCases: (datasetId: string) =>
+      ipcRenderer.invoke('aeh:getDatasetCases', datasetId),
+    caseVerdict: (caseId: string, body: unknown) =>
+      ipcRenderer.invoke('aeh:caseVerdict', caseId, body)
   }
 }
 
