@@ -35,6 +35,14 @@ def test_metric_registry_validation() -> None:
     assert not validate_metric("unknown_metric")
 
 
+def test_decomposition_coverage_is_a_literal_registry_entry_with_precondition() -> None:
+    """CS-288: a literal key (not the geval.* prefix fallback) carrying input_kind_is_query."""
+    assert validate_metric("geval.decomposition_coverage", "llm_judge")
+    spec = get_spec("geval.decomposition_coverage")
+    assert spec.meaningless_when == ["input_kind_is_query"]
+    assert get_spec("ragas.answer_relevancy").meaningless_when == ["input_kind_is_query"]
+
+
 @pytest.mark.asyncio
 async def test_validate_plan_readiness_reasons(tmp_path) -> None:
     """Validate a plan with multiple defects and verify exact readiness blocked reason codes."""

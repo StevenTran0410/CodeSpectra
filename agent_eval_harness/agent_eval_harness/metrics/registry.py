@@ -121,7 +121,7 @@ METRIC_REGISTRY: dict[str, MetricSpec] = {
     "ragas.answer_relevancy": MetricSpec(
         metric_class="llm_judge",
         dispatch="ragas_answer_relevancy",
-        # meaningless when input is not a natural-language query
+        meaningless_when=["input_kind_is_query"],  # meaningless when input is not a natural-language query
         description="Ragas answer relevancy: answer addresses the user query. Only meaningful for query-shaped inputs.",
         cost_class="llm_per_case",
     ),
@@ -144,7 +144,19 @@ METRIC_REGISTRY: dict[str, MetricSpec] = {
         ),
         cost_class="llm_per_case",
     ),
-    # geval.* prefix family — handled by prefix matching below.
+    "geval.decomposition_coverage": MetricSpec(
+        metric_class="llm_judge",
+        dispatch="geval",
+        required_params=["rubric_text"],
+        meaningless_when=["input_kind_is_query"],  # no decomposition artifact on a fixed-fan-out step
+        description=(
+            "GEval judge: decomposed intents cover the input query. Only meaningful for a genuine "
+            "dynamic planner/router whose input is a free-text query it decomposes at runtime — "
+            "never for a fixed-fan-out orchestrator, regardless of its role label."
+        ),
+        cost_class="llm_per_case",
+    ),
+    # geval.* prefix family (all other geval.<name> metrics) — handled by prefix matching below.
     # classifier.* prefix family — handled by prefix matching below.
 }
 

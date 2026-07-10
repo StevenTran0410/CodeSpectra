@@ -26,7 +26,6 @@ from agent_eval_harness.planning.report import (
     EvaluationGate,
     EvaluationPlanReport,
 )
-from agent_eval_harness.store import repository
 
 logger = logging.getLogger("agent_eval_harness.planning.agentic_planner")
 
@@ -77,6 +76,12 @@ GATE_DESIGNER_SYSTEM = (
     "prompt/goal when toolkit=deepeval.\n"
     "`component` MUST be one of this agent's own component ids given to you.\n"
     f"dataset_kind MUST be one of: {sorted(DATASET_KINDS)} — any other value will be downgraded to needs_human.\n"
+    "dataset_kind selection by archetype: use \"snapshot_fixture\" for any structured-input "
+    "component (input_kind=structured — its real entry point takes ids/config like snapshot_id, "
+    "not a free-text query). Use \"decomposition_gold\" ONLY for a component with "
+    "input_kind=query that itself decomposes that query into multiple sub-intents/sub-calls at "
+    "runtime (a genuine dynamic planner/router) — never for a fixed-fan-out section-writer, "
+    "regardless of its role label.\n"
     'Return JSON only: {"gates": [{"component": "<id>", "location": '
     '"input|output|internal_tool", "property": "<quality checked>", "metric": "<name>", '
     '"metric_class": "assertion|classifier|llm_judge", "toolkit": '
@@ -211,11 +216,6 @@ async def gather_evidence(
     llm_client: LLMClient,
 ) -> tuple[dict[str, AgentEvidence], dict[str, list[SuiteEntry]]]:
     """Root DAG node: deterministic evidence assembly + the rule-based baseline."""
-    try:
-        db_datasets = await repository.list_dataset_ids()
-    except Exception:
-        db_datasets = []
-
     supporting = _supporting_files_by_agent(agent_flow_map, system_map, accepted_edges)
     components_by_id = {c.id: c for c in system_map.components}
 
@@ -234,7 +234,7 @@ async def gather_evidence(
             agent=agent, owned=owned, supporting_files=supporting.get(agent.id, [])
         )
         baseline_by_agent[agent.id] = await baseline_gates_for_agent(
-            agent.component_ids, system_map, db_datasets, llm_client, agent_id=agent.id
+            agent.component_ids, system_map, llm_client, agent_id=agent.id
         )
 
     return evidence_by_agent, baseline_by_agent
@@ -270,6 +270,29 @@ def _evidence_user_prompt(evidence: AgentEvidence) -> str:
 
 _RETRY_TOKEN_MULTIPLIER = 4  # unparseable JSON is almost always truncation, not garbage
 
+# Per-DAG-node reasoning depth: how much judgment each node's task actually needs, not a
+# blanket setting. analyst reads real source and must infer/cross-check actual behavior —
+# genuine judgment. gate_designer picks from an explicit, prompt-given catalog under an
+# explicit decision rule ("cheapest toolkit that decides it") — closer to classification.
+# handoff_gates is the one node that reasons across ALL agents at once. critic is the final
+# holistic reviewer catching gaps the rest of the DAG missed — the highest-judgment node.
+REASONING_EFFORT_ANALYST = "medium"
+REASONING_EFFORT_GATE_DESIGNER = "low"
+REASONING_EFFORT_HANDOFF_GATES = "medium"
+REASONING_EFFORT_CRITIC = "high"
+
+# On a reasoning-tier model, effort isn't free: it eats into the same max_completion_tokens
+# budget as the visible output, so a node rated for more reasoning gets more headroom too —
+# same "base + step per unit of scale" shape as handoff_gates' existing agent-count scaling.
+_EFFORT_TOKEN_BASE = 4000
+_EFFORT_TOKEN_STEP = 500
+_EFFORT_TIERS = ("minimal", "low", "medium", "high", "xhigh")
+
+
+def _effort_token_floor(effort: str) -> int:
+    tier = _EFFORT_TIERS.index(effort) if effort in _EFFORT_TIERS else 0
+    return _EFFORT_TOKEN_BASE + _EFFORT_TOKEN_STEP * tier
+
 
 async def _complete_json(
     llm_client: LLMClient,
@@ -279,12 +302,20 @@ async def _complete_json(
     max_tokens: int,
     label: str,
     dag_notes: list[str] | None = None,
+    reasoning_effort: str = "low",
 ) -> dict | None:
-    """Calls the LLM in json_mode, retrying once at `max_tokens * _RETRY_TOKEN_MULTIPLIER` if
-    the first response is unparseable. Returns None (never raises) on repeated failure, but
-    appends a note to `dag_notes` so a degraded round is visible in the plan report."""
+    """Calls the LLM in json_mode at `reasoning_effort`, retrying once at
+    `max_tokens * _RETRY_TOKEN_MULTIPLIER` if the first response is unparseable. Returns
+    None (never raises) on repeated failure, but appends a note to `dag_notes` so a
+    degraded round is visible in the plan report.
+
+    The retry also drops to "low" effort regardless of what the first attempt used: on a
+    reasoning-tier model, a higher effort can burn the entire token budget on hidden
+    reasoning and return empty content, which looks identical to truncation but — unlike
+    truncation — doesn't get fixed by retrying with more tokens at the same effort."""
     last_error: Exception | None = None
     for attempt, tokens in enumerate((max_tokens, max_tokens * _RETRY_TOKEN_MULTIPLIER)):
+        effort = reasoning_effort if attempt == 0 else "low"
         try:
             response = await llm_client.complete(
                 [
@@ -293,6 +324,7 @@ async def _complete_json(
                 ],
                 max_tokens=tokens,
                 json_mode=True,
+                reasoning_effort=effort,
             )
             parsed = json.loads(response.content)
             if not isinstance(parsed, dict):
@@ -302,7 +334,7 @@ async def _complete_json(
             last_error = e
             logger.warning(
                 f"agentic_planner: {label} unparseable response "
-                f"(attempt {attempt + 1}/2, max_tokens={tokens}): {e}"
+                f"(attempt {attempt + 1}/2, max_tokens={tokens}, reasoning_effort={effort}): {e}"
             )
     if dag_notes is not None:
         dag_notes.append(
@@ -325,7 +357,9 @@ async def _run_analyst(
 ) -> AgentDataProfile:
     parsed = await _complete_json(
         llm_client, ANALYST_SYSTEM, _evidence_user_prompt(evidence),
-        max_tokens=3072, label=f"analyst[{agent_id}]", dag_notes=dag_notes,
+        max_tokens=_effort_token_floor(REASONING_EFFORT_ANALYST),
+        label=f"analyst[{agent_id}]", dag_notes=dag_notes,
+        reasoning_effort=REASONING_EFFORT_ANALYST,
     )
     if parsed is None:
         return AgentDataProfile(agent_id=agent_id)
@@ -413,7 +447,9 @@ async def _run_gate_designer(
 
     parsed = await _complete_json(
         llm_client, GATE_DESIGNER_SYSTEM, user_prompt,
-        max_tokens=4096, label=f"agent_gates[{agent_id}]", dag_notes=dag_notes,
+        max_tokens=_effort_token_floor(REASONING_EFFORT_GATE_DESIGNER),
+        label=f"agent_gates[{agent_id}]", dag_notes=dag_notes,
+        reasoning_effort=REASONING_EFFORT_GATE_DESIGNER,
     )
     if parsed is None:
         return []
@@ -477,10 +513,14 @@ async def _run_handoff_gates(
 
     # Scales with agent count — this node fans in ALL agents' evidence, so a fixed
     # small budget truncates on larger systems (observed: 2048 truncating at ~12 agents).
-    token_budget = max(6144, 500 * len(evidence_by_agent))
+    token_budget = max(
+        _effort_token_floor(REASONING_EFFORT_HANDOFF_GATES),
+        6144, 500 * len(evidence_by_agent),
+    )
     parsed = await _complete_json(
         llm_client, HANDOFF_GATES_SYSTEM, user_prompt,
         max_tokens=token_budget, label="handoff_gates", dag_notes=dag_notes,
+        reasoning_effort=REASONING_EFFORT_HANDOFF_GATES,
     )
     if parsed is None:
         return []
@@ -680,7 +720,8 @@ def _apply_feasibility(
     report_notes: list[str],
 ) -> list[EvaluationGate]:
     """Evaluate meaningless_when against the contract; replace/drop/needs_human.
-    Baseline gates (provenance='rule') are NEVER dropped.
+    Baseline gates (provenance='rule') are immune except for metrics declaring the
+    "input_kind_is_query" precondition (CS-288) — everything else is never dropped.
     LLM-only observability flags (in llm_fields) demote to needs_human; static flags execute."""
     if contract is None:
         return gates
@@ -692,7 +733,10 @@ def _apply_feasibility(
 
     for gate in gates:
         spec = get_spec(gate.metric)
-        if spec is None or gate.provenance == "rule":
+        if spec is None:
+            result.append(gate)
+            continue
+        if gate.provenance == "rule" and "input_kind_is_query" not in spec.meaningless_when:
             result.append(gate)
             continue
 
@@ -747,6 +791,27 @@ def _apply_feasibility(
             elif llm_non_query:
                 report_notes.append(
                     f"{gate.id}: ragas.answer_relevancy demoted to needs_human (input_kind={obs.input_kind}, LLM-only)"
+                )
+                result.append(gate.model_copy(update={"status": "needs_human"}))
+                continue
+
+        # geval.decomposition_coverage on input_kind != query: fixed-fan-out has no
+        # decomposition artifact to grade (02_metric_selection_framework.md §2.5, §6 #1).
+        if gate.metric == "geval.decomposition_coverage":
+            static_non_query = obs.input_kind != "query" and "input_kind" not in llm_fields
+            llm_non_query = obs.input_kind != "query" and "input_kind" in llm_fields
+            if obs.input_kind == "unknown":
+                pass  # no evidence to act on
+            elif static_non_query:
+                report_notes.append(
+                    f"{gate.id}: geval.decomposition_coverage dropped (input_kind={obs.input_kind}, "
+                    "static) — fixed-fan-out step, no decomposition artifact to grade"
+                )
+                continue
+            elif llm_non_query:
+                report_notes.append(
+                    f"{gate.id}: geval.decomposition_coverage demoted to needs_human "
+                    f"(input_kind={obs.input_kind}, LLM-only)"
                 )
                 result.append(gate.model_copy(update={"status": "needs_human"}))
                 continue
@@ -859,7 +924,8 @@ def reconcile(
     contracts: dict[str, EvaluationContract] | None = None,
     system_map: SystemMap | None = None,
 ) -> tuple[Suite, EvaluationPlanReport]:
-    """Baseline always wins on (component, metric) conflict and is never dropped.
+    """Baseline always wins on (component, metric) conflict, except the feasibility pass may
+    still drop input_kind_is_query-gated metrics on a non-query agent (CS-288).
     Runs params completion, feasibility, and judge rebalance after merge."""
     handoff_by_agent: dict[str, list[EvaluationGate]] = {}
     for gate in handoff_gates:
@@ -964,7 +1030,10 @@ async def run_critic(
     user_prompt = "\n".join(lines)
 
     parsed = await _complete_json(
-        llm_client, CRITIC_SYSTEM, user_prompt, max_tokens=1536, label="critic", dag_notes=dag_notes,
+        llm_client, CRITIC_SYSTEM, user_prompt,
+        max_tokens=_effort_token_floor(REASONING_EFFORT_CRITIC),
+        label="critic", dag_notes=dag_notes,
+        reasoning_effort=REASONING_EFFORT_CRITIC,
     )
     if parsed is None:
         return []

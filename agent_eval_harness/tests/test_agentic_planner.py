@@ -11,6 +11,7 @@ from agent_eval_harness.llm.fake_client import FakeLLMClient
 from agent_eval_harness.mapping.agent_flow import AgentFlow, AgentFlowMap
 from agent_eval_harness.mapping.system_map import Component, SystemMap, load_system_map
 from agent_eval_harness.planning import agentic_planner as ap
+from agent_eval_harness.planning.contract import EvaluationContract, ObservabilityContract
 from agent_eval_harness.planning.planner import generate_plan
 from agent_eval_harness.planning.report import (
     AgentDataProfile,
@@ -419,6 +420,141 @@ async def test_reconcile_baseline_never_dropped_llm_dedup_and_needs_human() -> N
     baseline_pairs = {(e.component, e.metric) for e in baseline_by_agent["core_agent"]}
     suite_pairs = {(e.component, e.metric) for e in suite.entries if e.agent_id == "core_agent"}
     assert baseline_pairs <= suite_pairs
+    # contracts=None here -> _apply_feasibility no-ops; see CS-288 tests below for the
+    # real-contract case where a baseline gate CAN be dropped.
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# _apply_feasibility on baseline (rule) gates — CS-288
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def _rule_gate(component: str, metric: str, metric_class: str = "llm_judge") -> ap.EvaluationGate:
+    return ap.EvaluationGate(
+        id=f"{component}.{metric}.rule", agent_id="a1", component=component, location="output",
+        metric=metric, metric_class=metric_class, toolkit="deepeval", provenance="rule",
+    )
+
+
+def _contract_with_input_kind(input_kind: str, *, llm_only: bool = False) -> EvaluationContract:
+    return EvaluationContract(
+        agent_id="a1",
+        observability=ObservabilityContract(
+            input_kind=input_kind,
+            llm_fields=["input_kind"] if llm_only else [],
+        ),
+    )
+
+
+async def test_apply_feasibility_drops_baseline_decomposition_coverage_on_structured_input() -> None:
+    gate = _rule_gate("project_identity", "geval.decomposition_coverage")
+    contract = _contract_with_input_kind("structured")
+    notes: list[str] = []
+
+    result = ap._apply_feasibility([gate], contract, "a1", notes)
+
+    assert result == []
+    assert any("geval.decomposition_coverage" in n and "dropped" in n for n in notes)
+
+
+async def test_apply_feasibility_drops_baseline_answer_relevancy_on_structured_input() -> None:
+    gate = _rule_gate("structure", "ragas.answer_relevancy")
+    contract = _contract_with_input_kind("structured")
+    notes: list[str] = []
+
+    result = ap._apply_feasibility([gate], contract, "a1", notes)
+
+    assert result == []
+    assert any("ragas.answer_relevancy" in n and "dropped" in n for n in notes)
+
+
+async def test_apply_feasibility_demotes_llm_only_input_kind_to_needs_human() -> None:
+    dc_gate = _rule_gate("project_identity", "geval.decomposition_coverage")
+    ar_gate = _rule_gate("structure", "ragas.answer_relevancy")
+    contract = _contract_with_input_kind("structured", llm_only=True)
+    notes: list[str] = []
+
+    result = ap._apply_feasibility([dc_gate, ar_gate], contract, "a1", notes)
+
+    assert len(result) == 2
+    assert all(g.status == "needs_human" for g in result)
+    assert any("needs_human" in n for n in notes)
+
+
+async def test_apply_feasibility_keeps_baseline_gate_when_input_kind_unknown() -> None:
+    gate = _rule_gate("project_identity", "geval.decomposition_coverage")
+    contract = _contract_with_input_kind("unknown")
+    notes: list[str] = []
+
+    result = ap._apply_feasibility([gate], contract, "a1", notes)
+
+    assert result == [gate]
+    assert notes == []
+
+
+async def test_apply_feasibility_preserves_precondition_free_baseline_gates() -> None:
+    """Only input_kind_is_query-gated metrics may drop a rule gate; everything else stays immune."""
+    gates = [
+        _rule_gate("project_identity", "allowed_downstream", metric_class="assertion"),
+        _rule_gate("project_identity", "schema_valid", metric_class="assertion"),
+        _rule_gate("project_identity", "fallback_sentinel", metric_class="assertion"),
+        _rule_gate("project_identity", "max_retries", metric_class="assertion"),
+        _rule_gate("project_identity", "max_items_per_call", metric_class="assertion"),
+        _rule_gate("project_identity", "classifier.project_identity_accuracy", metric_class="classifier"),
+        _rule_gate("worker", "tool_correctness", metric_class="llm_judge"),
+        _rule_gate("worker", "no_unnecessary_calls", metric_class="assertion"),
+    ]
+    contract = _contract_with_input_kind("structured")
+    notes: list[str] = []
+
+    result = ap._apply_feasibility(gates, contract, "a1", notes)
+
+    assert result == gates
+    assert notes == []
+
+
+async def test_reconcile_drops_baseline_decomposition_coverage_on_structured_input() -> None:
+    """With a real contract, decomposition_coverage drops; every other baseline pair survives."""
+    system_map = load_system_map(_MULTI_AGENT_MAP)
+    agent_flow_map = _multi_agent_flow_map()
+    llm_client = FakeLLMClient(LLMResponse(content='{"rubric_text": "x"}', model="fake"))
+
+    evidence_by_agent, baseline_by_agent = await ap.gather_evidence(
+        system_map, agent_flow_map, _fake_source_by_component(system_map), [], llm_client
+    )
+    profiles_by_agent = {aid: AgentDataProfile(agent_id=aid) for aid in evidence_by_agent}
+    contracts = {
+        "guard_agent": EvaluationContract(agent_id="guard_agent"),
+        "core_agent": EvaluationContract(
+            agent_id="core_agent", observability=ObservabilityContract(input_kind="structured"),
+        ),
+    }
+
+    suite, report = ap.reconcile(
+        agent_flow_map, evidence_by_agent, profiles_by_agent, baseline_by_agent,
+        llm_gates_by_agent={"guard_agent": [], "core_agent": []}, handoff_gates=[],
+        contracts=contracts, system_map=system_map,
+    )
+
+    core_report = next(a for a in report.agents if a.agent_id == "core_agent")
+    metrics = {g.metric for g in core_report.gates}
+    assert "geval.decomposition_coverage" not in metrics
+
+    baseline_pairs = {(e.component, e.metric) for e in baseline_by_agent["core_agent"]}
+    suite_pairs = {(e.component, e.metric) for e in suite.entries if e.agent_id == "core_agent"}
+    dropped = baseline_pairs - suite_pairs
+    # writer's baseline ragas.answer_relevancy is dropped too — same contract, same fix.
+    assert dropped == {
+        ("planner", "geval.decomposition_coverage"),
+        ("writer", "ragas.answer_relevancy"),
+    }
+
+
+async def test_gate_designer_prompt_documents_dataset_kind_archetype_rule() -> None:
+    assert "snapshot_fixture" in ap.GATE_DESIGNER_SYSTEM
+    assert "decomposition_gold" in ap.GATE_DESIGNER_SYSTEM
+    assert "input_kind=structured" in ap.GATE_DESIGNER_SYSTEM
+    assert "input_kind=query" in ap.GATE_DESIGNER_SYSTEM
 
 
 # ──────────────────────────────────────────────────────────────────────────────

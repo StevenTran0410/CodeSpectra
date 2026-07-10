@@ -88,49 +88,14 @@ def get_tool_name_from_component(tc: Component) -> str:
     return base
 
 
-async def _resolve_dataset_ref(
-    dataset_kind: str,
-    component: Component,
-    system_map: SystemMap,
-    db_datasets: list[dict],
-) -> DatasetRef | None:
-    """Match a dataset kind to an existing dataset ID in the DB, or return a required block."""
+def _resolve_dataset_ref(dataset_kind: str) -> DatasetRef | None:
+    """Every dataset requirement always starts fresh (never links to an already-existing
+    dataset in the DB) — so regenerating a plan can't silently resurface a stale dataset;
+    Fulfill Datasets always re-runs the real generators and produces a brand-new one."""
     if not dataset_kind:
         return None
-
-    # `db_datasets` is left-joined against the `datasets` metadata table and carries `kind`
-    # directly — no more fetching every case of every dataset just to sniff `input_json["kind"]`.
-    candidates = [ds["dataset_id"] for ds in db_datasets if ds.get("kind") == dataset_kind]
-
-    if not candidates:
-        min_cases = 40 if dataset_kind == "guard_classification" else 20
-        return DatasetRef(required={"kind": dataset_kind, "min_cases": min_cases})
-
-    # Step 2: Score matching datasets by component/target substring matching
-    scored_candidates = []
-    target_id = system_map.target_system_id.lower()
-    comp_id = component.id.lower()
-
-    for ds_id in candidates:
-        ds_id_lower = ds_id.lower()
-        score = 0
-        if target_id in ds_id_lower:
-            score += 2
-        if comp_id in ds_id_lower:
-            score += 1
-        elif "guard" in comp_id and "guard" in ds_id_lower:
-            score += 1
-        elif "judge" in comp_id and "sufficiency" in ds_id_lower:
-            score += 1
-        elif "planner" in comp_id and "decomp" in ds_id_lower:
-            score += 1
-        scored_candidates.append((score, ds_id))
-
-    # Pick the highest scoring candidate, tie break by sorting alphabetically
-    scored_candidates.sort(key=lambda x: (-x[0], x[1]))
-    best_ds_id = scored_candidates[0][1]
-
-    return DatasetRef(ref=best_ds_id)
+    min_cases = 40 if dataset_kind == "guard_classification" else 20
+    return DatasetRef(required={"kind": dataset_kind, "min_cases": min_cases})
 
 
 def _component_role_rules(
@@ -164,6 +129,8 @@ def _component_role_rules(
             ),
         })
     elif role == "orchestrator":
+        # Assigned unconditionally; agentic_planner.py::_apply_feasibility drops/demotes
+        # this downstream when input_kind != "query" (CS-288) — don't fix it here.
         role_rules.append({
             "metric": "geval.decomposition_coverage",
             "metric_class": "llm_judge",
@@ -241,6 +208,7 @@ def _component_role_rules(
                 "property. writer must not fabricate facts."
             ),
         })
+        # Same as the orchestrator branch above — feasibility pass corrects it (CS-288).
         role_rules.append({
             "metric": "ragas.answer_relevancy",
             "metric_class": "llm_judge",
@@ -258,7 +226,6 @@ async def _hydrate_rule_to_entry(
     component: Component,
     components_by_id: dict[str, Component],
     system_map: SystemMap,
-    db_datasets: list[dict],
     llm_client: LLMClient,
     *,
     agent_id: str | None = None,
@@ -266,9 +233,7 @@ async def _hydrate_rule_to_entry(
     """Resolve dataset refs and params, producing the SuiteEntry for one fired role rule."""
     dataset_ref = None
     if "dataset_kind" in rule:
-        dataset_ref = await _resolve_dataset_ref(
-            rule["dataset_kind"], component, system_map, db_datasets
-        )
+        dataset_ref = _resolve_dataset_ref(rule["dataset_kind"])
 
     params: dict[str, Any] = {}
     # Fetch queries from dataset cases if we have resolved a reference
@@ -400,7 +365,6 @@ async def baseline_gates_for_component(
     components_by_id: dict[str, Component],
     validator_comp: Component | None,
     system_map: SystemMap,
-    db_datasets: list[dict],
     llm_client: LLMClient,
     *,
     agent_id: str | None = None,
@@ -413,7 +377,7 @@ async def baseline_gates_for_component(
     for rule in _component_role_rules(component, components_by_id, validator_comp, system_map):
         entries.append(
             await _hydrate_rule_to_entry(
-                rule, component, components_by_id, system_map, db_datasets, llm_client,
+                rule, component, components_by_id, system_map, llm_client,
                 agent_id=agent_id,
             )
         )
@@ -424,7 +388,6 @@ async def baseline_gates_for_component(
 async def baseline_gates_for_agent(
     agent_component_ids: list[str],
     system_map: SystemMap,
-    db_datasets: list[dict],
     llm_client: LLMClient,
     *,
     agent_id: str,
@@ -439,7 +402,7 @@ async def baseline_gates_for_agent(
             continue
         entries.extend(
             await baseline_gates_for_component(
-                component, components_by_id, validator_comp, system_map, db_datasets,
+                component, components_by_id, validator_comp, system_map,
                 llm_client, agent_id=agent_id,
             )
         )
@@ -454,12 +417,6 @@ async def generate_plan(
     system_map = load_system_map(system_map_path)
     entries: list[SuiteEntry] = []
 
-    # Cache DB datasets to avoid repeatedly querying list_dataset_ids()
-    try:
-        db_datasets = await repository.list_dataset_ids()
-    except Exception:
-        db_datasets = []
-
     # Map for quick component lookup
     components_by_id = {c.id: c for c in system_map.components}
     validator_comp = _find_validator(system_map)
@@ -471,7 +428,7 @@ async def generate_plan(
         if role == "unknown":
             info = get_component_info(component.entry_point)
             suggested_entries = await _suggest_unknown_component_suite(
-                component, info, llm_client, db_datasets, system_map
+                component, info, llm_client
             )
             entries.extend(suggested_entries)
             continue
@@ -482,7 +439,7 @@ async def generate_plan(
 
         entries.extend(
             await baseline_gates_for_component(
-                component, components_by_id, validator_comp, system_map, db_datasets,
+                component, components_by_id, validator_comp, system_map,
                 llm_client,
             )
         )
@@ -506,6 +463,7 @@ async def _tailor_geval_rubric(
             LLMMessage(role="user", content=user_prompt),
         ],
         json_mode=True,
+        reasoning_effort="low",
     )
 
     fallback_rubric = (
@@ -528,8 +486,6 @@ async def _suggest_unknown_component_suite(
     component: Component,
     info: dict[str, str],
     llm_client: LLMClient,
-    db_datasets: list[dict],
-    system_map: SystemMap,
 ) -> list[SuiteEntry]:
     """Ask LLM to suggest one or more suite entries for an unknown-role component."""
     doc = info.get("docstring") or ""
@@ -542,6 +498,7 @@ async def _suggest_unknown_component_suite(
             LLMMessage(role="user", content=user_prompt),
         ],
         json_mode=True,
+        reasoning_effort="low",
     )
 
     fallback_entries = [
@@ -569,9 +526,7 @@ async def _suggest_unknown_component_suite(
         for i, item in enumerate(suggested):
             dataset_ref = None
             if "dataset_kind" in item:
-                dataset_ref = await _resolve_dataset_ref(
-                    item["dataset_kind"], component, system_map, db_datasets
-                )
+                dataset_ref = _resolve_dataset_ref(item["dataset_kind"])
 
             metric_suffix = (
                 item["metric"]
