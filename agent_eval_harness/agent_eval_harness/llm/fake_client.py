@@ -19,6 +19,7 @@ class FakeLLMClient:
         max_tokens: int = 512,
         temperature: float | None = 0.2,
         json_mode: bool = False,
+        reasoning_effort: str | None = None,
     ) -> LLMResponse:
         self.calls.append(messages)
         if self._queue:

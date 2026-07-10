@@ -56,6 +56,27 @@ from typing import AsyncGenerator
 from domain.qa.classifier_service import ClassifierService as _ClassifierService
 
 
+async def _warm_up_local_gpu_models() -> None:
+    """Eagerly load the GPU reranker and/or local embedding model if the user
+    already has them enabled (GPU present, weights on disk) — avoids the first
+    real request after startup paying the multi-second model-load cost."""
+    try:
+        from domain.retrieval.cross_encoder_rerank import is_gpu_reranker_enabled, load_reranker
+
+        if await is_gpu_reranker_enabled():
+            await asyncio.to_thread(load_reranker)
+    except Exception as e:
+        logger.warning(f"GPU reranker warm-up failed: {e}")
+
+    try:
+        from domain.embeddings.local_model import get_embedder, local_embedding_available
+
+        if await local_embedding_available():
+            await asyncio.to_thread(get_embedder)
+    except Exception as e:
+        logger.warning(f"Local embedding model warm-up failed: {e}")
+
+
 @asynccontextmanager
 async def _lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     await init_db()
@@ -64,6 +85,10 @@ async def _lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     asyncio.get_event_loop().create_task(
         _ClassifierService().warm_up_with_db_examples(),
         name="classifier-warmup",
+    )
+    asyncio.get_event_loop().create_task(
+        _warm_up_local_gpu_models(),
+        name="local-gpu-models-warmup",
     )
     logger.info("Backend startup complete")
     yield

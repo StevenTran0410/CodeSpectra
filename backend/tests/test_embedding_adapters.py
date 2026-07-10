@@ -165,6 +165,7 @@ async def test_local_embedding_available_disabled(monkeypatch) -> None:
 async def test_local_embedding_available_enabled(monkeypatch) -> None:
     from domain.embeddings.local_model import local_embedding_available
     monkeypatch.setattr("domain.embeddings.local_model.detect_gpu", lambda: (True, 8.0))
+    monkeypatch.setattr("domain.embeddings.local_model.embedding_weights_ready", lambda: True)
 
     class FakeCursor:
         async def fetchone(self):
@@ -182,6 +183,18 @@ async def test_local_embedding_available_enabled(monkeypatch) -> None:
 
     res = await local_embedding_available()
     assert res is True
+
+
+@pytest.mark.asyncio
+async def test_local_embedding_available_disabled_when_weights_missing(monkeypatch) -> None:
+    """GPU present + toggle on is not enough — weights must actually be on disk;
+    no falling back to an auto-download attempt."""
+    from domain.embeddings.local_model import local_embedding_available
+    monkeypatch.setattr("domain.embeddings.local_model.detect_gpu", lambda: (True, 8.0))
+    monkeypatch.setattr("domain.embeddings.local_model.embedding_weights_ready", lambda: False)
+
+    res = await local_embedding_available()
+    assert res is False
 
 
 @pytest.mark.asyncio

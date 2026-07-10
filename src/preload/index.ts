@@ -33,20 +33,16 @@ const api = {
       ipcRenderer.invoke('consent:cloud:give', given)
   },
   gpuReranker: {
-    status: (): Promise<{ enabled: boolean; gpu_available: boolean; vram_gb: number | null }> =>
-      ipcRenderer.invoke('gpuReranker:status'),
-    setEnabled: (
-      enabled: boolean
-    ): Promise<{ enabled: boolean; gpu_available: boolean; vram_gb: number | null }> =>
-      ipcRenderer.invoke('gpuReranker:setEnabled', enabled)
+    status: (): Promise<unknown> => ipcRenderer.invoke('gpuReranker:status'),
+    setEnabled: (enabled: boolean): Promise<unknown> =>
+      ipcRenderer.invoke('gpuReranker:setEnabled', enabled),
+    download: (): Promise<unknown> => ipcRenderer.invoke('gpuReranker:download')
   },
   localEmbedding: {
-    status: (): Promise<{ enabled: boolean; gpu_available: boolean; vram_gb: number | null; model_id: string }> =>
-      ipcRenderer.invoke('localEmbedding:status'),
-    setEnabled: (
-      enabled: boolean
-    ): Promise<{ enabled: boolean; gpu_available: boolean; vram_gb: number | null; model_id: string }> =>
-      ipcRenderer.invoke('localEmbedding:setEnabled', enabled)
+    status: (): Promise<unknown> => ipcRenderer.invoke('localEmbedding:status'),
+    setEnabled: (enabled: boolean): Promise<unknown> =>
+      ipcRenderer.invoke('localEmbedding:setEnabled', enabled),
+    download: (): Promise<unknown> => ipcRenderer.invoke('localEmbedding:download')
   },
   folder: {
     pick: (): Promise<string | null> => ipcRenderer.invoke('folder:pick'),

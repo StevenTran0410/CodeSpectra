@@ -44,23 +44,19 @@ async def generate(
             limit = c.value
             break
 
-    if limit is None:
-        raise ValueError(
-            f"Constraint 'max_items_per_call' not found on component "
-            f"'{parsed_config.component_id}'"
-        )
-
     if not llm_client:
         raise ValueError("LLM client is required for decomposition_gold generation")
 
     dataset_name = parsed_config.dataset_name
     cases: list[DatasetCase] = []
 
-    # Divide count into three categories: clean, rambling, over_limit
-    per_cat = max(1, parsed_config.count // 3)
-    
-    # 2. Clean Multi-Intent Cases (2 to limit intents)
-    intents_count_range = (2, max(2, limit))
+    # Without a mined max_items_per_call, there's no target system's real fan-out limit to
+    # test cases against — skip the over_limit category rather than inventing one.
+    num_categories = 3 if limit is not None else 2
+    per_cat = max(1, parsed_config.count // num_categories)
+
+    # 2. Clean Multi-Intent Cases (2 to limit intents, or a fixed default range with no limit)
+    intents_count_range = (2, max(2, limit)) if limit is not None else (2, 4)
     prompt_clean = (
         f"Generate exactly {per_cat} unique examples of user queries containing multiple "
         f"distinct intents. Each query must contain between {intents_count_range[0]} and "
@@ -72,7 +68,7 @@ async def generate(
         f'    "intents": ["Book a flight to Paris", "Reserve a hotel"]\n  }}\n]\n'
         f"Do not include any Markdown wrap (like ```json) or explanation."
     )
-    
+
     # 3. Rambling Single-Intent Cases
     prompt_rambling = (
         f"Generate exactly {per_cat} unique examples of long, wordy, or rambling user "
@@ -84,25 +80,23 @@ async def generate(
         f'hotel in Paris?",\n    "intents": ["Book a hotel in Paris"]\n  }}\n]\n'
         f"Do not include any Markdown wrap (like ```json) or explanation."
     )
-    
-    # 4. Over-limit Cases (> limit intents)
-    over_limit_count = limit + 1
-    prompt_over_limit = (
-        f"Generate exactly {per_cat} unique examples of user queries containing exactly "
-        f"{over_limit_count} distinct intents.\n"
-        f"Respond ONLY with a JSON list of objects, where each object has 'query' (string) "
-        f"and 'intents' (list of strings).\n"
-        f"Example output format:\n"
-        f'[\n  {{\n    "query": "Do A, B, and C",\n'
-        f'    "intents": ["Do A", "Do B", "Do C"]\n  }}\n]\n'
-        f"Do not include any Markdown wrap (like ```json) or explanation."
-    )
 
-    prompts = [
-        ("clean", prompt_clean),
-        ("rambling", prompt_rambling),
-        ("over_limit", prompt_over_limit)
-    ]
+    prompts = [("clean", prompt_clean), ("rambling", prompt_rambling)]
+
+    # 4. Over-limit Cases (> limit intents) — only meaningful when a real limit exists
+    if limit is not None:
+        over_limit_count = limit + 1
+        prompt_over_limit = (
+            f"Generate exactly {per_cat} unique examples of user queries containing exactly "
+            f"{over_limit_count} distinct intents.\n"
+            f"Respond ONLY with a JSON list of objects, where each object has 'query' (string) "
+            f"and 'intents' (list of strings).\n"
+            f"Example output format:\n"
+            f'[\n  {{\n    "query": "Do A, B, and C",\n'
+            f'    "intents": ["Do A", "Do B", "Do C"]\n  }}\n]\n'
+            f"Do not include any Markdown wrap (like ```json) or explanation."
+        )
+        prompts.append(("over_limit", prompt_over_limit))
 
     for category, prompt in prompts:
         prompt = apply_painpoint(prompt, parsed_config.painpoint)
@@ -140,7 +134,7 @@ async def generate(
             expected: dict[str, Any] = {"intents": intents, "expected_response": intents}
             
             # If over-limit, compute call split math using plain Python
-            if len(intents) > limit:
+            if limit is not None and len(intents) > limit:
                 call_split = [intents[i : i + limit] for i in range(0, len(intents), limit)]
                 expected["call_split"] = call_split
 

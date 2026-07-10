@@ -1,4 +1,4 @@
-import { BrowserWindow, Menu, session } from 'electron'
+import { BrowserWindow, Menu, session, shell } from 'electron'
 import { is } from '@electron-toolkit/utils'
 import path from 'path'
 import { logger } from './shared/logger'
@@ -52,8 +52,22 @@ export function createMainWindow(): BrowserWindow {
     if (is.dev) win.webContents.openDevTools({ mode: 'right' })
   })
 
-  // Block all new windows (popups, target="_blank", window.open)
-  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  // Block all new windows (popups, target="_blank", window.open) — except a narrow
+  // allowlist of trusted doc/model-card links, which open in the OS default browser
+  // instead of an in-app popup. Deny still applies to every other domain/scheme
+  // (including file:// and custom schemes) to avoid an arbitrary-URL-launch surface.
+  const EXTERNAL_LINK_ALLOWED_HOSTS = new Set(['huggingface.co'])
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    try {
+      const { protocol, hostname } = new URL(url)
+      if (protocol === 'https:' && EXTERNAL_LINK_ALLOWED_HOSTS.has(hostname)) {
+        shell.openExternal(url)
+      }
+    } catch {
+      // malformed URL — fall through to deny
+    }
+    return { action: 'deny' }
+  })
 
   // Block navigation away from the app bundle — prevents renderer-initiated
   // open-redirect attacks (e.g. a malicious repo with an HTML file that tries

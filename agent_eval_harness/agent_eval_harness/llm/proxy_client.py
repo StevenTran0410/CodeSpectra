@@ -40,8 +40,14 @@ class CodeSpectraProxyClient:
         max_tokens: int = 512,
         temperature: float | None = 0.2,
         json_mode: bool = False,
+        reasoning_effort: str | None = None,
     ) -> LLMResponse:
-        """Modest fan-out needs provider-rate-limit backoff — retries on 429."""
+        """Modest fan-out needs provider-rate-limit backoff — retries on 429.
+        `reasoning_effort` here overrides the client's constructor-level default for just
+        this call — callers that need a bounded/low-effort call (e.g. structured internal
+        JSON extraction, which reasoning burns through its token budget on and returns
+        empty content for) can pass it explicitly; omitted, falls back to the client default."""
+        effort = reasoning_effort if reasoning_effort is not None else self._reasoning_effort
         last_exc: httpx.HTTPStatusError | None = None
         for attempt in range(_MAX_RATE_LIMIT_RETRIES + 1):
             resp = await self._http.post(
@@ -53,7 +59,7 @@ class CodeSpectraProxyClient:
                     "messages": [{"role": m.role, "content": m.content} for m in messages],
                     "max_completion_tokens": max_tokens,
                     "temperature": temperature,
-                    "reasoning_effort": self._reasoning_effort,
+                    "reasoning_effort": effort,
                     "thinking_budget": self._thinking_budget,
                     "json_mode": json_mode,
                 },
@@ -69,7 +75,7 @@ class CodeSpectraProxyClient:
                     raise RateLimitExceeded(
                         self._provider_id,
                         self._model_id,
-                        self._reasoning_effort,
+                        effort,
                         self._thinking_budget,
                     ) from exc
                 raise

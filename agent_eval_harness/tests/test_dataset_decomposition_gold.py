@@ -85,3 +85,38 @@ components:
     assert len(over_limit_case_3.expected["intents"]) == 5
     # split size for limit 3 should be: [[I1, I2, I3], [I4, I5]]
     assert over_limit_case_3.expected["call_split"] == [["I1", "I2", "I3"], ["I4", "I5"]]
+
+
+@pytest.mark.asyncio
+async def test_decomposition_gold_missing_constraint_skips_over_limit(tmp_path):
+    """Component with no max_items_per_call constraint: no raise, no over_limit category."""
+    map_path = tmp_path / "system_map_no_limit.yaml"
+    map_path.write_text("""
+target_system_id: test_system
+discrepancies: []
+components:
+  - id: planner
+    role: orchestrator
+    entry_point: "dummy:entry"
+    constraints: []
+""", encoding="utf-8")
+
+    config = {
+        "dataset_name": "test_decomp_no_limit",
+        "system_map_path": str(map_path),
+        "component_id": "planner",
+        "count": 4,
+    }
+
+    mock_clean = '[{"query": "Do X and Y", "intents": ["I1", "I2"]}]'
+    mock_rambling = '[{"query": "Please do X", "intents": ["I1"]}]'
+    fake_client = FakeLLMClient([
+        LLMResponse(content=mock_clean, model="fake"),
+        LLMResponse(content=mock_rambling, model="fake"),
+    ])
+
+    cases = await generate(config, llm_client=fake_client)
+    categories = {c.labels.get("category") for c in cases}
+    assert categories == {"clean", "rambling"}
+    assert "over_limit" not in categories
+    assert all("call_split" not in c.expected for c in cases)

@@ -399,6 +399,11 @@ export interface GpuRerankerStatus {
   enabled: boolean
   gpu_available: boolean
   vram_gb: number | null
+  weights_ready: boolean
+  weights_dir: string
+  download_url: string
+  download_status: 'idle' | 'downloading' | 'done' | 'failed'
+  download_error: string | null
 }
 
 export interface LocalEmbeddingStatus {
@@ -406,6 +411,11 @@ export interface LocalEmbeddingStatus {
   gpu_available: boolean
   vram_gb: number | null
   model_id: string
+  weights_ready: boolean
+  weights_dir: string
+  download_url: string
+  download_status: 'idle' | 'downloading' | 'done' | 'failed'
+  download_error: string | null
 }
 
 
@@ -553,10 +563,12 @@ declare global {
       gpuReranker: {
         status: () => Promise<GpuRerankerStatus>
         setEnabled: (enabled: boolean) => Promise<GpuRerankerStatus>
+        download: () => Promise<GpuRerankerStatus>
       }
       localEmbedding: {
         status: () => Promise<LocalEmbeddingStatus>
         setEnabled: (enabled: boolean) => Promise<LocalEmbeddingStatus>
+        download: () => Promise<LocalEmbeddingStatus>
       }
 
       folder: {

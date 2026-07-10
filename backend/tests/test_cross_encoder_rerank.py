@@ -367,20 +367,23 @@ class TestRerankerPreservesMetadata:
 @pytest.mark.skipif(
     not torch.cuda.is_available() or os.getenv("RUN_GPU_SMOKE_TEST") != "1",
     reason="Requires GPU (CUDA) AND explicit opt-in via RUN_GPU_SMOKE_TEST=1 — "
-    "CUDA availability alone isn't consent to download/load a real model "
-    "every time the suite runs; a dev machine having a GPU shouldn't make "
-    "this fire unattended.",
+    "CUDA availability alone isn't consent to load a real model every time "
+    "the suite runs; a dev machine having a GPU shouldn't make this fire "
+    "unattended. Also requires weights already manually downloaded into "
+    "reranker_weights_dir() — this suite never auto-downloads them.",
 )
 class TestRerankerGPUEndToEnd:
-    """Real GPU end-to-end smoke test (requires CUDA + RUN_GPU_SMOKE_TEST=1)."""
+    """Real GPU end-to-end smoke test (requires CUDA + RUN_GPU_SMOKE_TEST=1 + weights present)."""
 
     def test_real_model_inference_smoke_test(self):
-        """Smoke test: load the real model and run inference on 2-3 docs; opt-in only (RUN_GPU_SMOKE_TEST=1) since it downloads/loads a real model."""
+        """Smoke test: load the real model and run inference on 2-3 docs; opt-in only
+        (RUN_GPU_SMOKE_TEST=1). Requires weights already downloaded — see
+        reranker_weights_dir() — this never auto-downloads."""
         from domain.retrieval.cross_encoder_rerank import load_reranker
 
         # Try to load the real model
         if not load_reranker():
-            pytest.skip("Failed to load jina-reranker-v3 model")
+            pytest.skip("jina-reranker-v3 weights not found or load failed")
 
         fused = [
             FusedRankEntry(
@@ -462,8 +465,22 @@ class TestGpuRerankerGlobalToggle:
         await self._set_flag("true")
         with patch(
             "domain.retrieval.cross_encoder_rerank.detect_gpu", return_value=(True, 8.0)
+        ), patch(
+            "domain.retrieval.cross_encoder_rerank.reranker_weights_ready", return_value=True
         ):
             assert await is_gpu_reranker_enabled() is True
+        await self._set_flag(None)
+
+    async def test_disabled_when_gpu_available_but_weights_missing(self):
+        """Weights presence is required even when the toggle is on and a GPU exists —
+        no falling back to an auto-download attempt."""
+        await self._set_flag("true")
+        with patch(
+            "domain.retrieval.cross_encoder_rerank.detect_gpu", return_value=(True, 8.0)
+        ), patch(
+            "domain.retrieval.cross_encoder_rerank.reranker_weights_ready", return_value=False
+        ):
+            assert await is_gpu_reranker_enabled() is False
         await self._set_flag(None)
 
     async def test_disabled_when_flag_true_but_no_gpu(self):

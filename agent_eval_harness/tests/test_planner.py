@@ -8,7 +8,11 @@ import pytest
 
 from agent_eval_harness.llm.client import LLMResponse
 from agent_eval_harness.llm.fake_client import FakeLLMClient
-from agent_eval_harness.planning.planner import generate_plan, get_component_info
+from agent_eval_harness.planning.planner import (
+    _resolve_dataset_ref,
+    generate_plan,
+    get_component_info,
+)
 
 _LINEAR_RAG_MAP = Path(__file__).parent.parent / "test_targets" / "linear_rag" / "system_map.yaml"
 _MULTI_AGENT_MAP = Path(__file__).parent.parent / "test_targets" / "multi_agent" / "system_map.yaml"
@@ -22,6 +26,25 @@ async def test_get_component_info() -> None:
     info = get_component_info("test_targets.linear_rag.components:RetrieverComponent")
     assert "Pure Python keyword-overlap ranker" in info["docstring"]
     assert "class RetrieverComponent" in info["source_snippet"]
+
+
+async def test_resolve_dataset_ref_always_returns_fresh_required_block() -> None:
+    """Plan (re)generation must never link to an already-existing dataset — every dataset
+    requirement always starts unfulfilled so Fulfill Datasets always regenerates for real."""
+    ref = _resolve_dataset_ref("qa_testset")
+    assert ref is not None
+    assert ref.ref is None
+    assert ref.required == {"kind": "qa_testset", "min_cases": 20}
+
+
+async def test_resolve_dataset_ref_guard_classification_min_cases() -> None:
+    ref = _resolve_dataset_ref("guard_classification")
+    assert ref is not None
+    assert ref.required["min_cases"] == 40
+
+
+async def test_resolve_dataset_ref_empty_kind_returns_none() -> None:
+    assert _resolve_dataset_ref("") is None
 
 
 async def test_generate_plan_linear_rag() -> None:

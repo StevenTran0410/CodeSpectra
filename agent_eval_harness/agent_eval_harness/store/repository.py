@@ -305,6 +305,14 @@ async def delete_dataset_case(case_id: str) -> None:
     await db.commit()
 
 
+async def delete_dataset(dataset_id: str) -> None:
+    """Delete a dataset's cases and its metadata row. Idempotent."""
+    db = get_db()
+    await db.execute("DELETE FROM dataset_cases WHERE dataset_id = ?", (dataset_id,))
+    await db.execute("DELETE FROM datasets WHERE dataset_id = ?", (dataset_id,))
+    await db.commit()
+
+
 async def insert_evaluation(
     run_id: str,
     metric_name: str,

@@ -57,3 +57,22 @@ async def test_reasoning_fields_absent_by_default() -> None:
     assert transport.last_body["reasoning_effort"] is None
     assert transport.last_body["thinking_budget"] is None
     await client.aclose()
+
+
+async def test_per_call_reasoning_effort_overrides_constructor_default() -> None:
+    """A caller doing bounded structured JSON extraction (e.g. agentic_planner's DAG
+    nodes) can force a low effort for just its own call, regardless of what reasoning
+    effort the client was configured with for other calls."""
+    transport = _CapturingTransport()
+    http_client = httpx.AsyncClient(transport=transport)
+    client = CodeSpectraProxyClient(
+        "http://test", "tok", "provider-x", "model-y",
+        http_client=http_client,
+        reasoning_effort="high",
+    )
+
+    await client.complete([LLMMessage(role="user", content="hi")], reasoning_effort="low")
+
+    assert transport.last_body is not None
+    assert transport.last_body["reasoning_effort"] == "low"
+    await client.aclose()

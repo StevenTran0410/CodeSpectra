@@ -1,10 +1,11 @@
-"""Cross-encoder reranking using jinaai/jina-reranker-v3: a GPU-only reranker that rescores fused entries using a local cross-encoder model. Lazy-loaded singleton, 4-bit quantization via bitsandbytes, uses trust_remote_code=True."""
+"""Cross-encoder reranking using jinaai/jina-reranker-v3: a GPU-only reranker that rescores fused entries using a local cross-encoder model. Lazy-loaded singleton, 4-bit quantization via bitsandbytes, uses trust_remote_code=True. Weights only arrive via an explicit user-triggered download (Settings "Download" button) or manual placement in weights_dir(_MODEL_KEY) — this module itself never reaches the network."""
 
 from __future__ import annotations
 
 import time
 
 from domain.shared.gpu import GPU_MIN_VRAM_GB, detect_gpu, release_gpu_cache
+from domain.shared.model_weights import weights_dir, weights_ready
 from shared.logger import logger
 
 from .types import FusedRankEntry, RerankedEntry
@@ -14,6 +15,18 @@ _model = None
 
 # Minimum VRAM (GB) required to consider the GPU usable for this model
 _MIN_VRAM_GB = GPU_MIN_VRAM_GB
+
+_MODEL_KEY = "jina-reranker-v3"
+_MODEL_ID = "jinaai/jina-reranker-v3"
+_HF_MODEL_URL = "https://huggingface.co/jinaai/jina-reranker-v3"
+
+
+def reranker_weights_ready() -> bool:
+    return weights_ready(_MODEL_KEY)
+
+
+def reranker_weights_dir() -> str:
+    return str(weights_dir(_MODEL_KEY))
 
 # Jina-reranker-v3 max sequence length (verified against model card)
 # This is the maximum tokens the model can accept for both query + passages combined
@@ -88,6 +101,13 @@ def load_reranker() -> bool:
         logger.warning("[reranker] GPU not available; cross-encoder reranking unavailable")
         return False
 
+    if not reranker_weights_ready():
+        logger.warning(
+            f"[reranker] weights not found at {reranker_weights_dir()} — "
+            f"download from {_HF_MODEL_URL} and place the files there"
+        )
+        return False
+
     try:
         import torch
         from transformers import AutoModel, BitsAndBytesConfig
@@ -100,13 +120,14 @@ def load_reranker() -> bool:
         )
 
         _model = AutoModel.from_pretrained(
-            "jinaai/jina-reranker-v3",
+            reranker_weights_dir(),
             trust_remote_code=True,
             quantization_config=quantization_config,
             device_map="cuda",
+            local_files_only=True,
         )
 
-        logger.debug("[reranker] Model loaded: jinaai/jina-reranker-v3 (4-bit quantization)")
+        logger.debug(f"[reranker] Model loaded: {_MODEL_ID} (4-bit quantization) from {reranker_weights_dir()}")
         return True
 
     except Exception as e:
@@ -234,10 +255,11 @@ async def is_gpu_reranker_enabled() -> bool:
     """Global on/off switch (app_metadata flag, mirrors api/consent.py's pattern),
     read by retrieve_rrf_fusion() to decide whether to run the rerank stage at all.
 
-    Re-checks GPU availability defensively — a stale 'true' flag carried over from
-    a different machine/session must never cause a crash, only a graceful no-op."""
+    Re-checks GPU availability and weights presence defensively — a stale 'true'
+    flag carried over from a different machine/session (or after weights were
+    deleted) must never cause a crash, only a graceful no-op."""
     available, _ = detect_gpu()
-    if not available:
+    if not available or not reranker_weights_ready():
         return False
 
     from infrastructure.db.database import get_db

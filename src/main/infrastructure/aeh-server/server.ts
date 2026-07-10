@@ -90,7 +90,8 @@ class AEHProcessManager {
         cwd: is.dev ? path.join(process.cwd(), 'agent_eval_harness') : undefined,
         env: {
           ...process.env,
-          AEH_DATA_DIR: dataDir
+          AEH_DATA_DIR: dataDir,
+          PYTHONIOENCODING: 'utf-8'
         },
         stdio: ['ignore', 'pipe', 'pipe']
       }
