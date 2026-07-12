@@ -38,7 +38,6 @@ export default function Stage4Screen(): React.ReactElement {
   }
 
   async function handleCreatePlan() {
-    if (!branchInfo) return
     setPlanCreating(true)
     setError(null)
     try {
@@ -168,7 +167,7 @@ export default function Stage4Screen(): React.ReactElement {
                   variant="primary"
                   onClick={handleCreatePlan}
                   loading={planCreating}
-                  disabled={!branchInfo || planCreating}
+                  disabled={planCreating}
                   className="w-full text-xs h-8 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-medium"
                 >
                   {planCreating ? 'Creating plan...' : 'Create Eval Plan'}

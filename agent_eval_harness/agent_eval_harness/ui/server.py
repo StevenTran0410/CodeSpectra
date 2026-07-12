@@ -1653,19 +1653,7 @@ async def restore_eval_branch(session_id: str):
 async def create_eval_plan(session_id: str):
     sess = await _get_expansion_session_or_404(session_id)
     repo_root = _get_repo_root()
-    eval_branch = sess.get("eval_branch_name")
-    if not eval_branch:
-        raise HTTPException(status_code=400, detail="Create eval branch first.")
-    # Guard: must currently be on the eval branch
-    try:
-        current_branch = BranchInjectionTarget.current_branch(repo_root)
-    except InjectionTargetError as e:
-        raise HTTPException(status_code=500, detail=f"git error resolving current branch: {e}")
-    if current_branch != eval_branch:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Must be on eval branch {eval_branch!r} (currently on {current_branch!r})",
-        )
+    eval_branch = sess.get("eval_branch_name") or f"aeh/eval-{session_id}"
     # Guard: plan must not already exist
     plan_md_path = repo_root / "AEH_EVAL_PLAN.md"
     if plan_md_path.exists():
