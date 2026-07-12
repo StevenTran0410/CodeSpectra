@@ -311,6 +311,55 @@ def test_fallback_disambiguates_by_entry_method_call(tmp_path: Path) -> None:
     assert any("multiple candidate fallback methods" in n for n in notes)
 
 
+def test_harvest_fallback_falls_through_to_pipeline_module_for_k(tmp_path: Path) -> None:
+    """K/L-shaped agents have no own try/except — validate_section() alone means the entry
+    method's fallback lives in a module-level `_section_<letter>_pipeline_fallback()` in a
+    different file (the pipeline orchestrator), never a class method (A5)."""
+    (tmp_path / "agent_k.py").write_text(
+        "from schemas import validate_section\n\n"
+        "class KAgent:\n"
+        "    async def run(self, all_sections: dict):\n"
+        "        result = {}\n"
+        "        validate_section('K', result)\n"
+        "        return result\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "agent_pipeline.py").write_text(
+        "def _section_k_pipeline_fallback() -> dict:\n"
+        "    return {'overall_confidence': 'low', 'notes': 'Audit could not be completed.'}\n",
+        encoding="utf-8",
+    )
+    asts = _parse_files([tmp_path / "agent_k.py", tmp_path / "agent_pipeline.py"])
+    comp = Component(id="k", role="auditor", entry_point="agent_k:KAgent", file="agent_k.py")
+    _, output, _, notes, _ = harvest_component_contract(comp, asts, tmp_path)
+    assert output is not None and output.fallback_literal is not None
+    assert output.fallback_literal == {
+        "overall_confidence": "low", "notes": "Audit could not be completed.",
+    }
+    assert output.fallback_source is not None and "agent_pipeline.py" in output.fallback_source
+    assert not any("multiple candidate fallback methods" in n for n in notes)
+
+
+def test_harvest_fallback_no_fallthrough_without_a_validator_letter(tmp_path: Path) -> None:
+    """The pipeline-fallback fallthrough is letter-keyed — an agent with no own fallback
+    method AND no validator letter has nothing to fall through to (never guessed)."""
+    (tmp_path / "agent_x.py").write_text(
+        "class XAgent:\n"
+        "    async def run(self, snapshot_id: str):\n"
+        "        return {}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "agent_pipeline.py").write_text(
+        "def _section_k_pipeline_fallback() -> dict:\n"
+        "    return {'overall_confidence': 'low'}\n",
+        encoding="utf-8",
+    )
+    asts = _parse_files([tmp_path / "agent_x.py", tmp_path / "agent_pipeline.py"])
+    comp = Component(id="x", role="unknown", entry_point="agent_x:XAgent", file="agent_x.py")
+    _, output, _, _, _ = harvest_component_contract(comp, asts, tmp_path)
+    assert output is not None and output.fallback_literal is None
+
+
 def test_typeddict_required_field_in_total_false(tmp_path: Path) -> None:
     """PEP 655 Required[] fields must be included in `required` even under total=False."""
     (tmp_path / "td.py").write_text(
@@ -449,3 +498,35 @@ async def test_generate_plan_agentic_attaches_contracts(tmp_path: Path) -> None:
     assert contract is not None
     assert contract.invocation is not None
     assert contract.observability.input_kind == "structured"  # static wins; LLM degraded to {}
+
+
+async def test_generate_plan_agentic_emits_synthetic_agent_io_gate_for_non_fan_in_agent(tmp_path: Path) -> None:
+    """CS-289: the gate-emission rule in reconcile() must fire for ANY archetype-classifiable
+    agent (here FooAgent classifies as rag_single_shot via _archetype_for — it has a
+    RetrievalService constructor dep and no mem_ctx/arch_bundle/folder_tree/query-planning
+    kwargs) — not just fan-in agents like K/L."""
+    from agent_eval_harness.llm.client import LLMResponse
+    from agent_eval_harness.llm.fake_client import FakeLLMClient
+    from agent_eval_harness.planning.agentic_planner import generate_plan_agentic
+
+    files = _write_fixture(tmp_path)
+    system_map = SystemMap(target_system_id="t", components=[_foo_component()])
+    flow = AgentFlowMap(target_system_id="t", agents=[AgentFlow(id="foo", role="orchestrator", component_ids=["foo"])])
+    llm_client = FakeLLMClient(LLMResponse(content="{}", model="fake"))
+
+    suite, report = await generate_plan_agentic(
+        system_map, flow, {"foo": AGENT_SRC}, [], llm_client,
+        run_critic_pass=False, files=files, files_root=tmp_path,
+    )
+
+    contract = report.agents[0].contract
+    assert contract is not None
+    assert not contract.field_downstream_consumers  # not a fan-in agent
+
+    synth_entries = [
+        e for e in suite.entries
+        if e.dataset and e.dataset.required and e.dataset.required.get("kind") == "synthetic_agent_io"
+    ]
+    assert len(synth_entries) == 1
+    assert synth_entries[0].agent_id == "foo"
+    assert synth_entries[0].provenance == "rule"

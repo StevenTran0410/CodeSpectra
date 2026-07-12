@@ -981,6 +981,31 @@ def reconcile(
             contract.needs_human.extend(conflict_notes)
             post_notes.extend(conflict_notes)
 
+        # Every agent _archetype_for can classify gets a synthetic_agent_io gate; eval_enabled only gates fulfillment, not gate existence.
+        if contract is not None:
+            from agent_eval_harness.datasets.fulfillment import _archetype_for
+
+            archetype = _archetype_for(contract)
+            if archetype != "unimplemented":
+                agent_gates.append(
+                    EvaluationGate(
+                        id=f"{contract.component_id}.synthetic_agent_io",
+                        agent_id=agent.id,
+                        component=contract.component_id,
+                        location="input",
+                        property="synthetic_agent_io",
+                        metric="schema_valid",
+                        metric_class="assertion",
+                        toolkit="assertion",
+                        dataset=DatasetRef(required={"kind": "synthetic_agent_io", "min_cases": 20}),
+                        rationale=(
+                            f"archetype={archetype} ⇒ opt-in auto-generated workflow-eval "
+                            "dataset at the agent's real LLM-call boundary (CS-289)."
+                        ),
+                        provenance="rule",
+                    )
+                )
+
         # Params completion
         agent_gates = [
             _complete_params(g, system_map, contract, post_notes)
@@ -1046,6 +1071,20 @@ async def run_critic(
 # ──────────────────────────────────────────────────────────────────────────────
 
 
+def _carry_forward_fulfilled_datasets(new_suite: Suite, previous_suite: Suite) -> None:
+    """Regenerating the plan rebuilds every gate from scratch with an unfulfilled dataset ref; re-links any gate whose id+agent_id match a previously fulfilled entry so already-generated data isn't forgotten and needlessly regenerated."""
+    old_refs = {
+        (e.id, e.agent_id): e.dataset.ref
+        for e in previous_suite.entries
+        if e.dataset and e.dataset.ref
+    }
+    for entry in new_suite.entries:
+        ref = old_refs.get((entry.id, entry.agent_id))
+        if ref and entry.dataset and not entry.dataset.ref:
+            entry.dataset.ref = ref
+            entry.dataset.required = None
+
+
 async def generate_plan_agentic(
     system_map: SystemMap,
     agent_flow_map: AgentFlowMap,
@@ -1056,17 +1095,25 @@ async def generate_plan_agentic(
     run_critic_pass: bool = True,
     files: list[Path] | None = None,
     files_root: Path | None = None,
+    previous_suite: Suite | None = None,
+    previous_report: EvaluationPlanReport | None = None,
 ) -> tuple[Suite, EvaluationPlanReport]:
-    """Builds and executes the Stage-3 DAG; every agent gets its own gate set."""
+    """Builds and executes the Stage-3 DAG; every agent gets its own gate set. When
+    `previous_report` is given, an agent whose prior run already produced a data profile
+    and gates skips the analyst/gate_designer LLM calls and reuses that result — only
+    agents missing from (or never analyzed in) the previous report get freshly analyzed.
+    Contracts, baseline gates, handoff_gates, reconcile, and critic still always run fresh."""
     agents = agent_flow_map.agents
     # Shared across all concurrent DAG nodes — list.append() is safe since asyncio
     # coroutines only interleave at await points, never mid-statement.
     dag_notes: list[str] = []
+    previous_by_agent = {r.agent_id: r for r in previous_report.agents} if previous_report else {}
+    reused_agent_ids: list[str] = []
 
     async def _gather(_: dict[str, Any]) -> tuple[dict[str, AgentEvidence], dict[str, list[SuiteEntry]]]:
         return await gather_evidence(system_map, agent_flow_map, source_by_component, accepted_edges, llm_client)
 
-    # Contract harvest is pure AST over already-fetched files — no LLM, runs inline.
+    # Contract harvest is pure AST over already-fetched files — no LLM, runs inline and always fresh.
     contracts: dict[str, EvaluationContract] = {}
     if files:
         from agent_eval_harness.mapping.builder.contract_harvest import harvest_contracts
@@ -1076,9 +1123,21 @@ async def generate_plan_agentic(
     nodes: list[DagNode] = [DagNode("gather", [], _gather)]
 
     for agent in agents:
+        prev = previous_by_agent.get(agent.id)
+        reusable_profile = prev.data_profile if prev and prev.data_profile is not None else None
+        reusable_gates = (
+            [g for g in prev.gates if g.provenance == "llm_suggested"] if prev is not None else None
+        )
+        if reusable_profile is not None and reusable_gates is not None:
+            reused_agent_ids.append(agent.id)
+
         analyst_name = f"analyst:{agent.id}"
 
-        async def _analyst(results: dict[str, Any], agent_id: str = agent.id) -> AgentDataProfile:
+        async def _analyst(
+            results: dict[str, Any], agent_id: str = agent.id, reusable_profile: AgentDataProfile | None = reusable_profile
+        ) -> AgentDataProfile:
+            if reusable_profile is not None:
+                return reusable_profile
             evidence_by_agent, _ = results["gather"]
             return await _run_analyst(agent_id, evidence_by_agent[agent_id], llm_client, dag_notes=dag_notes)
 
@@ -1086,7 +1145,12 @@ async def generate_plan_agentic(
 
         gates_name = f"agent_gates:{agent.id}"
 
-        async def _gates(results: dict[str, Any], agent_id: str = agent.id, analyst_name: str = analyst_name) -> list[EvaluationGate]:
+        async def _gates(
+            results: dict[str, Any], agent_id: str = agent.id, analyst_name: str = analyst_name,
+            reusable_gates: list[EvaluationGate] | None = reusable_gates,
+        ) -> list[EvaluationGate]:
+            if reusable_gates is not None:
+                return reusable_gates
             evidence_by_agent, baseline_by_agent = results["gather"]
             profile = results[analyst_name]
             return await _run_gate_designer(
@@ -1095,6 +1159,12 @@ async def generate_plan_agentic(
             )
 
         nodes.append(DagNode(gates_name, ["gather", analyst_name], _gates))
+
+    if reused_agent_ids:
+        dag_notes.append(
+            f"Reused prior analysis for {len(reused_agent_ids)} agent(s) unchanged since the "
+            f"last plan: {', '.join(sorted(reused_agent_ids))}."
+        )
 
     analyst_names = [f"analyst:{a.id}" for a in agents]
 
@@ -1128,6 +1198,8 @@ async def generate_plan_agentic(
 
     results = await run_dag(nodes)
     suite, report = results["reconcile"]
+    if previous_suite is not None:
+        _carry_forward_fulfilled_datasets(suite, previous_suite)
     critic_notes = results["critic"] if run_critic_pass else []
     report = report.model_copy(update={"advisory_notes": dag_notes + critic_notes})
     return suite, report

@@ -194,3 +194,132 @@ async def test_lmstudio_list_models_excludes_embedding_models() -> None:
 
 def _fake_response_get(body: dict) -> httpx.Response:
     return httpx.Response(200, json=body, request=httpx.Request("GET", "http://test/x"))
+
+
+# ── Base URL Configuration ──────────────────────────────────────────────────
+
+def test_openai_adapter_respects_configured_base_url() -> None:
+    config = _config(ProviderKind.OPENAI, "gpt-4o")
+    adapter = OpenAIAdapter(config)
+    assert str(adapter._client.base_url).rstrip("/") == "http://test"
+
+
+def test_anthropic_adapter_respects_configured_base_url() -> None:
+    config = _config(ProviderKind.ANTHROPIC, "claude-3-5-sonnet")
+    adapter = AnthropicAdapter(config)
+    assert str(adapter._client.base_url).rstrip("/") == "http://test"
+
+
+def test_gemini_adapter_respects_configured_base_url() -> None:
+    config = _config(ProviderKind.GEMINI, "gemini-1.5-pro")
+    adapter = GeminiAdapter(config)
+    assert str(adapter._client.base_url).rstrip("/") == "http://test"
+
+
+def test_deepseek_adapter_respects_configured_base_url() -> None:
+    config = _config(ProviderKind.DEEPSEEK, "deepseek-chat")
+    adapter = DeepSeekAdapter(config)
+    assert str(adapter._client.base_url).rstrip("/") == "http://test"
+
+
+def test_adapters_fallback_to_default_base_url_when_config_empty() -> None:
+    def _empty_config(kind: ProviderKind, model_id: str) -> ProviderConfig:
+        return ProviderConfig(
+            id="p1",
+            kind=kind,
+            display_name="test",
+            base_url="",  # empty base url to force fallback
+            model_id=model_id,
+            extra={"api_key": "key"},
+        )
+
+    # OpenAI default
+    openai_adapter = OpenAIAdapter(_empty_config(ProviderKind.OPENAI, "gpt-4o"))
+    assert str(openai_adapter._client.base_url).rstrip("/") == "https://api.openai.com"
+
+    # Anthropic default
+    anthropic_adapter = AnthropicAdapter(_empty_config(ProviderKind.ANTHROPIC, "claude-3-5-sonnet"))
+    assert str(anthropic_adapter._client.base_url).rstrip("/") == "https://api.anthropic.com"
+
+    # Gemini default
+    gemini_adapter = GeminiAdapter(_empty_config(ProviderKind.GEMINI, "gemini-1.5-pro"))
+    assert str(gemini_adapter._client.base_url).rstrip("/") == "https://generativelanguage.googleapis.com"
+
+    # DeepSeek default
+    deepseek_adapter = DeepSeekAdapter(_empty_config(ProviderKind.DEEPSEEK, "deepseek-chat"))
+    assert str(deepseek_adapter._client.base_url).rstrip("/") == "https://api.deepseek.com"
+
+
+# ── Non-vendor-shaped model lists (3rd-party gateways) ──────────────────────
+
+async def test_openai_list_models_returns_raw_ids_when_prefix_filter_zeroes_out() -> None:
+    """A real, non-empty response whose model IDs don't match OpenAI's own naming
+    (e.g. a 3rd-party gateway proxying other vendors) must surface those real IDs,
+    not silently substitute fake OpenAI preset names."""
+    adapter = OpenAIAdapter(_config(ProviderKind.OPENAI, "gpt-4o"))
+    adapter._client.get = AsyncMock(
+        return_value=_fake_response_get(
+            {"data": [{"id": "DeepSeek-V4-Pro"}, {"id": "Gemini-3.5-Flash"}]}
+        )
+    )
+    models = await adapter.list_models()
+    assert models == ["DeepSeek-V4-Pro", "Gemini-3.5-Flash"]
+
+
+async def test_openai_list_models_still_filters_when_some_match() -> None:
+    """Existing behavior preserved: a real OpenAI-shaped response with a mix of
+    chat and non-chat models still excludes the non-chat ones."""
+    adapter = OpenAIAdapter(_config(ProviderKind.OPENAI, "gpt-4o"))
+    adapter._client.get = AsyncMock(
+        return_value=_fake_response_get(
+            {"data": [{"id": "gpt-4o"}, {"id": "text-embedding-3-small"}, {"id": "whisper-1"}]}
+        )
+    )
+    models = await adapter.list_models()
+    assert models == ["gpt-4o"]
+
+
+async def test_openai_list_models_uses_presets_when_response_genuinely_empty() -> None:
+    adapter = OpenAIAdapter(_config(ProviderKind.OPENAI, "gpt-4o"))
+    adapter._client.get = AsyncMock(return_value=_fake_response_get({"data": []}))
+    models = await adapter.list_models()
+    assert models == OpenAIAdapter.MODEL_PRESETS
+
+
+async def test_gemini_list_models_returns_raw_names_when_capability_filter_zeroes_out() -> None:
+    """A real, non-empty response missing supportedGenerationMethods (e.g. a 3rd-party
+    gateway that doesn't populate it) must surface the real model names, not fake
+    Gemini preset names."""
+    adapter = GeminiAdapter(_config(ProviderKind.GEMINI, "gemini-1.5-pro"))
+    adapter._client.get = AsyncMock(
+        return_value=_fake_response_get(
+            {"models": [{"name": "models/DeepSeek-V4-Pro"}, {"name": "models/GPT-5.4"}]}
+        )
+    )
+    models = await adapter.list_models()
+    assert models == ["DeepSeek-V4-Pro", "GPT-5.4"]
+
+
+async def test_gemini_list_models_still_filters_when_some_match() -> None:
+    adapter = GeminiAdapter(_config(ProviderKind.GEMINI, "gemini-1.5-pro"))
+    adapter._client.get = AsyncMock(
+        return_value=_fake_response_get(
+            {
+                "models": [
+                    {"name": "models/gemini-1.5-pro", "supportedGenerationMethods": ["generateContent"]},
+                    {"name": "models/embedding-001", "supportedGenerationMethods": ["embedContent"]},
+                ]
+            }
+        )
+    )
+    models = await adapter.list_models()
+    assert models == ["gemini-1.5-pro"]
+
+
+async def test_gemini_list_models_uses_presets_when_response_genuinely_empty() -> None:
+    adapter = GeminiAdapter(_config(ProviderKind.GEMINI, "gemini-1.5-pro"))
+    adapter._client.get = AsyncMock(return_value=_fake_response_get({"models": []}))
+    models = await adapter.list_models()
+    from domain.model_connector.gemini.adapter import MODEL_PRESETS
+    assert models == MODEL_PRESETS
+

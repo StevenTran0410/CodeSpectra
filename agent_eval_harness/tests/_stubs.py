@@ -15,10 +15,14 @@ class FakeCodeSpectraClient:
         files: dict[str, str] | None = None,
         neighbors: dict[str, list[str]] | None = None,
         edges_map: dict[str, dict] | None = None,
+        reports: list[dict] | None = None,
+        full_reports: dict[str, dict] | None = None,
     ) -> None:
         self._files = files or {}
         self._neighbors = neighbors or {}
         self._edges_map = edges_map or {}
+        self._reports = reports or []
+        self._full_reports = full_reports or {}
         self.read_calls: list[str] = []
         self.neighbors_calls: list[str] = []
 
@@ -47,6 +51,27 @@ class FakeCodeSpectraClient:
                 })
         defined = ["symbolA", "symbolB", "Agent"]
         return {"defined_symbols": defined, "outgoing": outgoing, "incoming": []}
+
+    async def get_snapshot(self, snapshot_id: str) -> dict:
+        return {
+            "id": snapshot_id,
+            "local_repo_id": "test_repo",
+            "local_path": self._files.get(f"snapshot_local_path_{snapshot_id}", "fake_local_path"),
+        }
+
+    async def list_reports(
+        self,
+        repo_id: str | None = None,
+        workspace_id: str | None = None,
+        limit: int = 30,
+    ) -> list[dict]:
+        res = self._reports
+        if repo_id:
+            res = [r for r in res if r.get("repo_id") == repo_id]
+        return res[:limit]
+
+    async def get_report(self, report_id: str) -> dict:
+        return self._full_reports.get(report_id, {"id": report_id, "report": {"sections": {}}})
 
 
 class KeyedFakeLLMClient:

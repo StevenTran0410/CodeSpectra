@@ -43,12 +43,14 @@ export interface CreateProviderRequest {
   base_url: string
   model_id: string
   capabilities?: Partial<ProviderCapabilities>
+  extra?: Record<string, any>
 }
 
 export interface UpdateProviderRequest {
   display_name?: string
   base_url?: string
   model_id?: string
+  extra?: Record<string, any>
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

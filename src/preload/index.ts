@@ -330,6 +330,11 @@ const api = {
       ipcRenderer.invoke('aeh:updatePlan', sessionId, body),
     getPlanReport: (sessionId: string) =>
       ipcRenderer.invoke('aeh:getPlanReport', sessionId),
+    updatePlanReport: (sessionId: string, body: unknown) =>
+      ipcRenderer.invoke('aeh:updatePlanReport', sessionId, body),
+    runEval: (sessionId: string, body?: unknown) =>
+      ipcRenderer.invoke('aeh:runEval', sessionId, body ?? {}),
+    resetStage3: (sessionId: string) => ipcRenderer.invoke('aeh:resetStage3', sessionId),
     generateAgentFlowMap: (sessionId: string, body: unknown) =>
       ipcRenderer.invoke('aeh:generateAgentFlowMap', sessionId, body),
     getAgentFlowMap: (sessionId: string) =>

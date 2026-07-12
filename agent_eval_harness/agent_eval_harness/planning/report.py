@@ -56,6 +56,8 @@ class AgentPlanReport(BaseModel):
     contract: EvaluationContract | None = None
     gates: list[EvaluationGate] = Field(default_factory=list)
     needs_human: list[str] = Field(default_factory=list)
+    # Per-agent opt-in for the synthetic_agent_io workflow-eval dataset; off by default.
+    eval_enabled: bool = False
 
 
 class EvaluationPlanReport(BaseModel):

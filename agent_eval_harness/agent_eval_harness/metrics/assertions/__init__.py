@@ -1,1 +1,0 @@
-"""Assertion engine package."""

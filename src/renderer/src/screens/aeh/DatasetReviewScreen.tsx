@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
-import { Loader2, Sparkles, ArrowLeft, Settings } from 'lucide-react'
+import { Loader2, Sparkles, ArrowLeft, Settings, AlertCircle, RefreshCw } from 'lucide-react'
 import { Button, Badge, useToastStore } from '../../components/ui'
 import { useProviderStore } from '../../store/provider.store'
 import LLMConfigModal, { LLMModelButton } from './LLMConfigModal'
@@ -14,6 +14,7 @@ export default function DatasetReviewScreen(): React.ReactElement {
   const sessionId = searchParams.get('sessionId')
   const repoId = searchParams.get('repoId')
   const snapshotId = searchParams.get('snapshotId')
+  const agentId = searchParams.get('agentId')
   const toast = useToastStore()
 
   const { providers, load: loadProviders } = useProviderStore()
@@ -78,6 +79,12 @@ export default function DatasetReviewScreen(): React.ReactElement {
     AEHFulfillmentGroupResult
   > | null>(null)
 
+  // Scoped mode (agentId present): the dataset this agent's plan entry already points to, resolved from the plan itself.
+  const [scopedDatasetId, setScopedDatasetId] = useState<string | null>(null)
+  const [scopedLookupDone, setScopedLookupDone] = useState(false)
+  const [agentLabel, setAgentLabel] = useState<string | null>(null)
+  const [regenerateModalOpen, setRegenerateModalOpen] = useState(false)
+
   const loadDatasets = useCallback(async () => {
     setLoadingDatasets(true)
     try {
@@ -92,6 +99,45 @@ export default function DatasetReviewScreen(): React.ReactElement {
   useEffect(() => {
     loadDatasets()
   }, [loadDatasets])
+
+  const refreshScopedDataset = useCallback(async () => {
+    if (!agentId || !sessionId) {
+      setScopedLookupDone(true)
+      return
+    }
+    try {
+      const suite = await window.api.aeh.getPlan(sessionId)
+      const entry = suite?.entries.find(
+        (e) => e.agent_id === agentId && e.id.endsWith('.synthetic_agent_io') && !!e.dataset?.ref
+      )
+      setScopedDatasetId(entry?.dataset?.ref ?? null)
+    } catch {
+      setScopedDatasetId(null)
+    } finally {
+      setScopedLookupDone(true)
+    }
+  }, [agentId, sessionId])
+
+  useEffect(() => {
+    refreshScopedDataset()
+  }, [refreshScopedDataset])
+
+  useEffect(() => {
+    if (!agentId || !sessionId) return
+    window.api.aeh
+      .getAgentFlowMap(sessionId)
+      .then((flowMap) => {
+        const agent = flowMap?.agents.find((a) => a.id === agentId)
+        setAgentLabel(agent?.label || agent?.id || null)
+      })
+      .catch(() => {})
+  }, [agentId, sessionId])
+
+  useEffect(() => {
+    if (agentId && scopedDatasetId && datasets.some((d) => d.dataset_id === scopedDatasetId)) {
+      setSelectedDatasetId(scopedDatasetId)
+    }
+  }, [agentId, scopedDatasetId, datasets])
 
   const loadCases = useCallback(
     async (datasetId: string) => {
@@ -178,7 +224,7 @@ export default function DatasetReviewScreen(): React.ReactElement {
     toast.success(`Accepted ${synthetic.length} remaining case(s).`)
   }
 
-  const handleFulfill = async (): Promise<void> => {
+  const handleFulfill = async (force = false): Promise<void> => {
     if (!sessionId) {
       toast.error('No session in context — open this screen from a Stage 3 plan.')
       return
@@ -187,6 +233,7 @@ export default function DatasetReviewScreen(): React.ReactElement {
       toast.error('No LLM provider configured — set one via the gear icon first.')
       return
     }
+    setRegenerateModalOpen(false)
     setFulfilling(true)
     try {
       const report = await window.api.aeh.fulfillDatasets(sessionId, {
@@ -196,15 +243,40 @@ export default function DatasetReviewScreen(): React.ReactElement {
         thinking_budget: selectedThinkingBudget,
         embedding_provider_id: selectedEmbedProviderId || null,
         embedding_model_id: selectedEmbedModelId || null,
-        use_local_embedding: selectedUseLocalEmbedding
+        use_local_embedding: selectedUseLocalEmbedding,
+        agent_ids: agentId ? [agentId] : null,
+        force_agent_ids: agentId && force ? [agentId] : null
       })
       setFulfillmentReport(report)
       await loadDatasets()
-      toast.success('Fulfillment run complete.')
+      if (agentId) {
+        const outcome = report[`synthetic_agent_io/${agentId}`]
+        if (outcome?.status === 'fulfilled') {
+          toast.success(force ? 'Dataset regenerated for this agent.' : 'Dataset fulfilled for this agent.')
+        } else if (outcome?.status === 'skipped') {
+          toast.error('This agent’s eval toggle is off — turn it on in Stage 3 first.')
+        } else if (!outcome && scopedDatasetId) {
+          // Already fulfilled before this click — outside this run's unfulfilled scope, not a failure.
+          toast.success('Dataset already exists for this agent — nothing to regenerate.')
+        } else {
+          toast.error(outcome?.reason ?? 'Fulfillment did not produce a dataset for this agent.')
+        }
+        await refreshScopedDataset()
+      } else {
+        toast.success('Fulfillment run complete.')
+      }
     } catch (err: any) {
       toast.error(err?.message ?? 'Fulfillment failed.')
     } finally {
       setFulfilling(false)
+    }
+  }
+
+  const handleFulfillButtonClick = (): void => {
+    if (agentId && scopedDatasetId) {
+      setRegenerateModalOpen(true)
+    } else {
+      handleFulfill(false)
     }
   }
 
@@ -223,9 +295,11 @@ export default function DatasetReviewScreen(): React.ReactElement {
             <ArrowLeft size={16} />
           </Button>
           <div>
-            <h1 className="screen-title">Dataset Review</h1>
+            <h1 className="screen-title">{agentId ? `Dataset — ${agentLabel || agentId}` : 'Dataset Review'}</h1>
             <p className="screen-subtitle">
-              Auto-generated dataset cases — review before they can be referenced by a plan
+              {agentId
+                ? 'This agent’s synthetic_agent_io dataset only — fulfill it below if empty'
+                : 'Auto-generated dataset cases — review before they can be referenced by a plan'}
             </p>
           </div>
         </div>
@@ -247,16 +321,49 @@ export default function DatasetReviewScreen(): React.ReactElement {
           />
           <Button
             variant="primary"
-            onClick={handleFulfill}
+            onClick={handleFulfillButtonClick}
             loading={fulfilling}
             disabled={!sessionId}
             className="text-xs h-9 px-3 flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white"
           >
-            <Sparkles size={13} />
-            <span>Fulfill Datasets</span>
+            {agentId && scopedDatasetId ? <RefreshCw size={13} /> : <Sparkles size={13} />}
+            <span>{agentId ? (scopedDatasetId ? 'Regenerate' : 'Fulfill Data') : 'Fulfill Datasets'}</span>
           </Button>
         </div>
       </div>
+
+      {regenerateModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4">
+          <div className="glass rounded-2xl w-full max-w-sm border-slate-850 shadow-2xl p-5 space-y-4 text-slate-100">
+            <div className="flex items-center gap-3 text-amber-400">
+              <AlertCircle className="shrink-0 w-6 h-6" />
+              <h3 className="text-sm font-semibold text-slate-200">Regenerate this agent's dataset?</h3>
+            </div>
+            <p className="text-[11px] text-slate-450 leading-relaxed">
+              This permanently deletes the existing dataset (all cases and any review verdicts)
+              and generates a fresh one. This cannot be undone.
+            </p>
+            <div className="flex justify-end gap-2.5 pt-2">
+              <Button
+                variant="ghost"
+                onClick={() => setRegenerateModalOpen(false)}
+                disabled={fulfilling}
+                className="text-xs px-4 py-2"
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                onClick={() => handleFulfill(true)}
+                loading={fulfilling}
+                className="text-xs px-4 py-2 bg-amber-600 hover:bg-amber-500"
+              >
+                Regenerate
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <LLMConfigModal
         isOpen={llmConfigOpen}
@@ -306,40 +413,48 @@ export default function DatasetReviewScreen(): React.ReactElement {
       )}
 
       <div className="flex-1 overflow-hidden flex">
-        <div className="w-72 shrink-0 border-r border-slate-850 overflow-y-auto p-3 space-y-2">
-          {loadingDatasets ? (
-            <Loader2 className="animate-spin text-indigo-500 mx-auto mt-4" size={20} />
-          ) : datasets.length === 0 ? (
-            <p className="text-[11px] text-slate-600 italic p-2">No datasets yet.</p>
-          ) : (
-            datasets.map((ds) => (
-              <button
-                key={ds.dataset_id}
-                onClick={() => setSelectedDatasetId(ds.dataset_id)}
-                className={`w-full text-left p-2.5 rounded-lg border text-[11px] transition-colors ${
-                  selectedDatasetId === ds.dataset_id
-                    ? 'border-indigo-700 bg-indigo-950/30'
-                    : 'border-slate-850 bg-slate-950/20 hover:border-slate-700'
-                }`}
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-mono text-slate-200 truncate">{ds.dataset_id}</span>
-                  <Badge variant={ds.review_complete ? 'success' : 'warning'} size="sm" className="shrink-0">
-                    {ds.review_complete ? 'ready' : 'pending'}
-                  </Badge>
-                </div>
-                <div className="text-slate-500 mt-1">{ds.kind ?? 'unknown kind'}</div>
-                <div className="text-slate-600 mt-0.5">
-                  {ds.total_count} cases · {ds.synthetic_count} unreviewed
-                </div>
-              </button>
-            ))
-          )}
-        </div>
+        {!agentId && (
+          <div className="w-72 shrink-0 border-r border-slate-850 overflow-y-auto p-3 space-y-2">
+            {loadingDatasets ? (
+              <Loader2 className="animate-spin text-indigo-500 mx-auto mt-4" size={20} />
+            ) : datasets.length === 0 ? (
+              <p className="text-[11px] text-slate-600 italic p-2">No datasets yet.</p>
+            ) : (
+              datasets.map((ds) => (
+                <button
+                  key={ds.dataset_id}
+                  onClick={() => setSelectedDatasetId(ds.dataset_id)}
+                  className={`w-full text-left p-2.5 rounded-lg border text-[11px] transition-colors ${
+                    selectedDatasetId === ds.dataset_id
+                      ? 'border-indigo-700 bg-indigo-950/30'
+                      : 'border-slate-850 bg-slate-950/20 hover:border-slate-700'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-mono text-slate-200 truncate">{ds.dataset_id}</span>
+                    <Badge variant={ds.review_complete ? 'success' : 'warning'} size="sm" className="shrink-0">
+                      {ds.review_complete ? 'ready' : 'pending'}
+                    </Badge>
+                  </div>
+                  <div className="text-slate-500 mt-1">{ds.kind ?? 'unknown kind'}</div>
+                  <div className="text-slate-600 mt-0.5">
+                    {ds.total_count} cases · {ds.synthetic_count} unreviewed
+                  </div>
+                </button>
+              ))
+            )}
+          </div>
+        )}
 
         <div className="flex-1 overflow-y-auto p-4">
-          {!selectedDataset ? (
-            <p className="text-[11px] text-slate-600 italic">Select a dataset to review its cases.</p>
+          {agentId && !scopedLookupDone ? (
+            <Loader2 className="animate-spin text-indigo-500" size={20} />
+          ) : !selectedDataset ? (
+            <p className="text-[11px] text-slate-600 italic">
+              {agentId
+                ? 'No data fulfilled for this agent yet — click "Fulfill Data" above to generate it.'
+                : 'Select a dataset to review its cases.'}
+            </p>
           ) : (
             <>
               <div className="flex items-center justify-between mb-3">

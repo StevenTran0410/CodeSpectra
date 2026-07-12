@@ -26,7 +26,7 @@ class CodeSpectraProxyClient:
         self._token = bearer_token
         self._provider_id = provider_id
         self._model_id = model_id
-        self._http = http_client or httpx.AsyncClient(timeout=60.0)
+        self._http = http_client or httpx.AsyncClient(timeout=300.0)
         # Constructor-level, like provider_id/model_id — applies to every complete()
         # call this client makes, so every AEH call site gets the user's chosen
         # reasoning settings without threading them through each individual call.

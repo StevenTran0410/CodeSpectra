@@ -188,7 +188,14 @@ class ProviderConfigService:
         config = await self._get_by_id_full(provider_id)
         adapter = _get_adapter(config)
         try:
-            raw_ids = await adapter.list_models()
+            try:
+                raw_ids = await adapter.list_models()
+            except ProviderError:
+                manual = config.extra.get("manual_models")
+                if manual:
+                    raw_ids = manual
+                else:
+                    raise
             return [
                 ModelInfo(id=model_id, reasoning_style=classify(config.kind, model_id))
                 for model_id in raw_ids
@@ -199,9 +206,10 @@ class ProviderConfigService:
     async def chat(self, request: ChatRequest) -> ChatResponse:
         """Route a chat request to the correct provider adapter.
 
-        If the provider rejects the temperature value, automatically retry once
-        with temperature=None (let the model use its built-in default).
-        This handles models like o1, o3, gpt-5 that only accept their default temp.
+        Automatically retries once, dropping a parameter the provider rejected:
+        - reasoning_effort — the model-id heuristic can't know every proxy/gateway's real
+          capabilities (a 'gpt-5'-named alias may not accept reasoning_effort at all).
+        - temperature — models like o1/o3/gpt-5 only accept their built-in default.
         """
         config = await self._get_by_id_full(request.provider_id)
         if request.model_id:
@@ -212,6 +220,14 @@ class ProviderConfigService:
                 return await adapter.chat(request)
             except ProviderError as e:
                 msg = (e.message or "").lower()
+                if request.reasoning_effort is not None and "reasoning_effort" in msg:
+                    logger.warning(
+                        "Provider %s/%s rejected reasoning_effort=%s — retrying without it",
+                        request.provider_id,
+                        config.model_id,
+                        request.reasoning_effort,
+                    )
+                    return await adapter.chat(request.model_copy(update={"reasoning_effort": None}))
                 if request.temperature is not None and "temperature" in msg:
                     logger.warning(
                         "Provider %s/%s rejected temperature=%s — retrying without temperature",

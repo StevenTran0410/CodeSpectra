@@ -26,6 +26,7 @@ async def insert_run(
     suite_path: str | None = None,
     parent_run_id: str | None = None,
     model_overrides: dict[str, str] | None = None,
+    source: Literal["live", "ingested"] = "live",
 ) -> str:
     run_id = new_id()
     db = get_db()
@@ -33,8 +34,8 @@ async def insert_run(
     model_overrides_json = json.dumps(model_overrides or {})
     await db.execute(
         "INSERT INTO runs (id, target_system_id, eval_plan_id, started_at, status, "
-        "map_path, active_defects, target, suite_path, parent_run_id, model_overrides) "
-        "VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?)",
+        "map_path, active_defects, target, suite_path, parent_run_id, model_overrides, source) "
+        "VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?)",
         (
             run_id,
             target_system_id,
@@ -46,13 +47,14 @@ async def insert_run(
             suite_path,
             parent_run_id,
             model_overrides_json,
+            source,
         ),
     )
     await db.commit()
     return run_id
 
 
-async def finish_run(run_id: str, status: Literal["completed", "failed"]) -> None:
+async def finish_run(run_id: str, status: Literal["completed", "failed", "partial"]) -> None:
     db = get_db()
     await db.execute(
         "UPDATE runs SET status = ?, finished_at = ? WHERE id = ?",
@@ -764,7 +766,7 @@ async def list_expansion_sessions_for_candidate(candidate_id: str) -> list[dict]
     return [_decode_expansion_session_row(dict(r)) for r in rows]
 
 
-async def update_expansion_session_plan_path(session_id: str, plan_path: str) -> None:
+async def update_expansion_session_plan_path(session_id: str, plan_path: str | None) -> None:
     db = get_db()
     await db.execute(
         "UPDATE expansion_sessions SET plan_path = ? WHERE id = ?",
@@ -782,7 +784,7 @@ async def update_expansion_session_agentflows_path(session_id: str, agent_flows_
     await db.commit()
 
 
-async def update_expansion_session_plan_report_path(session_id: str, plan_report_path: str) -> None:
+async def update_expansion_session_plan_report_path(session_id: str, plan_report_path: str | None) -> None:
     db = get_db()
     await db.execute(
         "UPDATE expansion_sessions SET plan_report_path = ? WHERE id = ?",

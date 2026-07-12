@@ -174,6 +174,8 @@ DATASET_KINDS: frozenset[str] = frozenset(
         # kinds above; not a rename, these didn't exist before.
         "snapshot_fixture",
         "snapshot_regression_baseline",
+        "recorded_report_replay",  # mines real analysis_reports rows for K/L, no new ingestion needed
+        "synthetic_agent_io",  # CS-289: LLM-synthesized input+gold at an agent's real LLM boundary
     }
 )
 

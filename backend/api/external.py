@@ -50,6 +50,7 @@ class ProviderSummary(BaseModel):
     provider_id: str
     display_name: str
     model_id: str
+    kind: str = ""
 
 
 async def _get_external_token() -> str | None:
@@ -107,7 +108,10 @@ async def llm_complete(body: LLMCompleteRequest) -> ChatResponse:
 async def list_llm_providers() -> list[ProviderSummary]:
     configs = await _service.list_all()
     return [
-        ProviderSummary(provider_id=c.id, display_name=c.display_name, model_id=c.model_id)
+        ProviderSummary(
+            provider_id=c.id, display_name=c.display_name, model_id=c.model_id,
+            kind=c.kind.value,
+        )
         for c in configs
     ]
 

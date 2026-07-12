@@ -1,1 +1,0 @@
-"""Structural graph domain package."""

@@ -50,12 +50,11 @@ export default function Stage3Screen(): React.ReactElement {
   const [systemMap, setSystemMap] = useState<AEHSystemMap | null>(null)
   const [loadingSession, setLoadingSession] = useState(false)
 
-  // Stage 2's agent-flow map — Stage 3's hard prerequisite (the planning unit is the agent).
+  // Stage 2's agent-flow map — Stage 3's hard prerequisite.
   const [agentFlowMap, setAgentFlowMap] = useState<AEHAgentFlowMap | null>(null)
   const [loadingAgentFlow, setLoadingAgentFlow] = useState(false)
 
-  // null = overview (agent grid). Set = the agent-detail "page". No routing involved —
-  // a plain view switch, so Back is instant and doesn't touch the URL/candidate selector.
+  // null = overview (agent grid). Set = the agent-detail "page" (plain view switch, no routing).
   const [viewingAgentId, setViewingAgentId] = useState<string | null>(null)
 
   // The DAG orchestrator's audit report (data-flow profile + gates per agent).
@@ -86,6 +85,10 @@ export default function Stage3Screen(): React.ReactElement {
 
   // Regenerate Confirmation Modal
   const [confirmModalOpen, setConfirmModalOpen] = useState(false)
+
+  // Reset Stage 3 (delete plan + fulfilled datasets) Confirmation Modal
+  const [resetModalOpen, setResetModalOpen] = useState(false)
+  const [resettingStage3, setResettingStage3] = useState(false)
 
   useEffect(() => {
     loadProviders()
@@ -136,7 +139,7 @@ export default function Stage3Screen(): React.ReactElement {
     setOriginalEntries(JSON.parse(JSON.stringify(suite.entries || [])))
     setInvalidJsonIndices({})
     const ps: Record<number, string> = {}
-    ;(suite.entries || []).forEach((e: AEHPlanEntry, i: number) => { ps[i] = JSON.stringify(e.params || {}) })
+      ; (suite.entries || []).forEach((e: AEHPlanEntry, i: number) => { ps[i] = JSON.stringify(e.params || {}) })
     setParamsStrings(ps)
     setReadiness(suite.readiness || {})
   }
@@ -290,6 +293,58 @@ export default function Stage3Screen(): React.ReactElement {
     }
   }
 
+  const handleResetStage3 = async () => {
+    if (!expansionSession) return
+    setResettingStage3(true)
+    try {
+      const result = await window.api.aeh.resetStage3(expansionSession.id)
+      const count = result.deleted_dataset_ids.length
+      toast.success(
+        count > 0
+          ? `Stage 3 reset — deleted the plan and ${count} fulfilled dataset${count === 1 ? '' : 's'}.`
+          : 'Stage 3 reset — deleted the plan (no fulfilled datasets to remove).'
+      )
+      setPlanSuite(null)
+      setPlanReport(null)
+      setLocalEntries([])
+      setOriginalEntries([])
+      setParamsStrings({})
+      setInvalidJsonIndices({})
+      setReadiness({})
+      setViewingAgentId(null)
+      setResetModalOpen(false)
+    } catch (err: any) {
+      toast.error(err?.message ?? 'Failed to reset Stage 3.')
+    } finally {
+      setResettingStage3(false)
+    }
+  }
+
+  const handleFulfillAgent = () => {
+    if (!viewingAgentId) return
+    navigate(
+      `/aeh/analysis/datasets?repoId=${repoId}&snapshotId=${snapshotId}&sessionId=${expansionSession?.id ?? ''}&agentId=${viewingAgentId}`
+    )
+  }
+
+  const handleToggleEvalEnabled = async (agentId: string, enabled: boolean) => {
+    if (!expansionSession || !planReport) return
+    const previous = planReport
+    const updatedReport: AEHEvaluationPlanReport = {
+      ...planReport,
+      agents: planReport.agents.map((a) =>
+        a.agent_id === agentId ? { ...a, eval_enabled: enabled } : a
+      ),
+    }
+    setPlanReport(updatedReport) // immediate-persist pattern — no unsaved-changes gating
+    try {
+      await window.api.aeh.updatePlanReport(expansionSession.id, updatedReport)
+    } catch (err: any) {
+      setPlanReport(previous)
+      toast.error(err?.message ?? 'Failed to update evaluation toggle.')
+    }
+  }
+
   const updateEntryField = (index: number, field: keyof AEHPlanEntry, value: any) => {
     setLocalEntries((prev) =>
       prev.map((entry, idx) => (idx === index ? { ...entry, [field]: value } : entry))
@@ -337,7 +392,7 @@ export default function Stage3Screen(): React.ReactElement {
     return m
   }, [systemMap])
 
-  // component+metric -> the DAG's report gate, for toolkit display (report-only, not persisted on the Suite).
+  // component+metric -> the DAG's report gate, for toolkit display only (not persisted on the Suite).
   const gateByKey = useMemo(() => {
     const m = new Map<string, AEHEvaluationGate>()
     for (const agentReport of planReport?.agents ?? []) {
@@ -366,8 +421,7 @@ export default function Stage3Screen(): React.ReactElement {
 
   return (
     <div className="flex flex-col h-full bg-[#090d16] text-slate-100">
-      {/* Screen Header — swaps to the agent's own identity while viewing its detail page,
-          instead of stacking a second header row underneath. */}
+      {/* Header swaps to the agent's own identity while viewing its detail page. */}
       <div className="screen-header shrink-0 flex items-center justify-between">
         <div className="flex items-center gap-3 min-w-0">
           <Button
@@ -403,16 +457,28 @@ export default function Stage3Screen(): React.ReactElement {
 
         <div className="flex items-center gap-3 shrink-0">
           {viewingAgent ? (
-            <Button
-              variant="primary"
-              onClick={handleSaveEdits}
-              loading={savingPlan}
-              disabled={!hasUnsavedChanges || Object.values(invalidJsonIndices).some(Boolean)}
-              className="text-xs h-9 px-3 flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white font-medium"
-            >
-              <Save size={13} />
-              <span>Save Edits</span>
-            </Button>
+            <>
+              <Button
+                variant="ghost"
+                onClick={handleFulfillAgent}
+                disabled={!expansionSession}
+                className="text-xs h-9 px-3 flex items-center gap-1.5 border border-slate-800 bg-slate-900/40 hover:bg-slate-900 text-slate-300 disabled:opacity-40"
+                title="Open this agent's dataset — review existing cases, or fulfill new ones"
+              >
+                <Database size={13} />
+                <span>Fulfill Data</span>
+              </Button>
+              <Button
+                variant="primary"
+                onClick={handleSaveEdits}
+                loading={savingPlan}
+                disabled={!hasUnsavedChanges || Object.values(invalidJsonIndices).some(Boolean)}
+                className="text-xs h-9 px-3 flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white font-medium"
+              >
+                <Save size={13} />
+                <span>Save Edits</span>
+              </Button>
+            </>
           ) : (
             <Select
               value={selectedCandidateId}
@@ -443,6 +509,18 @@ export default function Stage3Screen(): React.ReactElement {
             >
               <Database size={13} />
               <span>Datasets</span>
+            </Button>
+          )}
+
+          {!viewingAgent && planSuite && (
+            <Button
+              variant="ghost"
+              onClick={() => setResetModalOpen(true)}
+              className="text-xs h-9 px-3 flex items-center gap-1.5 border border-rose-900/50 bg-rose-950/20 hover:bg-rose-950/40 text-rose-300"
+              title="Delete this plan and every dataset fulfilled from it"
+            >
+              <Trash2 size={13} />
+              <span>Reset Stage 3</span>
             </Button>
           )}
 
@@ -550,6 +628,7 @@ export default function Stage3Screen(): React.ReactElement {
                       agent={agent}
                       report={reportByAgentId.get(agent.id) ?? null}
                       onClick={() => setViewingAgentId(agent.id)}
+                      onToggleEvalEnabled={handleToggleEvalEnabled}
                     />
                   ))}
                 </div>
@@ -609,6 +688,40 @@ export default function Stage3Screen(): React.ReactElement {
                 className="text-xs px-4 py-2 bg-indigo-600 hover:bg-indigo-500"
               >
                 Continue
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {resetModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4">
+          <div className="glass rounded-2xl w-full max-w-sm border-slate-850 shadow-2xl p-5 space-y-4 text-slate-100">
+            <div className="flex items-center gap-3 text-rose-400">
+              <Trash2 className="shrink-0 w-6 h-6" />
+              <h3 className="text-sm font-semibold text-slate-200">Reset Stage 3?</h3>
+            </div>
+            <p className="text-[11px] text-slate-450 leading-relaxed">
+              This permanently deletes the evaluation plan, the plan report, and every dataset
+              fulfilled from it (all cases and their review verdicts). Stage 2's system map and
+              agent-flow map are not affected. This cannot be undone.
+            </p>
+            <div className="flex justify-end gap-2.5 pt-2">
+              <Button
+                variant="ghost"
+                onClick={() => setResetModalOpen(false)}
+                disabled={resettingStage3}
+                className="text-xs px-4 py-2"
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                onClick={handleResetStage3}
+                loading={resettingStage3}
+                className="text-xs px-4 py-2 bg-rose-600 hover:bg-rose-500"
+              >
+                Delete Everything
               </Button>
             </div>
           </div>
@@ -745,17 +858,21 @@ function AgentCard({
   agent,
   report,
   onClick,
+  onToggleEvalEnabled,
 }: {
   agent: AEHAgentFlow
   report: AEHAgentPlanReport | null
   onClick: () => void
+  onToggleEvalEnabled: (agentId: string, enabled: boolean) => void
 }): React.ReactElement {
   const gateCount = report?.gates.length ?? 0
   const needsHumanCount = report?.needs_human.length ?? 0
+  const canToggleEval = report?.gates.some((g) => g.property === 'synthetic_agent_io') ?? false
+  const evalEnabled = report?.eval_enabled ?? false
   return (
     <button
       onClick={onClick}
-      className="text-left border border-slate-850 rounded-lg p-3 bg-slate-900/20 hover:border-indigo-500/50 hover:bg-slate-900/40 transition-colors space-y-1.5"
+      className="text-left border border-slate-850 rounded-lg p-3 bg-slate-900/20 hover:border-indigo-500/50 hover:bg-slate-900/40 transition-colors space-y-1.5 w-full"
     >
       <div className="flex items-center gap-1.5 min-w-0">
         <span
@@ -766,6 +883,24 @@ function AgentCard({
         {needsHumanCount > 0 && (
           <span title={`${needsHumanCount} gate(s) need review`}>
             <AlertCircle className="w-2.5 h-2.5 text-amber-400 shrink-0" />
+          </span>
+        )}
+        {canToggleEval && (
+          <span
+            role="switch"
+            aria-checked={evalEnabled}
+            title={evalEnabled ? 'Workflow-eval dataset: on' : 'Workflow-eval dataset: off'}
+            onClick={(e) => {
+              e.stopPropagation()
+              onToggleEvalEnabled(agent.id, !evalEnabled)
+            }}
+            className={`shrink-0 inline-flex items-center w-6 h-3.5 rounded-full transition-colors cursor-pointer ${evalEnabled ? 'bg-indigo-500' : 'bg-slate-700'
+              }`}
+          >
+            <span
+              className={`w-2.5 h-2.5 rounded-full bg-white transition-transform ${evalEnabled ? 'translate-x-3' : 'translate-x-0.5'
+                }`}
+            />
           </span>
         )}
       </div>
@@ -779,7 +914,7 @@ function AgentCard({
   )
 }
 
-/** The agent-detail "page": data-flow text + component sub-graph on top, evaluation-gates table below. Hovering/clicking a graph node highlights the matching table row via a shared highlight id. */
+/** Agent-detail page: data-flow + sub-graph on top, gates table below; graph hover/click highlights the matching row. */
 function AgentDetailView({
   agent,
   agentReport,
@@ -827,277 +962,276 @@ function AgentDetailView({
 
   return (
     <div className="h-full overflow-hidden p-5 flex flex-col gap-4">
-        {/* Top row: data-flow text (left, 3/5) + component sub-graph (right, 2/5) */}
-        <div className="grid grid-cols-1 lg:grid-cols-5 gap-4 shrink-0">
-          <div className="lg:col-span-3 border border-slate-850 rounded-xl bg-slate-950/20 p-4 h-[430px] min-h-0 overflow-y-auto">
-            {!profile && !agentReport?.contract ? (
-              <p className="text-[10px] text-slate-600 italic">No data-flow analysis available — generate a plan to populate this.</p>
-            ) : (
-              <div className="space-y-3 text-[10px]">
-                {profile && (
-                  <>
+      {/* Top row: data-flow text (left, 3/5) + component sub-graph (right, 2/5) */}
+      <div className="grid grid-cols-1 lg:grid-cols-5 gap-4 shrink-0">
+        <div className="lg:col-span-3 border border-slate-850 rounded-xl bg-slate-950/20 p-4 h-[430px] min-h-0 overflow-y-auto">
+          {!profile && !agentReport?.contract ? (
+            <p className="text-[10px] text-slate-600 italic">No data-flow analysis available — generate a plan to populate this.</p>
+          ) : (
+            <div className="space-y-3 text-[10px]">
+              {profile && (
+                <>
+                  <div>
+                    <div className="text-slate-500 font-semibold uppercase tracking-wide text-[9px] mb-0.5">Input</div>
+                    <p className="text-slate-300 leading-relaxed">{profile.input_data || '—'}</p>
+                  </div>
+                  <div>
+                    <div className="text-slate-500 font-semibold uppercase tracking-wide text-[9px] mb-0.5">Output</div>
+                    <p className="text-slate-300 leading-relaxed">{profile.output_data || '—'}</p>
+                  </div>
+                  {profile.internal_tools.length > 0 && (
                     <div>
-                      <div className="text-slate-500 font-semibold uppercase tracking-wide text-[9px] mb-0.5">Input</div>
-                      <p className="text-slate-300 leading-relaxed">{profile.input_data || '—'}</p>
+                      <div className="text-slate-500 font-semibold uppercase tracking-wide text-[9px] mb-0.5">Internal tools</div>
+                      <ul className="text-slate-400 list-disc list-inside space-y-0.5">
+                        {profile.internal_tools.map((t, i) => (
+                          <li key={i}>{t}</li>
+                        ))}
+                      </ul>
                     </div>
+                  )}
+                  {profile.failure_modes.length > 0 && (
                     <div>
-                      <div className="text-slate-500 font-semibold uppercase tracking-wide text-[9px] mb-0.5">Output</div>
-                      <p className="text-slate-300 leading-relaxed">{profile.output_data || '—'}</p>
+                      <div className="text-slate-500 font-semibold uppercase tracking-wide text-[9px] mb-0.5">Failure modes</div>
+                      <ul className="text-amber-300/80 list-disc list-inside space-y-0.5">
+                        {profile.failure_modes.map((f, i) => (
+                          <li key={i}>{f}</li>
+                        ))}
+                      </ul>
                     </div>
-                    {profile.internal_tools.length > 0 && (
-                      <div>
-                        <div className="text-slate-500 font-semibold uppercase tracking-wide text-[9px] mb-0.5">Internal tools</div>
-                        <ul className="text-slate-400 list-disc list-inside space-y-0.5">
-                          {profile.internal_tools.map((t, i) => (
-                            <li key={i}>{t}</li>
-                          ))}
-                        </ul>
+                  )}
+                  {profile.consistency_notes.length > 0 && (
+                    <div>
+                      <div className="text-rose-400 font-semibold uppercase tracking-wide text-[9px] mb-0.5">
+                        Consistency notes (code vs. declared flow)
                       </div>
-                    )}
-                    {profile.failure_modes.length > 0 && (
-                      <div>
-                        <div className="text-slate-500 font-semibold uppercase tracking-wide text-[9px] mb-0.5">Failure modes</div>
-                        <ul className="text-amber-300/80 list-disc list-inside space-y-0.5">
-                          {profile.failure_modes.map((f, i) => (
-                            <li key={i}>{f}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-                    {profile.consistency_notes.length > 0 && (
-                      <div>
-                        <div className="text-rose-400 font-semibold uppercase tracking-wide text-[9px] mb-0.5">
-                          Consistency notes (code vs. declared flow)
-                        </div>
-                        <ul className="text-rose-300/80 list-disc list-inside space-y-0.5">
-                          {profile.consistency_notes.map((n, i) => (
-                            <li key={i}>{n}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-                  </>
-                )}
+                      <ul className="text-rose-300/80 list-disc list-inside space-y-0.5">
+                        {profile.consistency_notes.map((n, i) => (
+                          <li key={i}>{n}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </>
+              )}
 
-                {agentReport?.contract && (
-                  <EvaluationContractPanel contract={agentReport.contract} bordered={!!profile} />
-                )}
-              </div>
-            )}
-          </div>
-
-          <div className="lg:col-span-2 border border-slate-850 rounded-xl bg-slate-950/20 relative h-[430px] overflow-hidden">
-            <AgentSubGraphPanel
-              agent={agent}
-              agentFlowMap={agentFlowMap}
-              systemMap={systemMap}
-              expansionSession={expansionSession}
-              candidate={candidate}
-              selectedNode={selectedGraphNode}
-              onSelectNode={setSelectedGraphNode}
-              onNavigateToAgent={onNavigateToAgent}
-              onHoverNode={setHoveredGraphNode}
-            />
-          </div>
+              {agentReport?.contract && (
+                <EvaluationContractPanel contract={agentReport.contract} bordered={!!profile} />
+              )}
+            </div>
+          )}
         </div>
 
-        {/* Bottom: component list + evaluation gates — fills all remaining height. */}
-        <div className="flex-1 min-h-0 border border-slate-850 rounded-xl bg-slate-950/20 overflow-hidden flex flex-col">
-          <div className="px-4 py-3 border-b border-slate-850 flex items-center justify-between shrink-0">
-            <div className="text-xs text-slate-400">
-              Showing <span className="font-semibold text-slate-200">{visibleIndices.length}</span> assertions & judges
-            </div>
-            <Button
-              variant="ghost"
-              onClick={onAddEntry}
-              className="text-[10px] h-7 px-3 flex items-center gap-1 border border-slate-800 bg-slate-950 text-indigo-400 hover:text-indigo-300 hover:border-slate-700"
-            >
-              <Plus size={12} />
-              <span>Add Assertion</span>
-            </Button>
+        <div className="lg:col-span-2 border border-slate-850 rounded-xl bg-slate-950/20 relative h-[430px] overflow-hidden">
+          <AgentSubGraphPanel
+            agent={agent}
+            agentFlowMap={agentFlowMap}
+            systemMap={systemMap}
+            expansionSession={expansionSession}
+            candidate={candidate}
+            selectedNode={selectedGraphNode}
+            onSelectNode={setSelectedGraphNode}
+            onNavigateToAgent={onNavigateToAgent}
+            onHoverNode={setHoveredGraphNode}
+          />
+        </div>
+      </div>
+
+      {/* Bottom: component list + evaluation gates — fills all remaining height. */}
+      <div className="flex-1 min-h-0 border border-slate-850 rounded-xl bg-slate-950/20 overflow-hidden flex flex-col">
+        <div className="px-4 py-3 border-b border-slate-850 flex items-center justify-between shrink-0">
+          <div className="text-xs text-slate-400">
+            Showing <span className="font-semibold text-slate-200">{visibleIndices.length}</span> assertions & judges
           </div>
+          <Button
+            variant="ghost"
+            onClick={onAddEntry}
+            className="text-[10px] h-7 px-3 flex items-center gap-1 border border-slate-800 bg-slate-950 text-indigo-400 hover:text-indigo-300 hover:border-slate-700"
+          >
+            <Plus size={12} />
+            <span>Add Assertion</span>
+          </Button>
+        </div>
 
-          <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain">
-            <table className="w-full text-left border-collapse text-xs table-fixed">
-              <thead className="sticky top-0 z-10">
-                <tr className="border-b border-slate-850 bg-slate-900/90 backdrop-blur text-slate-400 font-medium">
-                  <th className="p-3 w-1/4">Component Target</th>
-                  <th className="p-3 w-1/5">Metric / Rubric</th>
-                  <th className="p-3 w-[120px]">Class</th>
-                  <th className="p-3 w-1/4">Rationale</th>
-                  <th className="p-3 w-1/6">Params (JSON)</th>
-                  <th className="p-3 w-[110px]">Readiness</th>
-                  <th className="p-3 w-[100px]">Provenance</th>
-                  <th className="p-3 w-[60px] text-right">Delete</th>
+        <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain">
+          <table className="w-full text-left border-collapse text-xs table-fixed">
+            <thead className="sticky top-0 z-10">
+              <tr className="border-b border-slate-850 bg-slate-900/90 backdrop-blur text-slate-400 font-medium">
+                <th className="p-3 w-1/4">Component Target</th>
+                <th className="p-3 w-1/5">Metric / Rubric</th>
+                <th className="p-3 w-[120px]">Class</th>
+                <th className="p-3 w-1/4">Rationale</th>
+                <th className="p-3 w-1/6">Params (JSON)</th>
+                <th className="p-3 w-[110px]">Readiness</th>
+                <th className="p-3 w-[100px]">Provenance</th>
+                <th className="p-3 w-[60px] text-right">Delete</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-850">
+              {visibleIndices.length === 0 && (
+                <tr>
+                  <td colSpan={8} className="p-6 text-center text-slate-600 text-[11px]">
+                    No gates for this agent yet.
+                  </td>
                 </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-850">
-                {visibleIndices.length === 0 && (
-                  <tr>
-                    <td colSpan={8} className="p-6 text-center text-slate-600 text-[11px]">
-                      No gates for this agent yet.
-                    </td>
-                  </tr>
-                )}
-                {visibleIndices.map((index) => {
-                  const entry = localEntries[index]
-                  const isJsonInvalid = invalidJsonIndices[index] || false
-                  const gate = gateByKey.get(`${entry.component}::${entry.metric}`)
-                  const needsHuman = entry.status === 'needs_human'
-                  const isHighlighted = entry.component === highlightedComponentId
-                  return (
-                    <tr
-                      key={entry.id}
-                      className={`transition-colors ${isHighlighted ? 'bg-indigo-950/40' : 'hover:bg-slate-900/25'}`}
-                    >
-                      <td className="p-3 align-top">
-                        <div className="flex items-center gap-1.5">
-                          <span
-                            className="w-2 h-2 rounded-full shrink-0"
-                            style={{
-                              background: ROLE_COLORS[roleByComponentId.get(entry.component) ?? 'unknown'] ?? ROLE_COLORS.unknown,
-                            }}
-                            title={roleByComponentId.get(entry.component) ?? 'unknown'}
-                          />
-                          <Select
-                            value={entry.component}
-                            onChange={(e) => onUpdateEntryField(index, 'component', e.target.value)}
-                            className="text-[11px] h-8 px-2 py-0.5 flex-1"
-                          >
-                            {agent.component_ids.map((opt) => (
-                              <option key={opt} value={opt}>
-                                {opt}
-                              </option>
-                            ))}
-                          </Select>
-                        </div>
-                      </td>
-
-                      <td className="p-3 align-top">
-                        <input
-                          type="text"
-                          value={entry.metric}
-                          onChange={(e) => onUpdateEntryField(index, 'metric', e.target.value)}
-                          className="w-full text-[11px] bg-slate-950 border border-slate-800 rounded px-2 py-1 text-slate-200 focus:border-slate-600 focus:outline-none"
-                          placeholder="Metric name"
+              )}
+              {visibleIndices.map((index) => {
+                const entry = localEntries[index]
+                const isJsonInvalid = invalidJsonIndices[index] || false
+                const gate = gateByKey.get(`${entry.component}::${entry.metric}`)
+                const needsHuman = entry.status === 'needs_human'
+                const isHighlighted = entry.component === highlightedComponentId
+                return (
+                  <tr
+                    key={entry.id}
+                    className={`transition-colors ${isHighlighted ? 'bg-indigo-950/40' : 'hover:bg-slate-900/25'}`}
+                  >
+                    <td className="p-3 align-top">
+                      <div className="flex items-center gap-1.5">
+                        <span
+                          className="w-2 h-2 rounded-full shrink-0"
+                          style={{
+                            background: ROLE_COLORS[roleByComponentId.get(entry.component) ?? 'unknown'] ?? ROLE_COLORS.unknown,
+                          }}
+                          title={roleByComponentId.get(entry.component) ?? 'unknown'}
                         />
-                        {gate && (
-                          <span className="block mt-1 text-[9px] text-slate-500 font-mono">
-                            {TOOLKIT_LABELS[gate.toolkit] ?? gate.toolkit}
-                            {gate.location && <span className="text-slate-600"> · {gate.location}</span>}
-                          </span>
-                        )}
-                      </td>
-
-                      <td className="p-3 align-top">
                         <Select
-                          value={entry.metric_class}
-                          onChange={(e) => onUpdateEntryField(index, 'metric_class', e.target.value)}
-                          className={`text-[11px] h-8 px-2 py-0.5 font-medium ${METRIC_CLASS_STYLES[entry.metric_class] ?? ''}`}
+                          value={entry.component}
+                          onChange={(e) => onUpdateEntryField(index, 'component', e.target.value)}
+                          className="text-[11px] h-8 px-2 py-0.5 flex-1"
                         >
-                          <option value="assertion">Assertion</option>
-                          <option value="classifier">Classifier</option>
-                          <option value="llm_judge">LLM Judge</option>
+                          {agent.component_ids.map((opt) => (
+                            <option key={opt} value={opt}>
+                              {opt}
+                            </option>
+                          ))}
                         </Select>
-                      </td>
+                      </div>
+                    </td>
 
-                      <td className="p-3 align-top">
-                        <textarea
-                          value={entry.rationale}
-                          onChange={(e) => onUpdateEntryField(index, 'rationale', e.target.value)}
-                          rows={2}
-                          className="w-full text-[11px] bg-slate-950 border border-slate-800 rounded px-2 py-1 text-slate-300 focus:border-slate-600 focus:outline-none resize-y"
-                          placeholder="Explain validation intent"
-                        />
-                      </td>
+                    <td className="p-3 align-top">
+                      <input
+                        type="text"
+                        value={entry.metric}
+                        onChange={(e) => onUpdateEntryField(index, 'metric', e.target.value)}
+                        className="w-full text-[11px] bg-slate-950 border border-slate-800 rounded px-2 py-1 text-slate-200 focus:border-slate-600 focus:outline-none"
+                        placeholder="Metric name"
+                      />
+                      {gate && (
+                        <span className="block mt-1 text-[9px] text-slate-500 font-mono">
+                          {TOOLKIT_LABELS[gate.toolkit] ?? gate.toolkit}
+                          {gate.location && <span className="text-slate-600"> · {gate.location}</span>}
+                        </span>
+                      )}
+                    </td>
 
-                      <td className="p-3 align-top">
-                        <textarea
-                          value={paramsStrings[index] ?? JSON.stringify(entry.params || {})}
-                          onChange={(e) => onParamsChange(index, e.target.value)}
-                          rows={2}
-                          className={`w-full font-mono text-[10px] bg-slate-950 border rounded px-2 py-1 text-slate-400 focus:outline-none ${
-                            isJsonInvalid ? 'border-red-500/80 focus:border-red-500' : 'border-slate-800 focus:border-slate-600'
+                    <td className="p-3 align-top">
+                      <Select
+                        value={entry.metric_class}
+                        onChange={(e) => onUpdateEntryField(index, 'metric_class', e.target.value)}
+                        className={`text-[11px] h-8 px-2 py-0.5 font-medium ${METRIC_CLASS_STYLES[entry.metric_class] ?? ''}`}
+                      >
+                        <option value="assertion">Assertion</option>
+                        <option value="classifier">Classifier</option>
+                        <option value="llm_judge">LLM Judge</option>
+                      </Select>
+                    </td>
+
+                    <td className="p-3 align-top">
+                      <textarea
+                        value={entry.rationale}
+                        onChange={(e) => onUpdateEntryField(index, 'rationale', e.target.value)}
+                        rows={2}
+                        className="w-full text-[11px] bg-slate-950 border border-slate-800 rounded px-2 py-1 text-slate-300 focus:border-slate-600 focus:outline-none resize-y"
+                        placeholder="Explain validation intent"
+                      />
+                    </td>
+
+                    <td className="p-3 align-top">
+                      <textarea
+                        value={paramsStrings[index] ?? JSON.stringify(entry.params || {})}
+                        onChange={(e) => onParamsChange(index, e.target.value)}
+                        rows={2}
+                        className={`w-full font-mono text-[10px] bg-slate-950 border rounded px-2 py-1 text-slate-400 focus:outline-none ${isJsonInvalid ? 'border-red-500/80 focus:border-red-500' : 'border-slate-800 focus:border-slate-600'
                           }`}
-                          placeholder="{}"
-                        />
-                      </td>
+                        placeholder="{}"
+                      />
+                    </td>
 
-                      <td className="p-3 align-top pt-4">
-                        {(() => {
-                          const read = readiness[entry.id]
-                          if (!read) {
-                            return (
-                              <span title="Save plan to compute readiness">
-                                <Badge variant="neutral" size="sm" className="font-normal text-[10px] px-2 py-0.5">
-                                  unsaved
-                                </Badge>
-                              </span>
-                            )
-                          }
-                          const isBlocked = read.status === 'blocked'
+                    <td className="p-3 align-top pt-4">
+                      {(() => {
+                        const read = readiness[entry.id]
+                        if (!read) {
                           return (
-                            <span title={isBlocked ? `Blocked: ${read.reasons.join(', ')}` : 'Ready to run'} className="cursor-help">
-                              <Badge
-                                variant={isBlocked ? 'warning' : 'success'}
-                                size="sm"
-                                className="font-normal text-[10px] px-2 py-0.5"
-                              >
-                                {read.status}
+                            <span title="Save plan to compute readiness">
+                              <Badge variant="neutral" size="sm" className="font-normal text-[10px] px-2 py-0.5">
+                                unsaved
                               </Badge>
                             </span>
                           )
-                        })()}
-                      </td>
+                        }
+                        const isBlocked = read.status === 'blocked'
+                        return (
+                          <span title={isBlocked ? `Blocked: ${read.reasons.join(', ')}` : 'Ready to run'} className="cursor-help">
+                            <Badge
+                              variant={isBlocked ? 'warning' : 'success'}
+                              size="sm"
+                              className="font-normal text-[10px] px-2 py-0.5"
+                            >
+                              {read.status}
+                            </Badge>
+                          </span>
+                        )
+                      })()}
+                    </td>
 
-                      <td className="p-3 align-top pt-4">
-                        <div className="flex flex-col items-start gap-1">
-                          <Badge
-                            variant={
-                              entry.provenance === 'human_added'
-                                ? 'success'
-                                : entry.provenance === 'llm_suggested'
+                    <td className="p-3 align-top pt-4">
+                      <div className="flex flex-col items-start gap-1">
+                        <Badge
+                          variant={
+                            entry.provenance === 'human_added'
+                              ? 'success'
+                              : entry.provenance === 'llm_suggested'
                                 ? 'info'
                                 : 'neutral'
-                            }
-                            size="sm"
-                            className="capitalize font-normal text-[10px] px-2 py-0.5"
-                          >
-                            {entry.provenance === 'human_added'
-                              ? 'Human added'
-                              : entry.provenance === 'llm_suggested'
+                          }
+                          size="sm"
+                          className="capitalize font-normal text-[10px] px-2 py-0.5"
+                        >
+                          {entry.provenance === 'human_added'
+                            ? 'Human added'
+                            : entry.provenance === 'llm_suggested'
                               ? 'AI suggested'
                               : 'Static rule'}
-                          </Badge>
-                          {needsHuman && (
-                            <span
-                              className="flex items-center gap-1 text-[9px] text-amber-400"
-                              title="Metric not recognized by the registry — review before running."
-                            >
-                              <AlertCircle size={10} />
-                              needs review
-                            </span>
-                          )}
-                        </div>
-                      </td>
+                        </Badge>
+                        {needsHuman && (
+                          <span
+                            className="flex items-center gap-1 text-[9px] text-amber-400"
+                            title="Metric not recognized by the registry — review before running."
+                          >
+                            <AlertCircle size={10} />
+                            needs review
+                          </span>
+                        )}
+                      </div>
+                    </td>
 
-                      <td className="p-3 align-top pt-3 text-right">
-                        <button
-                          onClick={() => onDeleteEntry(index)}
-                          className="text-slate-500 hover:text-rose-400 transition-colors p-1"
-                          title="Remove test entry"
-                        >
-                          <Trash2 size={13} />
-                        </button>
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
+                    <td className="p-3 align-top pt-3 text-right">
+                      <button
+                        onClick={() => onDeleteEntry(index)}
+                        className="text-slate-500 hover:text-rose-400 transition-colors p-1"
+                        title="Remove test entry"
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
         </div>
       </div>
+    </div>
   )
 }
 

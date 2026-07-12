@@ -361,6 +361,7 @@ class ProviderSummary(BaseModel):
     provider_id: str
     display_name: str
     model_id: str | None = None
+    kind: str = ""
 
 
 @app.get("/api/providers", response_model=list[ProviderSummary])
@@ -534,6 +535,43 @@ async def rerun_run(run_id: str, body: RerunRequest):
     return {"run_id": new_run_id}
 
 
+class IngestEvalRunRequest(BaseModel):
+    manifest_path: str
+
+
+@app.post("/api/eval-runs/ingest")
+async def ingest_eval_run_route(body: IngestEvalRunRequest):
+    """Stage 4's offline half: reads a manifest + spanlog an injected target produced,
+    persists it as an 'ingested' run. Parsing + a handful of DB writes for one case is fast
+    enough to run synchronously — unlike rerun, this never makes an LLM call itself."""
+    from agent_eval_harness.ingest.spanlog_ingest import IngestError, parse_spanlog, persist_spanlog
+
+    manifest_path = Path(body.manifest_path)
+    if not manifest_path.exists():
+        raise HTTPException(status_code=400, detail=f"manifest not found: {manifest_path}")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"could not read manifest: {e}")
+
+    log_path_str = manifest.get("log_path")
+    if not log_path_str or not Path(log_path_str).exists():
+        raise HTTPException(status_code=400, detail="manifest is missing a valid log_path")
+
+    try:
+        parsed = parse_spanlog(Path(log_path_str))
+    except IngestError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    run_id = await persist_spanlog(
+        parsed,
+        target_system_id=manifest.get("plan_id", "unknown"),
+        eval_plan_id=manifest.get("plan_id"),
+    )
+    run = await repository.get_run(run_id)
+    return {"run_id": run_id, "status": run["status"] if run else "unknown"}
+
+
 # --- Discovery Models & Endpoints ---
 
 class StartDiscoveryRequest(BaseModel):
@@ -556,6 +594,7 @@ class DiscoverySessionResponse(BaseModel):
     created_at: str
     finished_at: str | None
     pause_info: dict | None = None
+    pipeline_stage: str
 
 
 class DiscoveryCandidateResponse(BaseModel):
@@ -672,6 +711,7 @@ async def list_discovery_sessions(repo_ref: str | None = None, snapshot_id: str 
                 created_at=s["created_at"],
                 finished_at=s["finished_at"],
                 pause_info=s.get("pause_info"),
+                pipeline_stage=s["pipeline_stage"],
             )
             for s in sessions
         ]
@@ -692,6 +732,7 @@ async def get_discovery_session(session_id: str):
         created_at=session["created_at"],
         finished_at=session["finished_at"],
         pause_info=session.get("pause_info"),
+        pipeline_stage=session["pipeline_stage"],
     )
 
 
@@ -1061,18 +1102,36 @@ async def generate_plan_route(session_id: str, body: GeneratePlanRequest):
         abs_files = [local_path / p for p in sess["accepted"]]
         source_by_component = build_source_by_component(abs_files, system_map)
 
-        suite, plan_report = await generate_plan_agentic(
-            system_map, agent_flow_map, source_by_component, sess["accepted_edges"], llm_client,
-            files=abs_files, files_root=local_path,
-        )
+        harvest_files = abs_files + [local_path / p for p in sess.get("boundary", [])]
 
         map_path = Path(sess["map_path"])
         plan_path = map_path.with_name(map_path.stem + "_plan.yaml")
+        plan_report_path = map_path.with_name(map_path.stem + "_plan_report.yaml")
+        previous_suite = None
+        if plan_path.exists():
+            from agent_eval_harness.metrics.suite import load_suite
+
+            try:
+                previous_suite = load_suite(plan_path)
+            except Exception as e:
+                logger.warning(f"generate_plan: could not load previous plan for dataset carry-forward: {e}")
+        previous_report = None
+        if plan_report_path.exists():
+            try:
+                previous_report = load_plan_report(plan_report_path)
+            except Exception as e:
+                logger.warning(f"generate_plan: could not load previous plan report for incremental reuse: {e}")
+
+        suite, plan_report = await generate_plan_agentic(
+            system_map, agent_flow_map, source_by_component, sess["accepted_edges"], llm_client,
+            files=harvest_files, files_root=local_path,
+            previous_suite=previous_suite, previous_report=previous_report,
+        )
+
         plan_path.write_text(
             yaml.dump(suite.model_dump(), allow_unicode=True),
             encoding="utf-8"
         )
-        plan_report_path = map_path.with_name(map_path.stem + "_plan_report.yaml")
         save_plan_report(plan_report, plan_report_path)
 
         await repository.update_expansion_session_plan_path(session_id, str(plan_path))
@@ -1092,6 +1151,14 @@ async def generate_plan_route(session_id: str, body: GeneratePlanRequest):
         raise
     except Exception as e:
         logger.error(f"generate_plan failed: {e}", exc_info=True)
+        try:
+            candidate = await repository.get_discovery_candidate(sess["candidate_id"])
+            if candidate:
+                await repository.update_discovery_session_pipeline_stage(
+                    candidate["session_id"], "awaiting_map_review"
+                )
+        except Exception:
+            logger.warning("could not reset discovery pipeline_stage after plan failure")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         await client.aclose()
@@ -1109,6 +1176,178 @@ async def get_plan_report_route(session_id: str):
         return load_plan_report(plan_report_path_str).model_dump()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to load plan report: {e}")
+
+
+@app.put("/api/discovery/expansion-sessions/{session_id}/plan-report")
+async def update_plan_report_route(session_id: str, body: dict):
+    """Round-trips the per-agent AgentPlanReport (unlike PUT .../plan, which round-trips the Suite gate list) — what Stage3Screen's per-agent eval_enabled toggle writes to."""
+    sess = await _get_expansion_session_or_404(session_id)
+    plan_report_path_str = sess.get("plan_report_path")
+    if not plan_report_path_str or not Path(plan_report_path_str).exists():
+        raise HTTPException(status_code=400, detail="No plan report to update.")
+
+    from agent_eval_harness.planning.report import EvaluationPlanReport
+
+    try:
+        new_report = EvaluationPlanReport.model_validate(body)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Invalid plan report: {e}")
+
+    save_plan_report(new_report, plan_report_path_str)
+    return {"success": True}
+
+
+class EvalRunRequest(BaseModel):
+    """provider_id/model_id drive the agent-under-test's call; judge_provider_id/judge_model_id optionally override the judge."""
+    provider_id: str | None = None
+    model_id: str | None = None
+    judge_provider_id: str | None = None
+    judge_model_id: str | None = None
+    backend_url: str | None = None
+    backend_token: str | None = None
+
+
+@app.post("/api/discovery/expansion-sessions/{session_id}/eval-run")
+async def run_eval_route(session_id: str, body: EvalRunRequest):
+    """Runs the synthetic_agent_io suite for every eval_enabled agent, one real LLM call per case, scored by a separate cross-family judge provider where possible."""
+    sess = await _get_expansion_session_or_404(session_id)
+    plan_report_path_str = sess.get("plan_report_path")
+    plan_path_str = sess.get("plan_path")
+    if not plan_report_path_str or not Path(plan_report_path_str).exists():
+        raise HTTPException(status_code=400, detail="No plan report for this session.")
+    if not plan_path_str or not Path(plan_path_str).exists():
+        raise HTTPException(status_code=400, detail="No plan for this session.")
+
+    config = AEHConfig.load()
+    provider_id = body.provider_id or config.provider_id
+    backend_url = body.backend_url or config.backend_url
+    backend_token = body.backend_token or config.backend_token
+    if not backend_url or not backend_token:
+        raise HTTPException(status_code=400, detail="Missing backend connection config.")
+    if not provider_id:
+        raise HTTPException(status_code=400, detail="No LLM provider configured.")
+    model_id = body.model_id or config.model_id
+
+    from agent_eval_harness.injection.judge_selection import pick_judge_provider
+    from agent_eval_harness.injection.suite_runner import run_synthetic_agent_io_suite
+    from agent_eval_harness.metrics.suite import load_suite
+
+    plan_report = load_plan_report(plan_report_path_str)
+    suite = load_suite(plan_path_str)
+    system_map = load_system_map(sess["map_path"]) if sess.get("map_path") else None
+    target_system_id = system_map.target_system_id if system_map else session_id
+
+    enabled_agents = [a for a in plan_report.agents if a.eval_enabled and a.contract is not None]
+    if not enabled_agents:
+        return {"agents": {}, "note": "no agent has eval_enabled=True"}
+
+    providers_raw = await get_providers(backend_url, backend_token)
+    available = [ProviderSummary.model_validate(p) for p in providers_raw]
+    generator_summary = next(
+        (p for p in available if p.provider_id == provider_id),
+        ProviderSummary(provider_id=provider_id, display_name="", model_id=model_id, kind=""),
+    )
+    judge_pid = body.judge_provider_id
+    judge_mid = body.judge_model_id
+    if not judge_pid and available:
+        judge = pick_judge_provider(generator_summary, available)
+        if judge is not None:
+            judge_pid = judge.provider_id
+            judge_mid = judge.model_id or model_id
+    if not judge_pid:
+        judge_pid, judge_mid = provider_id, model_id
+
+    agent_llm_client = CodeSpectraProxyClient(backend_url, backend_token, provider_id, model_id)
+    judge_llm_client = CodeSpectraProxyClient(backend_url, backend_token, judge_pid, judge_mid or model_id)
+
+    results: dict[str, dict] = {}
+    try:
+        for agent in enabled_agents:
+            entry = next(
+                (
+                    e for e in suite.entries
+                    if e.agent_id == agent.agent_id
+                    and e.dataset
+                    and e.dataset.required
+                    and e.dataset.required.get("kind") == "synthetic_agent_io"
+                    and e.dataset.ref
+                ),
+                None,
+            )
+            if entry is None:
+                results[agent.agent_id] = {
+                    "status": "needs_human",
+                    "reason": "no fulfilled synthetic_agent_io dataset for this agent",
+                }
+                continue
+            dataset_cases = await repository.get_dataset_cases(entry.dataset.ref)
+            if not dataset_cases:
+                results[agent.agent_id] = {"status": "needs_human", "reason": "dataset has zero cases"}
+                continue
+
+            from agent_eval_harness.datasets.generators.synthetic_agent_io import is_dataset_stale
+
+            current_schema = (agent.contract.output.json_schema if agent.contract.output else None)
+            stale = is_dataset_stale(dataset_cases, current_schema)
+
+            run_result = await run_synthetic_agent_io_suite(
+                agent.agent_id, target_system_id, agent.contract, dataset_cases,
+                provider_id, model_id, agent_llm_client, judge_llm_client,
+            )
+            results[agent.agent_id] = {
+                "status": "completed",
+                "run_id": run_result.run_id,
+                "metric_count": len(run_result.results),
+                "error_count": len(run_result.errors),
+                # True if the dataset's gold predates the agent's current contract schema — never blocks scoring, just a UI hint.
+                "stale": stale,
+            }
+    finally:
+        if hasattr(agent_llm_client, "aclose"):
+            await agent_llm_client.aclose()
+        if hasattr(judge_llm_client, "aclose"):
+            await judge_llm_client.aclose()
+
+    return {"agents": results}
+
+
+@app.delete("/api/discovery/expansion-sessions/{session_id}/stage3")
+async def reset_stage3_route(session_id: str):
+    """Deletes every dataset fulfilled from this session's plan, the plan/plan-report files and their DB pointers, then resets the session to 'awaiting_map_review'. Stage 2 artifacts are untouched."""
+    sess = await _get_expansion_session_or_404(session_id)
+
+    deleted_dataset_ids: list[str] = []
+    plan_path_str = sess.get("plan_path")
+    if plan_path_str and Path(plan_path_str).exists():
+        try:
+            from agent_eval_harness.metrics.suite import load_suite
+
+            suite = load_suite(plan_path_str)
+            dataset_ids = {e.dataset.ref for e in suite.entries if e.dataset and e.dataset.ref}
+            for dataset_id in dataset_ids:
+                await repository.delete_dataset(dataset_id)
+                deleted_dataset_ids.append(dataset_id)
+        except Exception as e:
+            logger.warning(f"reset_stage3: failed to read/delete datasets from plan: {e}")
+
+    for path_str in (sess.get("plan_path"), sess.get("plan_report_path")):
+        if not path_str:
+            continue
+        try:
+            Path(path_str).unlink(missing_ok=True)
+        except OSError as e:
+            logger.warning(f"reset_stage3: failed to delete {path_str}: {e}")
+
+    await repository.update_expansion_session_plan_path(session_id, None)
+    await repository.update_expansion_session_plan_report_path(session_id, None)
+
+    candidate = await repository.get_discovery_candidate(sess["candidate_id"])
+    if candidate:
+        await repository.update_discovery_session_pipeline_stage(
+            candidate["session_id"], "awaiting_map_review"
+        )
+
+    return {"success": True, "deleted_dataset_ids": deleted_dataset_ids}
 
 
 @app.get("/api/discovery/expansion-sessions/{session_id}/plan")
@@ -1140,6 +1379,10 @@ class FulfillDatasetsRequest(BaseModel):
     embedding_provider_id: str | None = None
     embedding_model_id: str | None = None
     use_local_embedding: bool = False
+    # Scopes fulfillment to just these agents' groups; None fulfills every unfulfilled group.
+    agent_ids: list[str] | None = None
+    # Deletes and re-fulfills these agents' synthetic_agent_io dataset even if already fulfilled.
+    force_agent_ids: list[str] | None = None
 
 
 @app.post("/api/discovery/expansion-sessions/{session_id}/datasets/fulfill")
@@ -1190,7 +1433,10 @@ async def fulfill_datasets_route(session_id: str, body: FulfillDatasetsRequest):
         report = await fulfill_plan(
             sess["plan_path"], sess["map_path"], sess["snapshot_id"], local_path_str,
             provider_id, model_id, llm_client, instructions=body.instructions,
-            embedding_client=embedding_client,
+            embedding_client=embedding_client, codespectra_client=client,
+            only_agent_ids=body.agent_ids,
+            only_kind="synthetic_agent_io" if body.agent_ids else None,
+            force_agent_ids=body.force_agent_ids,
         )
         return report
     except HTTPException:
@@ -1394,10 +1640,8 @@ if dist_dir.exists():
 
 @app.get("/{catchall:path}")
 async def read_index(catchall: str):
-    # Only serve the index if index.html exists, otherwise return a message
     index_file = dist_dir / "index.html"
     if index_file.exists():
-        # Do not serve index.html for API requests that fall through
         if catchall.startswith("api/"):
             raise HTTPException(status_code=404, detail="API endpoint not found")
         return FileResponse(str(index_file))

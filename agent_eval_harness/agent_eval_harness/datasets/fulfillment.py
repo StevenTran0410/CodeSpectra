@@ -1,5 +1,4 @@
-"""Auto-fulfillment walk: turns a plan's unfulfilled `dataset.required` blocks into real
-datasets, one per (kind, agent-or-component) group, or an explicit failed/needs_human reason."""
+"""Auto-fulfillment walk: turns a plan's unfulfilled `dataset.required` blocks into real datasets, one per (kind, agent-or-component) group, or an explicit failed/needs_human reason."""
 from __future__ import annotations
 
 import json
@@ -12,9 +11,12 @@ import yaml
 from agent_eval_harness.datasets.generator_utils import seed_cases_to_dataset_cases
 from agent_eval_harness.datasets.registry import get_generator
 from agent_eval_harness.datasets.versioning import next_version
+from agent_eval_harness.discovery.client import CodeSpectraClient
 from agent_eval_harness.llm.client import LLMClient
 from agent_eval_harness.llm.embedding_client import EmbeddingClient
-from agent_eval_harness.metrics.suite import Suite, SuiteEntry, load_suite
+from agent_eval_harness.metrics.suite import DatasetRef, Suite, SuiteEntry, load_suite
+from agent_eval_harness.planning.contract import EvaluationContract
+from agent_eval_harness.planning.report import load_plan_report
 from agent_eval_harness.store import repository
 
 logger = logging.getLogger("agent_eval_harness.datasets.fulfillment")
@@ -32,6 +34,8 @@ _TOPO_ORDER = [
     "qa_testset", "decomposition_gold", "guard_classification",
     "snapshot_fixture", "field_match_gold",
     "sufficiency_labeled", "snapshot_regression_baseline",
+    "recorded_report_replay",
+    "synthetic_agent_io",  # no dependents downstream; order among the rest doesn't matter
 ]
 
 
@@ -63,8 +67,7 @@ def _effective_min_cases(kind: str, group_entries: list[SuiteEntry]) -> int:
 
 
 def _qa_corpus_paths(local_path: str) -> list[str]:
-    """corpus = **/*.md + **/*.txt under the snapshot, excluding .aeh/** — a RAG target
-    must never be able to retrieve its own generated answer key."""
+    """**/*.md + **/*.txt under the snapshot, excluding .aeh/** — never retrieve the answer key itself."""
     root = Path(local_path)
     paths: list[str] = []
     for pattern in ("**/*.md", "**/*.txt"):
@@ -86,18 +89,39 @@ def _derive_guard_categories(group_entries: list[SuiteEntry]) -> list[dict] | No
 
 
 def _qa_testset_backend(group_entries: list[SuiteEntry]) -> str:
-    """Match the qa_testset synthesis backend to the toolkit the consuming gate(s)
-    actually score with at eval time — llm_judge entries carry it as the metric's
-    namespace prefix (e.g. "ragas.faithfulness", "geval.decomposition_coverage").
-    A group can only be produced once, so a mix of consumers still gets one real
-    backend rather than silently guessing; ragas wins the tie since its metrics are
-    pickier about context/answer shape than deepeval's G-Eval rubric scoring."""
+    """Match the qa_testset backend to the consuming gate's scoring toolkit (metric namespace prefix); ragas wins ties since its metrics are pickier about shape."""
     if any(e.metric.startswith("ragas.") for e in group_entries):
         return "ragas"
     return "deepeval"
 
 
-def _derive_config(
+_NON_UPSTREAM_KWARGS = frozenset({
+    "provider_id", "model_id", "snapshot_id", "profile", "repo_name", "graph_summary",
+})
+
+
+def _archetype_for(contract: EvaluationContract) -> str:
+    """Deterministic archetype classifier from harvested contract signals only — never a guess."""
+    if contract.field_downstream_consumers:
+        return "fan_in_judge"
+    constructor_deps = contract.invocation.constructor_deps if contract.invocation else []
+    if "RetrievalService" not in constructor_deps:
+        return "unimplemented"
+    kwarg_names = {k.name for k in contract.invocation.kwargs} if contract.invocation else set()
+    has_query_planning = contract.query_planning_subcall
+    has_folder_tree = "folder_tree" in kwarg_names
+    if "mem_ctx" in kwarg_names:
+        return "rag_mem_ctx"
+    if has_folder_tree:
+        return "rag_query_planning_mem_ctx" if has_query_planning else "rag_mem_ctx_participant"
+    if has_query_planning:
+        return "rag_query_planning"
+    if kwarg_names - _NON_UPSTREAM_KWARGS:
+        return "rag_upstream"
+    return "rag_single_shot"
+
+
+async def _derive_config(
     kind: str,
     dataset_id: str,
     group_key: str,
@@ -111,9 +135,31 @@ def _derive_config(
     dataset_id_by_group: dict[str, str],
     painpoint: str | None,
     min_cases: int,
+    codespectra_client: CodeSpectraClient | None = None,
+    group_instructions: dict[str, Any] | None = None,
+    eval_enabled_by_agent: dict[str, bool] | None = None,
+    contract_by_agent: dict[str, EvaluationContract] | None = None,
+    profile_by_agent: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     """Returns a generator config dict, or None if underivable (caller marks needs_human)."""
     component = group_entries[0].component
+    instructions = group_instructions or {}
+    extra_snapshot_ids = instructions.get("extra_snapshot_ids") or []
+
+    if kind == "synthetic_agent_io":
+        agent_id = group_entries[0].agent_id or component
+        if not (eval_enabled_by_agent or {}).get(agent_id, False):
+            return None
+        contract = (contract_by_agent or {}).get(agent_id)
+        if contract is None:
+            return None
+        return {
+            "dataset_name": dataset_id, "agent_id": agent_id,
+            "archetype": _archetype_for(contract),
+            "contract": contract.model_dump(),
+            "profile": (profile_by_agent or {}).get(agent_id) or {},
+            "count": min_cases, "painpoint": painpoint,
+        }
 
     if kind == "qa_testset":
         corpus_paths = _qa_corpus_paths(snapshot_local_path)
@@ -144,13 +190,74 @@ def _derive_config(
         return {"dataset_name": dataset_id, "source_dataset_id": source_id}
 
     if kind == "snapshot_fixture":
+        if extra_snapshot_ids and not codespectra_client:
+            return None
+        snapshot_ids = [snapshot_id] + extra_snapshot_ids
+        if extra_snapshot_ids:
+            try:
+                for extra_id in extra_snapshot_ids:
+                    await codespectra_client.get_snapshot(extra_id)
+            except Exception as e:
+                logger.warning(f"Failed to validate extra snapshots for snapshot_fixture: {e}")
+                return None
         return {
-            "dataset_name": dataset_id, "snapshot_ids": [snapshot_id],
+            "dataset_name": dataset_id, "snapshot_ids": snapshot_ids,
             "provider_id": provider_id, "model_id": model_id,
         }
 
     if kind == "field_match_gold":
-        return {"dataset_name": dataset_id, "snapshot_id": snapshot_id, "local_path": snapshot_local_path}
+        if extra_snapshot_ids and not codespectra_client:
+            return None
+        snapshot_ids = [snapshot_id] + extra_snapshot_ids
+        local_paths = {snapshot_id: snapshot_local_path}
+        if extra_snapshot_ids:
+            try:
+                for extra_id in extra_snapshot_ids:
+                    snap = await codespectra_client.get_snapshot(extra_id)
+                    lp = snap.get("local_path")
+                    if not lp:
+                        return None
+                    local_paths[extra_id] = lp
+            except Exception as e:
+                logger.warning(f"Failed to resolve extra snapshot paths for field_match_gold: {e}")
+                return None
+        return {
+            "dataset_name": dataset_id,
+            "snapshot_ids": snapshot_ids,
+            "local_paths": local_paths,
+        }
+
+    if kind == "recorded_report_replay":
+        if not codespectra_client:
+            return None
+        try:
+            snapshot = await codespectra_client.get_snapshot(snapshot_id)
+            repo_id = snapshot.get("local_repo_id")
+            if not repo_id:
+                return None
+            reports = await codespectra_client.list_reports(repo_id=repo_id, limit=min_cases)
+            reports_config = []
+            suffix = group_key.split("/", 1)[1].lower()
+            letters = "ABCDEFGHIJK" if suffix == "synthesizer" else "ABCDEFGHIJ"
+
+            for r in reports:
+                r_id = r["id"]
+                report_data = await codespectra_client.get_report(r_id)
+                full_report_dict = report_data.get("report") or {}
+                sections = full_report_dict.get("sections") or {}
+                sliced_sections = {let: sections[let] for let in letters if let in sections}
+                reports_config.append({
+                    "report_id": r_id,
+                    "snapshot_id": r.get("snapshot_id") or snapshot_id,
+                    "sections": sliced_sections,
+                })
+            return {
+                "dataset_name": dataset_id,
+                "reports": reports_config,
+            }
+        except Exception as e:
+            logger.warning(f"Failed to derive config for recorded_report_replay: {e}")
+            return None
 
     return None
 
@@ -169,12 +276,57 @@ async def fulfill_plan(
     llm_client: LLMClient,
     instructions: dict[str, dict] | None = None,
     embedding_client: EmbeddingClient | None = None,
+    codespectra_client: CodeSpectraClient | None = None,
+    only_agent_ids: list[str] | None = None,
+    only_kind: str | None = None,
+    force_agent_ids: list[str] | None = None,
 ) -> dict[str, dict]:
-    """Auto-fulfillment walk. Returns {group_key: {status, dataset_id?, reason?}} — every
-    group gets exactly one of fulfilled/failed/needs_human, none silently skipped."""
+    """Auto-fulfillment walk. Returns {group_key: {status, dataset_id?, reason?}}; every group in scope gets fulfilled/failed/needs_human/skipped, none silently dropped. `only_agent_ids`, when given, scopes the walk to just those agents' groups; `only_kind` additionally scopes to a single dataset kind — others are left untouched and absent from the report. `force_agent_ids` deletes and re-links each listed agent's already-fulfilled synthetic_agent_io dataset (if any) so it re-enters this walk as unfulfilled instead of being skipped."""
     suite = load_suite(plan_path)
+
+    if force_agent_ids:
+        forced = set(force_agent_ids)
+        forced_any = False
+        for entry in suite.entries:
+            if (entry.agent_id or entry.component) not in forced:
+                continue
+            if not entry.id.endswith(".synthetic_agent_io"):
+                continue
+            if not entry.dataset or not entry.dataset.ref:
+                continue
+            await repository.delete_dataset(entry.dataset.ref)
+            entry.dataset = DatasetRef(required={"kind": "synthetic_agent_io", "min_cases": 20})
+            forced_any = True
+        if forced_any:
+            _save_suite(suite, plan_path)
+
     groups = _collect_unfulfilled_groups(suite)
     instructions = instructions or {}
+
+    if only_agent_ids is not None:
+        allowed_agent_ids = set(only_agent_ids)
+        groups = {
+            key: entries for key, entries in groups.items()
+            if (entries[0].agent_id or entries[0].component) in allowed_agent_ids
+        }
+    if only_kind is not None:
+        groups = {key: entries for key, entries in groups.items() if key.split("/", 1)[0] == only_kind}
+
+    eval_enabled_by_agent: dict[str, bool] = {}
+    contract_by_agent: dict[str, EvaluationContract] = {}
+    profile_by_agent: dict[str, dict[str, Any]] = {}
+    plan_report_path = Path(map_path).with_name(Path(map_path).stem + "_plan_report.yaml")
+    if plan_report_path.exists():
+        try:
+            plan_report = load_plan_report(plan_report_path)
+            for agent_report in plan_report.agents:
+                eval_enabled_by_agent[agent_report.agent_id] = agent_report.eval_enabled
+                if agent_report.contract is not None:
+                    contract_by_agent[agent_report.agent_id] = agent_report.contract
+                if agent_report.data_profile is not None:
+                    profile_by_agent[agent_report.agent_id] = agent_report.data_profile.model_dump()
+        except Exception as e:
+            logger.warning(f"fulfillment: could not load plan report for synthetic_agent_io wiring: {e}")
 
     ordered_keys = sorted(
         groups,
@@ -189,6 +341,15 @@ async def fulfill_plan(
         group_entries = groups[group_key]
         group_instructions = instructions.get(group_key, {})
         painpoint = group_instructions.get("painpoint")
+
+        if kind == "synthetic_agent_io":
+            group_agent_id = group_entries[0].agent_id or group_entries[0].component
+            if not eval_enabled_by_agent.get(group_agent_id, False):
+                report[group_key] = {
+                    "status": "skipped",
+                    "reason": "eval_enabled is False for this agent — toggle it on in Stage3Screen to generate this dataset",
+                }
+                continue
 
         if kind == "snapshot_regression_baseline":
             report[group_key] = {
@@ -216,11 +377,16 @@ async def fulfill_plan(
             seed_cases_to_dataset_cases(dataset_id, kind, seed_cases_raw) if seed_cases_raw else []
         )
 
-        config = _derive_config(
+        config = await _derive_config(
             kind, dataset_id, group_key, group_entries,
             map_path=map_path, snapshot_id=snapshot_id, snapshot_local_path=snapshot_local_path,
             provider_id=provider_id, model_id=model_id,
             dataset_id_by_group=dataset_id_by_group, painpoint=painpoint, min_cases=min_cases,
+            codespectra_client=codespectra_client,
+            group_instructions=group_instructions,
+            eval_enabled_by_agent=eval_enabled_by_agent,
+            contract_by_agent=contract_by_agent,
+            profile_by_agent=profile_by_agent,
         )
         if config is None:
             report[group_key] = {
@@ -290,8 +456,7 @@ async def fulfill_plan(
 
 
 async def export_dataset(dataset_id: str) -> list:
-    """Only `generated+reviewed`/`handwritten` cases ever leave AEH; `synthetic` never does.
-    Called at inject time — injection refuses when the dataset isn't review-complete."""
+    """Only `generated+reviewed`/`handwritten` cases ever leave AEH; `synthetic` never does."""
     from agent_eval_harness.datasets.types import DatasetCase
 
     metadata = await repository.get_dataset_metadata(dataset_id)

@@ -278,6 +278,15 @@ _MIGRATIONS: list[dict[str, Any]] = [
             );
         """,
     },
+    {
+        "version": 17,
+        "description": "Add runs.source (CS-283 ingest) — distinguishes a live in-process "
+        "sweep run from a run ingested from an injected target's own spanlog; existing rows "
+        "default to 'live' since that's the only kind that existed before this.",
+        "sql": """
+            ALTER TABLE runs ADD COLUMN source TEXT NOT NULL DEFAULT 'live';
+        """,
+    },
 ]
 
 TARGET_VERSION = len(_MIGRATIONS) - 1

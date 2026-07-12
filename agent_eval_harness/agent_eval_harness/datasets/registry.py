@@ -28,5 +28,11 @@ def get_generator(kind: str) -> GeneratorFn:
     elif kind == "field_match_gold":
         from agent_eval_harness.datasets.generators.field_match_gold import generate
         return generate
+    elif kind == "recorded_report_replay":
+        from agent_eval_harness.datasets.generators.recorded_report_replay import generate
+        return generate
+    elif kind == "synthetic_agent_io":
+        from agent_eval_harness.datasets.generators.synthetic_agent_io import generate
+        return generate
     else:
         raise ValueError(f"Unknown dataset kind: {kind}")

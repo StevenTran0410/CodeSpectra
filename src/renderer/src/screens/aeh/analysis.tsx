@@ -439,16 +439,10 @@ function AnalysisOverview(): React.ReactElement {
         toast.error('No completed expansion session found. Run Stage 2 first.')
         return
       }
-      await window.api.aeh.advanceSession(discoverySession.id, { confirmed_map_session_id: mapSessionId })
-      toast.success('System Map blueprint confirmed. Advancing to Stage 3: Planning.')
-
-      const updated = await window.api.aeh.getDiscoverySession(discoverySession.id)
-      setDiscoverySession(updated)
-
-      // Start planning automatically
-      await handleRunStage3Planning(mapSessionId)
+      toast.success('System Map confirmed — build the evaluation plan on Stage 3.')
+      navigate(`stage3?repoId=${repoId}&snapshotId=${snapshotId}`)
     } catch (err: any) {
-      toast.error(err?.message ?? 'Failed to advance session.')
+      toast.error(err?.message ?? 'Failed to open Stage 3.')
     }
   }
 
@@ -467,6 +461,13 @@ function AnalysisOverview(): React.ReactElement {
       setPollingSessionId(discoverySession.id)
     } catch (err: any) {
       toast.error('Failed to start planning: ' + err.message)
+      try {
+        const refreshed = await window.api.aeh.getDiscoverySession(discoverySession.id)
+        setDiscoverySession(refreshed)
+      } catch {
+        /* best-effort re-sync */
+      }
+      setPollingSessionId(null)
     }
   }
 
@@ -706,10 +707,10 @@ function AnalysisOverview(): React.ReactElement {
         {/* CA Sibling report banner */}
         {selectedRepo && (
           <div className={`flex items-center justify-between gap-3 px-4 py-3 rounded-xl border text-xs backdrop-blur-sm ${reportExists
-              ? 'bg-emerald-950/20 border-emerald-800/40 text-emerald-300'
-              : siblingCARepo
-                ? 'bg-amber-950/20 border-amber-800/40 text-amber-300'
-                : 'bg-slate-900/40 border-slate-800/60 text-slate-400'
+            ? 'bg-emerald-950/20 border-emerald-800/40 text-emerald-300'
+            : siblingCARepo
+              ? 'bg-amber-950/20 border-amber-800/40 text-amber-300'
+              : 'bg-slate-900/40 border-slate-800/60 text-slate-400'
             }`}>
             <div className="flex items-center gap-2">
               <Info className="w-3.5 h-3.5 shrink-0" />

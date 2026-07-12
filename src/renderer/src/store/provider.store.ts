@@ -32,6 +32,7 @@ interface ProviderState {
   remove: (id: string) => Promise<void>
   testConnection: (id: string) => Promise<TestResult>
   fetchModels: (id: string) => Promise<ModelInfo[]>
+  saveManualModels: (id: string, models: string[]) => Promise<void>
   clearError: () => void
 }
 
@@ -126,6 +127,17 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
       }))
       return get().modelLists[id] ?? []
     }
+  },
+
+  saveManualModels: async (id, models) => {
+    await get().update(id, { extra: { manual_models: models } })
+    set((s) => ({
+      modelLists: {
+        ...s.modelLists,
+        [id]: models.map((m) => ({ id: m, reasoning_style: 'none' }))
+      },
+      modelErrors: { ...s.modelErrors, [id]: '' }
+    }))
   },
 
   clearError: () => set({ error: null })

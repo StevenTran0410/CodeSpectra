@@ -1,28 +1,11 @@
-"""Assertion: fallback_sentinel — output is not the contract's fallback literal. A fallback
-dict passes schema_valid by construction (it's built to match the same schema), so this is
-the only deterministic way to catch a silently-degraded run."""
+"""Assertion: output is not the contract's fallback literal — the only deterministic way to catch a silently-degraded run, since a fallback dict passes schema_valid by construction."""
 from __future__ import annotations
 
 import json
 
 from agent_eval_harness.metrics.assertions.registry import register
+from agent_eval_harness.metrics.scoring_helpers import matches_fallback
 from agent_eval_harness.metrics.types import MetricResult
-
-_DYNAMIC = "<dynamic>"
-
-
-def _matches_fallback(data: dict, fallback: dict) -> bool:
-    """A field counts as matching if it's byte-equal, OR the harvested fallback marked
-    it '<dynamic>' (value varies per-call — e.g. echoes an input id) and the field is
-    merely present. Never a false negative from statics being unable to pin an exact value."""
-    for key, expected in fallback.items():
-        if key not in data:
-            return False
-        if expected == _DYNAMIC:
-            continue
-        if data[key] != expected:
-            return False
-    return True
 
 
 @register("fallback_sentinel")
@@ -52,7 +35,7 @@ def fallback_sentinel(spans: list[dict], component_id: str, params: dict) -> Met
             data = json.loads(raw)
         except json.JSONDecodeError:
             continue
-        if isinstance(data, dict) and _matches_fallback(data, fallback):
+        if isinstance(data, dict) and matches_fallback(data, fallback):
             hits.append({"span_id": span["id"]})
 
     passed = checked_span_count > 0 and len(hits) == 0

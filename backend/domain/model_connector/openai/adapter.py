@@ -38,15 +38,17 @@ class OpenAIAdapter(CloudAdapterBase):
             res = await self._client.get("/v1/models", headers=self._auth())
             res.raise_for_status()
             data = res.json()
-            models = [
-                m["id"]
-                for m in data.get("data", [])
-                if (
-                    self.CHAT_MODEL_PREFIXES is None
-                    or any(m["id"].startswith(p) for p in self.CHAT_MODEL_PREFIXES)
-                )
-            ]
-            return sorted(models) or self.MODEL_PRESETS
+            raw_ids = [m["id"] for m in data.get("data", []) if isinstance(m, dict) and "id" in m]
+            if not raw_ids:
+                return self.MODEL_PRESETS
+            if self.CHAT_MODEL_PREFIXES is None:
+                return sorted(raw_ids)
+            filtered = [m for m in raw_ids if any(m.startswith(p) for p in self.CHAT_MODEL_PREFIXES)]
+            # A non-empty response that the chat-model prefix filter zeroes out entirely
+            # means this endpoint doesn't use OpenAI's own naming convention (e.g. a 3rd-party
+            # gateway proxying other vendors' models) — surface the raw list rather than
+            # silently substituting fake OpenAI preset names that don't exist on it.
+            return sorted(filtered) if filtered else sorted(raw_ids)
         except httpx.ConnectError as e:
             raise self._map_connect_error(e) from e
         except httpx.TimeoutException as e:

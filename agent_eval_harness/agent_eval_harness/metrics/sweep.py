@@ -6,6 +6,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 from agent_eval_harness.llm.client import LLMClient
 from agent_eval_harness.llm.embedding_client import EmbeddingClient
@@ -37,10 +38,18 @@ async def run_sweep(
     active_defects: list[str] | None = None,
     run_id: str | None = None,
     embedding_client: EmbeddingClient | None = None,
+    source: Literal["live", "ingested"] = "live",
 ) -> SweepResult:
-    """Run the full evaluation sweep for a given target + suite."""
+    """Run the full evaluation sweep for a given target + suite. `source="ingested"` scores
+    an already-ingested Stage 4 run's persisted traces/spans instead of live-executing the
+    target — `run_id` must already exist (ingest creates it); assertion gates are scored
+    directly against the stored spans, judge/classifier gates aren't supported against
+    ingested data yet and come back as an explicit not-yet-supported result."""
     system_map = load_system_map(map_path)
     suite = load_suite(suite_path)
+
+    if source == "ingested" and run_id is None:
+        raise ValueError("source='ingested' requires an existing run_id — ingest creates the run row")
 
     if run_id is None:
         run_id = await repository.insert_run(
@@ -68,6 +77,7 @@ async def run_sweep(
                 tier,
                 active_defects=active_defects,
                 embedding_client=embedding_client,
+                source=source,
             )
             for entry in suite.entries
         ]
@@ -97,10 +107,14 @@ async def run_sweep(
                         agent_id=entry.agent_id,
                     )
     except Exception:
-        await repository.finish_run(run_id, "failed")
+        # An ingested run's status already reflects the injected execution itself (set at
+        # ingest time) — a scoring failure here is a separate concern and must not overwrite it.
+        if source == "live":
+            await repository.finish_run(run_id, "failed")
         raise
 
-    await repository.finish_run(run_id, "completed")
+    if source == "live":
+        await repository.finish_run(run_id, "completed")
     return sweep_result
 
 
@@ -115,9 +129,14 @@ async def _run_entry(
     tier: str,
     active_defects: list[str] | None = None,
     embedding_client: EmbeddingClient | None = None,
+    source: Literal["live", "ingested"] = "live",
 ) -> list[MetricResult]:
     """Dispatch one SuiteEntry to the appropriate scorer."""
     async with semaphore:
+        if source == "ingested":
+            if entry.metric_class == "assertion":
+                return await _score_assertion_entry_ingested(entry, system_map, run_id)
+            return [_not_supported_for_ingested_result(entry)]
         if entry.metric_class == "assertion":
             return await _score_assertion_entry(
                 entry,
@@ -147,6 +166,15 @@ async def _run_entry(
             raise ValueError(f"Unknown metric_class: {entry.metric_class!r}")
 
 
+def _derive_assertion_params(entry: SuiteEntry, system_map: SystemMap) -> dict:
+    params = dict(entry.params)
+    if entry.metric == "allowed_downstream" and "allowed" not in params:
+        component = system_map.component_by_id(entry.component)
+        if component:
+            params["allowed"] = component.downstream
+    return params
+
+
 async def _score_assertion_entry(
     entry: SuiteEntry,
     system_map: SystemMap,
@@ -159,15 +187,8 @@ async def _score_assertion_entry(
 ) -> list[MetricResult]:
     """Run traces for all dataset cases, then apply the assertion to each."""
     assertion_fn = get_assertion(entry.metric)
-
     queries = _get_queries_for_entry(entry, system_map)
-
-    # Auto-derive 'allowed' from System Map if not provided
-    params = dict(entry.params)
-    if entry.metric == "allowed_downstream" and "allowed" not in params:
-        component = system_map.component_by_id(entry.component)
-        if component:
-            params["allowed"] = component.downstream
+    params = _derive_assertion_params(entry, system_map)
 
     # Batch all queries into one execute_run call rather than one call per query.
     results: list[MetricResult] = []
@@ -181,6 +202,39 @@ async def _score_assertion_entry(
         results.append(result)
 
     return results or [_empty_assertion_result(entry)]
+
+
+async def _score_assertion_entry_ingested(
+    entry: SuiteEntry, system_map: SystemMap, run_id: str
+) -> list[MetricResult]:
+    """Scores an assertion gate directly against an already-ingested run's persisted traces —
+    one result per trace (one trace = one dataset case = one full injected pipeline run),
+    mirroring the live path's one-result-per-outcome convention exactly."""
+    assertion_fn = get_assertion(entry.metric)
+    params = _derive_assertion_params(entry, system_map)
+
+    traces = await repository.get_traces_for_run(run_id)
+    if not traces:
+        return [_empty_assertion_result(entry)]
+
+    results: list[MetricResult] = []
+    for trace in traces:
+        spans = await repository.get_spans_for_trace(trace["id"])
+        result = assertion_fn(spans, entry.component, params)
+        result.trace_id = trace["id"]
+        results.append(result)
+    return results
+
+
+def _not_supported_for_ingested_result(entry: SuiteEntry) -> MetricResult:
+    return MetricResult(
+        metric_name=f"{entry.metric_class}.{entry.metric}",
+        metric_class=entry.metric_class,
+        score=None,
+        passed=None,
+        details={"reason": "scoring judge/classifier gates against an ingested run is not supported yet"},
+        component_id=entry.component,
+    )
 
 
 async def _score_classifier_entry(

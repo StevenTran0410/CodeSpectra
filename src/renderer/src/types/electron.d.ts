@@ -537,6 +537,7 @@ export interface UpdateProviderRequest {
   base_url?: string
   model_id?: string
   api_key?: string
+  extra?: Record<string, any>
 }
 
 declare global {
@@ -896,6 +897,34 @@ declare global {
         getPlan: (sessionId: string) => Promise<AEHPlanSuite | null>
         updatePlan: (sessionId: string, body: { entries: AEHPlanEntry[] }) => Promise<{ success: boolean }>
         getPlanReport: (sessionId: string) => Promise<AEHEvaluationPlanReport | null>
+        updatePlanReport: (
+          sessionId: string,
+          body: AEHEvaluationPlanReport
+        ) => Promise<{ success: boolean }>
+        runEval: (
+          sessionId: string,
+          body?: {
+            provider_id?: string | null
+            model_id?: string | null
+            judge_provider_id?: string | null
+            judge_model_id?: string | null
+          }
+        ) => Promise<{
+          agents: Record<
+            string,
+            {
+              status: 'completed' | 'needs_human'
+              run_id?: string
+              metric_count?: number
+              error_count?: number
+              reason?: string
+              stale?: boolean
+            }
+          >
+        }>
+        resetStage3: (
+          sessionId: string
+        ) => Promise<{ success: boolean; deleted_dataset_ids: string[] }>
         generateAgentFlowMap: (
           sessionId: string,
           body: {
@@ -927,6 +956,8 @@ declare global {
             embedding_provider_id?: string | null
             embedding_model_id?: string | null
             use_local_embedding?: boolean
+            agent_ids?: string[] | null
+            force_agent_ids?: string[] | null
           }
         ) => Promise<Record<string, AEHFulfillmentGroupResult>>
         listDatasets: () => Promise<AEHDatasetSummary[]>
@@ -1187,6 +1218,7 @@ declare global {
     fallback_literal: Record<string, any> | null
     fallback_source: string | null
     validated_in_target: boolean
+    schema_enum_values: Record<string, string[]>
   }
 
   export interface AEHObservabilityContract {
@@ -1209,6 +1241,7 @@ declare global {
     constants: Record<string, number>
     connect_edges: { src: string; dst: string }[]
     needs_human: string[]
+    field_downstream_consumers: Record<string, string[]>
   }
 
   export interface AEHAgentPlanReport {
@@ -1219,6 +1252,7 @@ declare global {
     contract: AEHEvaluationContract | null
     gates: AEHEvaluationGate[]
     needs_human: string[]
+    eval_enabled: boolean
   }
 
   export interface AEHEvaluationPlanReport {
@@ -1248,7 +1282,7 @@ declare global {
   }
 
   export interface AEHFulfillmentGroupResult {
-    status: 'fulfilled' | 'failed' | 'needs_human'
+    status: 'fulfilled' | 'failed' | 'needs_human' | 'skipped'
     dataset_id?: string
     reason?: string
   }

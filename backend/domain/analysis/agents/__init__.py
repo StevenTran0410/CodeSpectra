@@ -1,5 +1,3 @@
-"""Section agents (A–L) — LLM + optional retrieval."""
-
 from __future__ import annotations
 
 import importlib

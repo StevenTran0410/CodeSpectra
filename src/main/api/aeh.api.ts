@@ -3,6 +3,9 @@ import { getAEHProcessManager } from '../infrastructure/aeh-server/server'
 import { BackendClient, BackendHttpError } from '../infrastructure/python-server/client'
 import { getBackendPort, getExternalApiToken } from '../infrastructure/python-server/server'
 
+// Fulfillment/eval-run block synchronously on many sequential LLM calls server-side — well past undici's 5-minute default.
+const LONG_RUNNING_TIMEOUT_MS = 45 * 60 * 1000
+
 function aehClient(): BackendClient {
   const port = getAEHProcessManager().getPort()
   if (port === null) {
@@ -142,6 +145,22 @@ export function registerAEHHandlers(): void {
     getOrNull(`/api/discovery/expansion-sessions/${sessionId}/plan-report`)
   )
 
+  ipcMain.handle('aeh:updatePlanReport', (_e, sessionId: string, body: unknown) =>
+    aehClient().put(`/api/discovery/expansion-sessions/${sessionId}/plan-report`, body)
+  )
+
+  ipcMain.handle('aeh:runEval', (_e, sessionId: string, body: unknown) =>
+    aehClient().post(
+      `/api/discovery/expansion-sessions/${sessionId}/eval-run`,
+      withBackendConnection(body ?? {}),
+      LONG_RUNNING_TIMEOUT_MS
+    )
+  )
+
+  ipcMain.handle('aeh:resetStage3', (_e, sessionId: string) =>
+    aehClient().del(`/api/discovery/expansion-sessions/${sessionId}/stage3`)
+  )
+
   ipcMain.handle('aeh:generateAgentFlowMap', (_e, sessionId: string, body: unknown) =>
     aehClient().post(`/api/discovery/expansion-sessions/${sessionId}/agent-flows`, withBackendConnection(body))
   )
@@ -157,7 +176,8 @@ export function registerAEHHandlers(): void {
   ipcMain.handle('aeh:fulfillDatasets', (_e, sessionId: string, body: unknown) =>
     aehClient().post(
       `/api/discovery/expansion-sessions/${sessionId}/datasets/fulfill`,
-      withBackendConnection(body)
+      withBackendConnection(body),
+      LONG_RUNNING_TIMEOUT_MS
     )
   )
 

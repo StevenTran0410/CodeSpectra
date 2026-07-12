@@ -27,12 +27,19 @@ class GeminiAdapter(CloudAdapterBase):
             res = await self._client.get("/v1beta/models", params=self._key_param())
             res.raise_for_status()
             data = res.json()
-            models = [
+            raw = [m for m in data.get("models", []) if isinstance(m, dict) and "name" in m]
+            if not raw:
+                return MODEL_PRESETS
+            filtered = [
                 m["name"].replace("models/", "")
-                for m in data.get("models", [])
+                for m in raw
                 if "generateContent" in m.get("supportedGenerationMethods", [])
             ]
-            return models or MODEL_PRESETS
+            # A non-empty response the capability filter zeroes out entirely means this
+            # endpoint isn't shaped like the real Gemini API (e.g. a 3rd-party gateway that
+            # doesn't populate supportedGenerationMethods) — surface the raw list instead of
+            # silently substituting fake Gemini preset names that don't exist on it.
+            return filtered if filtered else [m["name"].replace("models/", "") for m in raw]
         except httpx.ConnectError as e:
             raise self._map_connect_error(e) from e
         except httpx.TimeoutException as e:

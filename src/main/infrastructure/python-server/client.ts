@@ -40,11 +40,13 @@ export class BackendClient {
     return res.json() as Promise<T>
   }
 
-  async post<T>(path: string, body: unknown): Promise<T> {
+  /** timeoutMs overrides undici's default 5-minute headers timeout — pass a larger value for routes that run many sequential LLM calls server-side (e.g. dataset fulfillment). */
+  async post<T>(path: string, body: unknown, timeoutMs?: number): Promise<T> {
     const res = await fetch(`${this.base}${path}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
+      signal: timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined
     })
     if (!res.ok) await this._throwHttpError(res)
     return res.json() as Promise<T>
@@ -60,9 +62,13 @@ export class BackendClient {
     return res.json() as Promise<T>
   }
 
-  async del(path: string): Promise<void> {
+  /** Most DELETE routes return 204 (nothing to parse); a 200 + JSON body route gets it parsed and typed. */
+  async del<T = void>(path: string): Promise<T> {
     const res = await fetch(`${this.base}${path}`, { method: 'DELETE' })
     if (!res.ok) await this._throwHttpError(res)
+    if (res.status === 204) return undefined as T
+    const text = await res.text()
+    return (text ? JSON.parse(text) : undefined) as T
   }
 
   /** Consume a Server-Sent Events stream. Calls `onEvent` for every parsed data frame.

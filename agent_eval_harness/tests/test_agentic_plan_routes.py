@@ -189,3 +189,79 @@ async def test_generate_plan_missing_local_path_returns_400_not_500(tmp_path: Pa
         )
     assert resp.status_code == 400
     assert "local_path" in resp.json()["detail"]
+
+
+async def test_generate_plan_field_downstream_consumers_resolves_boundary_only_helper(tmp_path: Path) -> None:
+    """CS-289 A3 regression: found live against the real CodeSpectra repo — SynthesisAgent's
+    field reads are 100% delegated to _section_compressor.py, a helper Stage 2 discovered but
+    never accepted (it landed in `boundary`, not `accepted`, since it isn't its own
+    component). Contract harvest must still see it, or field_downstream_consumers comes back
+    completely empty and the synthetic_agent_io gate never gets emitted for that agent."""
+    (tmp_path / "myapp").mkdir()
+    (tmp_path / "myapp" / "fan_in_agent.py").write_text(
+        "from myapp.helper import build_input\n\n"
+        "class FanInAgent:\n"
+        "    async def run(self, provider_id: str, model_id: str, all_sections: dict) -> dict:\n"
+        "        return build_input(all_sections)\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "myapp" / "helper.py").write_text(
+        "def build_input(sections):\n"
+        "    out = {}\n"
+        "    for letter in 'AB':\n"
+        "        s = sections.get(letter) or {}\n"
+        "        out[letter] = {'confidence': s.get('confidence'), 'purpose': s.get('purpose')}\n"
+        "    return out\n",
+        encoding="utf-8",
+    )
+
+    session_id = "sess-boundary"
+    await repository.insert_expansion_session(session_id, "cand-1", "snap-1")
+    system_map = SystemMap(
+        target_system_id="t",
+        components=[
+            Component(
+                id="fanin", role="writer",
+                entry_point="myapp.fan_in_agent:FanInAgent", file="myapp/fan_in_agent.py",
+            )
+        ],
+    )
+    map_path = tmp_path / f"{session_id}.yaml"
+    save_system_map(system_map, map_path)
+    await repository.finish_expansion_session(
+        session_id, "completed", map_path=str(map_path),
+        accepted=["myapp/fan_in_agent.py"],  # helper.py deliberately NOT accepted
+        boundary=["myapp/helper.py"],
+        stop_reason="frontier_exhausted", accepted_edges=[],
+    )
+    agent_flow_map = AgentFlowMap(
+        target_system_id="t",
+        agents=[AgentFlow(id="fanin", role="writer", label="FanIn", component_ids=["fanin"])],
+        entry_agent_ids=["fanin"],
+    )
+    agent_flows_path = tmp_path / f"{session_id}_agentflows.yaml"
+    save_agent_flow_map(agent_flow_map, agent_flows_path)
+    await repository.update_expansion_session_agentflows_path(session_id, str(agent_flows_path))
+
+    async with await _client() as client:
+        resp = await client.post(
+            f"/api/discovery/expansion-sessions/{session_id}/plan",
+            json={"provider_id": "prov-1", "backend_url": "http://fake-backend", "backend_token": "tok"},
+        )
+    assert resp.status_code == 200, resp.text
+
+    sess = await repository.get_expansion_session(session_id)
+    report = yaml.safe_load(Path(sess["plan_report_path"]).read_text(encoding="utf-8"))
+    contract = next(a["contract"] for a in report["agents"] if a["agent_id"] == "fanin")
+    assert contract["field_downstream_consumers"] == {
+        "A": ["confidence", "purpose"],
+        "B": ["confidence", "purpose"],
+    }
+
+    plan = yaml.safe_load(Path(sess["plan_path"]).read_text(encoding="utf-8"))
+    synth_entries = [
+        e for e in plan["entries"]
+        if ((e.get("dataset") or {}).get("required") or {}).get("kind") == "synthetic_agent_io"
+    ]
+    assert len(synth_entries) == 1
+    assert synth_entries[0]["agent_id"] == "fanin"

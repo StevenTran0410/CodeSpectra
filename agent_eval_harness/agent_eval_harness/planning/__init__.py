@@ -1,4 +1,3 @@
-"""Planning module for evaluation plan generation and validation."""
 from __future__ import annotations
 
 from .planner import generate_plan

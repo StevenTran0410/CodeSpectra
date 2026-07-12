@@ -614,3 +614,38 @@ async def test_generate_plan_agentic_can_skip_critic_pass() -> None:
     assert report.advisory_notes == []
     # 1 (gather rubric) + 2 (analyst x2) + 3 (gate_designer x2 + handoff) = 6, no critic call
     assert len(llm_client.calls) - calls_before == 6
+
+
+async def test_generate_plan_agentic_reuses_previous_analysis_for_unchanged_agents() -> None:
+    """Regression test for a real cost bug: regenerating the plan to pick up a fix for ONE
+    agent (e.g. a static-harvest fix) used to re-run analyst+gate_designer LLM calls for
+    EVERY agent. An agent with a complete prior data_profile + gates must be reused as-is;
+    only an agent missing from the previous report gets freshly analyzed."""
+    system_map = load_system_map(_MULTI_AGENT_MAP)
+    agent_flow_map = _multi_agent_flow_map()
+
+    reused_profile = AgentDataProfile(agent_id="guard_agent", input_data="prior input data")
+    reused_gate = ap.EvaluationGate(
+        id="guard_llm.geval.prior_check.llm0", agent_id="guard_agent", component="guard_llm",
+        location="output", property="p", metric="geval.prior_check", metric_class="llm_judge",
+        toolkit="deepeval", provenance="llm_suggested",
+    )
+    previous_report = EvaluationPlanReport(
+        target_system_id="multi_agent",
+        agents=[ap.AgentPlanReport(agent_id="guard_agent", data_profile=reused_profile, gates=[reused_gate])],
+    )
+
+    llm_client = FakeLLMClient(LLMResponse(content="{}", model="fake"))
+    suite, report = await ap.generate_plan_agentic(
+        system_map, agent_flow_map, _fake_source_by_component(system_map), [], llm_client,
+        run_critic_pass=False, previous_report=previous_report,
+    )
+
+    # core_agent (not in previous_report) still gets analyzed fresh: 1 gather + 1 analyst +
+    # 2 gate_designer/handoff = 4, vs 6 when nothing is reusable (see test above).
+    assert len(llm_client.calls) == 4
+
+    by_agent = {a.agent_id: a for a in report.agents}
+    assert by_agent["guard_agent"].data_profile == reused_profile
+    assert reused_gate.id in {g.id for g in by_agent["guard_agent"].gates}
+    assert any("Reused prior analysis for 1 agent" in n for n in report.advisory_notes)

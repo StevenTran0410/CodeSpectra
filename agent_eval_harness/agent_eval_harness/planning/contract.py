@@ -37,6 +37,8 @@ class OutputContract(BaseModel):
     fallback_literal: dict[str, Any] | None = None
     fallback_source: str | None = None
     validated_in_target: bool = False
+    # field -> allowed literal values, e.g. {"confidence": ["low","medium","high"]}; empty until harvested.
+    schema_enum_values: dict[str, list[str]] = Field(default_factory=dict)
 
 
 class ObservabilityContract(BaseModel):
@@ -62,3 +64,7 @@ class EvaluationContract(BaseModel):
     constants: dict[str, int] = Field(default_factory=dict)
     connect_edges: list[dict[str, str]] = Field(default_factory=list)
     needs_human: list[str] = Field(default_factory=list)
+    # letter -> sorted field names this agent's entry method statically reads from that upstream section (fan-in agents only).
+    field_downstream_consumers: dict[str, list[str]] = Field(default_factory=dict)
+    # True when the entry method calls a module-level `plan_queries(...)` helper before retrieval.
+    query_planning_subcall: bool = False
