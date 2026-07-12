@@ -57,12 +57,6 @@ from domain.qa.classifier_service import ClassifierService as _ClassifierService
 
 
 async def _warm_up_local_gpu_models() -> None:
-    """Eagerly load the GPU reranker if the user already has it enabled (GPU
-    present, weights on disk) — avoids the first real request after startup
-    paying the multi-second model-load cost. The local embedding model is
-    NOT warmed up here on purpose — it stays fully lazy (domain/embeddings/
-    local_model.py's own singleton), loading only on its first real use, so
-    a session that never touches embedding never pays its VRAM/load cost."""
     try:
         from domain.retrieval.cross_encoder_rerank import is_gpu_reranker_enabled, load_reranker
 
@@ -137,9 +131,6 @@ def create_app() -> FastAPI:
     return app
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Custom uvicorn server that prints the BACKEND_READY signal after binding
-# ──────────────────────────────────────────────────────────────────────────────
 class _ReadySignalServer(uvicorn.Server):
     def __init__(self, config: uvicorn.Config, port: int) -> None:
         super().__init__(config)
