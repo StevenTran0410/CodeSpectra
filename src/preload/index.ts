@@ -335,6 +335,14 @@ const api = {
     runEval: (sessionId: string, body?: unknown) =>
       ipcRenderer.invoke('aeh:runEval', sessionId, body ?? {}),
     resetStage3: (sessionId: string) => ipcRenderer.invoke('aeh:resetStage3', sessionId),
+    createEvalBranch: (sessionId: string, baseRef: string) =>
+      ipcRenderer.invoke('aeh:createEvalBranch', sessionId, baseRef),
+    restoreEvalBranch: (sessionId: string) =>
+      ipcRenderer.invoke('aeh:restoreEvalBranch', sessionId),
+    createEvalPlan: (sessionId: string) =>
+      ipcRenderer.invoke('aeh:createEvalPlan', sessionId),
+    loadEvalResults: (sessionId: string) =>
+      ipcRenderer.invoke('aeh:loadEvalResults', sessionId),
     generateAgentFlowMap: (sessionId: string, body: unknown) =>
       ipcRenderer.invoke('aeh:generateAgentFlowMap', sessionId, body),
     getAgentFlowMap: (sessionId: string) =>

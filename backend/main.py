@@ -57,9 +57,12 @@ from domain.qa.classifier_service import ClassifierService as _ClassifierService
 
 
 async def _warm_up_local_gpu_models() -> None:
-    """Eagerly load the GPU reranker and/or local embedding model if the user
-    already has them enabled (GPU present, weights on disk) — avoids the first
-    real request after startup paying the multi-second model-load cost."""
+    """Eagerly load the GPU reranker if the user already has it enabled (GPU
+    present, weights on disk) — avoids the first real request after startup
+    paying the multi-second model-load cost. The local embedding model is
+    NOT warmed up here on purpose — it stays fully lazy (domain/embeddings/
+    local_model.py's own singleton), loading only on its first real use, so
+    a session that never touches embedding never pays its VRAM/load cost."""
     try:
         from domain.retrieval.cross_encoder_rerank import is_gpu_reranker_enabled, load_reranker
 
@@ -67,14 +70,6 @@ async def _warm_up_local_gpu_models() -> None:
             await asyncio.to_thread(load_reranker)
     except Exception as e:
         logger.warning(f"GPU reranker warm-up failed: {e}")
-
-    try:
-        from domain.embeddings.local_model import get_embedder, local_embedding_available
-
-        if await local_embedding_available():
-            await asyncio.to_thread(get_embedder)
-    except Exception as e:
-        logger.warning(f"Local embedding model warm-up failed: {e}")
 
 
 @asynccontextmanager

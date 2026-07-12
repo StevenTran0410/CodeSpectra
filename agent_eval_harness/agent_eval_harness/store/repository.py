@@ -793,6 +793,28 @@ async def update_expansion_session_plan_report_path(session_id: str, plan_report
     await db.commit()
 
 
+async def update_expansion_session_eval_branch(
+    session_id: str, branch_name: str, original_branch: str
+) -> None:
+    db = get_db()
+    await db.execute(
+        "UPDATE expansion_sessions SET eval_branch_name = ?, eval_original_branch = ? WHERE id = ?",
+        (branch_name, original_branch, session_id),
+    )
+    await db.commit()
+
+
+async def update_expansion_session_eval_plan_md_path(
+    session_id: str, plan_md_path: str
+) -> None:
+    db = get_db()
+    await db.execute(
+        "UPDATE expansion_sessions SET eval_plan_md_path = ? WHERE id = ?",
+        (plan_md_path, session_id),
+    )
+    await db.commit()
+
+
 async def cancel_orphaned_running_sessions() -> None:
     """Mark any status='running' session as failed — AEH's background tasks don't persist
     across process restarts, so a 'running' row at startup can only be a leftover from a

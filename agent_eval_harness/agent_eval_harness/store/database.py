@@ -287,6 +287,15 @@ _MIGRATIONS: list[dict[str, Any]] = [
             ALTER TABLE runs ADD COLUMN source TEXT NOT NULL DEFAULT 'live';
         """,
     },
+    {
+        "version": 18,
+        "description": "Add eval branch/plan columns to expansion_sessions (CS-284)",
+        "sql": (
+            "ALTER TABLE expansion_sessions ADD COLUMN eval_branch_name TEXT;\n"
+            "ALTER TABLE expansion_sessions ADD COLUMN eval_original_branch TEXT;\n"
+            "ALTER TABLE expansion_sessions ADD COLUMN eval_plan_md_path TEXT;"
+        ),
+    },
 ]
 
 TARGET_VERSION = len(_MIGRATIONS) - 1

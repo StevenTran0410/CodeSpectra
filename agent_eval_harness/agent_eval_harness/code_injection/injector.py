@@ -1,7 +1,6 @@
-"""Orchestrates a Stage 4 injection into CodeSpectra's own backend/: prepares an isolated
-worktree (never the caller's working directory), writes the 4 new artifacts, and applies the
-2 marker-wrapped hooks main.py needs — tracer registration before any haystack import, and
-the new eval route registered alongside the existing routers."""
+"""Stage 4 injection reference implementation — not wired to the UI (Stage 4 now uses
+plan_renderer via server.py routes). Kept as documentation of the original file-writing
+logic. inject_into_codespectra_backend is never called from the current UI flow."""
 from __future__ import annotations
 
 import json
@@ -9,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from agent_eval_harness.code_injection.file_writer import apply_marker_block, write_generated_file
-from agent_eval_harness.code_injection.injection_target import WorktreeInjectionTarget
+from agent_eval_harness.code_injection.injection_target import BranchInjectionTarget
 from agent_eval_harness.code_injection.wiring import build_wiring_for_codespectra
 from agent_eval_harness.mapping.system_map import SystemMap
 
@@ -33,8 +32,9 @@ class InjectionResult:
 def inject_into_codespectra_backend(
     repo_root: Path, system_map: SystemMap, plan_id: str
 ) -> InjectionResult:
-    target = WorktreeInjectionTarget(repo_root=repo_root, plan_id=plan_id)
-    worktree = target.prepare()
+    # Stage 4 UI now uses plan_renderer; this function is dead from the UI.
+    info = BranchInjectionTarget.prepare(repo_root, plan_id)
+    worktree = repo_root  # in-place checkout — backend is at repo_root/backend
     backend_root = worktree / "backend"
 
     files_written: list[str] = []
@@ -66,4 +66,4 @@ def inject_into_codespectra_backend(
     )
     files_written.append("backend/main.py (3 marker-wrapped hooks)")
 
-    return InjectionResult(worktree_path=worktree, branch_name=target.branch_name, files_written=files_written)
+    return InjectionResult(worktree_path=worktree, branch_name=info.branch_name, files_written=files_written)

@@ -29,6 +29,8 @@ import type { RepoSnapshot, LocalRepo } from '../../types/electron'
 import Stage1GraphScreen from './Stage1GraphScreen'
 import Stage2Screen from './Stage2Screen'
 import Stage3Screen from './Stage3Screen'
+import Stage4Screen from './Stage4Screen'
+import Stage5Screen from './Stage5Screen'
 import DatasetReviewScreen from './DatasetReviewScreen'
 import LLMConfigModal from './LLMConfigModal'
 
@@ -1018,6 +1020,66 @@ function AnalysisOverview(): React.ReactElement {
               </div>
             )
           })()}
+
+          {/* Stage 4 Card */}
+          {(() => {
+            const stage4Enabled = hasPlanCount > 0
+            return (
+              <div
+                onClick={() => stage4Enabled && navigate(`stage3?repoId=${repoId}&snapshotId=${snapshotId}&goto=stage4`)}
+                className={`border rounded-xl p-5 space-y-4 backdrop-blur-sm transition-all ${stage4Enabled ? 'cursor-pointer hover:border-indigo-500/40' : 'cursor-not-allowed opacity-70'
+                  } ${effectiveStage === 'done'
+                    ? 'bg-[#0f172a]/70 border-emerald-500/50 shadow-emerald-500/5 shadow-lg'
+                    : 'bg-[#0f172a]/40 border-slate-800/80'
+                  }`}
+              >
+                <div className="flex flex-col gap-3">
+                  <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-300 text-xs font-bold shrink-0">4</div>
+                    <div className="min-w-0">
+                      <h4 className="text-xs font-semibold text-slate-200">Stage 4: Eval Branch</h4>
+                      <p className="text-[10px] text-slate-500">Create instrumented branch for external coding agent.</p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-2">
+                    {renderPipelineBadge(4)}
+                    {stage4Enabled && <ArrowRight className="w-3.5 h-3.5 text-indigo-400 shrink-0" />}
+                  </div>
+                </div>
+              </div>
+            )
+          })()}
+
+          {/* Stage 5 Card */}
+          {(() => {
+            const stage5Enabled = hasPlanCount > 0
+            return (
+              <div
+                onClick={() => stage5Enabled && navigate(`stage3?repoId=${repoId}&snapshotId=${snapshotId}&goto=stage5`)}
+                className={`border rounded-xl p-5 space-y-4 backdrop-blur-sm transition-all ${stage5Enabled ? 'cursor-pointer hover:border-indigo-500/40' : 'cursor-not-allowed opacity-70'
+                  } ${effectiveStage === 'done'
+                    ? 'bg-[#0f172a]/70 border-emerald-500/50 shadow-emerald-500/5 shadow-lg'
+                    : 'bg-[#0f172a]/40 border-slate-800/80'
+                  }`}
+              >
+                <div className="flex flex-col gap-3">
+                  <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-300 text-xs font-bold shrink-0">5</div>
+                    <div className="min-w-0">
+                      <h4 className="text-xs font-semibold text-slate-200">Stage 5: Load Results</h4>
+                      <p className="text-[10px] text-slate-500">Ingest evaluation results from instrumented backend.</p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-2">
+                    {renderPipelineBadge(5)}
+                    {stage5Enabled && <ArrowRight className="w-3.5 h-3.5 text-indigo-400 shrink-0" />}
+                  </div>
+                </div>
+              </div>
+            )
+          })()}
         </div>
 
         <LLMConfigModal
@@ -1047,6 +1109,8 @@ export default function AEHAnalysisScreen(): React.ReactElement {
       <Route path="stage1" element={<Stage1GraphScreen />} />
       <Route path="stage2" element={<Stage2Screen />} />
       <Route path="stage3" element={<Stage3Screen />} />
+      <Route path="stage4" element={<Stage4Screen />} />
+      <Route path="stage5" element={<Stage5Screen />} />
       <Route path="datasets" element={<DatasetReviewScreen />} />
     </Routes>
   )

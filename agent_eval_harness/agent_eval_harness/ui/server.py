@@ -30,6 +30,11 @@ from agent_eval_harness.mapping.builder.pipeline import SystemMapBuilder
 from agent_eval_harness.mapping.system_map import load_system_map, save_system_map, SystemMap
 from agent_eval_harness.planning.agentic_planner import generate_plan_agentic
 from agent_eval_harness.planning.report import load_plan_report, save_plan_report
+from agent_eval_harness.code_injection.injection_target import BranchInjectionTarget, InjectionTargetError
+from agent_eval_harness.code_injection.plan_renderer import render_eval_plan_md
+from agent_eval_harness.code_injection.wiring import build_wiring_for_codespectra
+from agent_eval_harness.datasets.fulfillment import export_dataset
+from agent_eval_harness.metrics.suite import load_suite
 from agent_eval_harness.store import repository
 from agent_eval_harness.store.database import close_db, get_db, init_db
 
@@ -636,6 +641,31 @@ async def _get_expansion_session_or_404(session_id: str) -> dict:
     if not sess:
         raise HTTPException(status_code=404, detail="Expansion session not found.")
     return sess
+
+
+def _get_repo_root() -> Path:
+    """backend_source_path (config.py / backend_bridge.py's pre-existing convention) points
+    directly AT the backend/ folder, not the git repo root — its parent is the actual repo
+    root (where .git lives, and where injected paths like backend/.aeh/... are relative to)."""
+    config = AEHConfig.load()
+    if not config.backend_source_path:
+        raise HTTPException(
+            status_code=400,
+            detail="backend_source_path not configured — set it in .aeh/config.yaml",
+        )
+    backend_path = Path(config.backend_source_path)
+    if not backend_path.is_dir():
+        raise HTTPException(
+            status_code=400,
+            detail=f"backend_source_path does not exist or is not a directory: {backend_path}",
+        )
+    repo_root = backend_path.parent
+    if not (repo_root / ".git").exists():
+        raise HTTPException(
+            status_code=400,
+            detail=f"parent of backend_source_path is not a git repo root: {repo_root}",
+        )
+    return repo_root
 
 
 def _resolve_synthesis_config(
@@ -1581,6 +1611,155 @@ async def get_agent_flows_route(session_id: str):
         return agent_flow_map.model_dump()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to load agent-flow map: {e}")
+
+
+@app.post("/api/discovery/expansion-sessions/{session_id}/eval-branch")
+async def create_eval_branch(session_id: str, base_ref: str = "main"):
+    sess = await _get_expansion_session_or_404(session_id)
+    if sess.get("eval_branch_name"):
+        return {
+            "branch_name": sess["eval_branch_name"],
+            "previous_branch": sess["eval_original_branch"],
+        }
+    repo_root = _get_repo_root()
+    try:
+        info = BranchInjectionTarget.prepare(repo_root, session_id, base_ref=base_ref)
+    except InjectionTargetError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    await repository.update_expansion_session_eval_branch(
+        session_id, info.branch_name, info.original_branch
+    )
+    return {"branch_name": info.branch_name, "previous_branch": info.original_branch}
+
+
+@app.post("/api/discovery/expansion-sessions/{session_id}/eval-branch/restore")
+async def restore_eval_branch(session_id: str):
+    sess = await _get_expansion_session_or_404(session_id)
+    original_branch = sess.get("eval_original_branch")
+    if not original_branch:
+        raise HTTPException(
+            status_code=400,
+            detail="No eval branch recorded for this session.",
+        )
+    repo_root = _get_repo_root()
+    try:
+        BranchInjectionTarget.restore(repo_root, original_branch)
+    except InjectionTargetError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return {"restored_branch": original_branch}
+
+
+@app.post("/api/discovery/expansion-sessions/{session_id}/eval-plan")
+async def create_eval_plan(session_id: str):
+    sess = await _get_expansion_session_or_404(session_id)
+    repo_root = _get_repo_root()
+    eval_branch = sess.get("eval_branch_name")
+    if not eval_branch:
+        raise HTTPException(status_code=400, detail="Create eval branch first.")
+    # Guard: must currently be on the eval branch
+    try:
+        current_branch = BranchInjectionTarget.current_branch(repo_root)
+    except InjectionTargetError as e:
+        raise HTTPException(status_code=500, detail=f"git error resolving current branch: {e}")
+    if current_branch != eval_branch:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Must be on eval branch {eval_branch!r} (currently on {current_branch!r})",
+        )
+    # Guard: plan must not already exist
+    plan_md_path = repo_root / "AEH_EVAL_PLAN.md"
+    if plan_md_path.exists():
+        raise HTTPException(
+            status_code=409,
+            detail="AEH_EVAL_PLAN.md already exists on this branch.",
+        )
+    if not sess.get("map_path"):
+        raise HTTPException(status_code=400, detail="No system map for this session.")
+    if not sess.get("plan_path"):
+        raise HTTPException(
+            status_code=400,
+            detail="No plan for this session — generate a plan first.",
+        )
+    plan_report_path_str = sess.get("plan_report_path")
+    if not plan_report_path_str or not Path(plan_report_path_str).exists():
+        raise HTTPException(
+            status_code=400,
+            detail="No plan report for this session — regenerate the plan in Stage 3.",
+        )
+    system_map = load_system_map(sess["map_path"])
+    suite = load_suite(sess["plan_path"])
+    plan_report = load_plan_report(plan_report_path_str)
+    # Collect dataset ids from suite entries, grouped by gate_id
+    datasets_to_gate_ids: dict[str, list[str]] = {}
+    for entry in suite.entries:
+        if entry.dataset and entry.dataset.ref:
+            datasets_to_gate_ids.setdefault(entry.dataset.ref, []).append(entry.id)
+    # Export each dataset to JSONL alongside the eval branch
+    aeh_datasets_dir = repo_root / "backend" / ".aeh" / "datasets"
+    aeh_datasets_dir.mkdir(parents=True, exist_ok=True)
+    dataset_summaries: list[dict] = []
+    for dataset_id, gate_ids in datasets_to_gate_ids.items():
+        cases = await export_dataset(dataset_id)
+        jsonl_path = aeh_datasets_dir / f"{dataset_id}.jsonl"
+        jsonl_path.write_text(
+            "\n".join(json.dumps(c.model_dump()) for c in cases),
+            encoding="utf-8",
+        )
+        kind = cases[0].kind if cases else ""
+        dataset_summaries.append({
+            "dataset_id": dataset_id,
+            "kind": kind,
+            "case_count": len(cases),
+            "gate_ids": gate_ids,
+            "example_case": cases[0].model_dump() if cases else None,
+        })
+    wiring = build_wiring_for_codespectra(system_map, session_id)
+    md_content = render_eval_plan_md(
+        system_map, wiring, dataset_summaries, session_id, eval_branch,
+        plan_report=plan_report, repo_root=repo_root,
+    )
+    plan_md_path.write_text(md_content, encoding="utf-8")
+    await repository.update_expansion_session_eval_plan_md_path(
+        session_id, str(plan_md_path)
+    )
+    return {"plan_path": str(plan_md_path)}
+
+
+@app.post("/api/discovery/expansion-sessions/{session_id}/eval-results")
+async def load_eval_results(session_id: str):
+    await _get_expansion_session_or_404(session_id)
+    from agent_eval_harness.ingest.spanlog_ingest import IngestError, parse_spanlog, persist_spanlog
+    repo_root = _get_repo_root()
+    manifest_path = repo_root / "backend" / ".aeh" / "manifest.json"
+    if not manifest_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "manifest not found at backend/.aeh/manifest.json — "
+                "run POST /aeh/run-eval on your running backend first"
+            ),
+        )
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"could not read manifest: {e}")
+    log_path_str = manifest.get("log_path")
+    if not log_path_str or not Path(log_path_str).exists():
+        raise HTTPException(
+            status_code=400,
+            detail="manifest is missing a valid log_path",
+        )
+    try:
+        parsed = parse_spanlog(Path(log_path_str))
+    except IngestError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    run_id = await persist_spanlog(
+        parsed,
+        target_system_id=manifest.get("plan_id", "unknown"),
+        eval_plan_id=manifest.get("plan_id"),
+    )
+    run = await repository.get_run(run_id)
+    return {"run_id": run_id, "status": run["status"] if run else "unknown"}
 
 
 @app.post("/api/discovery/sessions/{session_id}/advance")

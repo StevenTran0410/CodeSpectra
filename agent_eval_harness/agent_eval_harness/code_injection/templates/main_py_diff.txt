@@ -1,0 +1,22 @@
+# AEH main.py instrumentation — three marker-wrapped blocks.
+# A coding agent should insert these blocks into backend/main.py at the specified positions.
+# The markers are idempotent: AEH can update the block in place on re-run.
+
+# --- Block 1: aeh_tracer ---
+# Position: BEFORE the line containing: import argparse
+# aeh:begin aeh_tracer
+import os
+os.environ.setdefault("HAYSTACK_CONTENT_TRACING_ENABLED", "true")
+# aeh:end aeh_tracer
+
+# --- Block 2: aeh_eval_import ---
+# Position: AFTER the line containing: from api.external import router as external_router
+# aeh:begin aeh_eval_import
+from api.aeh_eval import router as aeh_eval_router
+# aeh:end aeh_eval_import
+
+# --- Block 3: aeh_eval_route ---
+# Position: AFTER the line containing: app.include_router(external_router, prefix="/api/external")
+# aeh:begin aeh_eval_route
+    app.include_router(aeh_eval_router, prefix="/aeh")
+# aeh:end aeh_eval_route

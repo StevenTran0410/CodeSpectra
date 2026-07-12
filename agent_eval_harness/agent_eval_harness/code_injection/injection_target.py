@@ -1,9 +1,7 @@
-"""Where Stage 4 writes eval artifacts: always an isolated directory backed by a dedicated
-git branch, never the caller's own working directory. `git checkout -b` in place would mutate
-whatever the user (or a currently-running backend process) has open on disk right now;
-`git worktree add` gives a fully separate directory sharing the same .git object store — no
-clone, no risk, and no dirty-worktree check needed (a new worktree is always a clean checkout
-of a specific commit, independent of whatever is uncommitted in the main working directory)."""
+"""Stage 4 branch management: checkout -b an isolated eval branch in the caller's
+working directory. The worktree approach (WorktreeInjectionTarget) was removed in CS-284 —
+the running backend must be restarted after a branch switch regardless, so worktree
+isolation gave no benefit over in-place checkout with a dirty-tree guard."""
 from __future__ import annotations
 
 import subprocess
@@ -15,45 +13,61 @@ class InjectionTargetError(Exception):
     pass
 
 
-def _run_git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
+def _run_git(args: list[str], cwd: Path, check: bool = True) -> subprocess.CompletedProcess:
     result = subprocess.run(
         ["git", *args], cwd=cwd, capture_output=True, text=True, check=False,
     )
-    if result.returncode != 0:
+    if check and result.returncode != 0:
         raise InjectionTargetError(f"git {' '.join(args)} failed: {result.stderr.strip()}")
     return result
 
 
 @dataclass
-class WorktreeInjectionTarget:
-    repo_root: Path
-    plan_id: str
+class BranchInfo:
+    branch_name: str
+    original_branch: str
 
-    @property
-    def branch_name(self) -> str:
-        return f"aeh/eval-{self.plan_id}"
 
-    @property
-    def worktree_path(self) -> Path:
-        return self.repo_root.parent / ".aeh-worktrees" / self.repo_root.name / self.plan_id
+class BranchInjectionTarget:
+    @staticmethod
+    def prepare(repo_root: Path, session_id: str, base_ref: str = "main") -> BranchInfo:
+        # Dirty-check: refuse to proceed if working tree has uncommitted changes
+        result = _run_git(["status", "--porcelain"], repo_root)
+        if result.stdout.strip():
+            raise InjectionTargetError(
+                f"Working tree is dirty — commit or discard changes first:\n{result.stdout.strip()}"
+            )
+        # Capture the branch we are currently on before switching
+        original_branch = _run_git(
+            ["rev-parse", "--abbrev-ref", "HEAD"], repo_root
+        ).stdout.strip()
+        # Determine the eval branch name and switch to it (idempotent)
+        branch_name = f"aeh/eval-{session_id}"
+        exists = _run_git(
+            ["rev-parse", "--verify", f"refs/heads/{branch_name}"], repo_root, check=False
+        )
+        if exists.returncode == 0:
+            _run_git(["checkout", branch_name], repo_root)
+        else:
+            base_ok = _run_git(
+                ["rev-parse", "--verify", base_ref], repo_root, check=False
+            )
+            if base_ok.returncode != 0:
+                raise InjectionTargetError(
+                    f"base_ref '{base_ref}' not found locally — fetch it or specify an existing ref"
+                )
+            _run_git(["checkout", "-b", branch_name, base_ref], repo_root)
+        return BranchInfo(branch_name=branch_name, original_branch=original_branch)
 
-    def prepare(self) -> Path:
-        """Creates the worktree on first call; returns the existing one unchanged on repeat
-        calls for the same plan_id (idempotent — re-running the injector doesn't error)."""
-        path = self.worktree_path
-        if path.exists():
-            return path
-        path.parent.mkdir(parents=True, exist_ok=True)
-        _run_git(["worktree", "add", "-b", self.branch_name, str(path), "HEAD"], cwd=self.repo_root)
-        return path
+    @staticmethod
+    def restore(repo_root: Path, original_branch: str) -> None:
+        result = _run_git(["status", "--porcelain"], repo_root)
+        if result.stdout.strip():
+            raise InjectionTargetError(
+                f"Eval branch has uncommitted changes — commit or discard them first:\n{result.stdout.strip()}"
+            )
+        _run_git(["checkout", original_branch], repo_root)
 
-    def cleanup(self) -> None:
-        """Removes the worktree and its branch. Never called automatically by the injector —
-        the user reviews the branch with their own git tooling first (locked decision)."""
-        path = self.worktree_path
-        if path.exists():
-            _run_git(["worktree", "remove", "--force", str(path)], cwd=self.repo_root)
-        try:
-            _run_git(["branch", "-D", self.branch_name], cwd=self.repo_root)
-        except InjectionTargetError:
-            pass
+    @staticmethod
+    def current_branch(repo_root: Path) -> str:
+        return _run_git(["rev-parse", "--abbrev-ref", "HEAD"], repo_root).stdout.strip()

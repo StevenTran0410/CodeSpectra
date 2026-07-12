@@ -925,6 +925,13 @@ declare global {
         resetStage3: (
           sessionId: string
         ) => Promise<{ success: boolean; deleted_dataset_ids: string[] }>
+        createEvalBranch: (
+          sessionId: string,
+          baseRef: string
+        ) => Promise<{ branch_name: string; previous_branch: string }>
+        restoreEvalBranch: (sessionId: string) => Promise<{ restored_branch: string }>
+        createEvalPlan: (sessionId: string) => Promise<{ plan_path: string }>
+        loadEvalResults: (sessionId: string) => Promise<{ run_id: string; status: string }>
         generateAgentFlowMap: (
           sessionId: string,
           body: {

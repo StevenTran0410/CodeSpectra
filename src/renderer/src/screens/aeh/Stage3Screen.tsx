@@ -145,6 +145,13 @@ export default function Stage3Screen(): React.ReactElement {
   }
 
   useEffect(() => {
+    const goto = searchParams.get('goto')
+    if ((goto === 'stage4' || goto === 'stage5') && expansionSession) {
+      navigate(`/aeh/analysis/${goto}?sessionId=${expansionSession.id}`, { replace: true })
+    }
+  }, [searchParams, expansionSession, navigate])
+
+  useEffect(() => {
     if (!selectedCandidateId) return
     let cancelled = false
     setExpansionSession(null)

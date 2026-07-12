@@ -161,6 +161,25 @@ export function registerAEHHandlers(): void {
     aehClient().del(`/api/discovery/expansion-sessions/${sessionId}/stage3`)
   )
 
+  ipcMain.handle('aeh:createEvalBranch', (_e, sessionId: string, baseRef: string) =>
+    aehClient().post(
+      `/api/discovery/expansion-sessions/${sessionId}/eval-branch?base_ref=${encodeURIComponent(baseRef)}`,
+      {}
+    )
+  )
+
+  ipcMain.handle('aeh:restoreEvalBranch', (_e, sessionId: string) =>
+    aehClient().post(`/api/discovery/expansion-sessions/${sessionId}/eval-branch/restore`, {})
+  )
+
+  ipcMain.handle('aeh:createEvalPlan', (_e, sessionId: string) =>
+    aehClient().post(`/api/discovery/expansion-sessions/${sessionId}/eval-plan`, {})
+  )
+
+  ipcMain.handle('aeh:loadEvalResults', (_e, sessionId: string) =>
+    aehClient().post(`/api/discovery/expansion-sessions/${sessionId}/eval-results`, {})
+  )
+
   ipcMain.handle('aeh:generateAgentFlowMap', (_e, sessionId: string, body: unknown) =>
     aehClient().post(`/api/discovery/expansion-sessions/${sessionId}/agent-flows`, withBackendConnection(body))
   )
