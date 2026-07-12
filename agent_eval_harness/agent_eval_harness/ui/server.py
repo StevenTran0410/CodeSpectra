@@ -1615,12 +1615,7 @@ async def get_agent_flows_route(session_id: str):
 
 @app.post("/api/discovery/expansion-sessions/{session_id}/eval-branch")
 async def create_eval_branch(session_id: str, base_ref: str = "main"):
-    sess = await _get_expansion_session_or_404(session_id)
-    if sess.get("eval_branch_name"):
-        return {
-            "branch_name": sess["eval_branch_name"],
-            "previous_branch": sess["eval_original_branch"],
-        }
+    await _get_expansion_session_or_404(session_id)
     repo_root = _get_repo_root()
     try:
         info = BranchInjectionTarget.prepare(repo_root, session_id, base_ref=base_ref)
