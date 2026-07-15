@@ -928,10 +928,48 @@ declare global {
         createEvalBranch: (
           sessionId: string,
           baseRef: string
-        ) => Promise<{ branch_name: string; previous_branch: string }>
+        ) => Promise<{ branch_name: string; current_branch: string }>
         restoreEvalBranch: (sessionId: string) => Promise<{ restored_branch: string }>
-        createEvalPlan: (sessionId: string) => Promise<{ plan_path: string }>
+        createEvalPlan: (sessionId: string, baseRef: string) => Promise<{ plan_path: string }>
         loadEvalResults: (sessionId: string) => Promise<{ run_id: string; status: string }>
+        getEvalRunCases: (runId: string) => Promise<{
+          run_id: string
+          status: string
+          agents: Record<string, Array<{
+            case_id: string | null
+            trace_id: string
+            input: string | null
+            result: string | null
+            expected: unknown
+            evaluations: Array<{
+              metric_name: string
+              metric_class: string
+              score: number | null
+              details: Record<string, unknown>
+            }>
+          }>>
+          agent_summaries: Record<string, { insight: string; case_count: number; avg_score: number | null }>
+        }>
+        judgeEvalRunCases: (
+          runId: string,
+          body: {
+            agent_id: string
+            provider_id?: string | null
+            model_id?: string | null
+            reasoning_effort?: string | null
+            thinking_budget?: number | null
+          }
+        ) => Promise<{ scored: number; skipped: number }>
+        summarizeEvalRunAgent: (
+          runId: string,
+          body: {
+            agent_id: string
+            provider_id?: string | null
+            model_id?: string | null
+            reasoning_effort?: string | null
+            thinking_budget?: number | null
+          }
+        ) => Promise<{ insight: string; case_count: number; cached: boolean }>
         generateAgentFlowMap: (
           sessionId: string,
           body: {
@@ -942,6 +980,19 @@ declare global {
           }
         ) => Promise<AEHAgentFlowMap>
         getAgentFlowMap: (sessionId: string) => Promise<AEHAgentFlowMap | null>
+        enrichAgents: (
+          sessionId: string,
+          body: {
+            provider_id?: string | null
+            model_id?: string | null
+            reasoning_effort?: string | null
+            thinking_budget?: number | null
+            depth?: string
+            agent_ids?: string[] | null
+            force_agent_ids?: string[] | null
+          }
+        ) => Promise<{ enriched_count: number; degraded_count: number; skipped_count: number }>
+        getAgentKnowledge: (sessionId: string) => Promise<AEHAgentKnowledgeRecord[]>
         advanceSession: (
           sessionId: string,
           body: {
@@ -1140,16 +1191,120 @@ declare global {
     file_provenance?: Record<string, string>
   }
 
+  export interface AEHExpansionAcceptedItem {
+    file: string
+    role_hint: string | null
+    key_symbols: string[]
+    follow: boolean
+  }
+
+  export interface AEHCitation {
+    file: string
+    line: number
+    symbol: string
+  }
+
+  export interface AEHConsumerRef {
+    name: string
+    file: string
+    line: number
+  }
+
+  export interface AEHFailureModeRef {
+    description: string
+    file: string
+    line: number
+  }
+
+  export interface AEHContextBuilderRef {
+    name: string
+    file: string
+    line: number
+    builds_kwarg: string
+  }
+
+  export interface AEHLocationInfo {
+    file: string
+    line_start: number
+    line_end: number
+    entry_method: string
+    entry_line: number
+  }
+
+  export interface AEHComponentRef {
+    id: string
+    role: string
+    file: string
+    line: number
+  }
+
+  export interface AEHContractArg {
+    kwarg: string
+    source_kind: string
+    type_hint: string
+    example: string
+  }
+
+  export interface AEHOutputContract {
+    json_schema: string
+    example: string
+  }
+
+  export interface AEHPromptSiteRef {
+    file: string
+    line: number
+    kind: string
+    snippet: string
+  }
+
+  /** Mirrors agent_eval_harness/discovery/agent_knowledge.py::AgentKnowledge.to_json(). */
+  export interface AEHAgentKnowledgeContent {
+    location: AEHLocationInfo | null
+    components: AEHComponentRef[]
+    input_contract: AEHContractArg[]
+    output_contract: AEHOutputContract | null
+    prompt_sites: AEHPromptSiteRef[]
+    functionality: string
+    functionality_citations: AEHCitation[]
+    context_builders: AEHContextBuilderRef[]
+    upstream_consumers: AEHConsumerRef[]
+    downstream_consumers: AEHConsumerRef[]
+    failure_modes: AEHFailureModeRef[]
+    degraded: boolean
+    confidence: 'low' | 'medium' | 'high'
+    degraded_reason: string | null
+    needs_human: string[]
+    evidence_hash: string
+    query_count: number
+    generated_at: string
+  }
+
+  /** DB pointer row + parsed sidecar JSON, from GET .../agent-knowledge. */
+  export interface AEHAgentKnowledgeRecord {
+    session_id: string
+    agent_id: string
+    md_path: string
+    json_path: string
+    evidence_hash: string
+    confidence: 'low' | 'medium' | 'high'
+    query_count: number
+    generated_at: string
+    content: AEHAgentKnowledgeContent | null
+  }
+
   export interface AEHExpansionSession extends AEHSessionBase<'running' | 'completed' | 'failed'> {
     candidate_id: string
     map_path: string | null
-    accepted: string[]
+    accepted: AEHExpansionAcceptedItem[]
     boundary: string[]
     accepted_edges: { src: string; dst: string }[]
     stop_reason: string | null
     plan_path: string | null
     agent_flows_path: string | null
     plan_report_path: string | null
+    eval_branch_name?: string | null
+    eval_plan_md_path?: string | null
+    eval_run_id?: string | null
   }
 
   export interface AEHDatasetRef {

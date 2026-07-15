@@ -17,8 +17,15 @@ from domain.retrieval.signal_builders import (
     build_module_proximity_rank_list,
 )
 from domain.retrieval.graph_signal import _rerank_coverage_target
-from domain.retrieval.rrf_fusion import fuse_signal_lists
-from domain.retrieval.types import FusedRankEntry, RerankedEntry, RetrievalSection, SignalRankEntry, StageCandidate
+from domain.retrieval.rrf_fusion import _TOP_N_CHUNKS, fuse_signal_lists, retrieve_rrf_fusion_as_bundle
+from domain.retrieval.types import (
+    FusedRankEntry,
+    RerankedEntry,
+    RetrievalSection,
+    RrfFusionBundle,
+    SignalRankEntry,
+    StageCandidate,
+)
 from infrastructure.db.database import get_db
 from shared.utils import new_id
 
@@ -1512,3 +1519,92 @@ class TestDisabledPathByteForByte:
         # This test verifies the contract: no modifications to fused when reranker is off
         assert fused_list[0].fused_score == 10.0
         assert fused_list[0].per_signal_ranks == {"bm25": 1}
+
+
+class TestRetrieveRrfFusionAsBundle:
+    """Top-N selection + split-symbol completion in retrieve_rrf_fusion_as_bundle -- the real production cropping path retrieve() calls first."""
+
+    async def _insert_chunk(
+        self, db, snapshot_id, chunk_id, rel_path, chunk_index, content, token_estimate,
+        split_part=0, split_of=1,
+    ):
+        await db.execute(
+            """INSERT INTO retrieval_chunks
+            (id, snapshot_id, rel_path, language, category, chunk_index, content,
+             token_estimate, chunk_type, start_line, end_line, split_part, split_of, created_at)
+            VALUES (?, ?, ?, 'python', 'source', ?, ?, ?, 'function', 0, 0, ?, ?, '2026-01-01T00:00:00Z')""",
+            (chunk_id, snapshot_id, rel_path, chunk_index, content, token_estimate, split_part, split_of),
+        )
+        await db.commit()
+
+    def _fused_entry(self, chunk_id, rel_path, score, token_estimate=50):
+        return FusedRankEntry(
+            chunk_id=chunk_id, rel_path=rel_path, fused_score=score,
+            per_signal_ranks={"bm25": 1}, excerpt="x", token_estimate=token_estimate,
+        )
+
+    def _patch_rrf(self, monkeypatch, fused):
+        bundle = RrfFusionBundle(
+            snapshot_id="s", query="q", section=RetrievalSection.QA,
+            bm25_signal=[], graph_signal=[], module_signal=[], category_signal=[],
+            fused=fused, reranker_status="disabled",
+        )
+
+        async def fake(*args, **kwargs):
+            return bundle
+
+        monkeypatch.setattr("domain.retrieval.rrf_fusion.retrieve_rrf_fusion", fake)
+
+    @pytest.mark.asyncio
+    async def test_majority_split_parts_present_pulls_in_missing_sibling(self, monkeypatch):
+        """3-part split symbol, 2/3 parts rank into the top-N -- the missing middle part must be completed in."""
+        db = get_db()
+        snapshot_id = new_id()
+        rel_path = "agent_x.py"
+        await self._insert_chunk(db, snapshot_id, "c5", rel_path, 5, "part 0", 50, split_part=0, split_of=3)
+        await self._insert_chunk(db, snapshot_id, "c6", rel_path, 6, "part 1 -- the missing middle", 50, split_part=1, split_of=3)
+        await self._insert_chunk(db, snapshot_id, "c7", rel_path, 7, "part 2", 50, split_part=2, split_of=3)
+        self._patch_rrf(monkeypatch, [self._fused_entry("c5", rel_path, 10.0), self._fused_entry("c7", rel_path, 9.0)])
+
+        result = await retrieve_rrf_fusion_as_bundle(
+            snapshot_id=snapshot_id, query="q", section=RetrievalSection.QA, budget=12_000,
+        )
+
+        assert {e.chunk_id for e in result.evidences} == {"c5", "c6", "c7"}
+        completed = next(e for e in result.evidences if e.chunk_id == "c6")
+        assert completed.reason_codes == ["split-complete"]
+
+    @pytest.mark.asyncio
+    async def test_minority_split_parts_present_does_not_complete(self, monkeypatch):
+        """5-part split symbol, only 1/5 in top-N (20% < 50% threshold) -- no completion should happen."""
+        db = get_db()
+        snapshot_id = new_id()
+        rel_path = "agent_y.py"
+        for i in range(5):
+            await self._insert_chunk(db, snapshot_id, f"y{i}", rel_path, 10 + i, f"part {i}", 50, split_part=i, split_of=5)
+        self._patch_rrf(monkeypatch, [self._fused_entry("y0", rel_path, 10.0)])
+
+        result = await retrieve_rrf_fusion_as_bundle(
+            snapshot_id=snapshot_id, query="q", section=RetrievalSection.QA, budget=12_000,
+        )
+
+        assert {e.chunk_id for e in result.evidences} == {"y0"}
+
+    @pytest.mark.asyncio
+    async def test_top_n_cap_ignores_extra_ranked_entries_beyond_cap(self, monkeypatch):
+        """20 distinct, unrelated (non-split) ranked chunks well within budget -- only the top _TOP_N_CHUNKS by rank are kept."""
+        db = get_db()
+        snapshot_id = new_id()
+        entries = []
+        for i in range(20):
+            chunk_id = f"z{i}"
+            await self._insert_chunk(db, snapshot_id, chunk_id, f"file_{i}.py", i, f"content {i}", 50)
+            entries.append(self._fused_entry(chunk_id, f"file_{i}.py", 100.0 - i))
+        self._patch_rrf(monkeypatch, entries)
+
+        result = await retrieve_rrf_fusion_as_bundle(
+            snapshot_id=snapshot_id, query="q", section=RetrievalSection.QA, budget=12_000,
+        )
+
+        assert len(result.evidences) == _TOP_N_CHUNKS
+        assert {e.chunk_id for e in result.evidences} == {f"z{i}" for i in range(_TOP_N_CHUNKS)}

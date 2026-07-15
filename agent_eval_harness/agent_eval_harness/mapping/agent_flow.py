@@ -81,7 +81,11 @@ def _fallback_snippet(component: Component, files: list[Path]) -> str:
     return extract_symbol_snippet(content, class_name)
 
 
-def _build_user_prompt(system_map: SystemMap, source_by_component: dict[str, str]) -> str:
+def _build_user_prompt(
+    system_map: SystemMap,
+    source_by_component: dict[str, str],
+    feature_map_hint: str | None = None,
+) -> str:
     lines = [f"Target system: {system_map.target_system_id}", ""]
     for component in system_map.components:
         constraints = (
@@ -98,6 +102,10 @@ def _build_user_prompt(system_map: SystemMap, source_by_component: dict[str, str
         lines.append("source:")
         lines.append(snippet)
         lines.append("")
+    # B5: inject project feature map summary when available so LLM can infer agent boundaries
+    if feature_map_hint:
+        lines.append("\n\nProject feature map summary:")
+        lines.append(feature_map_hint)
     return "\n".join(lines)
 
 
@@ -105,6 +113,7 @@ async def separate_agent_flows(
     system_map: SystemMap,
     source_by_component: dict[str, str],
     llm_client: LLMClient,
+    feature_map_hint: str | None = None,
 ) -> AgentFlowMap:
     """One holistic LLM call; a malformed/empty response degrades to everything unassigned
     rather than raising, since components only leave `remaining` once validly claimed."""
@@ -119,7 +128,7 @@ async def separate_agent_flows(
                 LLMMessage(role="system", content=AGENT_FLOW_SYSTEM),
                 LLMMessage(
                     role="user",
-                    content=_build_user_prompt(system_map, source_by_component),
+                    content=_build_user_prompt(system_map, source_by_component, feature_map_hint),
                 ),
             ],
             max_tokens=4096,

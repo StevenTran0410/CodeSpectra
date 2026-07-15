@@ -150,6 +150,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     _add_data_dir_arg(discover_parser)
     discover_parser.add_argument("--json", action="store_true")
 
+    # enrich subcommand group
+    enrich_parser = subparsers.add_parser("enrich", help="Enrich discovered agents with LLM analysis")
+    enrich_parser.add_argument("session_id", help="Expansion session ID")
+    enrich_parser.add_argument("--depth", choices=["normal", "deep"], default="normal")
+    enrich_parser.add_argument("--agent-ids", dest="agent_ids", nargs="+", help="Specific agents to enrich")
+    enrich_parser.add_argument("--force", action="store_true", help="Force re-enrichment")
+    enrich_parser.add_argument("--offline", action="store_true", help="Offline mode: list cached knowledge")
+    _add_provider_args(enrich_parser)
+    _add_data_dir_arg(enrich_parser)
+
     return parser
 
 
@@ -585,6 +595,80 @@ async def _discover_command(args: argparse.Namespace) -> int:
     return 0
 
 
+async def _enrich_command(args: argparse.Namespace) -> int:
+    import json
+    _apply_data_dir(args)
+
+    from agent_eval_harness.store import repository
+
+    async with _db_session():
+        if args.offline:
+            # Offline mode: list cached knowledge
+            knowledge_list = await repository.list_agent_knowledge(args.session_id)
+            if args.json:
+                print(json.dumps(knowledge_list, indent=2))
+            else:
+                print(f"[aeh] Cached agent knowledge for session {args.session_id}:")
+                for item in knowledge_list:
+                    print(f"  - {item['agent_id']}: confidence={item['confidence']}, queries={item['query_count']}")
+            return 0
+
+        # Online enrichment
+        config = AEHConfig.load()
+        backend_url = args.backend_url or config.backend_url
+        backend_token = args.backend_token or config.backend_token
+        if not backend_url or not backend_token:
+            raise SystemExit(
+                "enrich command requires --backend-url/--backend-token (or .aeh/config.yaml)"
+            )
+
+        llm_client = _build_llm_client(args, config)
+
+        from agent_eval_harness.discovery.client import CodeSpectraClient
+        from agent_eval_harness.discovery.enrichment import enrich_agents
+        from agent_eval_harness.mapping.agent_flow import load_agent_flow_map
+        from agent_eval_harness.mapping.system_map import load_system_map
+
+        client = CodeSpectraClient(backend_url, backend_token)
+
+        try:
+            # Load session and related data
+            sess = await repository.get_expansion_session(args.session_id)
+            if not sess:
+                raise SystemExit(f"Session {args.session_id} not found")
+
+            system_map = load_system_map(sess["map_path"])
+            agent_flow_map = load_agent_flow_map(sess["agent_flows_path"])
+
+            force_ids = [args.session_id] if args.force else []
+
+            knowledge_list = await enrich_agents(
+                session_id=args.session_id,
+                agent_flow_map=agent_flow_map,
+                system_map=system_map,
+                accepted_with_annotations=sess.get("accepted", []),
+                accepted_edges=sess.get("accepted_edges", []),
+                client=client,
+                llm_client=llm_client,
+                depth=args.depth,
+                agent_ids=args.agent_ids,
+                force_agent_ids=force_ids,
+            )
+
+            enriched_count = sum(1 for k in knowledge_list if not k.degraded)
+            degraded_count = sum(1 for k in knowledge_list if k.degraded)
+
+            print(f"[aeh] enrich completed  session_id={args.session_id}")
+            print(f"  enriched: {enriched_count}")
+            print(f"  degraded: {degraded_count}")
+            return 0
+
+        finally:
+            await client.aclose()
+            if hasattr(llm_client, "aclose"):
+                await llm_client.aclose()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_arg_parser()
     args = parser.parse_args(argv)
@@ -592,6 +676,8 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(_run_command(args))
     elif args.command == "discover":
         return asyncio.run(_discover_command(args))
+    elif args.command == "enrich":
+        return asyncio.run(_enrich_command(args))
     elif args.command == "dataset":
         return asyncio.run(_dataset_command(args))
     elif args.command == "eval":

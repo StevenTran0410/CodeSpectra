@@ -291,3 +291,142 @@ async def test_discovery_paused_on_rate_limit() -> None:
     assert candidates[0]["name"] == "Crew 0"
     assert candidates[1]["name"] == "Crew 1"
     assert len(new_llm_client.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_risk_flag_forces_needs_human_on_hub_overlap() -> None:
+    """Risk finding evidence overlaps hub_path — candidate marked needs_human with risk_flags populated."""
+    from agent_eval_harness.discovery.analysis_context import ProjectContext, ReportSection
+
+    client = _golden_fixture_client()
+    llm_client = FakeLLMClient([
+        LLMResponse(
+            content='{"is_agentic_system": true, "name": "Haystack Pipeline", '
+            '"frameworks": ["haystack"], "entry_points": ["agents/haystack_pipeline.py"], '
+            '"confidence": "high"}',
+            model="fake",
+        ),
+        LLMResponse(
+            content='{"is_agentic_system": true, "name": "Crew Setup", '
+            '"frameworks": ["crewai"], "entry_points": ["agents/crew_setup.py"], '
+            '"confidence": "high"}',
+            model="fake",
+        ),
+    ])
+
+    # Create ProjectContext with risk findings that overlap hub_paths
+    project_context = ProjectContext(
+        risk_findings=[
+            {
+                "severity": "high",
+                "title": "God object in core file",
+                "evidence": ["agents/haystack_pipeline.py"],
+            },
+        ]
+    )
+
+    candidates = await discover_agentic_systems(
+        "snap-risk", "repo-risk", client, llm_client, project_context=project_context
+    )
+
+    assert len(candidates) == 2
+    haystack_cand = [c for c in candidates if c["name"] == "Haystack Pipeline"][0]
+    # Risk finding evidence overlaps hub_path, so needs_human must be True and risk_flags non-empty
+    assert haystack_cand["needs_human"] is True
+    assert len(haystack_cand.get("risk_flags", [])) == 1
+    assert haystack_cand["risk_flags"][0]["severity"] == "high"
+
+    crew_cand = [c for c in candidates if c["name"] == "Crew Setup"][0]
+    # No overlap for crew_setup.py, so risk_flags should be absent or empty
+    assert len(crew_cand.get("risk_flags", [])) == 0
+
+
+@pytest.mark.asyncio
+async def test_risk_flag_absent_when_no_hub_overlap() -> None:
+    """Risk finding evidence does NOT overlap hub_path — risk_flags must be absent."""
+    from agent_eval_harness.discovery.analysis_context import ProjectContext
+
+    client = _golden_fixture_client()
+    llm_client = FakeLLMClient([
+        LLMResponse(
+            content='{"is_agentic_system": true, "name": "Haystack Pipeline", '
+            '"frameworks": ["haystack"], "entry_points": ["agents/haystack_pipeline.py"], '
+            '"confidence": "high"}',
+            model="fake",
+        ),
+        LLMResponse(
+            content='{"is_agentic_system": true, "name": "Crew Setup", '
+            '"frameworks": ["crewai"], "entry_points": ["agents/crew_setup.py"], '
+            '"confidence": "high"}',
+            model="fake",
+        ),
+    ])
+
+    # Risk findings that do NOT overlap any hub_paths
+    project_context = ProjectContext(
+        risk_findings=[
+            {
+                "severity": "high",
+                "title": "Issue in unrelated file",
+                "evidence": ["utils/other_file.py"],
+            },
+        ]
+    )
+
+    candidates = await discover_agentic_systems(
+        "snap-no-overlap", "repo-no-overlap", client, llm_client, project_context=project_context
+    )
+
+    assert len(candidates) == 2
+    for cand in candidates:
+        # No hub overlap, so risk_flags must be empty (or absent)
+        assert len(cand.get("risk_flags", [])) == 0
+
+
+@pytest.mark.asyncio
+async def test_pass_c_prompt_includes_identity_context() -> None:
+    """Pass C prompt injection includes identity.as_context_block() when project_context provided."""
+    from agent_eval_harness.discovery.analysis_context import ProjectContext, ReportSection
+
+    client = _golden_fixture_client()
+
+    captured_prompts = []
+
+    class _PromptCapturingLLMClient:
+        def __init__(self):
+            self.call_count = 0
+
+        async def complete(self, messages, **kwargs):
+            self.call_count += 1
+            # Capture the user prompt for inspection
+            user_msg = [m for m in messages if m.role == "user"][0]
+            captured_prompts.append(user_msg.content)
+            # Return a valid response
+            return LLMResponse(
+                content='{"is_agentic_system": true, "name": "Test Agent", '
+                '"frameworks": ["haystack"], "entry_points": [], "confidence": "high"}',
+                model="fake",
+            )
+
+    llm_client = _PromptCapturingLLMClient()
+
+    # Create ProjectContext with identity section
+    project_context = ProjectContext(
+        identity=ReportSection(
+            content={
+                "purpose": "Process documents",
+                "domain": "NLP",
+            }
+        )
+    )
+
+    candidates = await discover_agentic_systems(
+        "snap-prompt", "repo-prompt", client, llm_client, project_context=project_context
+    )
+
+    assert len(candidates) > 0
+    assert len(captured_prompts) > 0
+    # At least one prompt should include the identity context block
+    first_prompt = captured_prompts[0]
+    assert "- purpose: Process documents" in first_prompt
+    assert "- domain: NLP" in first_prompt

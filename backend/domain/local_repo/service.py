@@ -316,10 +316,19 @@ class LocalRepoService:
         repo = await self.get_by_id(repo_id)
         await delete_repo_artifacts(repo_id)
 
+        # A path can be shared by multiple rows (e.g. Code Analysis + AEH); only delete the folder once no other row references it.
+        async with db.execute(
+            "SELECT 1 FROM local_repos WHERE path = ? AND id != ?",
+            (repo.path, repo_id),
+        ) as cur:
+            shared_by_other_repo = await cur.fetchone() is not None
+
         # If this path is inside CodeSpectra's managed clone root, delete it strictly first to avoid silent leftovers causing clone conflicts.
         managed_root = Path.home() / "CodeSpectra" / "repos"
         repo_path = Path(repo.path)
-        if _is_under_path(repo_path, managed_root):
+        if shared_by_other_repo:
+            logger.info(f"Skipping folder delete for {repo_path} — still referenced by another repo entry")
+        elif _is_under_path(repo_path, managed_root):
             _remove_tree_strict(repo_path)
             logger.info(f"Deleted managed clone folder: {repo_path}")
 

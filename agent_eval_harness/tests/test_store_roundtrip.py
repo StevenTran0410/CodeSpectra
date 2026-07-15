@@ -213,7 +213,9 @@ async def test_expansion_session_roundtrip_includes_accepted_edges() -> None:
     sess = await repository.get_expansion_session(session_id)
     assert sess is not None
     assert sess["status"] == "completed"
-    assert sess["accepted"] == ["a.py", "b.py"]
+    # accepted is now a list of dicts with file, role_hint, key_symbols, follow fields
+    accepted_files = [item["file"] for item in sess["accepted"]]
+    assert accepted_files == ["a.py", "b.py"]
     assert sess["boundary"] == ["c.py"]
     assert sess["accepted_edges"] == edges
 

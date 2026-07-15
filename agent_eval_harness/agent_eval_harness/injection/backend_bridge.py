@@ -9,7 +9,9 @@ from agent_eval_harness.config import AEHConfig
 _bridged = False
 
 
-def _default_backend_path() -> Path:
+def default_backend_path() -> Path:
+    """This repo's own backend/ — pass explicitly in tests, don't fall through to
+    AEHConfig.load() (that config may point at a disposable clone for live-run safety)."""
     # this file -> injection -> agent_eval_harness(pkg) -> agent_eval_harness(repo) -> monorepo root
     return Path(__file__).resolve().parents[3] / "backend"
 
@@ -20,7 +22,7 @@ def ensure_backend_importable(backend_source_path: str | None = None) -> Path:
     root = Path(
         backend_source_path
         or AEHConfig.load().backend_source_path
-        or _default_backend_path()
+        or default_backend_path()
     ).resolve()
     if not (root / "domain").is_dir():
         raise FileNotFoundError(

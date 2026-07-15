@@ -3,13 +3,44 @@ from __future__ import annotations
 
 import datetime
 import json
+import logging
 from pathlib import Path
 
 from agent_eval_harness.code_injection.prompt_locator import locate_prompt_reference
 from agent_eval_harness.mapping.system_map import SystemMap
 from agent_eval_harness.planning.report import AgentPlanReport, EvaluationPlanReport
 
+logger = logging.getLogger("agent_eval_harness.code_injection.plan_renderer")
+
 _TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
+
+# Single source of truth — must match the anchors main_py_diff.txt's instructions reference.
+_MAIN_PY_ANCHORS = (
+    "import argparse",
+    "from api.external import router as external_router",
+    'app.include_router(external_router, prefix="/api/external")',
+)
+
+
+def _validate_main_py_anchors(repo_root: Path) -> None:
+    """Fails loudly at plan-render time if backend/main.py doesn't actually contain the
+    anchor lines the diff instructions reference — better than silently handing a coding
+    agent (which has zero other context and can't tell a stale anchor from a real one)
+    instructions that won't apply."""
+    main_py_path = repo_root / "backend" / "main.py"
+    if not main_py_path.is_file():
+        raise ValueError(f"backend/main.py not found at {main_py_path}")
+    content = main_py_path.read_text(encoding="utf-8")
+    missing = [a for a in _MAIN_PY_ANCHORS if a not in content]
+    if missing:
+        raise ValueError(
+            "backend/main.py doesn't contain the expected anchor line(s): "
+            + "; ".join(repr(m) for m in missing)
+            + f" — the main.py hook instructions won't apply cleanly against {main_py_path}. "
+            "Check you're on the right branch (base_ref), or update "
+            "code_injection/templates/main_py_diff.txt if backend/main.py's real structure "
+            "changed."
+        )
 
 
 def render_eval_plan_md(
@@ -20,6 +51,8 @@ def render_eval_plan_md(
     branch_name: str,
     plan_report: EvaluationPlanReport | None = None,
     repo_root: Path | None = None,
+    base_ref: str = "main",
+    knowledge_dir: Path | None = None,
 ) -> str:
     """Build a self-contained briefing document for an external coding agent.
 
@@ -35,7 +68,17 @@ def render_eval_plan_md(
             When None, falls back to a thin wiring table (legacy sessions with no report).
         repo_root: required when plan_report is given, to resolve prompt-location references
             against real files on disk.
+        base_ref: branch/ref the coding agent should create the eval branch FROM. AEH itself
+            never creates this branch (a locally-created-but-unpushed branch is invisible to
+            anything checking remotely) — the plan tells the coding agent to create it as its
+            own first step instead.
+        knowledge_dir: optional directory containing enriched AgentKnowledge JSON sidecars
+            for agents. When provided, enriched agents use prompt_sites from their knowledge
+            instead of calling locate_prompt_reference.
     """
+    if repo_root is not None:
+        _validate_main_py_anchors(repo_root)
+
     sections: list[str] = []
 
     # Section 1: Header
@@ -46,10 +89,24 @@ def render_eval_plan_md(
         f"Branch: {branch_name}\n"
         f"plan_id: {wiring['plan_id']}\n"
         f"Generated: {datetime.datetime.utcnow().isoformat()}Z\n\n"
-        f"This document is a self-contained briefing for an external coding agent. "
-        f"It contains all file content, per-agent context, and instructions needed "
-        f"to instrument the target system for AEH evaluation. "
-        f"Do not run AEH to create these files — implement them directly from this document."
+        f"This document is a self-contained briefing for an external coding agent. You "
+        f"have NO other context about this project or AEH beyond what's written here — "
+        f"do not assume anything not stated explicitly. It contains all file content, "
+        f"per-agent context, and instructions needed to instrument the target system for "
+        f"AEH evaluation. Do not run AEH to create these files — implement them directly "
+        f"from this document."
+    )
+
+    # AEH never creates/switches this branch itself — it would yank the user's working dir out from under them mid-session.
+    sections.append(
+        "## Step 0: Create and checkout the eval branch\n"
+        "Before making ANY other changes, run this at the repo root:\n"
+        "```\n"
+        f"git checkout -b {branch_name} {base_ref}\n"
+        "```\n"
+        f"If `{branch_name}` already exists locally, run `git checkout {branch_name}` "
+        "instead (no `-b`). Do not proceed on any other branch — your changes need to "
+        "land here, not on whatever branch happened to be checked out when you started."
     )
 
     # Section 2: Agents — rich per-agent context pulled from Stage 3's already-computed
@@ -58,7 +115,7 @@ def render_eval_plan_md(
         if repo_root is None:
             raise ValueError("repo_root is required when plan_report is provided")
         agent_sections = [
-            _render_agent_section(agent_report, system_map, dataset_summaries, repo_root)
+            _render_agent_section(agent_report, system_map, dataset_summaries, repo_root, knowledge_dir)
             for agent_report in plan_report.agents
         ]
         sections.append("## Agents\n\n" + "\n\n".join(agent_sections))
@@ -120,8 +177,14 @@ def render_eval_plan_md(
     # Section 8: Verify
     sections.append(
         "## Step: Verify\n"
-        "After writing the files, restart the CodeSpectra backend and confirm "
-        "`/aeh/run-eval` appears in FastAPI docs at `/docs`. Then call "
+        "After writing the files, start the backend from the repo root with:\n"
+        "```\n"
+        "backend\\.venv\\Scripts\\python.exe backend\\main.py --port 8321\n"
+        "```\n"
+        "(Windows; on macOS/Linux use `backend/.venv/bin/python backend/main.py "
+        "--port 8321`. Pick any free port — this does not need to match the port the "
+        "real CodeSpectra app uses.) Confirm "
+        "`/aeh/run-eval` appears in FastAPI docs at `http://127.0.0.1:8321/docs`. Then call "
         "`POST /aeh/run-eval?verify=true` (from `/docs` or curl) BEFORE running the full "
         "eval — this runs exactly ONE case and confirms it actually succeeded. "
         "Do not proceed to the full run until this returns success; if it fails, the "
@@ -133,9 +196,12 @@ def render_eval_plan_md(
     # Section 9: Run
     sections.append(
         "## Step: Run\n"
-        "Once `?verify=true` succeeds, run `POST /aeh/run-eval` (no query param) from "
-        "`/docs` or curl to execute the full eval driver against every case. "
-        "Results are written to `backend/.aeh/manifest.json`."
+        "Once `?verify=true` succeeds, call `POST http://127.0.0.1:8321/aeh/run-eval` "
+        "(no query param, from `/docs` or curl) to execute the full eval driver against "
+        "every case. Results are written to `backend/.aeh/manifest.json`. If a case's "
+        "dataset has zero cases (check the Datasets table in each agent's section above — "
+        "`Cases: 0` means it's genuinely empty upstream, not something to fix here), that "
+        "agent's gates simply produce no results; this is expected, not a wiring failure."
     )
 
     # Section 10: Hand Back
@@ -154,8 +220,19 @@ def _render_agent_section(
     system_map: SystemMap,
     dataset_summaries: list[dict],
     repo_root: Path,
+    knowledge_dir: Path | None = None,
 ) -> str:
     lines = [f"### Agent: {agent_report.agent_id} (role: {agent_report.role})"]
+
+    # Try to load enriched knowledge sidecar
+    knowledge_sidecar = None
+    if knowledge_dir is not None:
+        knowledge_json_path = knowledge_dir / f"{agent_report.agent_id}.json"
+        if knowledge_json_path.exists():
+            try:
+                knowledge_sidecar = json.loads(knowledge_json_path.read_text(encoding='utf-8'))
+            except Exception as e:
+                logger.warning(f"Failed to load knowledge sidecar for {agent_report.agent_id}: {e}")
 
     contract = agent_report.contract
     primary_component_id = contract.component_id if contract else ""
@@ -169,13 +246,29 @@ def _render_agent_section(
         # No contract-declared primary component — fall back to the first gate's component.
         primary_component = system_map.component_by_id(sorted(owned_ids)[0])
 
+    # Add Functionality line if enrichment sidecar has it
+    if knowledge_sidecar and knowledge_sidecar.get('functionality'):
+        lines.append(f"- **Functionality**: {knowledge_sidecar.get('functionality')}")
+
     if primary_component is not None:
         lines.append(f"- **Code**: `{primary_component.file or 'file not tracked'}`")
-        prompt_ref = (
-            locate_prompt_reference(primary_component.file, repo_root)
-            if primary_component.file
-            else None
-        )
+
+        # Use enriched prompt_sites if available, otherwise fall back to locate_prompt_reference
+        prompt_ref = None
+        if knowledge_sidecar and knowledge_sidecar.get('prompt_sites'):
+            # Use first prompt site from enrichment
+            prompt_sites = knowledge_sidecar['prompt_sites']
+            if prompt_sites:
+                first_site = prompt_sites[0]
+                prompt_ref = f"{first_site['file']}:{first_site['line']}"
+        else:
+            # Fallback when no enrichment sidecar: superseded for enriched agents by prompt_sites in AgentKnowledge JSON.
+            prompt_ref = (
+                locate_prompt_reference(primary_component.file, repo_root)
+                if primary_component.file
+                else None
+            )
+
         if prompt_ref:
             lines.append(f"- **Prompt**: `{prompt_ref}`")
         else:

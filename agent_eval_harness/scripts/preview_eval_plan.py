@@ -127,6 +127,8 @@ async def main() -> None:
             })
 
         wiring = build_wiring_for_codespectra(system_map, session_id)
+        wiring["aeh_db_path"] = str((Path(os.environ["AEH_DATA_DIR"]) / "aeh.db").resolve())
+        wiring["dataset_ids"] = sorted(datasets_to_gate_ids.keys())
         branch_name = sess.get("eval_branch_name") or f"aeh/eval-{session_id}"
         md_content = render_eval_plan_md(
             system_map, wiring, dataset_summaries, session_id, branch_name,

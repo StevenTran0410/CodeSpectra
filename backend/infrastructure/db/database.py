@@ -566,6 +566,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_local_repos_path_workspace_mode
     ON local_repos(path, workspace_id, mode);
 """,
     },
+    {
+        "version": 34,
+        "description": "Add split_part/split_of to retrieval_chunks — an oversized function/class is now split into overlapping parts instead of being silently dropped from the index",
+        "sql": """
+ALTER TABLE retrieval_chunks ADD COLUMN split_part INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE retrieval_chunks ADD COLUMN split_of    INTEGER NOT NULL DEFAULT 1;
+""",
+    },
 ]
 
 TARGET_VERSION = len(_MIGRATIONS) - 1

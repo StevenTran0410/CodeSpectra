@@ -305,7 +305,7 @@ async def test_run_critic_defensive_parse() -> None:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# _complete_json — truncation retry
+# complete_json — truncation retry
 # ──────────────────────────────────────────────────────────────────────────────
 
 
@@ -316,7 +316,7 @@ async def test_complete_json_recovers_on_retry_after_truncated_first_response() 
         LLMResponse(content='{"notes": ["ok"]}', model="fake"),
     ])
 
-    parsed = await ap._complete_json(
+    parsed = await ap.complete_json(
         llm_client, "sys", "user", max_tokens=100, label="test_node",
     )
 
@@ -327,7 +327,7 @@ async def test_complete_json_surfaces_dag_note_when_both_attempts_fail() -> None
     llm_client = FakeLLMClient(LLMResponse(content="not json at all", model="fake"))
     dag_notes: list[str] = []
 
-    parsed = await ap._complete_json(
+    parsed = await ap.complete_json(
         llm_client, "sys", "user", max_tokens=100, label="test_node", dag_notes=dag_notes,
     )
 

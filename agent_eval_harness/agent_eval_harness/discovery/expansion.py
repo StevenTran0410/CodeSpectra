@@ -1,8 +1,11 @@
+from __future__ import annotations
+
 import ast
 import json
 import logging
 from agent_eval_harness.llm.client import LLMClient, LLMMessage
 from agent_eval_harness.discovery.client import CodeSpectraClient
+from agent_eval_harness.discovery.analysis_context import ProjectContext
 
 logger = logging.getLogger("agent_eval_harness.discovery.expansion")
 
@@ -63,11 +66,14 @@ def extract_symbol_snippet(content: str, symbol_identifier: str) -> str:
 
 MAX_CLASSIFY_BATCH_SIZE = 6
 
+VALID_ROLE_HINTS = {"orchestrator", "agent_core", "prompt", "tool", "context_builder", "model_client", "config", "util"}
+
 async def _classify_nodes_batch(
     items: list[tuple[str, str, str | None]],
     llm_client: LLMClient,
     candidate: dict,
-) -> dict[str, str]:
+    project_context: ProjectContext | None = None,
+) -> dict[str, dict]:
     """Classify a batch of Python code chunks separately using a single LLM call."""
     name = candidate.get("name", "unknown")
     frameworks = ", ".join(candidate.get("frameworks", []))
@@ -86,16 +92,34 @@ async def _classify_nodes_batch(
         "logging, test files, third-party libraries, or configuration. Do not expand its neighbors.\n"
         "3. \"expand\" - an intermediary connector module that bridges or imports agentic systems "
         "(e.g. API routers, connector files, shared models). Accept it and continue expanding.\n\n"
+        "Valid role_hint values are: orchestrator, agent_core, prompt, tool, context_builder, "
+        "model_client, config, util. Assign a role_hint only to chunks classified as 'accept'.\n\n"
         "Respond ONLY in raw JSON, one entry per chunk, in this exact schema:\n"
         "{\"verdicts\": [{\"id\": \"<unique chunk id, copied exactly from the input>\", "
-        "\"verdict\": \"accept\"|\"boundary\"|\"expand\", \"reason\": \"brief\"}]}"
+        "\"verdict\": \"accept\"|\"boundary\"|\"expand\", \"reason\": \"brief\", "
+        "\"role_hint\": \"<one of the valid role_hint values or null>\", "
+        "\"key_symbols\": [\"symbol1\", \"symbol2\"], "
+        "\"follow\": false, \"skip\": false}]}"
     )
+
+    if project_context and project_context.feature_map:
+        system_prompt += "\n\nProject feature map:\n" + project_context.feature_map.as_context_block()
 
     user_prompt = "\n\n".join(
         f"=== ID: {path}::{chunk_id} ===\n{content}" for path, content, chunk_id in items
     )
 
-    result: dict[str, str] = {f"{path}::{chunk_id}": "boundary" for path, _, chunk_id in items}
+    result: dict[str, dict] = {
+        f"{path}::{chunk_id}": {
+            "verdict": "boundary",
+            "reason": "",
+            "role_hint": None,
+            "key_symbols": [],
+            "follow": False,
+            "skip": False,
+        }
+        for path, _, chunk_id in items
+    }
     try:
         response = await llm_client.complete(
             [
@@ -109,7 +133,18 @@ async def _classify_nodes_batch(
             unique_id = entry.get("id")
             verdict = entry.get("verdict")
             if unique_id in result and verdict in ("accept", "boundary", "expand"):
-                result[unique_id] = verdict
+                role_hint = entry.get("role_hint")
+                # Coerce role_hint to None if not in valid set
+                if role_hint and role_hint not in VALID_ROLE_HINTS:
+                    role_hint = None
+                result[unique_id] = {
+                    "verdict": verdict,
+                    "reason": entry.get("reason", ""),
+                    "role_hint": role_hint,
+                    "key_symbols": entry.get("key_symbols", []),
+                    "follow": bool(entry.get("follow", False)),
+                    "skip": bool(entry.get("skip", False)),
+                }
     except Exception as e:
         logger.warning(f"Batch classification failed: {e}. Defaulting batch to 'boundary'.")
     return result
@@ -123,6 +158,7 @@ async def expand_candidate(
     *,
     node_budget: int = 100,
     hop_cap: int = 3,
+    project_context: ProjectContext | None = None,
 ) -> dict:
     # 1. Chunks Extraction for Seeds
     seeds = []
@@ -161,15 +197,30 @@ async def expand_candidate(
     for f_path, c_id, _ in frontier:
         hops_from_seed[(f_path, c_id)] = 0
 
+    # annotations tracks verdict data for each file
+    annotations = {}
+    # boundary_reasons collects reason strings for all boundary verdicts (for A9 log)
+    boundary_reasons: list[str] = []
+
     while frontier:
         if len(accepted_chunks) >= node_budget:
             accepted_edges = sorted(
                 {(s, d) for s, d in raw_file_edges if s in accepted_files and d in accepted_files}
             )
             edges_out = [{"src": s, "dst": d} for s, d in accepted_edges]
+            accepted_list = [
+                {
+                    "file": f,
+                    "role_hint": annotations.get(f, {}).get("role_hint"),
+                    "key_symbols": annotations.get(f, {}).get("key_symbols", []),
+                    "follow": annotations.get(f, {}).get("follow", False),
+                }
+                for f in sorted(accepted_files)
+            ]
             return {
-                "accepted": sorted(list(accepted_files)),
+                "accepted": accepted_list,
                 "boundary": sorted(list(boundary_files - accepted_files)),
+                "boundary_reasons": boundary_reasons,
                 "stop_reason": "node_budget",
                 "accepted_edges": edges_out
             }
@@ -218,17 +269,44 @@ async def expand_candidate(
             if not skip_classify:
                 to_classify.append((file_path, content, chunk_id))
 
-        verdicts = await _classify_nodes_batch(to_classify, llm_client, candidate) if to_classify else {}
+        verdicts = await _classify_nodes_batch(to_classify, llm_client, candidate, project_context) if to_classify else {}
 
         for file_path, chunk_id, snippet in level:
             content, skip_classify = resolved[(file_path, chunk_id)]
-            verdict = "expand" if skip_classify else verdicts.get(f"{file_path}::{chunk_id}", "boundary")
+            verdict_data = verdicts.get(f"{file_path}::{chunk_id}", {
+                "verdict": "boundary",
+                "reason": "",
+                "role_hint": None,
+                "key_symbols": [],
+                "follow": False,
+                "skip": False,
+            })
+            if isinstance(verdict_data, str):
+                # Handle old format compatibility (shouldn't happen in phase 1, but be safe)
+                verdict = verdict_data
+                verdict_data = {
+                    "verdict": verdict,
+                    "reason": "",
+                    "role_hint": None,
+                    "key_symbols": [],
+                    "follow": False,
+                    "skip": False,
+                }
+            else:
+                verdict = verdict_data.get("verdict", "boundary")
+
+            if skip_classify:
+                verdict = "expand"
 
             chunk_key = (file_path, chunk_id)
 
             if verdict == "boundary":
                 boundary_files.add(file_path)
+                boundary_reasons.append(verdict_data.get("reason", ""))
                 continue
+
+            # Track annotation data for accepted files
+            annotations[file_path] = verdict_data
 
             accepted_chunks.add(chunk_key)
             accepted_files.add(file_path)
@@ -267,13 +345,43 @@ async def expand_candidate(
                 except Exception as e:
                     logger.warning(f"Failed to get symbol edges for {file_path}: {e}")
 
+        # BFS frontier sort: partition frontier within same hop level
+        # Items matching follow=True key_symbols go to front
+        follow_symbols = set()
+        for annotation in annotations.values():
+            if annotation.get("follow", False):
+                follow_symbols.update(annotation.get("key_symbols", []))
+
+        if follow_symbols and frontier:
+            # Partition frontier: matching items first, then rest
+            matching = []
+            rest = []
+            for item in frontier:
+                file_path, chunk_id, snippet = item
+                item_str = f"{file_path}::{chunk_id}" if chunk_id else file_path
+                if any(symbol in item_str for symbol in follow_symbols):
+                    matching.append(item)
+                else:
+                    rest.append(item)
+            frontier = matching + rest
+
     accepted_edges = sorted(
         {(s, d) for s, d in raw_file_edges if s in accepted_files and d in accepted_files}
     )
     edges_out = [{"src": s, "dst": d} for s, d in accepted_edges]
+    accepted_list = [
+        {
+            "file": f,
+            "role_hint": annotations.get(f, {}).get("role_hint"),
+            "key_symbols": annotations.get(f, {}).get("key_symbols", []),
+            "follow": annotations.get(f, {}).get("follow", False),
+        }
+        for f in sorted(accepted_files)
+    ]
     return {
-        "accepted": sorted(list(accepted_files)),
+        "accepted": accepted_list,
         "boundary": sorted(list(boundary_files - accepted_files)),
+        "boundary_reasons": boundary_reasons,
         "stop_reason": "frontier_exhausted",
         "accepted_edges": edges_out
     }

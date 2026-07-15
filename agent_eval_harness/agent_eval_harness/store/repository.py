@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from typing import Literal
+from typing import Any, Literal
 
 from agent_eval_harness.instrumentation._extract import utc_now_iso
 from agent_eval_harness.instrumentation.base import CapturedSpan
@@ -135,6 +135,13 @@ async def get_traces_for_run(run_id: str) -> list[dict]:
     async with db.execute("SELECT * FROM traces WHERE run_id = ?", (run_id,)) as cur:
         rows = await cur.fetchall()
     return [dict(row) for row in rows]
+
+
+async def get_dataset_case(case_id: str) -> dict | None:
+    db = get_db()
+    async with db.execute("SELECT * FROM dataset_cases WHERE id = ?", (case_id,)) as cur:
+        row = await cur.fetchone()
+    return dict(row) if row else None
 
 
 async def get_spans_for_trace(trace_id: str) -> list[dict]:
@@ -449,6 +456,27 @@ async def finish_discovery_session(
     await db.commit()
 
 
+async def update_discovery_session_project_context(
+    session_id: str, ctx: Any,
+) -> None:
+    """Update a discovery session's project context JSON (code-analysis report).
+
+    If ctx is None, the update is skipped (degrade-don't-break).
+    """
+    if ctx is None:
+        return
+
+    import dataclasses
+    db = get_db()
+    ctx_dict = dataclasses.asdict(ctx)
+    ctx_json = json.dumps(ctx_dict)
+    await db.execute(
+        "UPDATE discovery_sessions SET project_context_json = ? WHERE id = ?",
+        (ctx_json, session_id),
+    )
+    await db.commit()
+
+
 async def insert_discovery_candidates_bulk(
     session_id: str,
     candidates: list[dict],
@@ -472,6 +500,7 @@ async def insert_discovery_candidates_bulk(
             json.dumps(c.get("excluded_files", [])),
             json.dumps(c.get("matched_files", [])),
             json.dumps(c.get("file_provenance", {})),
+            json.dumps(c.get("risk_flags", [])),
         )
         for c in candidates
     ]
@@ -480,8 +509,8 @@ async def insert_discovery_candidates_bulk(
             "INSERT INTO discovery_candidates (id, session_id, name, frameworks_json, "
             "entry_points_json, evidence_json, confidence, verdict, needs_human, "
             "community_id, cluster_files_json, hub_paths_json, wiring_block_json, "
-            "excluded_files_json, matched_files_json, file_provenance_json) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "excluded_files_json, matched_files_json, file_provenance_json, risk_flags_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             rows,
         )
         await db.commit()
@@ -490,6 +519,7 @@ async def insert_discovery_candidates_bulk(
 async def _decode_discovery_session_row(d: dict) -> dict:
     """Expand a discovery_sessions row's *_json column and resolve its derived pipeline_stage."""
     d["pause_info"] = json.loads(d["pause_info_json"]) if d.get("pause_info_json") else None
+    d["analysis_context"] = "available" if d.get("project_context_json") else "unavailable"
     d["pipeline_stage"] = await _resolve_effective_pipeline_stage(d)
     return d
 
@@ -506,12 +536,19 @@ def _decode_discovery_candidate_row(d: dict) -> dict:
     d["excluded_files"] = json.loads(d.get("excluded_files_json") or "[]")
     d["matched_files"] = json.loads(d.get("matched_files_json") or "[]")
     d["file_provenance"] = json.loads(d.get("file_provenance_json") or "{}")
+    d["risk_flags"] = json.loads(d.get("risk_flags_json") or "[]")
     return d
 
 
 def _decode_expansion_session_row(d: dict) -> dict:
     """Expand an expansion_sessions row's *_json columns into their parsed list fields."""
     d["accepted"] = json.loads(d.get("accepted_json") or "[]")
+    # Backward-compat: convert old str format to new dict format
+    d["accepted"] = [
+        item if isinstance(item, dict)
+        else {"file": item, "role_hint": None, "key_symbols": [], "follow": False}
+        for item in d["accepted"]
+    ]
     d["boundary"] = json.loads(d.get("boundary_json") or "[]")
     d["accepted_edges"] = json.loads(d.get("accepted_edges_json") or "[]")
     return d
@@ -815,6 +852,17 @@ async def update_expansion_session_eval_plan_md_path(
     await db.commit()
 
 
+async def update_expansion_session_eval_run(
+    session_id: str, run_id: str, manifest_run_id: str | None
+) -> None:
+    db = get_db()
+    await db.execute(
+        "UPDATE expansion_sessions SET eval_run_id = ?, eval_manifest_run_id = ? WHERE id = ?",
+        (run_id, manifest_run_id, session_id),
+    )
+    await db.commit()
+
+
 async def cancel_orphaned_running_sessions() -> None:
     """Mark any status='running' session as failed — AEH's background tasks don't persist
     across process restarts, so a 'running' row at startup can only be a leftover from a
@@ -844,3 +892,45 @@ async def update_discovery_session_pipeline_stage(session_id: str, stage: str) -
     await db.commit()
 
 
+async def upsert_agent_knowledge(
+    session_id: str,
+    agent_id: str,
+    md_path: str,
+    json_path: str,
+    evidence_hash: str,
+    confidence: str,
+    query_count: int,
+) -> None:
+    """Insert or replace agent knowledge record."""
+    db = get_db()
+    await db.execute(
+        "INSERT OR REPLACE INTO agent_knowledge "
+        "(session_id, agent_id, md_path, json_path, evidence_hash, confidence, query_count, generated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (session_id, agent_id, md_path, json_path, evidence_hash, confidence, query_count, utc_now_iso()),
+    )
+    await db.commit()
+
+
+async def get_agent_knowledge(session_id: str, agent_id: str) -> dict | None:
+    """Retrieve agent knowledge record."""
+    db = get_db()
+    async with db.execute(
+        "SELECT * FROM agent_knowledge WHERE session_id = ? AND agent_id = ?",
+        (session_id, agent_id),
+    ) as cur:
+        row = await cur.fetchone()
+    if not row:
+        return None
+    return dict(row)
+
+
+async def list_agent_knowledge(session_id: str) -> list[dict]:
+    """List all agent knowledge records for a session."""
+    db = get_db()
+    async with db.execute(
+        "SELECT * FROM agent_knowledge WHERE session_id = ? ORDER BY agent_id",
+        (session_id,),
+    ) as cur:
+        rows = await cur.fetchall()
+    return [dict(r) for r in rows]

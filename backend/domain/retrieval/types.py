@@ -50,6 +50,27 @@ class RetrievalEvidence(BaseModel):
     score: float
     token_estimate: int
     excerpt: str
+    start_line: int = 0
+    end_line: int = 0
+
+
+class FileChunk(BaseModel):
+    chunk_id: str
+    rel_path: str
+    chunk_index: int
+    chunk_type: str
+    content: str
+    token_estimate: int
+    start_line: int = 0
+    end_line: int = 0
+    split_part: int = 0
+    split_of: int = 1
+
+
+class FileChunksResponse(BaseModel):
+    snapshot_id: str
+    rel_path: str
+    chunks: list[FileChunk]
 
 
 class RetrievalBundle(BaseModel):
@@ -201,6 +222,8 @@ class SignalRankEntry(BaseModel):
     signal_name: str
     excerpt: str = ""
     token_estimate: int = 0
+    start_line: int = 0
+    end_line: int = 0
 
 
 class FusedRankEntry(BaseModel):
@@ -210,6 +233,8 @@ class FusedRankEntry(BaseModel):
     per_signal_ranks: dict[str, int]
     excerpt: str
     token_estimate: int = 0
+    start_line: int = 0
+    end_line: int = 0
 
 
 class RerankedEntry(BaseModel):
@@ -222,6 +247,8 @@ class RerankedEntry(BaseModel):
     fused_rank: int
     excerpt: str
     token_estimate: int = 0
+    start_line: int = 0
+    end_line: int = 0
 
 
 class RrfFusionBundle(BaseModel):
@@ -244,3 +271,4 @@ class RrfFusionRequest(BaseModel):
     section: RetrievalSection
     budget: int | None = None
     min_confidence: float | None = None
+    symbol_chunks_only: bool = False

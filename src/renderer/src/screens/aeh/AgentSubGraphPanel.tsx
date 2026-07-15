@@ -15,6 +15,11 @@ export const ROLE_COLORS: Record<string, string> = {
   unknown: '#475569',
 }
 
+/** `accepted` items are {file, role_hint, key_symbols, follow} — extract plain paths. */
+export function acceptedFilePaths(accepted: AEHExpansionSession['accepted']): string[] {
+  return accepted.map((a) => a.file)
+}
+
 export function wiringBlockFileEdges(wiringBlock: AEHDiscoveryCandidate['wiring_block']): { src: string; dst: string }[] {
   if (!wiringBlock) return []
   const aliasToFile = new Map<string, string>()
@@ -86,8 +91,9 @@ export function AgentSubGraphPanel({
 
   // LLM 1's own BFS-discovered file graph — reused as-is, not re-detected.
   const fileEdges = useMemo(() => {
+    const acceptedPaths = new Set(acceptedFilePaths(expansionSession.accepted))
     const wiringEdges = wiringBlockFileEdges(candidate?.wiring_block ?? null)
-      .filter((e) => expansionSession.accepted.includes(e.src) && expansionSession.accepted.includes(e.dst))
+      .filter((e) => acceptedPaths.has(e.src) && acceptedPaths.has(e.dst))
     const wiringEdgeKeys = new Set(wiringEdges.map((e) => `${e.src}|${e.dst}`))
     const symbolEdges = (expansionSession.accepted_edges || [])
       .filter((e) => !wiringEdgeKeys.has(`${e.src}|${e.dst}`) && !wiringEdgeKeys.has(`${e.dst}|${e.src}`))

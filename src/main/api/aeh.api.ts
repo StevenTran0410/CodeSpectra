@@ -172,12 +172,27 @@ export function registerAEHHandlers(): void {
     aehClient().post(`/api/discovery/expansion-sessions/${sessionId}/eval-branch/restore`, {})
   )
 
-  ipcMain.handle('aeh:createEvalPlan', (_e, sessionId: string) =>
-    aehClient().post(`/api/discovery/expansion-sessions/${sessionId}/eval-plan`, {})
+  ipcMain.handle('aeh:createEvalPlan', (_e, sessionId: string, baseRef: string) =>
+    aehClient().post(
+      `/api/discovery/expansion-sessions/${sessionId}/eval-plan?base_ref=${encodeURIComponent(baseRef)}`,
+      {}
+    )
   )
 
   ipcMain.handle('aeh:loadEvalResults', (_e, sessionId: string) =>
     aehClient().post(`/api/discovery/expansion-sessions/${sessionId}/eval-results`, {})
+  )
+
+  ipcMain.handle('aeh:getEvalRunCases', (_e, runId: string) =>
+    aehClient().get(`/api/eval-runs/${runId}/cases`)
+  )
+
+  ipcMain.handle('aeh:judgeEvalRunCases', (_e, runId: string, body: unknown) =>
+    aehClient().post(`/api/eval-runs/${runId}/judge`, withBackendConnection(body), LONG_RUNNING_TIMEOUT_MS)
+  )
+
+  ipcMain.handle('aeh:summarizeEvalRunAgent', (_e, runId: string, body: unknown) =>
+    aehClient().post(`/api/eval-runs/${runId}/agent-summary`, withBackendConnection(body), LONG_RUNNING_TIMEOUT_MS)
   )
 
   ipcMain.handle('aeh:generateAgentFlowMap', (_e, sessionId: string, body: unknown) =>
@@ -186,6 +201,18 @@ export function registerAEHHandlers(): void {
 
   ipcMain.handle('aeh:getAgentFlowMap', (_e, sessionId: string) =>
     getOrNull(`/api/discovery/expansion-sessions/${sessionId}/agent-flows`)
+  )
+
+  ipcMain.handle('aeh:enrichAgents', (_e, sessionId: string, body: unknown) =>
+    aehClient().post(
+      `/api/discovery/expansion-sessions/${sessionId}/enrich-agents`,
+      withBackendConnection(body),
+      LONG_RUNNING_TIMEOUT_MS
+    )
+  )
+
+  ipcMain.handle('aeh:getAgentKnowledge', (_e, sessionId: string) =>
+    aehClient().get(`/api/discovery/expansion-sessions/${sessionId}/agent-knowledge`)
   )
 
   ipcMain.handle('aeh:advanceSession', (_e, sessionId: string, body: unknown) =>

@@ -20,6 +20,8 @@ from .chunker_ast import ASTChunk, ASTChunker
 from .types import (
     BuildRetrievalIndexRequest,
     BuildRetrievalIndexResponse,
+    FileChunk,
+    FileChunksResponse,
     RetrievalBundle,
     RetrievalCompareResponse,
     RetrievalEvidence,
@@ -97,7 +99,7 @@ _SECTION_CATEGORY_HINTS: dict[RetrievalSection, set[str]] = {
 
 
 # Avoids loading `content` when only metadata is needed, saving bandwidth on large codebases.
-_CHUNK_FULL_COLS = "id, snapshot_id, rel_path, language, category, chunk_index, content, token_estimate, chunk_type, start_line, end_line"
+_CHUNK_FULL_COLS = "id, snapshot_id, rel_path, language, category, chunk_index, content, token_estimate, chunk_type, start_line, end_line, split_part, split_of"
 
 
 async def _batch_insert_chunks(
@@ -109,7 +111,8 @@ async def _batch_insert_chunks(
 
     chunk_rows columns: (id, snapshot_id, rel_path, language, category,
                          chunk_index, content, token_estimate, chunk_type,
-                         start_line, end_line, content_hash, created_at)
+                         start_line, end_line, split_part, split_of,
+                         content_hash, created_at)
     index_rows columns: (id, snapshot_id, rel_path, chunk_index,
                          lexical_preview, created_at)
     """
@@ -120,8 +123,9 @@ async def _batch_insert_chunks(
             """
             INSERT INTO retrieval_chunks
             (id, snapshot_id, rel_path, language, category, chunk_index, content,
-             token_estimate, chunk_type, start_line, end_line, content_hash, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             token_estimate, chunk_type, start_line, end_line, split_part, split_of,
+             content_hash, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             chunk_rows,
         )
@@ -484,6 +488,8 @@ class RetrievalService:
                 chunk_type = ast_chunk.chunk_type if ast_chunk else "block"
                 start_line = ast_chunk.start_line if ast_chunk else 0
                 end_line = ast_chunk.end_line if ast_chunk else 0
+                split_part = ast_chunk.split_part if ast_chunk else 0
+                split_of = ast_chunk.split_of if ast_chunk else 1
                 # Collect tokenized document for BM25 IDF computation
                 tokens = _WORD.findall(piece.lower())
                 tokenized_corpus.append(tokens)
@@ -503,6 +509,8 @@ class RetrievalService:
                         chunk_type,
                         start_line,
                         end_line,
+                        split_part,
+                        split_of,
                         content_hash,
                         now,
                     )
@@ -570,6 +578,39 @@ class RetrievalService:
             chunk_count=chunk_count,
             files_indexed=files_indexed,
             generated_at=now,
+        )
+
+    async def chunks_for_file(
+        self, snapshot_id: str, rel_path: str, symbol_chunks_only: bool = False
+    ) -> FileChunksResponse:
+        """Fetch a known file's own chunks directly by path — no search, no ranking, no risk of drifting to a wrong-but-similar-sounding file."""
+        query = f"SELECT {_CHUNK_FULL_COLS} FROM retrieval_chunks WHERE snapshot_id=? AND rel_path=?"
+        params: tuple = (snapshot_id, rel_path)
+        if symbol_chunks_only:
+            query += " AND chunk_type IN ('function', 'class')"
+        query += " ORDER BY chunk_index ASC"
+
+        async with get_db().execute(query, params) as cur:
+            rows = await cur.fetchall()
+
+        return FileChunksResponse(
+            snapshot_id=snapshot_id,
+            rel_path=rel_path,
+            chunks=[
+                FileChunk(
+                    chunk_id=r["id"],
+                    rel_path=r["rel_path"],
+                    chunk_index=r["chunk_index"],
+                    chunk_type=r["chunk_type"],
+                    content=r["content"] or "",
+                    token_estimate=int(r["token_estimate"] or 0),
+                    start_line=r["start_line"] or 0,
+                    end_line=r["end_line"] or 0,
+                    split_part=r["split_part"] or 0,
+                    split_of=r["split_of"] or 1,
+                )
+                for r in rows
+            ],
         )
 
     async def retrieve(self, req: RetrieveRequest) -> RetrievalBundle:
@@ -783,6 +824,7 @@ class RetrievalService:
             section=req.section,
             budget=req.budget,
             min_confidence=req.min_confidence,
+            symbol_chunks_only=req.symbol_chunks_only,
         )
 
     async def compare(self, req: RetrieveRequest) -> RetrievalCompareResponse:

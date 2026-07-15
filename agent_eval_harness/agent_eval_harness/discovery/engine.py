@@ -10,6 +10,7 @@ from typing import Any
 import yaml
 
 from agent_eval_harness.discovery.client import CodeSpectraClient
+from agent_eval_harness.discovery.analysis_context import ProjectContext, load_project_context
 from agent_eval_harness.llm.client import LLMClient, LLMMessage, RateLimitExceeded
 from agent_eval_harness.store import repository
 
@@ -72,6 +73,7 @@ async def discover_agentic_systems(
     client: CodeSpectraClient,
     llm_client: LLMClient,
     already_named: dict[str, dict[str, Any]] | None = None,
+    project_context: ProjectContext | None = None,
 ) -> list[dict[str, Any]]:
     logger.info("Starting AEH Discovery Pass A: Fingerprinting scan...")
     fingerprints = load_fingerprints()
@@ -179,39 +181,6 @@ async def discover_agentic_systems(
     candidate_clusters.sort(key=lambda x: x["density"], reverse=True)
     logger.info(f"Clustered into {len(candidate_clusters)} candidates. Starting Pass C: LLM Synthesis...")
 
-    # Sibling CA report resolution
-    ca_report_content = None
-    try:
-        snap = await client.get_snapshot(snapshot_id)
-        repo_id = snap.get("local_repo_id")
-        repo = await client.get_repo(repo_id)
-        repo_path = repo.get("path")
-        workspace_id = repo.get("workspace_id")
-
-        all_repos = await client.list_repos(workspace_id=workspace_id, mode="code_analysis")
-        sibling_repo = None
-        for r in all_repos:
-            if r.get("path") == repo_path:
-                sibling_repo = r
-                break
-
-        if sibling_repo:
-            reports = await client.list_reports(repo_id=sibling_repo["id"])
-            if reports:
-                latest_report_id = reports[0]["id"]
-                full_report = await client.get_report(latest_report_id)
-                sections = []
-                report_data = full_report.get("report", {})
-                for sec in report_data.get("sections", []):
-                    sec_name = sec.get("section", "").lower()
-                    if any(x in sec_name for x in ["architecture", "feature_map", "important_files"]):
-                        sections.append(f"### {sec.get('section')}\n{sec.get('content')}")
-                if sections:
-                    ca_report_content = "\n\n".join(sections)
-                    logger.info("Found matching Code Analysis report sections to use as context.")
-    except Exception as exc:
-        logger.warning(f"Could not retrieve sibling CA report: {exc}")
-
     candidates = []
     wiring_llm_fallback_used = 0
     for rank, cluster in enumerate(candidate_clusters):
@@ -267,8 +236,16 @@ async def discover_agentic_systems(
             f"All community files: {', '.join(cluster['files'][:30])}\n\n"
             f"Evidence Hits:\n{evidence_bundle_str}\n\n"
         )
-        if ca_report_content:
-            user_prompt += f"Sibling Code Analysis Report Context:\n{ca_report_content}\n\n"
+        if project_context:
+            if project_context.identity:
+                user_prompt += project_context.identity.as_context_block()
+            if project_context.synthesis:
+                user_prompt += project_context.synthesis.as_context_block()
+            if project_context.important_files:
+                hub_set = set(cluster["hub_paths"])
+                tagged = [p for p in project_context.important_files if p in hub_set]
+                if tagged:
+                    user_prompt += f"\nKnown important files in this cluster: {', '.join(tagged)}\n"
 
         user_prompt += "Does this cluster represent a candidate agentic system? Return the JSON profile."
 
@@ -320,6 +297,14 @@ async def discover_agentic_systems(
         candidate_profile["needs_human"] = (
             candidate_profile["name"] == "unknown" or candidate_profile["confidence"] == "low"
         )
+
+        # B3: Risk flag propagation from analysis to candidate profile
+        if project_context and project_context.risk_findings:
+            hub_path_set = set(cluster["hub_paths"])
+            for finding in project_context.risk_findings:
+                if hub_path_set.intersection(finding.get("evidence", [])):
+                    candidate_profile.setdefault("risk_flags", []).append(finding)
+                    candidate_profile["needs_human"] = True
 
         # Pass D: Detect wiring block
         file_contents = {}
@@ -373,9 +358,14 @@ async def run_discovery_background(
 ) -> None:
     """Executes discovery process asynchronously and stores the output candidates in the DB."""
     try:
+        # Load project context (code-analysis report) for this snapshot
+        project_context = await load_project_context(client, snapshot_id)
+        await repository.update_discovery_session_project_context(session_id, project_context)
+
         try:
             candidates = await discover_agentic_systems(
-                snapshot_id, repo_ref, client, llm_client, already_named=already_named
+                snapshot_id, repo_ref, client, llm_client, already_named=already_named,
+                project_context=project_context
             )
             await repository.replace_discovery_candidates(session_id, candidates)
             await repository.finish_discovery_session(session_id, "completed")

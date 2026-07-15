@@ -1,12 +1,15 @@
-"""AEH Stage 4 eval driver — loads dataset cases from .aeh/datasets/*.jsonl, drives this
-repo's own analysis pipeline directly (bypassing the job-queue /start route), writes
-out/eval_log.{pid}.jsonl + manifest.json. Makes no LLM/network calls of its own and reads
-no keys — provider_id/model_id/API keys all come from THIS repo's own already-configured
-provider service, exactly as a normal analysis run would use them.
+"""AEH Stage 4 eval driver — reads dataset cases directly from AEH's own sqlite database
+(path + dataset ids come from wiring.json, stdlib sqlite3 only — no agent_eval_harness
+dependency), drives this repo's own analysis pipeline directly (bypassing the job-queue
+/start route), writes out/eval_log.{pid}.jsonl + manifest.json. Cases are read live on every
+run — never a static exported snapshot that can go stale relative to AEH's own review state.
+Makes no LLM/network calls of its own and reads no keys — provider_id/model_id/API keys all
+come from THIS repo's own already-configured provider service, exactly as a normal analysis
+run would use them.
 
 Run as a route (POST /aeh/run-eval, see api/aeh_eval.py) or standalone:
     python .aeh/run_eval.py --verify   # one case, confirms >=1 span was captured
-    python .aeh/run_eval.py            # every case in .aeh/datasets/
+    python .aeh/run_eval.py            # every reviewed case across every dataset in wiring.json
 """
 from __future__ import annotations
 
@@ -14,6 +17,7 @@ import argparse
 import asyncio
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import time
@@ -36,8 +40,10 @@ _TRACER_VERSION = "1"
 
 def _ensure_tracer_registered() -> None:
     from haystack.tracing import tracer as global_tracer
+    from haystack.tracing.tracer import NullTracer
 
-    if global_tracer.actual_tracer is None:
+    # Default tracer is a NullTracer() instance, never None — check for that, not None.
+    if isinstance(global_tracer.actual_tracer, NullTracer):
         register_tracer()
 
 
@@ -55,19 +61,45 @@ def _load_wiring() -> dict[str, Any]:
     return json.loads((_HERE / "wiring.json").read_text(encoding="utf-8"))
 
 
-def _load_cases(limit: int | None = None) -> list[dict[str, Any]]:
-    """Reads exported DatasetCase-shaped JSONL from .aeh/datasets/ — {id, dataset, kind,
-    input, expected, labels, provenance}, matching agent_eval_harness's own export_dataset()
-    shape exactly, so nothing here has to guess or re-derive the case format."""
+def _load_cases(wiring: dict[str, Any], limit: int | None = None) -> list[dict[str, Any]]:
+    """Reads dataset cases directly from AEH's own sqlite database — aeh_db_path and
+    dataset_ids come from wiring.json. Always the current, live data (whatever's been
+    reviewed in AEH as of THIS run), never a static snapshot that can go stale relative to
+    AEH's own review state. Only 'generated+reviewed'/'handwritten' cases are used — this
+    mirrors agent_eval_harness/datasets/fulfillment.py::export_dataset()'s exact provenance
+    filter (AEH's mandatory human-review gate), reimplemented here via stdlib sqlite3 only
+    since this file has no agent_eval_harness dependency."""
+    aeh_db_path = wiring.get("aeh_db_path")
+    dataset_ids = wiring.get("dataset_ids", [])
+    if not aeh_db_path or not dataset_ids:
+        return []
+
     cases: list[dict[str, Any]] = []
-    dataset_dir = _HERE / "datasets"
-    for path in sorted(dataset_dir.glob("*.jsonl")):
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            cases.append(json.loads(line))
-            if limit is not None and len(cases) >= limit:
-                return cases
+    conn = sqlite3.connect(aeh_db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        for dataset_id in dataset_ids:
+            rows = conn.execute(
+                "SELECT id, input_json, expected_json, labels_json, provenance "
+                "FROM dataset_cases WHERE dataset_id = ? "
+                "AND provenance IN ('generated+reviewed', 'handwritten') ORDER BY id",
+                (dataset_id,),
+            ).fetchall()
+            for row in rows:
+                input_data = json.loads(row["input_json"])
+                input_data.pop("kind", None)  # kind-sniffing artifact from an older storage shape
+                cases.append({
+                    "id": row["id"],
+                    "dataset": dataset_id,
+                    "input": input_data,
+                    "expected": json.loads(row["expected_json"]) if row["expected_json"] else None,
+                    "labels": json.loads(row["labels_json"]) if row["labels_json"] else None,
+                    "provenance": row["provenance"],
+                })
+                if limit is not None and len(cases) >= limit:
+                    return cases
+    finally:
+        conn.close()
     return cases
 
 
@@ -134,7 +166,7 @@ def _write_header(plan_id: str, run_id: str) -> None:
 async def run(*, verify: bool = False) -> dict[str, Any]:
     _ensure_tracer_registered()
     wiring = _load_wiring()
-    cases = _load_cases(limit=1 if verify else None)
+    cases = _load_cases(wiring, limit=1 if verify else None)
     run_id = f"{int(time.time())}-{os.getpid()}"
     _write_header(wiring.get("plan_id", "unknown"), run_id)
 

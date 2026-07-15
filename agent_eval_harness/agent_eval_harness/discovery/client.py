@@ -29,7 +29,9 @@ class CodeSpectraClient:
             return None
         return resp.json()
 
-    async def search_retrieval(self, snapshot_id: str, query: str, section: str = "qa") -> dict:
+    async def search_retrieval(
+        self, snapshot_id: str, query: str, section: str = "qa", symbol_chunks_only: bool = False
+    ) -> dict:
         """Perform BM25 fused search using retrieve_rrf_fusion."""
         return await self._request(
             "POST",
@@ -38,7 +40,18 @@ class CodeSpectraClient:
                 "snapshot_id": snapshot_id,
                 "query": query,
                 "section": section,
+                "symbol_chunks_only": symbol_chunks_only,
             },
+        )
+
+    async def get_file_chunks(
+        self, snapshot_id: str, rel_path: str, symbol_chunks_only: bool = False
+    ) -> dict:
+        """Direct chunk fetch for a known file path — no search, ground-truth evidence."""
+        return await self._request(
+            "GET",
+            f"/retrieval/{snapshot_id}/file-chunks",
+            params={"rel_path": rel_path, "symbol_chunks_only": symbol_chunks_only},
         )
 
     async def get_neighbors(

@@ -22,7 +22,7 @@ from domain.analysis.agents._graph_plan import plan_queries, retrieve_multi
 from domain.analysis.agents.base import BaseTypedAgent
 from domain.analysis.prompts import render_bundle
 
-from .types import Citation, QAResponse, QASectionCache
+from .types import QASectionCache
 from .section_cache_service import QASectionCacheService
 from .intent_classifier import classify_intent as _local_classify_intent
 
@@ -40,7 +40,9 @@ Use these for implementation-level details, specific logic, and code citations.
 
 Rules:
 - Prefer CODEBASE ANALYSIS for high-level questions — it is authoritative and curated.
-- Prefer CODE EVIDENCE for specific implementation questions. Cite with [file:line].
+- Prefer CODE EVIDENCE for specific implementation questions. Cite with [file:line], using \
+the real `lines=start-end` range printed on the evidence chunk you're citing — never guess \
+or estimate a line number from the excerpt text itself.
 - Synthesize both sources when both are relevant.
 - If you cannot determine something from either source, state it clearly.
 - Set claim_polarity to 'negative' if your answer states a feature or behaviour does NOT exist or is NOT implemented.
@@ -73,6 +75,10 @@ Given the question, the evidence, and the answer already written, output ONLY a 
 deep_research_recommended = true when the question involves tracing call chains,
 data flow, execution paths across multiple files, or blast-radius analysis.
 Set false for simple lookup questions.
+
+For each citation, copy line_start/line_end from the `lines=start-end` range printed on the
+evidence chunk you're citing — never guess or estimate from the excerpt text. If the cited
+chunk has no `lines=` range, use 0 for both.
 
 Output ONLY the JSON object. No markdown fences, no prose.
 """
@@ -689,7 +695,7 @@ class QAAgent(BaseTypedAgent):
             if used >= budget:
                 break
             async with db.execute(
-                """SELECT id, rel_path, chunk_index, content, token_estimate
+                """SELECT id, rel_path, chunk_index, content, token_estimate, start_line, end_line
                    FROM retrieval_chunks
                    WHERE snapshot_id=? AND rel_path=?
                    ORDER BY chunk_index ASC LIMIT 1""",
@@ -709,6 +715,8 @@ class QAAgent(BaseTypedAgent):
                 score=0.0,
                 token_estimate=tok,
                 excerpt=row["content"],
+                start_line=row["start_line"] or 0,
+                end_line=row["end_line"] or 0,
             ))
             used += tok
 

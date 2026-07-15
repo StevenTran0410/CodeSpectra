@@ -21,9 +21,6 @@ from pydantic import BaseModel
 
 from .graph_queries import (
     TraceStep,
-    ImpactResult,
-    get_callees_of,
-    get_callers_of,
     trace_call_chain,
     get_impact_cone,
 )
@@ -218,8 +215,10 @@ You receive the original question, all step findings, AND the actual code eviden
 collected across every investigation step.
 
 Use the code evidence to produce a precise, code-grounded answer — cite specific
-functions, file paths, line numbers, and actual logic from the evidence.
-Do NOT invent details that are not in the evidence; state them as unknowns.
+functions, file paths, and actual logic from the evidence. When citing a line number,
+copy it from the `lines=start-end` range printed on the evidence chunk — never guess
+or estimate one from the excerpt text. Do NOT invent details that are not in the
+evidence; state them as unknowns.
 
 FORMATTING — MANDATORY:
 - Write in rich Markdown (use ### headings, **bold**, bullet lists, ```code blocks```).
@@ -663,7 +662,7 @@ class DeepResearchAgent(BaseTypedAgent):
                 if path in existing_paths or used >= _RESEARCH_RETRIEVAL_BUDGET:
                     continue
                 async with db.execute(
-                    """SELECT id, rel_path, chunk_index, content, token_estimate
+                    """SELECT id, rel_path, chunk_index, content, token_estimate, start_line, end_line
                        FROM retrieval_chunks
                        WHERE snapshot_id=? AND rel_path=?
                        ORDER BY chunk_index ASC LIMIT 3""",
@@ -685,6 +684,8 @@ class DeepResearchAgent(BaseTypedAgent):
                             score=0.5,
                             token_estimate=tok,
                             excerpt=row["content"],
+                            start_line=row["start_line"] or 0,
+                            end_line=row["end_line"] or 0,
                         )
                     )
                     used += tok

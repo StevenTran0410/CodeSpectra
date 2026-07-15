@@ -122,7 +122,15 @@ def _plan_report_fixture() -> EvaluationPlanReport:
     )
 
 
+_MAIN_PY_FIXTURE = (
+    "import argparse\n"
+    "from api.external import router as external_router\n"
+    'app.include_router(external_router, prefix="/api/external")\n'
+)
+
+
 def test_render_with_plan_report_includes_per_agent_context(tmp_path: Path) -> None:
+    _write(tmp_path / "backend/main.py", _MAIN_PY_FIXTURE)
     _write(tmp_path / "backend/prompts.py", "RETRIEVER_SYSTEM = 'you are...'\n")
     _write(tmp_path / "backend/retriever.py", "from .prompts import RETRIEVER_SYSTEM\n")
     ds = [{**_DS[0], "example_case": {"id": "c1", "input": {"query": "hi"}}}]
@@ -143,9 +151,24 @@ def test_render_with_plan_report_includes_per_agent_context(tmp_path: Path) -> N
     assert "backend/retriever.py:42" in result
     assert "confirm reranker is intentionally excluded" in result
     assert '"id": "c1"' in result
+    assert "## Step 0: Create and checkout the eval branch" in result
+    assert "git checkout -b aeh/eval-sess-test main" in result
+
+
+def test_render_step0_uses_the_given_base_ref(tmp_path: Path) -> None:
+    _write(tmp_path / "backend/main.py", _MAIN_PY_FIXTURE)
+    _write(tmp_path / "backend/retriever.py", "import os\n")
+
+    result = render_eval_plan_md(
+        _SM, _WIRING, _DS, "sess-test", "aeh/eval-sess-test",
+        plan_report=_plan_report_fixture(), repo_root=tmp_path, base_ref="develop",
+    )
+
+    assert "git checkout -b aeh/eval-sess-test develop" in result
 
 
 def test_render_with_plan_report_shows_fallback_when_prompt_not_found(tmp_path: Path) -> None:
+    _write(tmp_path / "backend/main.py", _MAIN_PY_FIXTURE)
     _write(tmp_path / "backend/retriever.py", "import os\n")
 
     result = render_eval_plan_md(
@@ -155,6 +178,24 @@ def test_render_with_plan_report_shows_fallback_when_prompt_not_found(tmp_path: 
 
     assert "not auto-detected" in result
     assert "search `backend/retriever.py`" in result
+
+
+def test_render_raises_when_main_py_missing_expected_anchors(tmp_path: Path) -> None:
+    _write(tmp_path / "backend/main.py", "print('not the real main.py')\n")
+
+    with pytest.raises(ValueError, match="anchor line"):
+        render_eval_plan_md(
+            _SM, _WIRING, _DS, "sess-test", "aeh/eval-sess-test",
+            plan_report=_plan_report_fixture(), repo_root=tmp_path,
+        )
+
+
+def test_render_raises_when_main_py_file_missing(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="backend/main.py not found"):
+        render_eval_plan_md(
+            _SM, _WIRING, _DS, "sess-test", "aeh/eval-sess-test",
+            plan_report=_plan_report_fixture(), repo_root=tmp_path,
+        )
 
 
 def test_render_raises_when_plan_report_given_without_repo_root() -> None:

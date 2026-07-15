@@ -294,7 +294,7 @@ def _effort_token_floor(effort: str) -> int:
     return _EFFORT_TOKEN_BASE + _EFFORT_TOKEN_STEP * tier
 
 
-async def _complete_json(
+async def complete_json(
     llm_client: LLMClient,
     system: str,
     user_prompt: str,
@@ -355,7 +355,7 @@ async def _run_analyst(
     llm_client: LLMClient,
     dag_notes: list[str] | None = None,
 ) -> AgentDataProfile:
-    parsed = await _complete_json(
+    parsed = await complete_json(
         llm_client, ANALYST_SYSTEM, _evidence_user_prompt(evidence),
         max_tokens=_effort_token_floor(REASONING_EFFORT_ANALYST),
         label=f"analyst[{agent_id}]", dag_notes=dag_notes,
@@ -445,7 +445,7 @@ async def _run_gate_designer(
         + f"Known registered assertion names: {_known_assertion_names()}"
     )
 
-    parsed = await _complete_json(
+    parsed = await complete_json(
         llm_client, GATE_DESIGNER_SYSTEM, user_prompt,
         max_tokens=_effort_token_floor(REASONING_EFFORT_GATE_DESIGNER),
         label=f"agent_gates[{agent_id}]", dag_notes=dag_notes,
@@ -517,7 +517,7 @@ async def _run_handoff_gates(
         _effort_token_floor(REASONING_EFFORT_HANDOFF_GATES),
         6144, 500 * len(evidence_by_agent),
     )
-    parsed = await _complete_json(
+    parsed = await complete_json(
         llm_client, HANDOFF_GATES_SYSTEM, user_prompt,
         max_tokens=token_budget, label="handoff_gates", dag_notes=dag_notes,
         reasoning_effort=REASONING_EFFORT_HANDOFF_GATES,
@@ -1054,7 +1054,7 @@ async def run_critic(
         lines.append(f"Agent {agent_report.agent_id} (role={agent_report.role}): {gate_summary}")
     user_prompt = "\n".join(lines)
 
-    parsed = await _complete_json(
+    parsed = await complete_json(
         llm_client, CRITIC_SYSTEM, user_prompt,
         max_tokens=_effort_token_floor(REASONING_EFFORT_CRITIC),
         label="critic", dag_notes=dag_notes,

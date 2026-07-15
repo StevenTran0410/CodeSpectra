@@ -5,7 +5,6 @@ import pytest
 
 from agent_eval_harness.code_injection.injection_target import (
     BranchInjectionTarget,
-    BranchInfo,
     InjectionTargetError,
 )
 
@@ -46,30 +45,43 @@ def _current_branch(repo: Path) -> str:
     ).stdout.strip()
 
 
-def test_prepare_refuses_dirty_tree_with_zero_writes(git_repo: Path) -> None:
-    (git_repo / "dirty.txt").write_text("uncommitted", encoding="utf-8")
-    with pytest.raises(InjectionTargetError):
-        BranchInjectionTarget.prepare(git_repo, "sess-123")
+def _branch_exists(repo: Path, name: str) -> bool:
     branches = subprocess.run(
-        ["git", "branch", "--list", "aeh/eval-sess-123"],
-        cwd=git_repo, capture_output=True, text=True,
+        ["git", "branch", "--list", name],
+        cwd=repo, capture_output=True, text=True,
     ).stdout
-    assert "aeh/eval-sess-123" not in branches
+    return name in branches
 
 
-def test_prepare_idempotent_already_on_eval_branch(git_repo: Path) -> None:
-    original = _current_branch(git_repo)  # capture BEFORE first prepare
+def test_prepare_creates_branch_without_switching(git_repo: Path) -> None:
+    original = _current_branch(git_repo)
+    info = BranchInjectionTarget.prepare(git_repo, "sess-abc")
+    assert info.branch_name == "aeh/eval-sess-abc"
+    assert info.current_branch == original
+    assert _branch_exists(git_repo, "aeh/eval-sess-abc")
+    # HEAD never moved — that's the entire point of this design.
+    assert _current_branch(git_repo) == original
+
+
+def test_prepare_does_not_require_a_clean_tree(git_repo: Path) -> None:
+    (git_repo / "dirty.txt").write_text("uncommitted", encoding="utf-8")
+    # Creating a branch ref never touches the working tree, so a dirty tree is fine.
+    info = BranchInjectionTarget.prepare(git_repo, "sess-123")
+    assert _branch_exists(git_repo, "aeh/eval-sess-123")
+    assert info.current_branch == "main"
+
+
+def test_prepare_idempotent_on_repeat_calls(git_repo: Path) -> None:
     info1 = BranchInjectionTarget.prepare(git_repo, "sess-abc")
-    assert info1.original_branch == original  # first call captures the real original branch
     info2 = BranchInjectionTarget.prepare(git_repo, "sess-abc")
     assert info1.branch_name == info2.branch_name == "aeh/eval-sess-abc"
-    # info2.original_branch is intentionally not asserted — the route's DB guard
-    # prevents double-prepare in practice; on a second call HEAD is already the eval branch.
+    assert info1.current_branch == info2.current_branch
 
 
 def test_restore_refuses_dirty_eval_branch(git_repo: Path) -> None:
     original = _current_branch(git_repo)
     BranchInjectionTarget.prepare(git_repo, "sess-xyz")
+    subprocess.run(["git", "checkout", "aeh/eval-sess-xyz"], cwd=git_repo, check=True, capture_output=True)
     (git_repo / "dirty.txt").write_text("uncommitted on eval branch", encoding="utf-8")
     with pytest.raises(InjectionTargetError):
         BranchInjectionTarget.restore(git_repo, original)
@@ -78,6 +90,7 @@ def test_restore_refuses_dirty_eval_branch(git_repo: Path) -> None:
 def test_restore_returns_to_original_branch(git_repo: Path) -> None:
     original = _current_branch(git_repo)
     BranchInjectionTarget.prepare(git_repo, "sess-ret")
+    subprocess.run(["git", "checkout", "aeh/eval-sess-ret"], cwd=git_repo, check=True, capture_output=True)
     assert _current_branch(git_repo) == "aeh/eval-sess-ret"
     BranchInjectionTarget.restore(git_repo, original)
     assert _current_branch(git_repo) == original
@@ -86,8 +99,4 @@ def test_restore_returns_to_original_branch(git_repo: Path) -> None:
 def test_prepare_raises_on_missing_base_ref(git_repo: Path) -> None:
     with pytest.raises(InjectionTargetError, match="nonexistent-ref"):
         BranchInjectionTarget.prepare(git_repo, "sess-noref", base_ref="nonexistent-ref")
-    branches = subprocess.run(
-        ["git", "branch", "--list", "aeh/eval-sess-noref"],
-        cwd=git_repo, capture_output=True, text=True,
-    ).stdout
-    assert "aeh/eval-sess-noref" not in branches
+    assert not _branch_exists(git_repo, "aeh/eval-sess-noref")

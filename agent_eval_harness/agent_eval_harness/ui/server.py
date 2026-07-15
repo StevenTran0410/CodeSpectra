@@ -19,6 +19,7 @@ from agent_eval_harness.config import AEHConfig
 from agent_eval_harness.llm.proxy_client import CodeSpectraProxyClient
 from agent_eval_harness.discovery.client import CodeSpectraClient
 from agent_eval_harness.discovery.engine import run_discovery_background
+from agent_eval_harness.discovery.analysis_context import load_project_context
 from agent_eval_harness.discovery.expansion import expand_candidate
 from agent_eval_harness.mapping.agent_flow import (
     build_source_by_component,
@@ -34,6 +35,9 @@ from agent_eval_harness.code_injection.injection_target import BranchInjectionTa
 from agent_eval_harness.code_injection.plan_renderer import render_eval_plan_md
 from agent_eval_harness.code_injection.wiring import build_wiring_for_codespectra
 from agent_eval_harness.datasets.fulfillment import export_dataset
+from agent_eval_harness.judging.case_judge import judge_case_semantic_match, summarize_agent_judgments
+from agent_eval_harness.llm.client import LLMResponse
+from agent_eval_harness.llm.fake_client import FakeLLMClient
 from agent_eval_harness.metrics.suite import load_suite
 from agent_eval_harness.store import repository
 from agent_eval_harness.store.database import close_db, get_db, init_db
@@ -913,13 +917,26 @@ async def run_expansion_background(
             hop_cap=hop_cap,
         )
 
+        # A9: log scanner summary so an empty map is diagnosable
+        _reasons = res.get("boundary_reasons", [])
+        from collections import Counter
+        top_skip = [r for r, _ in Counter(r for r in _reasons if r).most_common(3)]
+        logger.info(
+            "Scanner summary: name=%s accepted=%d boundary=%d top_skip_reasons=%s",
+            candidate["name"],
+            len(res["accepted"]),
+            len(res["boundary"]),
+            top_skip,
+        )
+
         snapshot = await client.get_snapshot(snapshot_id)
         local_path_str = snapshot.get("local_path")
         if not local_path_str:
             raise RuntimeError(f"Snapshot {snapshot_id} is missing local_path context.")
 
         local_path = Path(local_path_str)
-        abs_files = [local_path / p for p in res["accepted"]]
+        # accepted is now a list of dicts with file, role_hint, key_symbols, follow fields
+        abs_files = [local_path / (p["file"] if isinstance(p, dict) else p) for p in res["accepted"]]
 
         builder = SystemMapBuilder(llm_client)
         system_map, _summary = await builder.build_from_files(
@@ -1068,6 +1085,16 @@ class GeneratePlanRequest(BaseModel):
     thinking_budget: int | None = None
 
 
+class JudgeAgentCasesRequest(BaseModel):
+    agent_id: str
+    provider_id: str | None = None
+    model_id: str | None = None
+    backend_url: str | None = None
+    backend_token: str | None = None
+    reasoning_effort: str | None = None
+    thinking_budget: int | None = None
+
+
 class UpdatePlanRequest(BaseModel):
     entries: list[dict]
 
@@ -1080,6 +1107,18 @@ class AdvanceSessionRequest(BaseModel):
     model_id: str | None = None
     backend_url: str | None = None
     backend_token: str | None = None
+
+
+class EnrichAgentsRequest(BaseModel):
+    provider_id: str | None = None
+    model_id: str | None = None
+    backend_url: str | None = None
+    backend_token: str | None = None
+    reasoning_effort: str | None = None
+    thinking_budget: int | None = None
+    depth: str = 'normal'
+    agent_ids: list[str] | None = None
+    force_agent_ids: list[str] | None = None
 
 
 @app.post("/api/discovery/expansion-sessions/{session_id}/plan")
@@ -1129,7 +1168,8 @@ async def generate_plan_route(session_id: str, body: GeneratePlanRequest):
         if not local_path_str:
             raise HTTPException(status_code=400, detail="Snapshot is missing local_path context.")
         local_path = Path(local_path_str)
-        abs_files = [local_path / p for p in sess["accepted"]]
+        # accepted is now a list of dicts with file, role_hint, key_symbols, follow fields
+        abs_files = [local_path / (p["file"] if isinstance(p, dict) else p) for p in sess["accepted"]]
         source_by_component = build_source_by_component(abs_files, system_map)
 
         harvest_files = abs_files + [local_path / p for p in sess.get("boundary", [])]
@@ -1575,10 +1615,21 @@ async def generate_agent_flows_route(session_id: str, body: AgentFlowRequest):
                 status_code=400, detail="Snapshot is missing local_path context."
             )
         local_path = Path(local_path_str)
-        abs_files = [local_path / p for p in sess["accepted"]]
+        # accepted is now a list of dicts with file, role_hint, key_symbols, follow fields
+        abs_files = [local_path / (p["file"] if isinstance(p, dict) else p) for p in sess["accepted"]]
 
         source_by_component = build_source_by_component(abs_files, system_map)
-        agent_flow_map = await separate_agent_flows(system_map, source_by_component, llm_client)
+
+        # B5: inject project feature map as a hint into the agent-flow grouping prompt
+        project_ctx = await load_project_context(client, sess["snapshot_id"])
+        feature_map_hint = (
+            project_ctx.feature_map.as_context_block()
+            if project_ctx and project_ctx.feature_map
+            else None
+        )
+        agent_flow_map = await separate_agent_flows(
+            system_map, source_by_component, llm_client, feature_map_hint=feature_map_hint
+        )
 
         map_path = Path(sess["map_path"])
         agent_flows_path = map_path.with_name(map_path.stem + "_agentflows.yaml")
@@ -1613,6 +1664,96 @@ async def get_agent_flows_route(session_id: str):
         raise HTTPException(status_code=500, detail=f"Failed to load agent-flow map: {e}")
 
 
+@app.post("/api/discovery/expansion-sessions/{session_id}/enrich-agents")
+async def enrich_agents_route(session_id: str, body: EnrichAgentsRequest):
+    """Stage 2.5 enrichment: concurrent LLM analysis of discovered agents."""
+    sess = await _get_expansion_session_or_404(session_id)
+    if sess["status"] != "completed":
+        raise HTTPException(status_code=400, detail="Expansion has not completed.")
+    agent_flows_path_str = sess.get("agent_flows_path")
+    if not agent_flows_path_str or not Path(agent_flows_path_str).exists():
+        raise HTTPException(
+            status_code=400,
+            detail="Run Stage 2 agent-flow separation first.",
+        )
+
+    config = AEHConfig.load()
+    provider_id = body.provider_id or config.provider_id
+    backend_url = body.backend_url or config.backend_url
+    backend_token = body.backend_token or config.backend_token
+    if not backend_url or not backend_token:
+        raise HTTPException(status_code=400, detail="Missing backend connection config.")
+    if not provider_id:
+        raise HTTPException(status_code=400, detail="No LLM provider configured.")
+
+    model_id = body.model_id or config.model_id
+    reasoning_effort = body.reasoning_effort or config.reasoning_effort
+    thinking_budget = (
+        body.thinking_budget if body.thinking_budget is not None else config.thinking_budget
+    )
+    llm_client = CodeSpectraProxyClient(
+        backend_url, backend_token, provider_id, model_id,
+        reasoning_effort=reasoning_effort, thinking_budget=thinking_budget,
+    )
+    client = CodeSpectraClient(backend_url, backend_token)
+
+    try:
+        system_map = load_system_map(sess["map_path"])
+        agent_flow_map = load_agent_flow_map(agent_flows_path_str)
+
+        from agent_eval_harness.discovery.enrichment import enrich_agents
+
+        knowledge_list = await enrich_agents(
+            session_id=session_id,
+            agent_flow_map=agent_flow_map,
+            system_map=system_map,
+            accepted_with_annotations=sess.get("accepted", []),
+            accepted_edges=sess.get("accepted_edges", []),
+            client=client,
+            llm_client=llm_client,
+            snapshot_id=sess["snapshot_id"],
+            depth=body.depth or 'normal',
+            agent_ids=body.agent_ids,
+            force_agent_ids=body.force_agent_ids,
+        )
+
+        enriched_count = sum(1 for k in knowledge_list if not k.degraded)
+        degraded_count = sum(1 for k in knowledge_list if k.degraded)
+        skipped_count = 0
+
+        return {
+            "enriched_count": enriched_count,
+            "degraded_count": degraded_count,
+            "skipped_count": skipped_count,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"enrich_agents failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        await client.aclose()
+        if hasattr(llm_client, "aclose"):
+            await llm_client.aclose()
+
+
+@app.get("/api/discovery/expansion-sessions/{session_id}/agent-knowledge")
+async def get_agent_knowledge_route(session_id: str):
+    """Agent knowledge records with the parsed sidecar JSON content included."""
+    await _get_expansion_session_or_404(session_id)
+    knowledge_list = await repository.list_agent_knowledge(session_id)
+    for record in knowledge_list:
+        record["content"] = None
+        json_path_str = record.get("json_path")
+        if not json_path_str:
+            continue
+        try:
+            record["content"] = json.loads(Path(json_path_str).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            logger.warning(f"Could not read agent knowledge sidecar {json_path_str}: {e}")
+    return knowledge_list
+
+
 @app.post("/api/discovery/expansion-sessions/{session_id}/eval-branch")
 async def create_eval_branch(session_id: str, base_ref: str = "main"):
     await _get_expansion_session_or_404(session_id)
@@ -1622,9 +1763,9 @@ async def create_eval_branch(session_id: str, base_ref: str = "main"):
     except InjectionTargetError as e:
         raise HTTPException(status_code=409, detail=str(e))
     await repository.update_expansion_session_eval_branch(
-        session_id, info.branch_name, info.original_branch
+        session_id, info.branch_name, info.current_branch
     )
-    return {"branch_name": info.branch_name, "previous_branch": info.original_branch}
+    return {"branch_name": info.branch_name, "current_branch": info.current_branch}
 
 
 @app.post("/api/discovery/expansion-sessions/{session_id}/eval-branch/restore")
@@ -1645,7 +1786,7 @@ async def restore_eval_branch(session_id: str):
 
 
 @app.post("/api/discovery/expansion-sessions/{session_id}/eval-plan")
-async def create_eval_plan(session_id: str):
+async def create_eval_plan(session_id: str, base_ref: str = "main"):
     sess = await _get_expansion_session_or_404(session_id)
     repo_root = _get_repo_root()
     eval_branch = sess.get("eval_branch_name") or f"aeh/eval-{session_id}"
@@ -1677,17 +1818,10 @@ async def create_eval_plan(session_id: str):
     for entry in suite.entries:
         if entry.dataset and entry.dataset.ref:
             datasets_to_gate_ids.setdefault(entry.dataset.ref, []).append(entry.id)
-    # Export each dataset to JSONL alongside the eval branch
-    aeh_datasets_dir = repo_root / "backend" / ".aeh" / "datasets"
-    aeh_datasets_dir.mkdir(parents=True, exist_ok=True)
+    # Descriptive only — run_eval.py reads cases live from AEH's sqlite DB, not this export.
     dataset_summaries: list[dict] = []
     for dataset_id, gate_ids in datasets_to_gate_ids.items():
         cases = await export_dataset(dataset_id)
-        jsonl_path = aeh_datasets_dir / f"{dataset_id}.jsonl"
-        jsonl_path.write_text(
-            "\n".join(json.dumps(c.model_dump()) for c in cases),
-            encoding="utf-8",
-        )
         kind = cases[0].kind if cases else ""
         dataset_summaries.append({
             "dataset_id": dataset_id,
@@ -1697,9 +1831,11 @@ async def create_eval_plan(session_id: str):
             "example_case": cases[0].model_dump() if cases else None,
         })
     wiring = build_wiring_for_codespectra(system_map, session_id)
+    wiring["aeh_db_path"] = str((Path(os.getenv("AEH_DATA_DIR", ".")) / "aeh.db").resolve())
+    wiring["dataset_ids"] = sorted(datasets_to_gate_ids.keys())
     md_content = render_eval_plan_md(
         system_map, wiring, dataset_summaries, session_id, eval_branch,
-        plan_report=plan_report, repo_root=repo_root,
+        plan_report=plan_report, repo_root=repo_root, base_ref=base_ref,
     )
     plan_md_path.write_text(md_content, encoding="utf-8")
     await repository.update_expansion_session_eval_plan_md_path(
@@ -1710,7 +1846,7 @@ async def create_eval_plan(session_id: str):
 
 @app.post("/api/discovery/expansion-sessions/{session_id}/eval-results")
 async def load_eval_results(session_id: str):
-    await _get_expansion_session_or_404(session_id)
+    sess = await _get_expansion_session_or_404(session_id)
     from agent_eval_harness.ingest.spanlog_ingest import IngestError, parse_spanlog, persist_spanlog
     repo_root = _get_repo_root()
     manifest_path = repo_root / "backend" / ".aeh" / "manifest.json"
@@ -1726,6 +1862,18 @@ async def load_eval_results(session_id: str):
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"could not read manifest: {e}")
+
+    # Idempotent on the manifest's run_id — re-ingesting an unchanged manifest returns the existing run.
+    manifest_run_id = manifest.get("run_id")
+    if (
+        manifest_run_id
+        and sess.get("eval_manifest_run_id") == manifest_run_id
+        and sess.get("eval_run_id")
+    ):
+        existing = await repository.get_run(sess["eval_run_id"])
+        if existing:
+            return {"run_id": sess["eval_run_id"], "status": existing["status"]}
+
     log_path_str = manifest.get("log_path")
     if not log_path_str or not Path(log_path_str).exists():
         raise HTTPException(
@@ -1741,8 +1889,202 @@ async def load_eval_results(session_id: str):
         target_system_id=manifest.get("plan_id", "unknown"),
         eval_plan_id=manifest.get("plan_id"),
     )
+    await repository.update_expansion_session_eval_run(session_id, run_id, manifest_run_id)
     run = await repository.get_run(run_id)
     return {"run_id": run_id, "status": run["status"] if run else "unknown"}
+
+
+@app.get("/api/eval-runs/{run_id}/cases")
+async def get_eval_run_cases(run_id: str):
+    """Per-agent input/result/expected for an ingested run — cheap to compute directly from
+    traces + dataset_cases, no gate scoring required. agent_id comes from the dataset case's
+    own labels_json (set at generation time), not re-derived."""
+    run = await repository.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found.")
+    traces = await repository.get_traces_for_run(run_id)
+    evaluations = await repository.get_evaluations_for_run(run_id)
+    evals_by_trace: dict[str, list[dict]] = {}
+    agent_summaries: dict[str, dict] = {}
+    for ev in evaluations:
+        if ev.get("trace_id"):
+            evals_by_trace.setdefault(ev["trace_id"], []).append({
+                "metric_name": ev["metric_name"],
+                "metric_class": ev["metric_class"],
+                "score": ev["score"],
+                "details": json.loads(ev["details_json"]) if ev.get("details_json") else {},
+            })
+        elif ev["metric_name"] == "agent_summary" and ev.get("component_id"):
+            details = json.loads(ev["details_json"]) if ev.get("details_json") else {}
+            agent_summaries[ev["component_id"]] = {
+                "insight": details.get("insight", ""),
+                "case_count": details.get("case_count", 0),
+                "avg_score": ev["score"],
+            }
+
+    agents: dict[str, list[dict]] = {}
+    for trace in traces:
+        case_id = trace.get("dataset_case_id")
+        dataset_case = await repository.get_dataset_case(case_id) if case_id else None
+        agent_id = "unknown"
+        expected = None
+        if dataset_case:
+            try:
+                labels = json.loads(dataset_case["labels_json"]) if dataset_case.get("labels_json") else {}
+            except json.JSONDecodeError:
+                labels = {}
+            agent_id = labels.get("agent_id", "unknown")
+            if dataset_case.get("expected_json"):
+                try:
+                    expected = json.loads(dataset_case["expected_json"])
+                except json.JSONDecodeError:
+                    expected = dataset_case["expected_json"]
+        agents.setdefault(agent_id, []).append({
+            "case_id": case_id,
+            "trace_id": trace["id"],
+            "input": trace.get("root_input"),
+            "result": trace.get("final_output"),
+            "expected": expected,
+            "evaluations": evals_by_trace.get(trace["id"], []),
+        })
+    return {"run_id": run_id, "status": run["status"], "agents": agents, "agent_summaries": agent_summaries}
+
+
+_JUDGE_BATCH_SIZE = 4  # concurrent LLM calls per batch — this is a dev-only tool, favor speed
+
+
+@app.post("/api/eval-runs/{run_id}/judge")
+async def judge_eval_run_agent_cases(run_id: str, body: JudgeAgentCasesRequest):
+    """Ad-hoc per-case scoring for Stage 5's results view (see judging/case_judge.py) — one
+    LLM call per case for a single agent, chosen explicitly by the caller so cost stays
+    bounded and visible (never all agents at once). Cases are judged _JUDGE_BATCH_SIZE at a
+    time (concurrent LLM calls, sequential DB writes) rather than one at a time — this tool is
+    dev-only, so wall-clock speed matters more than strict request ordering. Produces the
+    overall semantic-match score plus synonym-aware precision/recall on list-valued fields
+    (falls back to exact-string matching per field if the judge doesn't return usable pairs).
+    Idempotent per case: a case with an existing 'semantic_match' evaluation is skipped."""
+    run = await repository.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found.")
+
+    if body.provider_id and body.backend_url and body.backend_token:
+        llm_client = CodeSpectraProxyClient(
+            body.backend_url, body.backend_token, body.provider_id, body.model_id,
+            reasoning_effort=body.reasoning_effort, thinking_budget=body.thinking_budget,
+        )
+    else:
+        llm_client = FakeLLMClient(
+            LLMResponse(content='{"score": 0.0, "notes": "no provider configured"}', model="fake")
+        )
+
+    traces = await repository.get_traces_for_run(run_id)
+    existing = await repository.get_evaluations_for_component(run_id, body.agent_id)
+    already_scored_trace_ids = {
+        e["trace_id"] for e in existing if e["metric_name"] == "semantic_match"
+    }
+
+    pending: list[tuple[dict, Any, Any]] = []
+    skipped = 0
+    for trace in traces:
+        case_id = trace.get("dataset_case_id")
+        if not case_id:
+            continue
+        dataset_case = await repository.get_dataset_case(case_id)
+        if not dataset_case:
+            continue
+        try:
+            labels = json.loads(dataset_case["labels_json"]) if dataset_case.get("labels_json") else {}
+        except json.JSONDecodeError:
+            labels = {}
+        if labels.get("agent_id") != body.agent_id:
+            continue
+        if trace["id"] in already_scored_trace_ids:
+            skipped += 1
+            continue
+
+        try:
+            result = json.loads(trace["final_output"]) if trace.get("final_output") else None
+        except json.JSONDecodeError:
+            result = trace.get("final_output")
+        expected = None
+        if dataset_case.get("expected_json"):
+            try:
+                expected = json.loads(dataset_case["expected_json"])
+            except json.JSONDecodeError:
+                expected = dataset_case["expected_json"]
+        pending.append((trace, result, expected))
+
+    scored = 0
+    for i in range(0, len(pending), _JUDGE_BATCH_SIZE):
+        batch = pending[i:i + _JUDGE_BATCH_SIZE]
+        judged_batch = await asyncio.gather(
+            *[judge_case_semantic_match(llm_client, result, expected) for _trace, result, expected in batch]
+        )
+        for (trace, _result, _expected), judged in zip(batch, judged_batch):
+            await repository.insert_evaluation(
+                run_id, "semantic_match", "llm_judge",
+                trace_id=trace["id"], component_id=body.agent_id,
+                score=judged["score"], details={"notes": judged["notes"]},
+                evaluator=judged["model"], cost_tokens=judged["tokens"],
+            )
+            for field_name, pr in judged["field_matches"].items():
+                await repository.insert_evaluation(
+                    run_id, f"precision_recall.{field_name}", "llm_judge",
+                    trace_id=trace["id"], component_id=body.agent_id,
+                    score=pr["precision"], details=pr,
+                )
+            scored += 1
+
+    return {"scored": scored, "skipped": skipped}
+
+
+@app.post("/api/eval-runs/{run_id}/agent-summary")
+async def summarize_eval_run_agent(run_id: str, body: JudgeAgentCasesRequest):
+    """One extra LLM call for a single agent (see judging/case_judge.py) that reads its
+    already-judged per-case semantic_match scores+notes and synthesizes one holistic insight —
+    recurring strengths, recurring weaknesses, structural red flags. Requires /judge to have
+    already scored at least one case for this agent. Idempotent: skipped if an agent_summary
+    already exists for this agent on this run."""
+    run = await repository.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found.")
+
+    existing = await repository.get_evaluations_for_component(run_id, body.agent_id)
+    prior = next((e for e in existing if e["metric_name"] == "agent_summary"), None)
+    if prior:
+        details = json.loads(prior["details_json"]) if prior.get("details_json") else {}
+        return {"insight": details.get("insight", ""), "case_count": details.get("case_count", 0), "cached": True}
+
+    case_summaries = [
+        {"score": e["score"], "notes": json.loads(e["details_json"]).get("notes", "") if e.get("details_json") else ""}
+        for e in existing
+        if e["metric_name"] == "semantic_match" and e["score"] is not None
+    ]
+    if not case_summaries:
+        raise HTTPException(
+            status_code=400,
+            detail="No scored cases yet for this agent — run /judge for it first.",
+        )
+
+    if body.provider_id and body.backend_url and body.backend_token:
+        llm_client = CodeSpectraProxyClient(
+            body.backend_url, body.backend_token, body.provider_id, body.model_id,
+            reasoning_effort=body.reasoning_effort, thinking_budget=body.thinking_budget,
+        )
+    else:
+        llm_client = FakeLLMClient(
+            LLMResponse(content='{"insight": "no provider configured"}', model="fake")
+        )
+
+    summary = await summarize_agent_judgments(llm_client, case_summaries)
+    avg_score = sum(c["score"] for c in case_summaries) / len(case_summaries)
+    await repository.insert_evaluation(
+        run_id, "agent_summary", "llm_judge",
+        component_id=body.agent_id, score=avg_score,
+        details={"insight": summary["insight"], "case_count": len(case_summaries)},
+        evaluator=summary["model"], cost_tokens=summary["tokens"],
+    )
+    return {"insight": summary["insight"], "case_count": len(case_summaries), "cached": False}
 
 
 @app.post("/api/discovery/sessions/{session_id}/advance")

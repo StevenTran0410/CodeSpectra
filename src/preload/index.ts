@@ -339,14 +339,24 @@ const api = {
       ipcRenderer.invoke('aeh:createEvalBranch', sessionId, baseRef),
     restoreEvalBranch: (sessionId: string) =>
       ipcRenderer.invoke('aeh:restoreEvalBranch', sessionId),
-    createEvalPlan: (sessionId: string) =>
-      ipcRenderer.invoke('aeh:createEvalPlan', sessionId),
+    createEvalPlan: (sessionId: string, baseRef: string) =>
+      ipcRenderer.invoke('aeh:createEvalPlan', sessionId, baseRef),
     loadEvalResults: (sessionId: string) =>
       ipcRenderer.invoke('aeh:loadEvalResults', sessionId),
+    getEvalRunCases: (runId: string) =>
+      ipcRenderer.invoke('aeh:getEvalRunCases', runId),
+    judgeEvalRunCases: (runId: string, body: unknown) =>
+      ipcRenderer.invoke('aeh:judgeEvalRunCases', runId, body),
+    summarizeEvalRunAgent: (runId: string, body: unknown) =>
+      ipcRenderer.invoke('aeh:summarizeEvalRunAgent', runId, body),
     generateAgentFlowMap: (sessionId: string, body: unknown) =>
       ipcRenderer.invoke('aeh:generateAgentFlowMap', sessionId, body),
     getAgentFlowMap: (sessionId: string) =>
       ipcRenderer.invoke('aeh:getAgentFlowMap', sessionId),
+    enrichAgents: (sessionId: string, body: unknown) =>
+      ipcRenderer.invoke('aeh:enrichAgents', sessionId, body),
+    getAgentKnowledge: (sessionId: string) =>
+      ipcRenderer.invoke('aeh:getAgentKnowledge', sessionId),
     advanceSession: (sessionId: string, body: unknown) =>
       ipcRenderer.invoke('aeh:advanceSession', sessionId, body),
     fulfillDatasets: (sessionId: string, body: unknown) =>

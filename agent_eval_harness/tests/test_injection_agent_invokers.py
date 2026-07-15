@@ -9,10 +9,12 @@ import json
 
 import pytest
 
-from agent_eval_harness.injection.backend_bridge import ensure_backend_importable
+from agent_eval_harness.injection.backend_bridge import default_backend_path, ensure_backend_importable
 
 try:
-    ensure_backend_importable()
+    # Explicit path, not the config-driven default: this is a contract test against the real
+    # backend, and must never be influenced by a live Stage-4 run's .aeh/config.yaml target.
+    ensure_backend_importable(str(default_backend_path()))
     from domain.model_connector.service import ProviderConfigService
     from domain.model_connector.types import ChatResponse
     _BACKEND = True

@@ -8,6 +8,7 @@ import {
   CheckCircle2,
   Workflow,
   ChevronRight,
+  ChevronLeft,
   RefreshCw,
 } from 'lucide-react'
 import { Button, Select, Badge, useToastStore } from '../../components/ui'
@@ -17,7 +18,7 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { getDagreGraphLayout, type GraphLayoutNode, type GraphLayoutEdge } from './graphLayout'
-import { ROLE_COLORS, wiringBlockFileEdges, AgentSubGraphPanel } from './AgentSubGraphPanel'
+import { ROLE_COLORS, wiringBlockFileEdges, acceptedFilePaths, AgentSubGraphPanel } from './AgentSubGraphPanel'
 import { useAEHStore } from '../../store/aeh.store'
 import { useProviderStore } from '../../store/provider.store'
 import LLMConfigModal, { LLMModelButton } from './LLMConfigModal'
@@ -67,6 +68,27 @@ export default function Stage2Screen(): React.ReactElement {
   const [generatingFlows, setGeneratingFlows] = useState(false)
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
   const [graphScope, setGraphScope] = useState<'agent' | 'full'>('agent')
+
+  // Enrichment State
+  const [enriching, setEnriching] = useState(false)
+  const [enrichConfirmOpen, setEnrichConfirmOpen] = useState(false)
+  const [forceReEnrich, setForceReEnrich] = useState(false)
+  const [agentKnowledge, setAgentKnowledge] = useState<AEHAgentKnowledgeRecord[]>([])
+  const [knowledgePanelCollapsed, setKnowledgePanelCollapsed] = useState(false)
+
+  const knowledgeByAgent = useMemo(
+    () => new Map(agentKnowledge.map((k) => [k.agent_id, k])),
+    [agentKnowledge]
+  )
+
+  const loadAgentKnowledge = useCallback(async (sessionId: string) => {
+    try {
+      const records = await window.api.aeh.getAgentKnowledge(sessionId)
+      setAgentKnowledge(records)
+    } catch (e) {
+      console.error('Failed to load agent knowledge', e)
+    }
+  }, [])
 
   // Load providers on mount
   useEffect(() => {
@@ -126,7 +148,8 @@ export default function Stage2Screen(): React.ReactElement {
     } catch {
       setAgentFlowMap(null)
     }
-  }, [])
+    await loadAgentKnowledge(sessionId)
+  }, [loadAgentKnowledge])
 
   const generateAgentFlowsFor = useCallback(
     async (sessionId: string) => {
@@ -180,6 +203,34 @@ export default function Stage2Screen(): React.ReactElement {
       setError('Error polling expansion status.')
     },
   })
+
+  const handleEnrichAgents = useCallback(async () => {
+    if (!expansionSession || enriching || agentFlowMap === null) return
+
+    // Close immediately — the request can take minutes; progress shows via the header spinner.
+    setEnrichConfirmOpen(false)
+    setEnriching(true)
+    try {
+      const result = await window.api.aeh.enrichAgents(expansionSession.id, {
+        provider_id: selectedProviderId,
+        model_id: selectedModelId || null,
+        reasoning_effort: selectedReasoningEffort,
+        thinking_budget: selectedThinkingBudget,
+        depth: 'normal',
+        force_agent_ids: forceReEnrich ? agentFlowMap.agents.map((a) => a.id) : null,
+      })
+      toast.success(
+        `Enriched ${result.enriched_count} agent${result.enriched_count === 1 ? '' : 's'}` +
+          (result.degraded_count > 0 ? ` (${result.degraded_count} degraded)` : '')
+      )
+      await loadAgentKnowledge(expansionSession.id)
+    } catch (err: any) {
+      toast.error(err?.message ?? 'Failed to enrich agents.')
+    } finally {
+      setEnriching(false)
+      setForceReEnrich(false)
+    }
+  }, [expansionSession, enriching, agentFlowMap, selectedProviderId, selectedModelId, selectedReasoningEffort, selectedThinkingBudget, forceReEnrich, toast, loadAgentKnowledge])
 
   // Restore the latest session/map for this candidate so navigating back isn't a blank slate.
   useEffect(() => {
@@ -310,7 +361,7 @@ export default function Stage2Screen(): React.ReactElement {
               setSelectedReasoningEffort(effort ?? null)
               setSelectedThinkingBudget(budget ?? null)
             }}
-            title="LLM 1 — Expansion & Classification Model (this stage only)"
+            title="LLM 1 — Expansion & Classification Model (also used for Enrich Agents)"
           />
 
           <LLMModelButton
@@ -363,6 +414,25 @@ export default function Stage2Screen(): React.ReactElement {
             )}
           </Button>
 
+          <Button
+            variant="primary"
+            disabled={enriching || agentFlowMap === null}
+            onClick={() => setEnrichConfirmOpen(true)}
+            className="text-[10px] h-7 px-3.5 flex items-center gap-1.5"
+          >
+            {enriching ? (
+              <>
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                <span>Enriching...</span>
+              </>
+            ) : (
+              <>
+                <Workflow className="w-3 h-3 ml-0.5" />
+                <span>Enrich Agents</span>
+              </>
+            )}
+          </Button>
+
           {/* Node budget badge */}
           {(() => {
             const totalFiles = countKnownFiles(activeCandidate)
@@ -387,6 +457,62 @@ export default function Stage2Screen(): React.ReactElement {
           })()}
         </div>
       </div>
+
+      {enrichConfirmOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4">
+          <div className="glass rounded-2xl w-full max-w-sm border-slate-850 shadow-2xl p-5 space-y-4 text-slate-100">
+            <div className="flex items-center gap-3 text-amber-400">
+              <AlertCircle className="shrink-0 w-6 h-6" />
+              <h3 className="text-sm font-semibold text-slate-200">Enrich agents with LLM analysis?</h3>
+            </div>
+            <p className="text-[11px] text-slate-450 leading-relaxed">
+              This runs the Stage 2.5 enrichment pass using{' '}
+              <span className="font-mono text-slate-200">
+                {providers.find((p) => p.id === selectedProviderId)?.display_name ?? '(no provider selected)'}
+                {selectedModelId ? `:${selectedModelId}` : ' (provider default model)'}
+              </span>{' '}
+              — the same LLM 1 config as Expansion — up to 2 LLM calls and 3 retrieval queries per
+              agent ({agentFlowMap?.agents.length ?? 0} agent{(agentFlowMap?.agents.length ?? 0) === 1 ? '' : 's'}) —
+              to build a citation-verified knowledge profile for each. Agents with sufficient existing
+              evidence may need zero queries.
+            </p>
+            <p className="text-[10px] text-slate-500">
+              This can take a few minutes for many agents — reasoning models may spend a while
+              per call. The button stays on &quot;Enriching…&quot; the whole time; that is normal,
+              not stuck.
+            </p>
+            {!selectedProviderId && (
+              <p className="text-[10px] text-amber-400">
+                No provider selected — set LLM 1 above before continuing, or the server-side default from
+                .aeh/config.yaml will be used instead.
+              </p>
+            )}
+            {agentKnowledge.length > 0 && (
+              <label className="flex items-start gap-2 text-[10px] text-slate-400 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={forceReEnrich}
+                  onChange={(e) => setForceReEnrich(e.target.checked)}
+                  className="mt-0.5 accent-indigo-500"
+                />
+                <span>
+                  Force re-enrich — {agentKnowledge.length} agent{agentKnowledge.length === 1 ? '' : 's'} already
+                  {' '}have cached knowledge from a previous run and would otherwise be skipped (same
+                  evidence_hash). Check this to re-run them anyway.
+                </span>
+              </label>
+            )}
+            <div className="flex justify-end gap-2.5 pt-2">
+              <Button variant="ghost" onClick={() => setEnrichConfirmOpen(false)} className="text-xs px-4 py-2">
+                Cancel
+              </Button>
+              <Button variant="primary" onClick={handleEnrichAgents} className="text-xs px-4 py-2 bg-indigo-600 hover:bg-indigo-500">
+                Continue
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Screen Body */}
       <div className="flex-1 flex overflow-hidden min-w-0">
@@ -470,9 +596,9 @@ export default function Stage2Screen(): React.ReactElement {
                 <div className="space-y-1 border-t border-slate-900 pt-2">
                   <span className="text-[9px] uppercase tracking-wider font-bold text-slate-500">Accepted</span>
                   <div className="max-h-40 overflow-y-auto space-y-0.5 pr-1">
-                    {expansionSession.accepted.map((path) => (
-                      <div key={path} className="text-[9px] font-mono text-slate-300 truncate" title={path}>
-                        {path}
+                    {expansionSession.accepted.map((item) => (
+                      <div key={item.file} className="text-[9px] font-mono text-slate-300 truncate" title={item.file}>
+                        {item.file}
                       </div>
                     ))}
                   </div>
@@ -775,6 +901,151 @@ export default function Stage2Screen(): React.ReactElement {
                       </div>
                     )
                   })()}
+
+                  {graphScope === 'agent' &&
+                    selectedAgentId &&
+                    (() => {
+                      const record = knowledgeByAgent.get(selectedAgentId)
+                      if (!record) return null
+                      const k = record.content
+
+                      if (knowledgePanelCollapsed) {
+                        return (
+                          <div className="w-8 border-l border-slate-850 bg-slate-950/80 backdrop-blur-sm flex flex-col items-center pt-3 shrink-0">
+                            <button
+                              onClick={() => setKnowledgePanelCollapsed(false)}
+                              className="text-slate-500 hover:text-slate-300"
+                              title="Expand Agent Knowledge"
+                            >
+                              <ChevronLeft className="w-4 h-4" />
+                            </button>
+                          </div>
+                        )
+                      }
+
+                      return (
+                        <div className="w-80 border-l border-slate-850 bg-slate-950/80 backdrop-blur-sm p-4 overflow-y-auto space-y-4 text-xs shrink-0">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[9px] uppercase tracking-wider font-bold text-slate-500">Agent Knowledge</span>
+                            <div className="flex items-center gap-2">
+                              <Badge
+                                variant={record.confidence === 'high' ? 'success' : record.confidence === 'medium' ? 'neutral' : 'error'}
+                                size="sm"
+                              >
+                                {record.confidence}
+                              </Badge>
+                              <button
+                                onClick={() => setKnowledgePanelCollapsed(true)}
+                                className="text-slate-500 hover:text-slate-300"
+                                title="Collapse"
+                              >
+                                <ChevronRight className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
+
+                          {!k ? (
+                            <p className="text-[10px] text-slate-500 italic">
+                              Record found but sidecar JSON could not be read — check server logs.
+                            </p>
+                          ) : (
+                            <div className="space-y-3">
+                              {k.degraded && (
+                                <div className="flex items-start gap-1.5 text-amber-400 bg-amber-950/20 border border-amber-900/40 rounded-lg p-2">
+                                  <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                                  <span className="text-[10px]">{k.degraded_reason || 'Degraded — enrichment did not complete fully.'}</span>
+                                </div>
+                              )}
+
+                              {k.functionality && (
+                                <div>
+                                  <div className="text-[10px] text-slate-400 mb-0.5">Functionality</div>
+                                  <p className="text-[10px] text-slate-300 leading-relaxed">{k.functionality}</p>
+                                </div>
+                              )}
+
+                              {k.context_builders.length > 0 && (
+                                <div className="border-t border-slate-900 pt-2.5">
+                                  <div className="text-[10px] text-slate-400 mb-1">Context Builders ({k.context_builders.length})</div>
+                                  <div className="space-y-1">
+                                    {k.context_builders.map((cb, i) => (
+                                      <div key={i} className="text-[9px] font-mono text-slate-400">
+                                        <span className="text-slate-300">{cb.name}</span>
+                                        <span className="text-slate-600"> → builds </span>
+                                        <span className="text-indigo-400">{cb.builds_kwarg}</span>
+                                        <div className="text-slate-600 truncate" title={`${cb.file}:${cb.line}`}>{cb.file}:{cb.line}</div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+
+                              {(k.upstream_consumers.length > 0 || k.downstream_consumers.length > 0) && (
+                                <div className="border-t border-slate-900 pt-2.5 space-y-2">
+                                  {k.upstream_consumers.length > 0 && (
+                                    <div>
+                                      <div className="text-[10px] text-slate-400 mb-1">Upstream ({k.upstream_consumers.length})</div>
+                                      {k.upstream_consumers.map((c, i) => (
+                                        <div key={i} className="text-[9px] font-mono text-slate-400 truncate" title={`${c.file}:${c.line}`}>{c.name}</div>
+                                      ))}
+                                    </div>
+                                  )}
+                                  {k.downstream_consumers.length > 0 && (
+                                    <div>
+                                      <div className="text-[10px] text-slate-400 mb-1">Downstream ({k.downstream_consumers.length})</div>
+                                      {k.downstream_consumers.map((c, i) => (
+                                        <div key={i} className="text-[9px] font-mono text-slate-400 truncate" title={`${c.file}:${c.line}`}>{c.name}</div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+
+                              {k.failure_modes.length > 0 && (
+                                <div className="border-t border-slate-900 pt-2.5">
+                                  <div className="text-[10px] text-slate-400 mb-1">Failure Modes ({k.failure_modes.length})</div>
+                                  <div className="space-y-1">
+                                    {k.failure_modes.map((fm, i) => (
+                                      <div key={i} className="text-[9px] text-slate-400">{fm.description}</div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+
+                              {k.input_contract.length > 0 && (
+                                <div className="border-t border-slate-900 pt-2.5">
+                                  <div className="text-[10px] text-slate-400 mb-1">Input Contract ({k.input_contract.length})</div>
+                                  <div className="space-y-1 font-mono text-[9px]">
+                                    {k.input_contract.map((arg, i) => (
+                                      <div key={i} className="text-slate-400">
+                                        <span className="text-slate-300">{arg.kwarg}</span>
+                                        <span className="text-slate-600"> : {arg.type_hint} </span>
+                                        <span className="text-slate-600">({arg.source_kind})</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+
+                              {k.needs_human.length > 0 && (
+                                <div className="border-t border-slate-900 pt-2.5">
+                                  <div className="text-[10px] text-amber-400 mb-1">Needs Human ({k.needs_human.length})</div>
+                                  <div className="space-y-1">
+                                    {k.needs_human.map((item, i) => (
+                                      <div key={i} className="text-[9px] text-amber-500/80">{item}</div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+
+                              <div className="border-t border-slate-900 pt-2.5 text-[9px] text-slate-600 font-mono">
+                                {k.query_count} quer{k.query_count === 1 ? 'y' : 'ies'} · {record.evidence_hash.slice(0, 8)} · {k.generated_at}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })()}
                 </div>
               </div>
             </div>
@@ -807,8 +1078,9 @@ function SystemMapGraphPanel({
   }, [systemMap])
 
   const mergedEdges = useMemo(() => {
+    const acceptedPaths = new Set(acceptedFilePaths(expansionSession.accepted))
     const wiringEdges = wiringBlockFileEdges(candidate?.wiring_block ?? null)
-      .filter((e) => expansionSession.accepted.includes(e.src) && expansionSession.accepted.includes(e.dst))
+      .filter((e) => acceptedPaths.has(e.src) && acceptedPaths.has(e.dst))
     const wiringEdgeKeys = new Set(wiringEdges.map((e) => `${e.src}|${e.dst}`))
 
     const symbolEdges = (expansionSession.accepted_edges || [])
@@ -822,7 +1094,7 @@ function SystemMapGraphPanel({
 
   const neighborsOf = useMemo(() => {
     const m = new Map<string, Set<string>>()
-    for (const path of expansionSession.accepted) m.set(path, new Set())
+    for (const path of acceptedFilePaths(expansionSession.accepted)) m.set(path, new Set())
     for (const e of mergedEdges) {
       m.get(e.src)?.add(e.dst)
       m.get(e.dst)?.add(e.src)
@@ -831,7 +1103,7 @@ function SystemMapGraphPanel({
   }, [expansionSession, mergedEdges])
 
   const { layoutNodes, layoutEdges } = useMemo(() => {
-    const nodes = expansionSession.accepted.map((path) => ({
+    const nodes = acceptedFilePaths(expansionSession.accepted).map((path) => ({
       id: path,
       label: path.split('/').pop() || path,
       color: ROLE_COLORS[roleByFile.get(path) ?? 'unknown'] ?? ROLE_COLORS.unknown,

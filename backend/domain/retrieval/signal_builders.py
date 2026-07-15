@@ -242,6 +242,8 @@ def build_graph_confidence_rank_list(
                 signal_name="graph_confidence",
                 excerpt=excerpt,
                 token_estimate=int(best_chunk.get("token_estimate") or 0),
+                start_line=int(best_chunk.get("start_line") or 0),
+                end_line=int(best_chunk.get("end_line") or 0),
             )
         )
 
@@ -288,6 +290,8 @@ def build_bm25_rank_list(
                     signal_name="bm25",
                     excerpt=excerpt,
                     token_estimate=int(best_chunk.get("token_estimate") or 0),
+                    start_line=int(best_chunk.get("start_line") or 0),
+                    end_line=int(best_chunk.get("end_line") or 0),
                 )
             )
     return entries
@@ -343,6 +347,8 @@ def build_module_proximity_rank_list(
                     signal_name="module_proximity",
                     excerpt=excerpt,
                     token_estimate=int(best_chunk.get("token_estimate") or 0),
+                    start_line=int(best_chunk.get("start_line") or 0),
+                    end_line=int(best_chunk.get("end_line") or 0),
                 )
             )
 
@@ -400,6 +406,8 @@ def build_category_hint_rank_list(
                     signal_name="category_hint",
                     excerpt=excerpt,
                     token_estimate=int(best_chunk.get("token_estimate") or 0),
+                    start_line=int(best_chunk.get("start_line") or 0),
+                    end_line=int(best_chunk.get("end_line") or 0),
                 )
             )
 

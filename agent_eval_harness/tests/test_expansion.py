@@ -62,7 +62,8 @@ async def test_expansion_golden_flow() -> None:
     }
 
     res = await expand_candidate("snap-123", candidate, client, llm_client, node_budget=5, hop_cap=3)
-    assert res["accepted"] == ["file_a.py", "file_b.py"]
+    accepted_files = [item["file"] for item in res["accepted"]]
+    assert accepted_files == ["file_a.py", "file_b.py"]
     assert res["boundary"] == ["file_c.py"]
     assert res["stop_reason"] == "frontier_exhausted"
 
@@ -90,7 +91,8 @@ async def test_expansion_node_budget() -> None:
     }
 
     res = await expand_candidate("snap-123", candidate, client, llm_client, node_budget=1, hop_cap=3)
-    assert res["accepted"] == ["file_a.py"]
+    accepted_files = [item["file"] for item in res["accepted"]]
+    assert accepted_files == ["file_a.py"]
     assert res["stop_reason"] == "node_budget"
 
 
@@ -159,8 +161,9 @@ async def test_expansion_chunk_level_evidence_and_bypass() -> None:
     }
 
     res = await expand_candidate("snap-123", candidate, client, llm_client, node_budget=5, hop_cap=3)
-    assert "file_a.py" in res["accepted"]
-    assert "file_b.py" in res["accepted"]
+    accepted_files = [item["file"] for item in res["accepted"]]
+    assert "file_a.py" in accepted_files
+    assert "file_b.py" in accepted_files
     assert res["stop_reason"] == "frontier_exhausted"
 
 
@@ -194,8 +197,9 @@ async def test_expansion_respects_excluded_files() -> None:
     }
 
     res = await expand_candidate("snap-123", candidate, client, llm_client, node_budget=5, hop_cap=3)
-    assert "file_a.py" not in res["accepted"]
-    assert "file_b.py" not in res["accepted"]
+    accepted_files = [item["file"] for item in res["accepted"]]
+    assert "file_a.py" not in accepted_files
+    assert "file_b.py" not in accepted_files
     assert res["stop_reason"] == "frontier_exhausted"
 
 
@@ -233,8 +237,9 @@ async def test_expansion_captures_accepted_edges() -> None:
     }
 
     res = await expand_candidate("snap-123", candidate, client, llm_client, node_budget=5, hop_cap=3)
-    assert res["accepted"] == ["file_a.py", "file_b.py", "file_c.py"]
-    
+    accepted_files = [item["file"] for item in res["accepted"]]
+    assert accepted_files == ["file_a.py", "file_b.py", "file_c.py"]
+
     edges = res["accepted_edges"]
     assert len(edges) == 2
     assert {"src": "file_a.py", "dst": "file_b.py"} in edges
@@ -267,7 +272,8 @@ async def test_expansion_batch_classification_fewer_calls() -> None:
 
     # All three files are in seeds, so they are processed in a single batch level
     res = await expand_candidate("snap-123", candidate, client, llm_client, node_budget=5, hop_cap=3)
-    assert sorted(res["accepted"]) == ["file_a.py", "file_b.py", "file_c.py"]
+    accepted_files = sorted([item["file"] for item in res["accepted"]])
+    assert accepted_files == ["file_a.py", "file_b.py", "file_c.py"]
     # Verify that exactly 1 LLM call was made for this first batch level
     assert llm_client.call_count == 1
 
@@ -310,7 +316,8 @@ async def test_expansion_batch_classification_missing_degrades_to_boundary() -> 
     }
 
     res = await expand_candidate("snap-123", candidate, client, llm_client, node_budget=5, hop_cap=3)
-    assert "file_a.py" in res["accepted"]
-    assert "file_c.py" in res["accepted"]
-    assert "file_b.py" not in res["accepted"]
+    accepted_files = [item["file"] for item in res["accepted"]]
+    assert "file_a.py" in accepted_files
+    assert "file_c.py" in accepted_files
+    assert "file_b.py" not in accepted_files
     assert "file_b.py" in res["boundary"]

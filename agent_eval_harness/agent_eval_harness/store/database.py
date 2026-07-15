@@ -296,6 +296,45 @@ _MIGRATIONS: list[dict[str, Any]] = [
             "ALTER TABLE expansion_sessions ADD COLUMN eval_plan_md_path TEXT;"
         ),
     },
+    {
+        "version": 19,
+        "description": "Add eval_run_id/eval_manifest_run_id to expansion_sessions — lets "
+        "eval-results be idempotent per target-side manifest run_id (re-clicking Load "
+        "Results with an unchanged manifest returns the existing AEH run instead of "
+        "inserting a duplicate) and lets the UI recall the last loaded run across "
+        "navigation instead of forcing a fresh click every visit.",
+        "sql": (
+            "ALTER TABLE expansion_sessions ADD COLUMN eval_run_id TEXT;\n"
+            "ALTER TABLE expansion_sessions ADD COLUMN eval_manifest_run_id TEXT;"
+        ),
+    },
+    {
+        "version": 20,
+        "description": "Add project_context_json to discovery_sessions and risk_flags_json "
+        "to discovery_candidates — persist code-analysis report context (CS-290 §B1) and "
+        "risk flag propagation from analysis to candidate profiles (CS-290 §B3)",
+        "sql": (
+            "ALTER TABLE discovery_sessions ADD COLUMN project_context_json TEXT;\n"
+            "ALTER TABLE discovery_candidates ADD COLUMN risk_flags_json TEXT NOT NULL DEFAULT '[]';"
+        ),
+    },
+    {
+        "version": 21,
+        "description": "Add agent_knowledge table for enrichment results (CS-291 Phase 2)",
+        "sql": (
+            "CREATE TABLE IF NOT EXISTS agent_knowledge (\n"
+            "    session_id TEXT NOT NULL,\n"
+            "    agent_id TEXT NOT NULL,\n"
+            "    md_path TEXT NOT NULL,\n"
+            "    json_path TEXT NOT NULL,\n"
+            "    evidence_hash TEXT NOT NULL,\n"
+            "    confidence TEXT NOT NULL,\n"
+            "    query_count INTEGER NOT NULL DEFAULT 0,\n"
+            "    generated_at TEXT NOT NULL,\n"
+            "    PRIMARY KEY (session_id, agent_id)\n"
+            ");"
+        ),
+    },
 ]
 
 TARGET_VERSION = len(_MIGRATIONS) - 1

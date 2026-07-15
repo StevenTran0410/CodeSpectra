@@ -110,3 +110,24 @@ fingerprints:
     pattern: "system_prompt|system prompt"
     framework: "unknown"
     weight: 0.6
+
+  - id: mcp_tool_description
+    type: retrieval
+    query: "Tool description"
+    pattern: "Tool\\(description="
+    framework: "mcp"
+    weight: 0.8
+
+  - id: mcp_agent_card
+    type: retrieval
+    query: "AgentCard"
+    pattern: "AgentCard\\("
+    framework: "mcp"
+    weight: 0.8
+
+  - id: mcp_list_tools
+    type: retrieval
+    query: "list_tools"
+    pattern: "@\\w+\\.list_tools\\("
+    framework: "mcp"
+    weight: 0.9
