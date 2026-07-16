@@ -176,6 +176,7 @@ DATASET_KINDS: frozenset[str] = frozenset(
         "snapshot_regression_baseline",
         "recorded_report_replay",  # mines real analysis_reports rows for K/L, no new ingestion needed
         "synthetic_agent_io",  # CS-289: LLM-synthesized input+gold at an agent's real LLM boundary
+        "metamorphic_relation",  # CS-298: mechanically-derived gold from a reviewed source + config relation
     }
 )
 

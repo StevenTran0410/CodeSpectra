@@ -34,5 +34,8 @@ def get_generator(kind: str) -> GeneratorFn:
     elif kind == "synthetic_agent_io":
         from agent_eval_harness.datasets.generators.synthetic_agent_io import generate
         return generate
+    elif kind == "metamorphic_relation":
+        from agent_eval_harness.datasets.generators.metamorphic_relation import generate
+        return generate
     else:
         raise ValueError(f"Unknown dataset kind: {kind}")

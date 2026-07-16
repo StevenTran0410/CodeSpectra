@@ -255,7 +255,11 @@ async def insert_dataset_metadata(
     instructions: dict | None = None,
     source_gate_ids: list[str] | None = None,
     min_cases: int = 1,
+    metrics: dict | None = None,
 ) -> None:
+    stored = dict(instructions or {})
+    if metrics:
+        stored["_metrics"] = metrics
     db = get_db()
     await db.execute(
         "INSERT OR REPLACE INTO datasets "
@@ -264,7 +268,7 @@ async def insert_dataset_metadata(
         (
             dataset_id,
             kind,
-            json.dumps(instructions or {}),
+            json.dumps(stored),
             json.dumps(source_gate_ids or []),
             min_cases,
             utc_now_iso(),

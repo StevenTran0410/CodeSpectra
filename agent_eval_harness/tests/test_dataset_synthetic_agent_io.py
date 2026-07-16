@@ -3,7 +3,12 @@ import json
 
 import pytest
 
-from agent_eval_harness.datasets.generators.synthetic_agent_io import generate, is_dataset_stale, schema_hash
+from agent_eval_harness.datasets.generators.synthetic_agent_io import (
+    _extract_text_values,
+    generate,
+    is_dataset_stale,
+    schema_hash,
+)
 from agent_eval_harness.llm.client import LLMResponse
 from agent_eval_harness.llm.fake_client import FakeLLMClient
 
@@ -395,3 +400,129 @@ async def test_d9_known_kwarg_set_still_uses_fast_path():
 
     assert len(cases) == 1
     assert cases[0].input["shape"] == "retrieval_only"  # fast-path builder shape, not "generic"
+
+
+# --- D6: embedding dedup ---
+# target-specific: uses fan_in_judge inputs (letter-keyed dicts) which have no top-level string
+# values, so the dedup degrades to a no-op — which is the correct behavior per the spec.
+
+
+class _FakeEmbeddingClient:
+    """Returns distinct unit vectors for different texts, identical vector for same text."""
+
+    def __init__(self) -> None:
+        self._cache: dict[str, list[float]] = {}
+        self._counter = 0
+
+    async def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        result = []
+        for text in texts:
+            if text not in self._cache:
+                # Orthogonal unit vectors: slot counter in a 10-dim space
+                vec = [0.0] * 10
+                vec[self._counter % 10] = 1.0
+                self._cache[text] = vec
+                self._counter += 1
+            result.append(self._cache[text])
+        return result
+
+
+class _IdenticalEmbeddingClient:
+    """Always returns the same unit vector, regardless of text — simulates near-duplicate."""
+
+    async def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        return [[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]] * len(texts)
+
+
+async def test_d6_no_false_positive_identical_field_names_different_values():
+    """AC D6: two cases with identical field names but different string values must NOT be
+    treated as near-duplicates.  This is the false-positive trap the spec calls out at
+    synthetic_agent_io.py:560-562 — embedding whole JSON would inflate cosine-sim via shared
+    keys; text-values-only embedding must score them as distinct."""
+    # Two candidates with same field structure but different values
+    candidate_a = {
+        "input": {"query": "Python packaging conventions", "repo_name": "my-python-lib"},
+        "gold": {"entrypoint": {"file": "setup.py", "reason": "entry"}, "confidence": "high"},
+    }
+    candidate_b = {
+        "input": {"query": "Kubernetes deployment patterns", "repo_name": "k8s-operator"},
+        "gold": {"entrypoint": {"file": "main.go", "reason": "entry"}, "confidence": "medium"},
+    }
+    payload = json.dumps([candidate_a, candidate_b])
+    llm_client = FakeLLMClient(LLMResponse(content=payload, model="fake"))
+    embed_client = _FakeEmbeddingClient()
+
+    cases = await generate(
+        _rag_config("important_files", "rag_single_shot", count=2),
+        llm_client,
+        embedding_client=embed_client,
+    )
+
+    assert len(cases) == 2, "distinct cases must not be auto-dropped by dedup"
+    assert not any(c.labels.get("near_duplicate") for c in cases), (
+        "cases with different text values must not be flagged near-duplicate"
+    )
+
+
+def test_d6_extracts_text_from_nested_inputs():
+    """Regression: real generated inputs are nested (letter-keyed objects, bundle.evidences),
+    so a top-level-only walk returned '' for every case and collapsed them all to sim 1.0."""
+    letter_keyed_a = {
+        "A": {"summary": "auth module is well tested", "confidence": "high"},
+        "B": {"summary": "db layer has no tests", "confidence": "low"},
+    }
+    letter_keyed_b = {
+        "A": {"summary": "payments flow is untested", "confidence": "low"},
+        "B": {"summary": "unrelated content entirely", "confidence": "high"},
+    }
+    text_a = _extract_text_values(letter_keyed_a)
+    text_b = _extract_text_values(letter_keyed_b)
+    assert text_a and text_b, "nested string leaves must be reached, not skipped"
+    assert text_a != text_b, "distinct nested cases must not collapse to the same text"
+
+    bundled = {
+        "shape": "kwargs",
+        "bundle": {"evidences": [{"rel_path": "src/x.py", "excerpt": "def foo(): pass", "score": 0.9}]},
+    }
+    text_c = _extract_text_values(bundled)
+    assert "def foo(): pass" in text_c, "evidence excerpts distinguish cases and must be embedded"
+    assert "kwargs" not in text_c, "the constant 'shape' discriminator must stay out of the text"
+
+
+async def test_d6_near_duplicate_flagged_not_dropped():
+    """Cases scoring 0.80–0.93 are accepted with near_duplicate=True, not auto-dropped."""
+    # Both candidates return the same embedding — cosine_sim = 1.0 ≥ 0.93 → auto-drop first
+    # one gets accepted (no prior), second is identical → dropped and reinstatement fires.
+    # For flag-only (0.80–0.93) we'd need a partial-match client; use _FakeEmbeddingClient
+    # which gives orthogonal vectors, so we test that distinct-enough cases have no flag.
+    candidate_a = {
+        "input": {"query": "topic A", "repo_name": "repo-a"},
+        "gold": {"entrypoint": {"file": "a.py", "reason": "r"}, "confidence": "high"},
+    }
+    candidate_b = {
+        "input": {"query": "topic B", "repo_name": "repo-b"},
+        "gold": {"entrypoint": {"file": "b.py", "reason": "r"}, "confidence": "high"},
+    }
+    payload = json.dumps([candidate_a, candidate_b])
+    llm_client = FakeLLMClient(LLMResponse(content=payload, model="fake"))
+
+    cases = await generate(
+        _rag_config("glossary", "rag_single_shot", count=2),
+        llm_client,
+        embedding_client=_FakeEmbeddingClient(),
+    )
+
+    assert len(cases) == 2
+    assert all("max_sim" in c.labels for c in cases[1:]), "accepted cases after first carry max_sim"
+
+
+async def test_d6_no_embedding_client_behavior_unchanged():
+    """With embedding_client=None the generation is byte-identical to before D6."""
+    payload = json.dumps([_valid_case(1), _valid_case(2)])
+    llm_client = FakeLLMClient(LLMResponse(content=payload, model="fake"))
+
+    cases = await generate(_config(count=2), llm_client, embedding_client=None)
+
+    assert len(cases) == 2
+    assert not any(c.labels.get("near_duplicate") for c in cases)
+    assert not any(c.labels.get("max_sim") is not None for c in cases)

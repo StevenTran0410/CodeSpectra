@@ -366,6 +366,74 @@ async def case_verdict_route(case_id: str, body: CaseVerdictRequest):
     raise HTTPException(status_code=400, detail=f"Unknown verdict: {body.verdict}")
 
 
+@app.get("/api/metamorphic-relations")
+async def list_metamorphic_relations_route():
+    from agent_eval_harness.datasets.metamorphic_relations import load_relations
+
+    return [r.model_dump() for r in load_relations().values()]
+
+
+class MetamorphicPreviewRequest(BaseModel):
+    relation_id: str
+    sample_size: int = 5
+
+
+class MetamorphicApproveRequest(BaseModel):
+    relation_id: str
+    samples: list[dict] | None = None
+
+
+class MetamorphicDeriveRequest(BaseModel):
+    relation_id: str
+    dataset_name: str | None = None
+    spot_audit_pct: float = 0.10
+
+
+@app.post("/api/datasets/{dataset_id}/metamorphic/preview")
+async def metamorphic_preview_route(dataset_id: str, body: MetamorphicPreviewRequest):
+    from agent_eval_harness.datasets.metamorphic_derive import (
+        MetamorphicPreconditionError,
+        preview_relation,
+    )
+
+    try:
+        return await preview_relation(body.relation_id, dataset_id, sample_size=body.sample_size)
+    except MetamorphicPreconditionError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/datasets/{dataset_id}/metamorphic/approve")
+async def metamorphic_approve_route(dataset_id: str, body: MetamorphicApproveRequest):
+    from agent_eval_harness.datasets.metamorphic_derive import (
+        MetamorphicPreconditionError,
+        approve_relation,
+    )
+
+    try:
+        await approve_relation(body.relation_id, dataset_id, samples=body.samples)
+        return {"success": True}
+    except MetamorphicPreconditionError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/datasets/{dataset_id}/metamorphic/derive")
+async def metamorphic_derive_route(dataset_id: str, body: MetamorphicDeriveRequest):
+    from agent_eval_harness.datasets.metamorphic_derive import (
+        MetamorphicPreconditionError,
+        derive_dataset,
+    )
+
+    try:
+        return await derive_dataset(
+            body.relation_id,
+            dataset_id,
+            dataset_name=body.dataset_name,
+            spot_audit_pct=body.spot_audit_pct,
+        )
+    except MetamorphicPreconditionError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 class ProviderSummary(BaseModel):
     provider_id: str
     display_name: str

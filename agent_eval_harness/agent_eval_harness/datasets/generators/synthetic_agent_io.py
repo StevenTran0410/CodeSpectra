@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from agent_eval_harness.datasets.generator_utils import apply_painpoint, strip_markdown_code_block
 from agent_eval_harness.datasets.types import DatasetCase
 from agent_eval_harness.llm.client import LLMClient, LLMMessage
+from agent_eval_harness.llm.embedding_client import EmbeddingClient
 from agent_eval_harness.store.repository import new_id
 
 logger = logging.getLogger("agent_eval_harness.datasets.generators.synthetic_agent_io")
@@ -33,6 +34,35 @@ _GENERIC_PURPOSE_BY_ARCHETYPE: dict[str, str] = {
     "rag_query_planning": "Plans retrieval queries then analyzes the retrieved evidence.",
     "rag_query_planning_mem_ctx": "Plans queries with project context then analyzes evidence.",
 }
+
+
+def _cosine_sim(a: list[float], b: list[float]) -> float:
+    """Cosine similarity; returns 0.0 when either vector is zero."""
+    dot = sum(x * y for x, y in zip(a, b))
+    mag_a = sum(x * x for x in a) ** 0.5
+    mag_b = sum(x * x for x in b) ** 0.5
+    if mag_a == 0.0 or mag_b == 0.0:
+        return 0.0
+    return dot / (mag_a * mag_b)
+
+
+def _extract_text_values(inp: Any) -> str:
+    """Joins string leaves at any depth; keys are never embedded because same-batch cases share them."""
+    out: list[str] = []
+
+    def walk(node: Any) -> None:
+        if isinstance(node, str):
+            out.append(node)
+        elif isinstance(node, dict):
+            for k, v in node.items():
+                if k != "shape":  # constant discriminator, identical across every case
+                    walk(v)
+        elif isinstance(node, (list, tuple)):
+            for v in node:
+                walk(v)
+
+    walk(inp)
+    return " | ".join(out)
 
 
 def _generic_purpose_for_archetype(archetype: str) -> str:
@@ -172,7 +202,8 @@ def _fan_in_judge_prompt(
 
 
 async def _generate_fan_in_judge(
-    parsed: SyntheticAgentIOConfig, llm_client: LLMClient
+    parsed: SyntheticAgentIOConfig, llm_client: LLMClient,
+    embedding_client: EmbeddingClient | None = None,
 ) -> list[DatasetCase]:
     def build_prompt(n: int, avoid: list[dict[str, Any]] | None) -> str:
         return _fan_in_judge_prompt(parsed, n, avoid)
@@ -180,6 +211,7 @@ async def _generate_fan_in_judge(
     return await _generate_validated_cases(
         parsed, llm_client, build_prompt,
         build_case_input=lambda inp: {"shape": "all_sections", "all_sections": inp},
+        embedding_client=embedding_client,
     )
 
 
@@ -317,6 +349,7 @@ async def _generate_validated_cases(
     llm_client: LLMClient,
     build_prompt: Callable[[int, list[dict[str, Any]] | None], str],
     build_case_input: Callable[[dict[str, Any]], dict[str, Any]],
+    embedding_client: EmbeddingClient | None = None,
 ) -> list[DatasetCase]:
     """Shared generation core for every archetype builder. Requests cases in small batches, stopping once count is reached, the round ceiling hits, or _MAX_CONSECUTIVE_DRY_ROUNDS add nothing."""
     output = parsed.contract.get("output") or {}
@@ -324,6 +357,9 @@ async def _generate_validated_cases(
     case_schema_hash = schema_hash(json_schema)
 
     accepted: list[dict[str, Any]] = []
+    accepted_extra_labels: list[dict[str, Any]] = []  # parallel to accepted
+    accepted_embeddings: list[list[float]] = []
+    dedup_stash: list[tuple[float, dict[str, Any]]] = []  # (max_sim, candidate) for floor-guard reinstatement
     rejected_last_round: list[dict[str, Any]] = []
     dry_rounds = 0
 
@@ -351,7 +387,29 @@ async def _generate_validated_cases(
             if errors:
                 rejected_last_round.append(candidate)
                 continue
+
+            # Embedding dedup — degrades cleanly when client is absent or embedding fails.
+            extra_labels: dict[str, Any] = {}
+            if embedding_client is not None:
+                try:
+                    text = _extract_text_values(candidate["input"])
+                    [emb] = await embedding_client.embed_texts([text])
+                    if accepted_embeddings:
+                        max_sim = max(_cosine_sim(emb, acc) for acc in accepted_embeddings)
+                        extra_labels["max_sim"] = round(max_sim, 4)
+                        if max_sim >= 0.93:
+                            # Auto-drop: regenerate instead of shrinking the dataset.
+                            dedup_stash.append((max_sim, candidate))
+                            rejected_last_round.append(candidate)
+                            continue
+                        if max_sim >= 0.80:
+                            extra_labels["near_duplicate"] = True
+                    accepted_embeddings.append(emb)
+                except Exception:
+                    pass  # degrade cleanly — accept without dedup check
+
             accepted.append(candidate)
+            accepted_extra_labels.append(extra_labels)
             newly_accepted += 1
 
         if newly_accepted == 0:
@@ -375,6 +433,15 @@ async def _generate_validated_cases(
         else:
             dry_rounds = 0
 
+    # Floor guard: if dedup auto-drops pushed us below count, reinstate least-similar dropped cases.
+    if dedup_stash and len(accepted) < parsed.count:
+        dedup_stash.sort(key=lambda t: t[0])  # ascending: lowest sim first (most diverse of the dropped)
+        for stash_sim, stash_candidate in dedup_stash:
+            if len(accepted) >= parsed.count:
+                break
+            accepted.append(stash_candidate)
+            accepted_extra_labels.append({"max_sim": round(stash_sim, 4), "near_duplicate": True})
+
     if len(accepted) < parsed.count:
         logger.warning(
             "synthetic_agent_io[%s/%s]: generated %d/%d requested cases",
@@ -382,7 +449,8 @@ async def _generate_validated_cases(
         )
 
     cases: list[DatasetCase] = []
-    for candidate in accepted[: parsed.count]:
+    for i, candidate in enumerate(accepted[: parsed.count]):
+        extra = accepted_extra_labels[i] if i < len(accepted_extra_labels) else {}
         cases.append(
             DatasetCase(
                 id=new_id(),
@@ -394,6 +462,7 @@ async def _generate_validated_cases(
                     "agent_id": parsed.agent_id,
                     "archetype": parsed.archetype,
                     "schema_hash": case_schema_hash,
+                    **extra,
                 },
                 provenance="synthetic",
             )
@@ -401,7 +470,10 @@ async def _generate_validated_cases(
     return cases
 
 
-async def _generate_rag_single_shot(parsed: SyntheticAgentIOConfig, llm_client: LLMClient) -> list[DatasetCase]:
+async def _generate_rag_single_shot(
+    parsed: SyntheticAgentIOConfig, llm_client: LLMClient,
+    embedding_client: EmbeddingClient | None = None,
+) -> list[DatasetCase]:
     """I, G — one fixed-query retrieval call, no upstream, no mem_ctx."""
 
     def build_prompt(n: int, avoid: list[dict[str, Any]] | None) -> str:
@@ -411,10 +483,14 @@ async def _generate_rag_single_shot(parsed: SyntheticAgentIOConfig, llm_client: 
 
     return await _generate_validated_cases(
         parsed, llm_client, build_prompt, build_case_input=_shape_case_input("retrieval_only"),
+        embedding_client=embedding_client,
     )
 
 
-async def _generate_rag_upstream(parsed: SyntheticAgentIOConfig, llm_client: LLMClient) -> list[DatasetCase]:
+async def _generate_rag_upstream(
+    parsed: SyntheticAgentIOConfig, llm_client: LLMClient,
+    embedding_client: EmbeddingClient | None = None,
+) -> list[DatasetCase]:
     """E, H — one fixed-query retrieval call + one upstream agent's raw output dict."""
     specs = _upstream_specs_for(parsed)
 
@@ -425,10 +501,14 @@ async def _generate_rag_upstream(parsed: SyntheticAgentIOConfig, llm_client: LLM
 
     return await _generate_validated_cases(
         parsed, llm_client, build_prompt, build_case_input=_shape_case_input("retrieval_and_upstream"),
+        embedding_client=embedding_client,
     )
 
 
-async def _generate_rag_mem_ctx(parsed: SyntheticAgentIOConfig, llm_client: LLMClient) -> list[DatasetCase]:
+async def _generate_rag_mem_ctx(
+    parsed: SyntheticAgentIOConfig, llm_client: LLMClient,
+    embedding_client: EmbeddingClient | None = None,
+) -> list[DatasetCase]:
     """A — 4 mutually-consistent artifacts generated together per case so evidence paths are always a real subset of that case's synthetic folder_tree."""
     string_specs = [
         _FOLDER_TREE_SPEC,
@@ -445,10 +525,14 @@ async def _generate_rag_mem_ctx(parsed: SyntheticAgentIOConfig, llm_client: LLMC
 
     return await _generate_validated_cases(
         parsed, llm_client, build_prompt, build_case_input=_shape_case_input("mem_ctx_and_retrieval"),
+        embedding_client=embedding_client,
     )
 
 
-async def _generate_rag_mem_ctx_participant(parsed: SyntheticAgentIOConfig, llm_client: LLMClient) -> list[DatasetCase]:
+async def _generate_rag_mem_ctx_participant(
+    parsed: SyntheticAgentIOConfig, llm_client: LLMClient,
+    embedding_client: EmbeddingClient | None = None,
+) -> list[DatasetCase]:
     """B, C — an inherited arch_bundle + folder_tree, optionally an upstream identity dict."""
     specs = _upstream_specs_for(parsed)
 
@@ -460,10 +544,14 @@ async def _generate_rag_mem_ctx_participant(parsed: SyntheticAgentIOConfig, llm_
 
     return await _generate_validated_cases(
         parsed, llm_client, build_prompt, build_case_input=_shape_case_input("mem_ctx_participant"),
+        embedding_client=embedding_client,
     )
 
 
-async def _generate_rag_query_planning(parsed: SyntheticAgentIOConfig, llm_client: LLMClient) -> list[DatasetCase]:
+async def _generate_rag_query_planning(
+    parsed: SyntheticAgentIOConfig, llm_client: LLMClient,
+    embedding_client: EmbeddingClient | None = None,
+) -> list[DatasetCase]:
     """D, J — a query-planning LLM sub-call (not simulated) + retrieve_multi, optionally one upstream agent output dict (D only)."""
     specs = _upstream_specs_for(parsed)
 
@@ -474,10 +562,14 @@ async def _generate_rag_query_planning(parsed: SyntheticAgentIOConfig, llm_clien
 
     return await _generate_validated_cases(
         parsed, llm_client, build_prompt, build_case_input=_shape_case_input("query_planning"),
+        embedding_client=embedding_client,
     )
 
 
-async def _generate_rag_query_planning_mem_ctx(parsed: SyntheticAgentIOConfig, llm_client: LLMClient) -> list[DatasetCase]:
+async def _generate_rag_query_planning_mem_ctx(
+    parsed: SyntheticAgentIOConfig, llm_client: LLMClient,
+    embedding_client: EmbeddingClient | None = None,
+) -> list[DatasetCase]:
     """F — query-planning + retrieve_multi + a parallel frontend-screens retrieve, plus folder_tree and two upstream agent output dicts (identity, architecture)."""
     specs = _upstream_specs_for(parsed)
 
@@ -489,6 +581,7 @@ async def _generate_rag_query_planning_mem_ctx(parsed: SyntheticAgentIOConfig, l
 
     return await _generate_validated_cases(
         parsed, llm_client, build_prompt, build_case_input=_shape_case_input("query_planning_mem_ctx"),
+        embedding_client=embedding_client,
     )
 
 
@@ -510,7 +603,10 @@ _KNOWN_SHAPE_KWARG_SETS: dict[str, frozenset[str]] = {
 _KNOWN_KWARG_SET_VALUES: frozenset[frozenset[str]] = frozenset(_KNOWN_SHAPE_KWARG_SETS.values())
 
 # CS-297: retained with the known-kwarg-set fast-path
-_ARCHETYPE_BUILDERS: dict[str, Callable[[SyntheticAgentIOConfig, LLMClient], Awaitable[list[DatasetCase]]]] = {
+_ARCHETYPE_BUILDERS: dict[
+    str,
+    Callable[[SyntheticAgentIOConfig, LLMClient, EmbeddingClient | None], Awaitable[list[DatasetCase]]],
+] = {
     "fan_in_judge": _generate_fan_in_judge,
     "rag_single_shot": _generate_rag_single_shot,
     "rag_upstream": _generate_rag_upstream,
@@ -523,7 +619,10 @@ _ARCHETYPE_BUILDERS: dict[str, Callable[[SyntheticAgentIOConfig, LLMClient], Awa
 _NON_INPUT_KWARG_NAMES = frozenset({"provider_id", "model_id"})
 
 
-async def _generate_generic(parsed: SyntheticAgentIOConfig, llm_client: LLMClient) -> list[DatasetCase]:
+async def _generate_generic(
+    parsed: SyntheticAgentIOConfig, llm_client: LLMClient,
+    embedding_client: EmbeddingClient | None = None,
+) -> list[DatasetCase]:
     """Generic builder: derives the case-input field list from contract.invocation.kwargs."""
     contract = parsed.contract
     output = contract.get("output") or {}
@@ -579,6 +678,7 @@ async def _generate_generic(parsed: SyntheticAgentIOConfig, llm_client: LLMClien
 
     cases = await _generate_validated_cases(
         parsed, llm_client, build_prompt, build_case_input=_shape_case_input("generic"),
+        embedding_client=embedding_client,
     )
     # Rubber-stamp visibility: tag cases when output schema was unavailable
     if json_schema is None:
@@ -590,7 +690,8 @@ async def _generate_generic(parsed: SyntheticAgentIOConfig, llm_client: LLMClien
 
 
 async def generate(
-    config: dict, llm_client: LLMClient | None, seed: int | None = None
+    config: dict, llm_client: LLMClient | None, seed: int | None = None,
+    embedding_client: EmbeddingClient | None = None,
 ) -> list[DatasetCase]:
     parsed = SyntheticAgentIOConfig.model_validate(config)
     if llm_client is None:
@@ -601,7 +702,7 @@ async def generate(
             "agent has no retrieval signal (check has_retrieval_signal in contract harvest)"
         )
     if parsed.archetype == "fan_in_judge":
-        return await _generate_fan_in_judge(parsed, llm_client)
+        return await _generate_fan_in_judge(parsed, llm_client, embedding_client)
     # CS-297: fast-path for known CodeSpectra kwarg shapes; remove once generic path is validated
     kwarg_names = frozenset(
         k["name"] for k in ((parsed.contract.get("invocation") or {}).get("kwargs") or []) if k.get("name")
@@ -610,5 +711,5 @@ async def generate(
     if not kwarg_names or kwarg_names in _KNOWN_KWARG_SET_VALUES:
         builder = _ARCHETYPE_BUILDERS.get(parsed.archetype)
         if builder is not None:
-            return await builder(parsed, llm_client)
-    return await _generate_generic(parsed, llm_client)
+            return await builder(parsed, llm_client, embedding_client)
+    return await _generate_generic(parsed, llm_client, embedding_client)

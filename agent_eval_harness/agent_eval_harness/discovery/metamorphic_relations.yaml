@@ -1,0 +1,50 @@
+# metamorphic_relations.yaml
+# WHY: config-as-data (contract_signals.yaml precedent). Each relation pairs a deterministic
+# transform (or none) with a mechanical invariant over an ALREADY-reviewed source case, so gold
+# needs no LLM text and no per-case human review (review the relation once, amortize N cases).
+# Field names below are DATA harvested from each target's own EvaluationContract.output.json_schema
+# at authoring time — they are NEVER literals in metamorphic_ops.py or perturbation.py.
+# Section-letters / agent-ids MUST NOT appear in code; here they may appear only as target-field data.
+# Each relation is git-reviewed in this file AND runtime-approved per source cohort (preview) before
+# derivation (agent_eval_harness/datasets/metamorphic_derive.py enforces the double precondition).
+relations:
+
+  # CS-299 A1/A2 (auditor 2cec1c60): PURE cross-field invariant, no input transform.
+  # gold = f(existing reviewed case fields). Flags the case whose weakest list omits an argmin member.
+  - id: weakest_is_argmin
+    applies_to: fan_in_judge            # archetype, never an agent id
+    transform: null                     # invariant over the reviewed case as-is
+    invariant:
+      op: argmin_k
+      params:
+        scores_field: section_scores    # DATA: per-key numeric dict field for THIS target
+        report_field: weakest_sections  # DATA: field that must equal the argmin-k keys
+        k: 3
+        allow_ties: true                # A2 tie case: ties for the k-th boundary score are valid
+
+  # CS-299 A3/A4 (violations ebc63255): input transform + predicted output delta (metamorphic proper).
+  # Forces a POSITIVE case where most reviewed cases had zero violations.
+  - id: injected_conflict_is_flagged
+    applies_to: fan_in_judge
+    transform:
+      op: inject_conflict
+      params:
+        target_fields: [purpose, description]  # DATA: text fields to seed the contradiction
+        token: "__mr_conflict__"               # sentinel injected token
+    invariant:
+      op: contains_injected_token
+      params:
+        output_field: violations_found         # DATA: list/flag field that must surface it
+        token: "__mr_conflict__"
+        min_count: 1
+
+  # NON-CodeSpectra acceptance target (multi_agent JudgeComponent {sufficient:bool, context:list}).
+  # Proves the schema fires on a FLAT, section-letter-free target — the real acceptance bar.
+  - id: empty_context_is_insufficient
+    applies_to: fan_in_judge
+    transform:
+      op: degrade_section                # generic: empties target field to its TYPED empty ([] here)
+      params: { target_field: context }  # perturbation.py's typed-empty fix is what makes this yield []
+    invariant:
+      op: field_equals
+      params: { target_field: sufficient, expect: false }

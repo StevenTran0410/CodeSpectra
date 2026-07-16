@@ -479,7 +479,10 @@ export default function DatasetReviewScreen(): React.ReactElement {
                 <Loader2 className="animate-spin text-indigo-500" size={20} />
               ) : (
                 <div className="space-y-3">
-                  {cases.map((c) => (
+                  {cases.map((c) => {
+                    let caseLabels: Record<string, any> = {}
+                    try { caseLabels = JSON.parse(c.labels_json ?? '{}') } catch {}
+                    return (
                     <div key={c.id} className="border border-slate-850 rounded-lg p-3 bg-slate-950/20">
                       <div className="flex items-center justify-between mb-2">
                         <Badge
@@ -515,6 +518,30 @@ export default function DatasetReviewScreen(): React.ReactElement {
                           </button>
                         </div>
                       </div>
+                      {(caseLabels.schema_source === 'none' || caseLabels.near_duplicate || caseLabels.needs_human || caseLabels.archetype) && (
+                        <div className="flex flex-wrap items-center gap-1 mb-2">
+                          {caseLabels.schema_source === 'none' && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-900/60 text-rose-300 border border-rose-700 font-medium">
+                              no schema — gold unvalidated
+                            </span>
+                          )}
+                          {caseLabels.near_duplicate && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-900/60 text-amber-300 border border-amber-700">
+                              near-duplicate
+                            </span>
+                          )}
+                          {caseLabels.needs_human && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-orange-900/60 text-orange-300 border border-orange-700">
+                              needs human review
+                            </span>
+                          )}
+                          {caseLabels.archetype && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700">
+                              {caseLabels.archetype}
+                            </span>
+                          )}
+                        </div>
+                      )}
                       <div className="grid grid-cols-3 gap-2">
                         {(['input', 'expected', 'labels'] as const).map((field) => (
                           <div key={field}>
@@ -534,7 +561,8 @@ export default function DatasetReviewScreen(): React.ReactElement {
                         ))}
                       </div>
                     </div>
-                  ))}
+                  )
+                  })}
                 </div>
               )}
             </>

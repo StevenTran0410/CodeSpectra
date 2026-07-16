@@ -11,6 +11,7 @@ import yaml
 from agent_eval_harness.datasets.generator_utils import seed_cases_to_dataset_cases
 from agent_eval_harness.datasets.registry import get_generator
 from agent_eval_harness.datasets.versioning import next_version
+from agent_eval_harness.datasets.types import TRUSTED_PROVENANCE
 from agent_eval_harness.discovery.client import CodeSpectraClient
 from agent_eval_harness.llm.client import LLMClient
 from agent_eval_harness.llm.embedding_client import EmbeddingClient
@@ -431,8 +432,9 @@ async def fulfill_plan(
             continue
 
         generator_fn = get_generator(kind)
+        _uses_embedding = kind in ("qa_testset", "synthetic_agent_io")
         try:
-            if kind == "qa_testset":
+            if _uses_embedding:
                 generated_cases = await generator_fn(
                     config, llm_client, embedding_client=embedding_client
                 )
@@ -447,7 +449,7 @@ async def fulfill_plan(
         if len(all_cases) < min_cases:
             # One top-up generation attempt before giving up.
             try:
-                if kind == "qa_testset":
+                if _uses_embedding:
                     topup_cases = await generator_fn(
                         config, llm_client, embedding_client=embedding_client
                     )
@@ -464,12 +466,19 @@ async def fulfill_plan(
             }
             continue
 
+        max_sims = [
+            c.labels["max_sim"] for c in all_cases
+            if isinstance(c.labels, dict) and "max_sim" in c.labels
+        ]
+        dataset_metrics = {"diversity": round(1.0 - sum(max_sims) / len(max_sims), 4)} if max_sims else None
+
         await repository.insert_dataset_cases_bulk(dataset_id, all_cases)
         await repository.insert_dataset_metadata(
             dataset_id, kind,
             instructions=group_instructions or None,
             source_gate_ids=[e.id for e in group_entries],
             min_cases=min_cases,
+            metrics=dataset_metrics,
         )
         dataset_id_by_group[group_key] = dataset_id
         report[group_key] = {"status": "fulfilled", "dataset_id": dataset_id}
@@ -500,7 +509,7 @@ async def export_dataset(dataset_id: str) -> list:
     db_cases = await repository.get_dataset_cases(dataset_id)
     out: list[DatasetCase] = []
     for db_case in db_cases:
-        if db_case["provenance"] not in ("generated+reviewed", "handwritten"):
+        if db_case["provenance"] not in TRUSTED_PROVENANCE:
             continue
         input_data = json.loads(db_case["input_json"])
         input_data.pop("kind", None)  # kind-sniffing artifact from an older storage shape

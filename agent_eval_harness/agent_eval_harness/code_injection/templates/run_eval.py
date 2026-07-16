@@ -82,7 +82,8 @@ def _load_cases(wiring: dict[str, Any], limit: int | None = None) -> list[dict[s
             rows = conn.execute(
                 "SELECT id, input_json, expected_json, labels_json, provenance "
                 "FROM dataset_cases WHERE dataset_id = ? "
-                "AND provenance IN ('generated+reviewed', 'handwritten') ORDER BY id",
+                "AND provenance IN ('generated+reviewed', 'handwritten', 'derived+reviewed') "
+                "ORDER BY id",
                 (dataset_id,),
             ).fetchall()
             for row in rows:

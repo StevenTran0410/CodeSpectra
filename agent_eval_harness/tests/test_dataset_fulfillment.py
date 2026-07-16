@@ -199,6 +199,25 @@ async def test_export_dataset_excludes_synthetic_never_leaves_aeh():
     assert all("kind" not in c.input for c in exported)
 
 
+async def test_export_dataset_fail_closed_on_unknown_provenance():
+    # A case with an unrecognised provenance must never reach export_dataset's output.
+    dataset_id = "t_export_bogus_v1"
+    db = repository.get_db()
+    await db.execute(
+        "INSERT INTO dataset_cases (id, dataset_id, input_json, expected_json, labels_json, provenance) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        ("bogus_c1", dataset_id, '{"x": 1}', None, None, "bogus"),
+    )
+    await db.commit()
+    await repository.insert_dataset_metadata(dataset_id, "qa_testset", min_cases=1)
+
+    exported = await export_dataset(dataset_id)
+
+    assert not any(c.id == "bogus_c1" for c in exported), (
+        "export_dataset must be fail-closed: 'bogus' provenance must not export"
+    )
+
+
 def _entry(metric: str, metric_class: str = "llm_judge") -> SuiteEntry:
     return SuiteEntry(
         id=f"c.{metric}.llm0", component="c", metric=metric, metric_class=metric_class,
