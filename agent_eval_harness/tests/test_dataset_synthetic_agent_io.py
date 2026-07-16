@@ -99,12 +99,12 @@ async def test_generate_retries_and_fills_remaining_count():
     assert len(llm_client.calls) == 2
 
 
-async def test_generate_unknown_archetype_raises():
+async def test_generate_unimplemented_archetype_raises():
     config = _config()
-    config["archetype"] = "not_a_real_archetype"
+    config["archetype"] = "unimplemented"
     llm_client = FakeLLMClient(LLMResponse(content="[]", model="fake"))
 
-    with pytest.raises(ValueError, match="not implemented"):
+    with pytest.raises(ValueError, match="unimplemented"):
         await generate(config, llm_client)
 
 
@@ -320,3 +320,78 @@ async def test_generate_requests_in_small_batches_for_large_counts():
 
     assert len(cases) == 20
     assert len(llm_client.calls) == 7
+
+
+# --- D9: generic builder equivalence (AC4) ---
+
+
+def _generic_config(agent_id: str = "retriever", archetype: str = "rag_upstream") -> dict:
+    """Config for a non-CodeSpectra agent whose kwarg set is not in _KNOWN_SHAPE_KWARG_SETS."""
+    return {
+        "dataset_name": "test_generic",
+        "agent_id": agent_id,
+        "archetype": archetype,
+        "contract": {
+            "output": {"json_schema": _G_SCHEMA},
+            "invocation": {
+                "kwargs": [
+                    {"name": "query", "annotation": "str"},
+                    {"name": "documents", "annotation": "list[str]"},
+                ],
+            },
+        },
+        "count": 1,
+    }
+
+
+async def test_d9_generic_builder_fires_for_unknown_kwarg_set():
+    """AC4: an agent with a non-CodeSpectra kwarg set bypasses fast-path and uses _generate_generic."""
+    candidate = {
+        "input": {"query": "what is X?", "documents": ["doc1"]},
+        "gold": {"entrypoint": {"file": "main.py", "reason": "entry"}, "confidence": "high"},
+    }
+    llm_client = FakeLLMClient(LLMResponse(content=json.dumps([candidate]), model="fake"))
+
+    cases = await generate(_generic_config(), llm_client)
+
+    assert len(cases) == 1
+    assert cases[0].input["shape"] == "generic"
+    assert cases[0].labels["archetype"] == "rag_upstream"
+    assert "query" in cases[0].input
+    assert "documents" in cases[0].input
+
+
+async def test_d9_generic_builder_tags_schema_source_none_when_no_output_schema():
+    """AC4: when contract.output.json_schema is None, cases are tagged schema_source=none."""
+    config = _generic_config()
+    config["contract"]["output"] = {}  # no json_schema
+    candidate = {
+        "input": {"query": "what is X?", "documents": ["doc1"]},
+        "gold": {},
+    }
+    llm_client = FakeLLMClient(LLMResponse(content=json.dumps([candidate]), model="fake"))
+
+    cases = await generate(config, llm_client)
+
+    assert len(cases) == 1
+    assert cases[0].labels.get("schema_source") == "none"
+    assert "needs_human" in cases[0].labels
+
+
+async def test_d9_known_kwarg_set_still_uses_fast_path():
+    """AC4 inverse: a CodeSpectra-shaped kwarg set still routes through the archetype builder."""
+    config = _rag_config("glossary", "rag_single_shot")
+    # glossary's exact kwarg set is in _KNOWN_SHAPE_KWARG_SETS
+    config["contract"]["invocation"] = {
+        "kwargs": [
+            {"name": "provider_id"}, {"name": "model_id"},
+            {"name": "snapshot_id"}, {"name": "profile"},
+        ]
+    }
+    candidate = {"input": {"bundle": _bundle_evidence()}, "gold": _gold()}
+    llm_client = FakeLLMClient(LLMResponse(content=json.dumps([candidate]), model="fake"))
+
+    cases = await generate(config, llm_client)
+
+    assert len(cases) == 1
+    assert cases[0].input["shape"] == "retrieval_only"  # fast-path builder shape, not "generic"

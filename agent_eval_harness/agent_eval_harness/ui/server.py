@@ -1192,10 +1192,18 @@ async def generate_plan_route(session_id: str, body: GeneratePlanRequest):
             except Exception as e:
                 logger.warning(f"generate_plan: could not load previous plan report for incremental reuse: {e}")
 
+        # B6: load project context once for all analyst prompts
+        _plan_project_ctx = None
+        try:
+            _plan_project_ctx = await load_project_context(client, sess["snapshot_id"])
+        except Exception as _pce:
+            logger.warning(f"generate_plan: could not load project context for B6: {_pce}")
+
         suite, plan_report = await generate_plan_agentic(
             system_map, agent_flow_map, source_by_component, sess["accepted_edges"], llm_client,
             files=harvest_files, files_root=local_path,
             previous_suite=previous_suite, previous_report=previous_report,
+            project_context=_plan_project_ctx,
         )
 
         plan_path.write_text(
@@ -1507,6 +1515,7 @@ async def fulfill_datasets_route(session_id: str, body: FulfillDatasetsRequest):
             only_agent_ids=body.agent_ids,
             only_kind="synthetic_agent_io" if body.agent_ids else None,
             force_agent_ids=body.force_agent_ids,
+            session_id=session_id,
         )
         return report
     except HTTPException:

@@ -68,3 +68,7 @@ class EvaluationContract(BaseModel):
     field_downstream_consumers: dict[str, list[str]] = Field(default_factory=dict)
     # True when the entry method calls a module-level `plan_queries(...)` helper before retrieval.
     query_planning_subcall: bool = False
+    # True when keyword-tier OR role-tier retrieval signal fires (D1).
+    has_retrieval_signal: bool = False
+    # Harvested upstream output specs — [{name, description}, ...] — for generic dataset builders (D3).
+    upstream_context_specs: list[dict] = Field(default_factory=list)

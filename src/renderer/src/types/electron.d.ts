@@ -1165,6 +1165,7 @@ declare global {
     repo_ref: string
     pause_info: { reason: string; provider_id: string; model_id: string | null } | null
     pipeline_stage: string
+    analysis_context: 'available' | 'unavailable'
   }
 
   export interface AEHDiscoveryCandidate {

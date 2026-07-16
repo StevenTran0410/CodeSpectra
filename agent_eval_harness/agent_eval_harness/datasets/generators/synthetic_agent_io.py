@@ -24,60 +24,23 @@ _MAX_CONSECUTIVE_DRY_ROUNDS = 2
 _GENERATION_MAX_TOKENS = 20000
 _CONFIDENCE_ENUM = ("low", "medium", "high")
 
-_FALLBACK_PURPOSE: dict[str, str] = {
-    "auditor": (
-        "Meta-audits the other upstream sections' own self-reported confidence and blind "
-        "spots, scoring per-section confidence, naming the weakest sections, and estimating "
-        "overall coverage — without re-deriving any section's underlying content itself."
-    ),
-    "synthesizer": (
-        "Writes the human-facing executive summary and narrative prose sections by "
-        "synthesizing all upstream sections (including the auditor's own audit) — every "
-        "claim in its output must be traceable to something an upstream section already said."
-    ),
-    "glossary": (
-        "Extracts the repo's domain vocabulary (entities, types, event names, constants) "
-        "from retrieved code evidence — each term must be grounded in a real, cited file."
-    ),
-    "important_files": (
-        "Identifies the repo's structurally important files (entrypoint, backbone, "
-        "critical config, highest-centrality, riskiest-to-touch, best-to-read-first) from "
-        "retrieved code evidence, each with a one-line reason."
-    ),
-    "project_identity": (
-        "Determines the repo's overall identity — domain, purpose, runtime type, tech "
-        "stack, business context — from README/manifest/folder-tree/code evidence."
-    ),
-    "violations": (
-        "Infers the repo's unwritten/negative conventions (banned patterns, anti-patterns) "
-        "and flags concrete violations of them, grounded in retrieved evidence plus the "
-        "upstream coding-conventions agent's own findings."
-    ),
-    "onboarding": (
-        "Produces an ordered, time-estimated reading path for a new engineer onboarding "
-        "onto this repo, informed by the upstream important-files agent's key-file picks."
-    ),
-    "architecture": (
-        "Describes the repo's architecture — layers, frameworks, entrypoints, services, "
-        "external integrations, config sources — from retrieved code evidence."
-    ),
-    "structure": (
-        "Classifies each top-level folder by architectural role (domain/infrastructure/"
-        "delivery/shared/test/generated/unknown) and writes a short structural narrative."
-    ),
-    "conventions": (
-        "Documents the repo's actual coding conventions (naming, error handling, async "
-        "style, DI, class-vs-functional, test style) as observed in retrieved evidence."
-    ),
-    "risk": (
-        "Identifies risk/complexity hotspots (large files, deep nesting, TODO/FIXME "
-        "clusters, high blast-radius modules) from retrieved evidence."
-    ),
-    "feature_map": (
-        "Maps the repo's user-facing features to their entrypoints, key files, tests, and "
-        "reading order, from retrieved evidence plus upstream identity/architecture context."
-    ),
+_GENERIC_PURPOSE_BY_ARCHETYPE: dict[str, str] = {
+    "fan_in_judge": "Synthesizes and evaluates outputs from multiple upstream agents.",
+    "rag_single_shot": "Analyzes retrieved code evidence and produces a structured output.",
+    "rag_upstream": "Analyzes retrieved evidence combined with an upstream agent's output.",
+    "rag_mem_ctx": "Analyzes retrieved evidence enriched with project-level context.",
+    "rag_mem_ctx_participant": "Analyzes retrieved evidence with inherited project context.",
+    "rag_query_planning": "Plans retrieval queries then analyzes the retrieved evidence.",
+    "rag_query_planning_mem_ctx": "Plans queries with project context then analyzes evidence.",
 }
+
+
+def _generic_purpose_for_archetype(archetype: str) -> str:
+    """Tier-3 fallback purpose when knowledge and analyst profile have nothing."""
+    if archetype in _GENERIC_PURPOSE_BY_ARCHETYPE:
+        return _GENERIC_PURPOSE_BY_ARCHETYPE[archetype]
+    logger.warning("synthetic_agent_io: no generic purpose for archetype %r — using stub", archetype)
+    return f"Evaluates agent behavior for the '{archetype}' archetype."
 
 
 class SyntheticAgentIOConfig(BaseModel):
@@ -86,6 +49,7 @@ class SyntheticAgentIOConfig(BaseModel):
     archetype: str
     contract: dict[str, Any]
     profile: dict[str, Any] = {}
+    failure_modes: list[str] = []  # D2b: from AgentKnowledge, drives edge-case case generation
     count: int = 20
     painpoint: str | None = None
 
@@ -163,9 +127,7 @@ def _fan_in_judge_prompt(
     output = contract.get("output") or {}
     json_schema = output.get("json_schema") or {}
     fields_by_letter = contract.get("field_downstream_consumers") or {}
-    purpose = (parsed.profile or {}).get("purpose") or _FALLBACK_PURPOSE.get(
-        parsed.agent_id, f"Agent '{parsed.agent_id}' consumes all upstream sections."
-    )
+    purpose = (parsed.profile or {}).get("purpose") or _generic_purpose_for_archetype(parsed.archetype)
 
     prompt = (
         f"You are generating realistic synthetic test cases for evaluating a fan-in judge "
@@ -193,6 +155,13 @@ def _fan_in_judge_prompt(
         f"— never inventing a weak section, score, or claim that \"input\" doesn't support.\n\n"
         f"Respond ONLY with a JSON array of {n} such objects. No markdown, no explanation."
     )
+    if parsed.failure_modes:
+        prompt += (
+            "\n\nADDITIONALLY, include 1–2 extra cases covering EDGE-CASE or NEGATIVE scenarios "
+            "based on the agent's known failure modes. Gold for these cases must reflect correct "
+            "handling of the failure mode (graceful degradation or error, not the failure itself):\n"
+            + "\n".join(f"- {fm}" for fm in parsed.failure_modes[:5])
+        )
     if avoid:
         prompt += (
             f"\n\nThese {len(avoid)} candidate case(s) failed schema validation last attempt — "
@@ -214,7 +183,9 @@ async def _generate_fan_in_judge(
     )
 
 
-_UPSTREAM_SPECS_BY_AGENT: dict[str, list[tuple[str, str]]] = {
+# CS-297: remove after (1) 240-case diff-run proves no CodeSpectra activation AND
+#         (2) >= 1 green multi_agent/linear_rag Stage 1→3 exercises the generic/harvested path.
+_LEGACY_OVERRIDE: dict[str, list[tuple[str, str]]] = {
     "violations": [(
         "conventions_output",
         "the D (coding-conventions) agent's own real output shape — must include a "
@@ -234,13 +205,17 @@ _UPSTREAM_SPECS_BY_AGENT: dict[str, list[tuple[str, str]]] = {
         ("identity_output", "the A (project-identity) agent's own real output shape — domain/tech_stack/runtime_type"),
         ("architecture_output", "the B (architecture) agent's own real output shape — main_layers/main_services"),
     ],
-}
-
-# B/C/F, whose entry method takes a folder_tree kwarg (_archetype_for's mem_ctx-participation signal).
-_MEM_CTX_PARTICIPANT_AGENTS: dict[str, list[tuple[str, str]]] = {
     "architecture": [("identity_output", "the A (project-identity) agent's own real output shape — domain/tech_stack/runtime_type")],
     "structure": [("identity_output", "the A (project-identity) agent's own real output shape — domain/tech_stack/runtime_type")],
 }
+
+
+def _upstream_specs_for(parsed: SyntheticAgentIOConfig) -> list[tuple[str, str]]:
+    """Prefer harvested upstream_context_specs; fall back to _LEGACY_OVERRIDE for CodeSpectra agents."""
+    contract_specs = (parsed.contract.get("upstream_context_specs") or [])
+    if contract_specs:
+        return [(s["name"], s["description"]) for s in contract_specs if s.get("name")]
+    return _LEGACY_OVERRIDE.get(parsed.agent_id, [])  # CS-297
 
 _FOLDER_TREE_SPEC = (
     "folder_tree",
@@ -262,9 +237,7 @@ def _rag_writer_prompt(
     contract = parsed.contract
     output = contract.get("output") or {}
     json_schema = output.get("json_schema") or {}
-    purpose = (parsed.profile or {}).get("purpose") or _FALLBACK_PURPOSE.get(
-        parsed.agent_id, f"Agent '{parsed.agent_id}' analyzes retrieved code evidence."
-    )
+    purpose = (parsed.profile or {}).get("purpose") or _generic_purpose_for_archetype(parsed.archetype)
 
     parts = [
         "You are generating realistic synthetic test cases for evaluating a "
@@ -319,6 +292,13 @@ def _rag_writer_prompt(
         f"Respond ONLY with a JSON array of {n} such objects. No markdown, no explanation."
     )
     prompt = "\n\n".join(parts)
+    if parsed.failure_modes:
+        prompt += (
+            "\n\nADDITIONALLY, include 1–2 extra cases covering EDGE-CASE or NEGATIVE scenarios "
+            "based on the agent's known failure modes. Gold for these cases must reflect correct "
+            "handling of the failure mode (graceful degradation or error, not the failure itself):\n"
+            + "\n".join(f"- {fm}" for fm in parsed.failure_modes[:5])
+        )
     if avoid:
         prompt += (
             f"\n\nThese {len(avoid)} candidate case(s) failed schema validation last attempt — "
@@ -436,7 +416,7 @@ async def _generate_rag_single_shot(parsed: SyntheticAgentIOConfig, llm_client: 
 
 async def _generate_rag_upstream(parsed: SyntheticAgentIOConfig, llm_client: LLMClient) -> list[DatasetCase]:
     """E, H — one fixed-query retrieval call + one upstream agent's raw output dict."""
-    specs = _UPSTREAM_SPECS_BY_AGENT.get(parsed.agent_id, [])
+    specs = _upstream_specs_for(parsed)
 
     def build_prompt(n: int, avoid: list[dict[str, Any]] | None) -> str:
         return _rag_writer_prompt(
@@ -470,7 +450,7 @@ async def _generate_rag_mem_ctx(parsed: SyntheticAgentIOConfig, llm_client: LLMC
 
 async def _generate_rag_mem_ctx_participant(parsed: SyntheticAgentIOConfig, llm_client: LLMClient) -> list[DatasetCase]:
     """B, C — an inherited arch_bundle + folder_tree, optionally an upstream identity dict."""
-    specs = _MEM_CTX_PARTICIPANT_AGENTS.get(parsed.agent_id, [])
+    specs = _upstream_specs_for(parsed)
 
     def build_prompt(n: int, avoid: list[dict[str, Any]] | None) -> str:
         return _rag_writer_prompt(
@@ -485,7 +465,7 @@ async def _generate_rag_mem_ctx_participant(parsed: SyntheticAgentIOConfig, llm_
 
 async def _generate_rag_query_planning(parsed: SyntheticAgentIOConfig, llm_client: LLMClient) -> list[DatasetCase]:
     """D, J — a query-planning LLM sub-call (not simulated) + retrieve_multi, optionally one upstream agent output dict (D only)."""
-    specs = _UPSTREAM_SPECS_BY_AGENT.get(parsed.agent_id, [])
+    specs = _upstream_specs_for(parsed)
 
     def build_prompt(n: int, avoid: list[dict[str, Any]] | None) -> str:
         return _rag_writer_prompt(
@@ -499,7 +479,7 @@ async def _generate_rag_query_planning(parsed: SyntheticAgentIOConfig, llm_clien
 
 async def _generate_rag_query_planning_mem_ctx(parsed: SyntheticAgentIOConfig, llm_client: LLMClient) -> list[DatasetCase]:
     """F — query-planning + retrieve_multi + a parallel frontend-screens retrieve, plus folder_tree and two upstream agent output dicts (identity, architecture)."""
-    specs = _UPSTREAM_SPECS_BY_AGENT.get(parsed.agent_id, [])
+    specs = _upstream_specs_for(parsed)
 
     def build_prompt(n: int, avoid: list[dict[str, Any]] | None) -> str:
         return _rag_writer_prompt(
@@ -512,6 +492,24 @@ async def _generate_rag_query_planning_mem_ctx(parsed: SyntheticAgentIOConfig, l
     )
 
 
+# CS-297: remove fast-path table after (1) 240-case diff-run proves no CodeSpectra activation AND
+#         (2) >= 1 green multi_agent/linear_rag Stage 1→3 exercises the generic path.
+_KNOWN_SHAPE_KWARG_SETS: dict[str, frozenset[str]] = {
+    "rag_single_shot:glossary": frozenset({"provider_id", "model_id", "snapshot_id", "profile"}),
+    "rag_single_shot:important_files": frozenset({"provider_id", "model_id", "snapshot_id", "graph_summary", "profile"}),
+    "rag_mem_ctx:project_identity": frozenset({"provider_id", "model_id", "snapshot_id", "repo_name", "mem_ctx", "profile"}),
+    "rag_mem_ctx_participant:architecture": frozenset({"provider_id", "model_id", "snapshot_id", "graph_summary", "arch_bundle", "identity_output", "profile", "folder_tree"}),
+    "rag_mem_ctx_participant:structure": frozenset({"provider_id", "model_id", "snapshot_id", "arch_bundle", "folder_tree", "identity_output", "profile"}),
+    "rag_query_planning:conventions": frozenset({"provider_id", "model_id", "snapshot_id", "static_convention", "structure_output", "profile"}),
+    "rag_query_planning:risk": frozenset({"provider_id", "model_id", "snapshot_id", "static_risk", "profile"}),
+    "rag_upstream:violations": frozenset({"provider_id", "model_id", "snapshot_id", "static_convention", "static_risk", "conventions_output", "profile"}),
+    "rag_upstream:onboarding": frozenset({"provider_id", "model_id", "snapshot_id", "important_files_output", "profile"}),
+    "rag_query_planning_mem_ctx:feature_map": frozenset({"provider_id", "model_id", "snapshot_id", "graph_summary", "identity_output", "architecture_output", "profile", "folder_tree"}),
+}
+
+_KNOWN_KWARG_SET_VALUES: frozenset[frozenset[str]] = frozenset(_KNOWN_SHAPE_KWARG_SETS.values())
+
+# CS-297: retained with the known-kwarg-set fast-path
 _ARCHETYPE_BUILDERS: dict[str, Callable[[SyntheticAgentIOConfig, LLMClient], Awaitable[list[DatasetCase]]]] = {
     "fan_in_judge": _generate_fan_in_judge,
     "rag_single_shot": _generate_rag_single_shot,
@@ -522,6 +520,74 @@ _ARCHETYPE_BUILDERS: dict[str, Callable[[SyntheticAgentIOConfig, LLMClient], Awa
     "rag_query_planning_mem_ctx": _generate_rag_query_planning_mem_ctx,
 }
 
+_NON_INPUT_KWARG_NAMES = frozenset({"provider_id", "model_id"})
+
+
+async def _generate_generic(parsed: SyntheticAgentIOConfig, llm_client: LLMClient) -> list[DatasetCase]:
+    """Generic builder: derives the case-input field list from contract.invocation.kwargs."""
+    contract = parsed.contract
+    output = contract.get("output") or {}
+    json_schema: dict | None = output.get("json_schema")
+    schema_block = (
+        json.dumps(json_schema, ensure_ascii=False)
+        if json_schema
+        else "(not available — schema_source=none; human review required)"
+    )
+
+    invocation = contract.get("invocation") or {}
+    kwargs = invocation.get("kwargs") or []
+    upstream_context_specs = contract.get("upstream_context_specs") or []
+    upstream_by_name = {s["name"]: s for s in upstream_context_specs if s.get("name")}
+
+    field_descs: dict[str, str] = {}
+    for kwarg in kwargs:
+        name = kwarg.get("name") or ""
+        if not name or name in _NON_INPUT_KWARG_NAMES:
+            continue
+        if name in upstream_by_name:
+            field_descs[name] = upstream_by_name[name].get("description", "upstream agent output")
+        else:
+            annotation = kwarg.get("annotation") or ""
+            field_descs[name] = f"({annotation})" if annotation else "any value"
+
+    purpose = (parsed.profile or {}).get("purpose") or _generic_purpose_for_archetype(parsed.archetype)
+    fields_block = json.dumps(field_descs, indent=2, ensure_ascii=False) if field_descs else "{}"
+
+    def build_prompt(n: int, avoid: list[dict[str, Any]] | None) -> str:
+        prompt = (
+            f"You are generating synthetic test cases for evaluating an agent.\n\n"
+            f"AGENT PURPOSE: {purpose}\n\n"
+            f"INPUT SHAPE — each case's 'input' must have exactly these fields:\n{fields_block}\n\n"
+            f"OUTPUT SCHEMA (for 'gold'):\n{schema_block}\n\n"
+            f"Generate exactly {n} DISTINCT cases. Each case is an object with two keys: "
+            f"'input' (matching the shape above) and 'gold' (the expected output, strictly "
+            f"matching the schema).\n\n"
+            f"Respond ONLY with a JSON array of {n} such objects. No markdown, no explanation."
+        )
+        if parsed.failure_modes:
+            prompt += (
+                "\n\nADDITIONALLY, include 1–2 extra cases covering EDGE-CASE or NEGATIVE scenarios "
+                "based on the agent's known failure modes:\n"
+                + "\n".join(f"- {fm}" for fm in parsed.failure_modes[:5])
+            )
+        if avoid:
+            prompt += (
+                f"\n\nThese {len(avoid)} candidate(s) failed last attempt — generate different, "
+                f"valid replacements:\n{json.dumps(avoid, ensure_ascii=False)[:2000]}"
+            )
+        return apply_painpoint(prompt, parsed.painpoint)
+
+    cases = await _generate_validated_cases(
+        parsed, llm_client, build_prompt, build_case_input=_shape_case_input("generic"),
+    )
+    # Rubber-stamp visibility: tag cases when output schema was unavailable
+    if json_schema is None:
+        for case in cases:
+            if isinstance(case.labels, dict):
+                case.labels["schema_source"] = "none"
+                case.labels["needs_human"] = "output schema unavailable — gold was not schema-validated"
+    return cases
+
 
 async def generate(
     config: dict, llm_client: LLMClient | None, seed: int | None = None
@@ -529,10 +595,20 @@ async def generate(
     parsed = SyntheticAgentIOConfig.model_validate(config)
     if llm_client is None:
         raise ValueError("LLM client is required for synthetic_agent_io generation")
-    builder = _ARCHETYPE_BUILDERS.get(parsed.archetype)
-    if builder is None:
+    if parsed.archetype == "unimplemented":
         raise ValueError(
-            f"synthetic_agent_io archetype {parsed.archetype!r} not implemented yet "
-            f"(CS-289 phasing — only {sorted(_ARCHETYPE_BUILDERS)} exist so far)"
+            "synthetic_agent_io archetype 'unimplemented' cannot generate cases — "
+            "agent has no retrieval signal (check has_retrieval_signal in contract harvest)"
         )
-    return await builder(parsed, llm_client)
+    if parsed.archetype == "fan_in_judge":
+        return await _generate_fan_in_judge(parsed, llm_client)
+    # CS-297: fast-path for known CodeSpectra kwarg shapes; remove once generic path is validated
+    kwarg_names = frozenset(
+        k["name"] for k in ((parsed.contract.get("invocation") or {}).get("kwargs") or []) if k.get("name")
+    )
+    # No kwarg info OR kwarg set matches a known pattern → use the specific archetype builder
+    if not kwarg_names or kwarg_names in _KNOWN_KWARG_SET_VALUES:
+        builder = _ARCHETYPE_BUILDERS.get(parsed.archetype)
+        if builder is not None:
+            return await builder(parsed, llm_client)
+    return await _generate_generic(parsed, llm_client)

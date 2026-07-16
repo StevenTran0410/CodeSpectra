@@ -7,6 +7,9 @@ import logging
 import re
 from pathlib import Path
 
+import yaml
+
+from agent_eval_harness.config import ContractConventions
 from agent_eval_harness.mapping.agent_flow import AgentFlowMap
 from agent_eval_harness.mapping.system_map import Component, SystemMap
 from agent_eval_harness.planning.contract import (
@@ -24,8 +27,6 @@ _QUERYISH_PARAMS = frozenset({"query", "question", "prompt", "text", "message", 
 _CONFIG_PARAMS = frozenset({"provider_id", "model_id"})
 _SCHEMA_NAME_RE = re.compile(r"SCHEMA", re.IGNORECASE)
 _DYNAMIC = "<dynamic>"
-# Generic per-section rerun route; `section` accepts any of the 12 letters.
-_RERUN_SECTION_ROUTE = "/api/analysis/rerun_section"
 
 
 def _parse_files(files: list[Path]) -> dict[Path, ast.Module]:
@@ -353,10 +354,12 @@ def _extract_dict_return_literal(node: ast.FunctionDef | ast.AsyncFunctionDef) -
 
 
 def _find_pipeline_fallback_function(
-    asts: dict[Path, ast.Module], letter: str, files_root: Path | None
+    asts: dict[Path, ast.Module], letter: str, files_root: Path | None,
+    conventions: ContractConventions | None = None,
 ) -> tuple[dict, str] | None:
     """A5 fallthrough: agents without their own try/except (e.g. K/L) have a module-level `_section_<letter>_pipeline_fallback()` instead."""
-    target_name = f"_section_{letter.lower()}_pipeline_fallback"
+    pattern = (conventions or ContractConventions()).pipeline_fallback_name_pattern
+    target_name = pattern.format(letter=letter.lower())
     for path, tree in asts.items():
         fn = _find_function(tree, target_name)
         if fn is None:
@@ -374,6 +377,7 @@ def _harvest_fallback(
     *,
     letter: str | None = None,
     asts: dict[Path, ast.Module] | None = None,
+    conventions: ContractConventions | None = None,
 ) -> tuple[dict | None, str | None, bool]:
     """Fallback method returning a dict literal; disambiguates candidates by entry-point call, then name match, then order. Returned bool flags genuine ambiguity for human review."""
     candidates = [
@@ -382,7 +386,7 @@ def _harvest_fallback(
     ]
     if not candidates:
         if letter and asts:
-            found = _find_pipeline_fallback_function(asts, letter, files_root)
+            found = _find_pipeline_fallback_function(asts, letter, files_root, conventions)
             if found:
                 literal, source = found
                 return literal, source, False
@@ -434,6 +438,7 @@ def harvest_component_contract(
     component: Component,
     asts: dict[Path, ast.Module],
     files_root: Path | None = None,
+    conventions: ContractConventions | None = None,
 ) -> tuple[InvocationContract | None, OutputContract | None, dict[str, int], list[str], str]:
     """Returns (invocation, output, constants, needs_human_notes, input_kind) for one component."""
     notes: list[str] = []
@@ -465,7 +470,7 @@ def harvest_component_contract(
         elif letter:
             # Rerun via the pipeline's per-section endpoint — live constructor deps run in that process, not AEH.
             invocation_mode = "per_agent_route"
-            route = _RERUN_SECTION_ROUTE
+            route = (conventions or ContractConventions()).rerun_section_route
             case_binding = {
                 "report_id": "case:$.input.report_id",
                 "section": f"const:{letter}",
@@ -518,7 +523,7 @@ def harvest_component_contract(
                 schema_source = schema_source or (cite + f" {name} (non-JSON template)")
 
     fallback_literal, fallback_source, fallback_ambiguous = _harvest_fallback(
-        cls, path, files_root, letter=letter, asts=asts
+        cls, path, files_root, letter=letter, asts=asts, conventions=conventions
     )
     output = OutputContract(
         json_schema=json_schema,
@@ -543,6 +548,7 @@ def harvest_contracts(
     agent_flow_map: AgentFlowMap,
     files: list[Path],
     files_root: Path | None = None,
+    conventions: ContractConventions | None = None,
 ) -> dict[str, EvaluationContract]:
     """One EvaluationContract per agent, harvested from its head component's source."""
     asts = _parse_files(files)
@@ -551,6 +557,16 @@ def harvest_contracts(
     field_consumers_by_agent, field_consumer_notes = harvest_field_downstream_consumers(
         agent_flow_map, system_map, asts
     )
+
+    # D1: load keyword signals from discovery/contract_signals.yaml
+    _signals_path = Path(__file__).parent.parent.parent / "discovery" / "contract_signals.yaml"
+    _kw_signals: list[str] = []
+    if _signals_path.exists():
+        try:
+            _sig_data = yaml.safe_load(_signals_path.read_text(encoding="utf-8")) or {}
+            _kw_signals = [str(k) for k in (_sig_data.get("keywords") or [])]
+        except Exception:
+            pass
 
     for agent in agent_flow_map.agents:
         head_id = agent.id if agent.id in components_by_id else (agent.component_ids[0] if agent.component_ids else "")
@@ -577,21 +593,64 @@ def harvest_contracts(
             continue
 
         invocation, output, constants, notes, input_kind = harvest_component_contract(
-            component, asts, files_root
+            component, asts, files_root, conventions
         )
         contract.invocation = invocation
         contract.output = output
         contract.constants = constants
         contract.needs_human.extend(notes)
         contract.observability = ObservabilityContract(has_tools=has_tools, input_kind=input_kind)
-        contract.query_planning_subcall = _detect_query_planning_subcall(component, asts)
+        contract.query_planning_subcall = _detect_query_planning_subcall(component, asts, conventions)
+
+        # D1: OR-combine keyword-tier and role-tier to set has_retrieval_signal
+        constructor_deps = invocation.constructor_deps if invocation else []
+        tier1 = bool(_kw_signals) and any(kw in dep for dep in constructor_deps for kw in _kw_signals)
+        tier2 = any(
+            components_by_id[u].role == "retrieval_agent"
+            for u in (component.upstream if component else [])
+            if u in components_by_id
+        )
+        if tier1 or tier2:
+            contract.has_retrieval_signal = True
+            provenance = "+".join(t for t, ok in (("keyword-tier", tier1), ("role-tier", tier2)) if ok)
+            contract.needs_human.append(f"has_retrieval_signal: True via {provenance}")
+
         contracts[agent.id] = contract
+
+    # D3 pass-2: fill upstream_context_specs from harvested output contracts
+    comp_to_agent: dict[str, str] = {}
+    for agent in agent_flow_map.agents:
+        for cid in agent.component_ids:
+            comp_to_agent[cid] = agent.id
+
+    for agent in agent_flow_map.agents:
+        head_id = agent.id if agent.id in components_by_id else (agent.component_ids[0] if agent.component_ids else "")
+        component = components_by_id.get(head_id)
+        if component is None:
+            continue
+        specs: list[dict] = []
+        for up_comp_id in component.upstream:
+            up_agent_id = comp_to_agent.get(up_comp_id)
+            if not up_agent_id or up_agent_id not in contracts:
+                continue
+            up_contract = contracts[up_agent_id]
+            if up_contract.output and up_contract.output.json_schema:
+                schema_snippet = json.dumps(up_contract.output.json_schema, ensure_ascii=False)[:200]
+                specs.append({
+                    "name": f"{up_agent_id}_output",
+                    "description": f"the {up_agent_id} agent's output — JSON schema: {schema_snippet}",
+                })
+        if specs:
+            contracts[agent.id].upstream_context_specs = specs
 
     return contracts
 
 
-def _detect_query_planning_subcall(component: Component, asts: dict[Path, ast.Module]) -> bool:
-    """True if the entry method calls a module-level `plan_queries(...)` helper (D/J/F's query-planning archetype)."""
+def _detect_query_planning_subcall(
+    component: Component, asts: dict[Path, ast.Module],
+    conventions: ContractConventions | None = None,
+) -> bool:
+    """True if the entry method calls a module-level plan_queries-style helper (D/J/F's query-planning archetype)."""
     path = _resolve_component_file(component, asts)
     if path is None:
         return False
@@ -604,8 +663,9 @@ def _detect_query_planning_subcall(component: Component, asts: dict[Path, ast.Mo
     entry = _find_entry_method(cls)
     if entry is None:
         return False
+    symbol = (conventions or ContractConventions()).plan_queries_symbol
     for node in ast.walk(entry):
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "plan_queries":
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == symbol:
             return True
     return False
 

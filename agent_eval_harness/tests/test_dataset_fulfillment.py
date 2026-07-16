@@ -364,15 +364,28 @@ def _contract_with_kwargs(
             constructor_deps=["ProviderConfigService", "RetrievalService"],
         ),
         query_planning_subcall=query_planning,
+        has_retrieval_signal=True,  # D1: signal set by harvest; required for non-unimplemented archetypes
     )
 
 
-def test_archetype_for_unimplemented_without_retrieval_constructor_dep():
+def test_archetype_for_unimplemented_without_retrieval_signal():
     contract = EvaluationContract(
         agent_id="x",
         invocation=InvocationContract(kwargs=[], constructor_deps=["ProviderConfigService"]),
+        has_retrieval_signal=False,
     )
     assert _archetype_for(contract) == "unimplemented"
+
+
+def test_archetype_for_real_archetype_when_has_retrieval_signal_and_empty_constructor_deps():
+    # A6/D1: empty constructor_deps is no longer a blocker when has_retrieval_signal is True (e.g. role-tier fired)
+    contract = EvaluationContract(
+        agent_id="retriever",
+        invocation=InvocationContract(kwargs=[], constructor_deps=[]),
+        has_retrieval_signal=True,
+    )
+    assert _archetype_for(contract) != "unimplemented"
+    assert _archetype_for(contract) == "rag_single_shot"
 
 
 def test_archetype_for_rag_single_shot_matches_glossary_and_important_files():

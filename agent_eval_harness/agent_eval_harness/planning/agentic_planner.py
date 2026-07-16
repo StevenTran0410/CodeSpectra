@@ -44,6 +44,7 @@ ANALYST_SYSTEM = (
     "Surface any mismatch, do not silently resolve it.\n"
     'Return JSON only: {"input_data": "<what this agent receives, and from where>", '
     '"output_data": "<what this agent produces, and to where>", '
+    '"purpose": "<what this agent uniquely does, one sentence>", '
     '"internal_tools": ["<tool/helper: what it returns>", ...], '
     '"failure_modes": ["<a concrete, specific way this agent could produce bad output>", ...], '
     '"consistency_notes": ["<a specific code-vs-declared-flow mismatch>", ...] (empty list if none), '
@@ -160,6 +161,7 @@ class AgentEvidence:
     agent: AgentFlow
     owned: list[dict] = field(default_factory=list)  # per-component evidence dicts
     supporting_files: list[str] = field(default_factory=list)
+    project_context_block: str = ""  # B6: project context prepended to each analyst prompt
 
 
 def _owned_component_dict(component: Component, snippet: str) -> dict:
@@ -214,10 +216,19 @@ async def gather_evidence(
     source_by_component: dict[str, str],
     accepted_edges: list[dict],
     llm_client: LLMClient,
+    project_context: Any | None = None,
 ) -> tuple[dict[str, AgentEvidence], dict[str, list[SuiteEntry]]]:
     """Root DAG node: deterministic evidence assembly + the rule-based baseline."""
     supporting = _supporting_files_by_agent(agent_flow_map, system_map, accepted_edges)
     components_by_id = {c.id: c for c in system_map.components}
+
+    # B6: build project context block once; shared across all agents in this run
+    _ctx_block = ""
+    if project_context is not None:
+        if getattr(project_context, "identity", None):
+            _ctx_block += project_context.identity.as_context_block()
+        if getattr(project_context, "synthesis", None):
+            _ctx_block += project_context.synthesis.as_context_block()
 
     evidence_by_agent: dict[str, AgentEvidence] = {}
     baseline_by_agent: dict[str, list[SuiteEntry]] = {}
@@ -231,7 +242,8 @@ async def gather_evidence(
             owned.append(_owned_component_dict(component, source_by_component.get(cid, "")))
 
         evidence_by_agent[agent.id] = AgentEvidence(
-            agent=agent, owned=owned, supporting_files=supporting.get(agent.id, [])
+            agent=agent, owned=owned, supporting_files=supporting.get(agent.id, []),
+            project_context_block=_ctx_block,
         )
         baseline_by_agent[agent.id] = await baseline_gates_for_agent(
             agent.component_ids, system_map, llm_client, agent_id=agent.id
@@ -242,7 +254,12 @@ async def gather_evidence(
 
 def _evidence_user_prompt(evidence: AgentEvidence) -> str:
     agent = evidence.agent
-    lines = [
+    lines = []
+    if evidence.project_context_block:
+        lines.append("Project context (from static analysis report):")
+        lines.append(evidence.project_context_block)
+        lines.append("")
+    lines += [
         f"Agent: {agent.id} (role_hint={agent.role})",
         f"Label: {agent.label}",
         f"Summary: {agent.summary}",
@@ -371,8 +388,11 @@ async def _run_analyst(
     input_kind = parsed.get("input_kind")
     has_ctx = parsed.get("has_separable_context")
     ctx_loc = parsed.get("context_location")
+    purpose_raw = parsed.get("purpose")
+    purpose = purpose_raw if isinstance(purpose_raw, str) and purpose_raw.strip() else None
     return AgentDataProfile(
         agent_id=agent_id,
+        purpose=purpose,
         input_data=parsed.get("input_data") if isinstance(parsed.get("input_data"), str) else "",
         output_data=parsed.get("output_data") if isinstance(parsed.get("output_data"), str) else "",
         internal_tools=_str_list("internal_tools"),
@@ -1097,6 +1117,7 @@ async def generate_plan_agentic(
     files_root: Path | None = None,
     previous_suite: Suite | None = None,
     previous_report: EvaluationPlanReport | None = None,
+    project_context: Any | None = None,
 ) -> tuple[Suite, EvaluationPlanReport]:
     """Builds and executes the Stage-3 DAG; every agent gets its own gate set. When
     `previous_report` is given, an agent whose prior run already produced a data profile
@@ -1111,7 +1132,7 @@ async def generate_plan_agentic(
     reused_agent_ids: list[str] = []
 
     async def _gather(_: dict[str, Any]) -> tuple[dict[str, AgentEvidence], dict[str, list[SuiteEntry]]]:
-        return await gather_evidence(system_map, agent_flow_map, source_by_component, accepted_edges, llm_client)
+        return await gather_evidence(system_map, agent_flow_map, source_by_component, accepted_edges, llm_client, project_context)
 
     # Contract harvest is pure AST over already-fetched files — no LLM, runs inline and always fresh.
     contracts: dict[str, EvaluationContract] = {}

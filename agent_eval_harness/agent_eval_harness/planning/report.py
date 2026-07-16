@@ -18,6 +18,7 @@ class AgentDataProfile(BaseModel):
     """Data-Flow Analyst node output — read from the agent's real code, not guessed from its role."""
 
     agent_id: str
+    purpose: str | None = None
     input_data: str = ""
     output_data: str = ""
     internal_tools: list[str] = Field(default_factory=list)

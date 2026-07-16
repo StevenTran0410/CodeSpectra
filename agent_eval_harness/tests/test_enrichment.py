@@ -133,27 +133,19 @@ async def test_persist_md_and_json_to_appdata(tmp_path: Path, monkeypatch: pytes
 
 @pytest.mark.anyio
 async def test_no_hidden_fallback_purpose(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """AC3: No hidden fallback — functionality not a substring of _FALLBACK_PURPOSE."""
-    from agent_eval_harness.datasets.generators.synthetic_agent_io import _FALLBACK_PURPOSE
-
+    """AC3 (updated D2): _FALLBACK_PURPOSE was deleted; enrichment LLM output is returned verbatim."""
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
-    agent = AgentFlow(id="test_agent", label="Test Agent", component_ids=[])
+    agent = AgentFlow(id="test_agent_ac3", label="Test Agent AC3", component_ids=[])
     flow_map = AgentFlowMap(target_system_id="test_system", agents=[agent])
     system_map = SystemMap(target_system_id="test_system", components=[])
-    evidence = {
-        'prompt_sites_by_file': {},
-        'component_by_agent': {"test_agent": []},
-        'edges_by_agent': {"test_agent": []},
-        'source_coverage': {"test_agent": 0.0},
-    }
 
     llm_client = _StubLLMClient(response_override={
         "functionality": "Enriched by test stub — no fallback"
     })
 
     result = await enrich_agents(
-        session_id="test_session",
+        session_id="test_session_ac3",
         agent_flow_map=flow_map,
         system_map=system_map,
         accepted_with_annotations=[],
@@ -164,8 +156,7 @@ async def test_no_hidden_fallback_purpose(tmp_path: Path, monkeypatch: pytest.Mo
     )
 
     knowledge = result[0]
-    for fallback_value in _FALLBACK_PURPOSE.values():
-        assert knowledge.functionality not in fallback_value
+    assert knowledge.functionality == "Enriched by test stub — no fallback"
     assert knowledge.functionality != "Agent discovered with high coverage; no LLM analysis performed."
 
 

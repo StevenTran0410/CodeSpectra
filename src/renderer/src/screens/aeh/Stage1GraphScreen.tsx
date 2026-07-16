@@ -1227,6 +1227,16 @@ export default function Stage1GraphScreen(): React.ReactElement {
           </div>
         )}
 
+        {!discoveryError && !pauseInfo && discoverySession?.analysis_context === 'unavailable' && (
+          <div className="absolute inset-x-0 top-0 z-10 bg-slate-900/90 border-b border-slate-700/60 px-4 py-2 backdrop-blur-sm flex items-center gap-3 text-xs text-slate-300">
+            <Info className="w-4 h-4 shrink-0 text-slate-400" />
+            <span className="flex-1">
+              No Code Analysis report found for this snapshot — candidate naming ran without that
+              extra context. Run one in Code Analysis for richer results.
+            </span>
+          </div>
+        )}
+
         <div className="flex-1 flex flex-col min-h-0 overflow-hidden divide-y divide-slate-800">
           {/* Top row: Wiring Block details + Small Graph */}
           <div className="flex h-1/2 min-h-0 divide-x divide-slate-800">

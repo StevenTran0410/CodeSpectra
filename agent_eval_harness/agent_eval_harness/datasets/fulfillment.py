@@ -104,8 +104,7 @@ def _archetype_for(contract: EvaluationContract) -> str:
     """Deterministic archetype classifier from harvested contract signals only — never a guess."""
     if contract.field_downstream_consumers:
         return "fan_in_judge"
-    constructor_deps = contract.invocation.constructor_deps if contract.invocation else []
-    if "RetrievalService" not in constructor_deps:
+    if not contract.has_retrieval_signal:
         return "unimplemented"
     kwarg_names = {k.name for k in contract.invocation.kwargs} if contract.invocation else set()
     has_query_planning = contract.query_planning_subcall
@@ -140,6 +139,7 @@ async def _derive_config(
     eval_enabled_by_agent: dict[str, bool] | None = None,
     contract_by_agent: dict[str, EvaluationContract] | None = None,
     profile_by_agent: dict[str, dict[str, Any]] | None = None,
+    knowledge_by_agent: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     """Returns a generator config dict, or None if underivable (caller marks needs_human)."""
     component = group_entries[0].component
@@ -153,11 +153,18 @@ async def _derive_config(
         contract = (contract_by_agent or {}).get(agent_id)
         if contract is None:
             return None
+        # D2: 3-tier purpose: knowledge.functionality > profile.purpose > archetype generic (in generator)
+        knowledge = (knowledge_by_agent or {}).get(agent_id) or {}
+        base_profile = dict((profile_by_agent or {}).get(agent_id) or {})
+        resolved_purpose = knowledge.get("functionality") or base_profile.get("purpose") or ""
+        if resolved_purpose:
+            base_profile["purpose"] = resolved_purpose
         return {
             "dataset_name": dataset_id, "agent_id": agent_id,
             "archetype": _archetype_for(contract),
             "contract": contract.model_dump(),
-            "profile": (profile_by_agent or {}).get(agent_id) or {},
+            "profile": base_profile,
+            "failure_modes": knowledge.get("failure_modes") or [],
             "count": min_cases, "painpoint": painpoint,
         }
 
@@ -280,6 +287,7 @@ async def fulfill_plan(
     only_agent_ids: list[str] | None = None,
     only_kind: str | None = None,
     force_agent_ids: list[str] | None = None,
+    session_id: str = "",
 ) -> dict[str, dict]:
     """Auto-fulfillment walk. Returns {group_key: {status, dataset_id?, reason?}}; every group in scope gets fulfilled/failed/needs_human/skipped, none silently dropped. `only_agent_ids`, when given, scopes the walk to just those agents' groups; `only_kind` additionally scopes to a single dataset kind — others are left untouched and absent from the report. `force_agent_ids` deletes and re-links each listed agent's already-fulfilled synthetic_agent_io dataset (if any) so it re-enters this walk as unfulfilled instead of being skipped."""
     suite = load_suite(plan_path)
@@ -316,6 +324,7 @@ async def fulfill_plan(
     contract_by_agent: dict[str, EvaluationContract] = {}
     profile_by_agent: dict[str, dict[str, Any]] = {}
     plan_report_path = Path(map_path).with_name(Path(map_path).stem + "_plan_report.yaml")
+    plan_report = None
     if plan_report_path.exists():
         try:
             plan_report = load_plan_report(plan_report_path)
@@ -327,6 +336,31 @@ async def fulfill_plan(
                     profile_by_agent[agent_report.agent_id] = agent_report.data_profile.model_dump()
         except Exception as e:
             logger.warning(f"fulfillment: could not load plan report for synthetic_agent_io wiring: {e}")
+
+    # D2: load AgentKnowledge per agent from the DB when session_id is available
+    knowledge_by_agent: dict[str, dict[str, Any]] = {}
+    if session_id and plan_report is not None:
+        for agent_report in plan_report.agents:
+            try:
+                row = await repository.get_agent_knowledge(session_id, agent_report.agent_id)
+                if not row:
+                    continue
+                json_path = row.get("json_path")
+                if not json_path or not Path(json_path).exists():
+                    continue
+                raw = json.loads(Path(json_path).read_text(encoding="utf-8"))
+                functionality = raw.get("functionality") or ""
+                failure_modes = [
+                    fm["description"]
+                    for fm in (raw.get("failure_modes") or [])
+                    if isinstance(fm, dict) and fm.get("description")
+                ]
+                knowledge_by_agent[agent_report.agent_id] = {
+                    "functionality": functionality,
+                    "failure_modes": failure_modes,
+                }
+            except Exception as e:
+                logger.warning(f"fulfillment: could not load knowledge for {agent_report.agent_id}: {e}")
 
     ordered_keys = sorted(
         groups,
@@ -387,6 +421,7 @@ async def fulfill_plan(
             eval_enabled_by_agent=eval_enabled_by_agent,
             contract_by_agent=contract_by_agent,
             profile_by_agent=profile_by_agent,
+            knowledge_by_agent=knowledge_by_agent,
         )
         if config is None:
             report[group_key] = {
