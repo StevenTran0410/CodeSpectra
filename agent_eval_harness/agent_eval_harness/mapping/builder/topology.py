@@ -114,6 +114,12 @@ def extract_topology(
     for candidate in candidates:
         edges[candidate.candidate_id] = TopologyEdges()
 
+    # Populate constructor_downstream before the merge below discards edge-kind (B2: orchestrator signal)
+    for source, targets in constructor_edges.items():
+        if source not in edges:
+            edges[source] = TopologyEdges()
+        edges[source].constructor_downstream = list(dict.fromkeys(targets))
+
     # Populate upstream/downstream
     for source, targets in all_edges.items():
         if source not in edges:

@@ -6,36 +6,56 @@ import hashlib
 import json
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from agent_eval_harness.discovery.agent_knowledge import AgentKnowledge, verify_citations
+from agent_eval_harness.discovery.agent_knowledge import (
+    AgentKnowledge,
+    ComponentRoleVerdict,
+    PromptSiteRef,
+    verify_citations,
+)
 from agent_eval_harness.discovery.prompt_site_scan import scan_for_prompt_sites
 from agent_eval_harness.injection.backend_bridge import default_backend_path
 from agent_eval_harness.instrumentation._extract import utc_now_iso
 from agent_eval_harness.llm.client import LLMClient
-from agent_eval_harness.mapping.agent_flow import AgentFlowMap
-from agent_eval_harness.mapping.system_map import SystemMap
+from agent_eval_harness.mapping.agent_flow import AgentFlow, AgentFlowMap, save_agent_flow_map
+from agent_eval_harness.mapping.builder.prompts import ROLE_TAXONOMY
+from agent_eval_harness.mapping.builder.roles import (
+    ROLE_CONFIDENCE_THRESHOLD,
+    VALID_ROLES,
+    admissible_roles,
+    structural_facts,
+)
+from agent_eval_harness.mapping.system_map import SystemMap, save_system_map
 from agent_eval_harness.planning.agentic_planner import DagNode, complete_json, run_dag
 from agent_eval_harness.store import repository
 
 logger = logging.getLogger("agent_eval_harness.discovery.enrichment")
 
+_PROMPT_SITE_CHAR_BUDGET = 2000  # per-site, keeping the HEAD — the role-defining opening survives
+_PROMPT_SITE_BLOCK_BUDGET = 20000  # total across all sites for one agent
 
-def _resolve_repo_root() -> Path:
+
+def _resolve_repo_root(override_root: Path | None = None) -> Path:
     """Repo root containing backend/ — never Path.cwd(), which is agent_eval_harness/ under Electron dev mode."""
+    if override_root is not None:
+        return override_root
     override = os.getenv("AEH_REPO_ROOT")
     return Path(override) if override else default_backend_path().parent
 
 _ENRICH_SYSTEM = (
     "You are an expert AI software architect analyzing one agent within a discovered "
     "agentic system. Given evidence about the agent (its components, source excerpts, "
-    "and detected prompt sites), produce a structured JSON semantic profile of what "
-    "the agent does, what it consumes and produces, and how it can fail. Every claim "
+    "and detected prompt sites), first decide each component's ROLE, then describe the "
+    "agent's functionality, context flow, and failure modes as BEHAVIOURS OF THAT ROLE — "
+    "role is your first conclusion, everything else follows from it. Every claim "
     "about where something lives in the source must cite a real file and line number "
     "you can see in the evidence — never invent one; if you cannot find a file/line for "
     "a claim, omit file and line for that item rather than guessing.\n\n"
+    "ROLE TAXONOMY — apply this to every component listed in the evidence:\n"
+    f"{ROLE_TAXONOMY}\n\n"
     "The evidence has two reliability tiers, marked with '===' headers:\n"
     "- GROUND TRUTH blocks are fetched directly from the database by a known file path — "
     "always the correct file, trust these first for describing what the agent's own code does.\n"
@@ -49,9 +69,11 @@ _ENRICH_SYSTEM = (
     "evidence is too thin to describe the agent confidently, write what is uncertain in "
     "plain words (e.g. \"Insufficient evidence to determine purpose beyond <best guess>\") "
     "rather than returning null or an empty string.\n"
-    "3. Do NOT add fields like \"confidence\", \"degraded\", \"location\", \"components\", "
-    "\"input_contract\", or \"output_contract\" — those are computed separately from static "
-    "analysis, not from you, and including them will be ignored or cause an error."
+    "3. \"component_roles\" is REQUIRED — one entry per component listed in the evidence, "
+    "each role taken from THAT component's own admissible set. Do NOT add fields like "
+    "\"degraded\", \"location\", \"components\", \"input_contract\", or \"output_contract\" "
+    "— those are computed separately from static analysis, not from you, and including "
+    "them will be ignored or cause an error."
 )
 
 
@@ -70,8 +92,26 @@ def _opt_i(v: Any) -> int | None:
     return v if isinstance(v, int) and not isinstance(v, bool) else None
 
 
+def _f(v: Any) -> float:
+    """Coerce to float; anything not numeric becomes 0.0. bool excluded (subclass of int)."""
+    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else 0.0
+
+
 def _clean_items(items: Any) -> list[dict]:
     return [i for i in items if isinstance(i, dict)] if isinstance(items, list) else []
+
+
+def _clean_component_role(c: dict) -> dict | None:
+    """A component id the LLM didn't name is unusable; an out-of-vocabulary role becomes
+    'unknown' at confidence 0.0 here — the STRUCTURAL hard gate (per-component admissible
+    set) runs later in _enrich_single_agent, this only guards against a hallucinated word."""
+    cid = _s(c.get('id'))
+    if not cid:
+        return None
+    role = _s(c.get('role'))
+    if role not in VALID_ROLES:
+        return {'id': cid, 'role': 'unknown', 'confidence': 0.0, 'reasoning': _s(c.get('reasoning'))}
+    return {'id': cid, 'role': role, 'confidence': _f(c.get('confidence')), 'reasoning': _s(c.get('reasoning'))}
 
 
 def _richness(k: AgentKnowledge) -> int:
@@ -87,6 +127,11 @@ def _sanitize_llm_knowledge_dict(raw: Any) -> dict:
     if not isinstance(raw, dict):
         return {}
     return {
+        'component_roles': [
+            r for r in (
+                _clean_component_role(c) for c in _clean_items(raw.get('component_roles'))
+            ) if r is not None
+        ],
         'functionality': _s(raw.get('functionality')),
         'functionality_citations': [
             {'file': _opt_s(c.get('file')), 'line': _opt_i(c.get('line')), 'symbol': _s(c.get('symbol'))}
@@ -118,6 +163,22 @@ def _sanitize_llm_knowledge_dict(raw: Any) -> dict:
             if _s(c.get('description'))
         ],
     }
+
+
+def _derive_agent_role(agent: AgentFlow, system_map: SystemMap) -> str:
+    """AgentFlow.role is DERIVED in code from its components' gated roles, never asked of the
+    LLM (CS-300 §5): the single non-worker/non-unknown role among the agent's components if
+    exactly one exists, else 'worker' — or 'unknown' if every component is still 'unknown'."""
+    comp_roles = [
+        comp.role for cid in agent.component_ids
+        if (comp := system_map.component_by_id(cid)) is not None
+    ]
+    if not comp_roles or all(r == 'unknown' for r in comp_roles):
+        return 'unknown'
+    distinct_special = {r for r in comp_roles if r not in ('worker', 'unknown')}
+    if len(distinct_special) == 1:
+        return next(iter(distinct_special))
+    return 'worker'
 
 
 async def _execute_queries(ctx: _EnrichmentContext, queries: list[str]) -> str:
@@ -208,6 +269,7 @@ class _EnrichmentContext:
     depth: str
     force_agent_ids: list[str]
     semaphore: asyncio.Semaphore
+    repo_root: Path | None = None
 
 
 async def enrich_agents(
@@ -223,6 +285,9 @@ async def enrich_agents(
     depth: str = 'normal',
     agent_ids: list[str] | None = None,
     force_agent_ids: list[str] | None = None,
+    map_path: str | Path | None = None,
+    agent_flows_path: str | Path | None = None,
+    repo_root: str | Path | None = None,
 ) -> list[AgentKnowledge]:
     """Orchestrate concurrent enrichment of discovered agents.
 
@@ -239,10 +304,17 @@ async def enrich_agents(
         depth: 'normal' (≤3 queries, ≤2 LLM calls) or 'deep' (≤6 queries, ≤3 rounds)
         agent_ids: If provided, enrich only these agents (subset)
         force_agent_ids: If provided, re-enrich these agents even if cached
+        map_path: If provided, gated component roles (CS-300) are written back onto
+            `system_map` and persisted here — system_map YAML is the sole authority for role.
+        agent_flows_path: If provided, `AgentFlow.role` (derived in code from gated component
+            roles, never asked of the LLM) is persisted here.
+        repo_root: Root to resolve prompt-site file paths and citations against. None keeps
+            the pre-CS-300 `_resolve_repo_root()` behaviour byte-identical.
 
     Returns:
         List of AgentKnowledge objects, one per agent
     """
+    resolved_repo_root = Path(repo_root) if repo_root is not None else None
     force_ids = set(force_agent_ids or [])
     target_agents = [
         a for a in agent_flow_map.agents
@@ -274,6 +346,7 @@ async def enrich_agents(
         depth=depth,
         force_agent_ids=list(force_ids),
         semaphore=semaphore,
+        repo_root=resolved_repo_root,
     )
 
     # Stage 1: Gather shared evidence (prompt sites, component metadata, edges)
@@ -322,6 +395,8 @@ async def enrich_agents(
         appdata_dir = Path.home() / "AppData" / "Local" / "codespectra" / "agents" / session_id
         appdata_dir.mkdir(parents=True, exist_ok=True)
 
+        role_by_component: dict[str, tuple[str, float]] = {}
+
         for agent in target_agents:
             knowledge = results[f"enrich:{agent.id}"]
             md_path = appdata_dir / f"{agent.id}.md"
@@ -338,6 +413,35 @@ async def enrich_agents(
                 confidence=knowledge.confidence,
                 query_count=knowledge.query_count,
             )
+
+            # A degraded agent's verdicts are never applied — one agent failing must never
+            # blank the other agents' roles, nor write 'unknown' over a previously-good role.
+            if knowledge.degraded:
+                continue
+            for verdict in knowledge.component_roles:
+                role_by_component[verdict.id] = (verdict.role, verdict.confidence)
+
+        if not role_by_component:
+            return
+
+        for component in ctx.system_map.components:
+            if component.id in role_by_component:
+                role, confidence = role_by_component[component.id]
+                component.role = role
+                component.role_confidence = confidence
+                component.role_source = 'llm_constrained'
+
+        # AgentFlow.role is DERIVED in code from the just-applied gated component roles,
+        # never asked of the LLM (CS-300 §5).
+        if agent_flows_path:
+            for flow in ctx.agent_flow_map.agents:
+                flow.role = _derive_agent_role(flow, ctx.system_map)
+            save_agent_flow_map(ctx.agent_flow_map, agent_flows_path)
+
+        # system_map YAML is the sole authority for role (CS-300 Q1) — write it LAST, only
+        # after every agent's md/json/DB row (and agent_flows) above has already succeeded.
+        if map_path:
+            save_system_map(ctx.system_map, map_path)
 
     nodes.append(DagNode("persist", enrich_names, _persist))
 
@@ -370,7 +474,7 @@ async def _gather_evidence(ctx: _EnrichmentContext) -> dict[str, Any]:
         for item in ctx.accepted_with_annotations
     ]
 
-    prompt_sites_by_file = scan_for_prompt_sites(_resolve_repo_root(), accepted_files)
+    prompt_sites_by_file = scan_for_prompt_sites(_resolve_repo_root(ctx.repo_root), accepted_files)
 
     # Build per-agent component info
     component_by_agent: dict[str, list[dict]] = {}
@@ -384,6 +488,10 @@ async def _gather_evidence(ctx: _EnrichmentContext) -> dict[str, Any]:
                     'role': comp.role,
                     'file': comp.file,
                     'entry_point': comp.entry_point,
+                    'is_tool': comp.is_tool,
+                    'constructor_fanout': comp.constructor_fanout,
+                    'fan_in': len(comp.upstream),
+                    'fan_out': len(comp.downstream),
                 })
         component_by_agent[agent.id] = agent_components
 
@@ -489,13 +597,18 @@ async def _enrich_single_agent(
             generated_at=utc_now_iso(),
         )
 
-    # Evidence the LLM cites from: components, relevant prompt sites, edges.
+    # Evidence the LLM cites from: components (+ the structural facts/admissible set the
+    # hard gate below will enforce), relevant prompt sites, edges.
     context_lines = [f"Agent: {agent.label}", ""]
     if components:
         context_lines.append(f"Components ({len(components)}):")
         for c in components:
             entry = f" — entry: {c['entry_point']}" if c.get('entry_point') else ""
-            context_lines.append(f"  - {c['id']} ({c.get('role', 'unknown')}) @ {c.get('file', '?')}{entry}")
+            facts = structural_facts(c.get('fan_in', 0), c.get('fan_out', 0))
+            admissible = sorted(admissible_roles(c.get('is_tool'), c.get('constructor_fanout')))
+            context_lines.append(
+                f"  - {c['id']} @ {c.get('file', '?')}{entry} — {facts}; admissible roles: {admissible}"
+            )
     else:
         context_lines.append("Components: none")
 
@@ -504,9 +617,17 @@ async def _enrich_single_agent(
     if relevant_sites:
         context_lines.append("")
         context_lines.append(f"Prompt/LLM call sites in this agent's files ({len(relevant_sites)}):")
+        block_chars = 0
         for site in relevant_sites[:15]:
-            snippet = (site.snippet or '').replace('\n', ' ')[:150]
-            context_lines.append(f"  - {site.file}:{site.line} [{site.kind}] {snippet}")
+            snippet = (site.snippet or '').replace('\n', ' ')
+            if len(snippet) > _PROMPT_SITE_CHAR_BUDGET:
+                snippet = snippet[:_PROMPT_SITE_CHAR_BUDGET] + " [truncated]"
+            line = f"  - {site.file}:{site.line} [{site.kind}] {snippet}"
+            if block_chars + len(line) > _PROMPT_SITE_BLOCK_BUDGET:
+                context_lines.append("  ... [truncated — remaining prompt sites omitted to stay in budget]")
+                break
+            context_lines.append(line)
+            block_chars += len(line)
 
     agent_edges = evidence['edges_by_agent'].get(agent_id, [])
     if agent_edges:
@@ -547,6 +668,9 @@ async def _enrich_single_agent(
 
 Return JSON with this exact shape (all fields required, empty arrays/null if unknown):
 {{
+  "component_roles": [
+    {{"id": "<id from the Components list above>", "role": "<from THAT component's admissible set>", "confidence": 0.0, "reasoning": "<one sentence>"}}
+  ],
   "functionality": "<one sentence describing the agent's core purpose>",
   "functionality_citations": [
     {{"file": "<path/to/file.py>", "line": 42, "symbol": "function_or_class_name"}}
@@ -581,7 +705,7 @@ If you need more information to provide complete answers, set need_more to true 
         llm_calls += 1
         raw = await complete_json(
             ctx.llm_client, _ENRICH_SYSTEM, prompt,
-            max_tokens=12000, label=f"enrich[{agent_id}]",
+            max_tokens=16000, label=f"enrich[{agent_id}]",
             reasoning_effort="medium",
         )
         if raw is None:
@@ -612,17 +736,17 @@ If you need more information to provide complete answers, set need_more to true 
                 f"Given your previous analysis, here are the follow-up query results you asked for:\n\n"
                 f"{query_results}\n\n"
                 f"Re-analyze and provide an updated semantic profile using this new evidence. "
-                f"Return the SAME JSON shape as before — functionality, functionality_citations, "
-                f"context_builders, upstream_consumers, downstream_consumers, failure_modes, "
-                f"need_more, next_queries — with no other fields. functionality must still be a "
-                f"non-empty string, never null. If the query results above don't actually add "
-                f"anything useful, keep your previous, more specific answer rather than replacing "
-                f"it with a vaguer one."
+                f"Return the SAME JSON shape as before — component_roles, functionality, "
+                f"functionality_citations, context_builders, upstream_consumers, "
+                f"downstream_consumers, failure_modes, need_more, next_queries — with no other "
+                f"fields. functionality must still be a non-empty string, never null. If the "
+                f"query results above don't actually add anything useful, keep your previous, "
+                f"more specific answer rather than replacing it with a vaguer one."
             )
 
             raw2 = await complete_json(
                 ctx.llm_client, _ENRICH_SYSTEM, round2_prompt,
-                max_tokens=12000, label=f"enrich[{agent_id}]-round2",
+                max_tokens=16000, label=f"enrich[{agent_id}]-round2",
                 reasoning_effort="medium",
             )
             if raw2 is not None:
@@ -646,7 +770,25 @@ If you need more information to provide complete answers, set need_more to true 
         logger.exception(f"Enrichment failed for {agent_id}: {e}")
         llm_knowledge = AgentKnowledge(degraded=True, degraded_reason=f"Enrichment exception: {str(e)}")
 
-    # 5. Static-wins merge — structural fields never come from the LLM
+    # 5. Hard gate — mirrors roles.py's structural subtraction exactly: the prompt LISTS the
+    # admissible set (above), the code ENFORCES it. Richer evidence gives the LLM more
+    # material to rationalise a structurally impossible role, not less confidence to do so.
+    structural_by_id = {c['id']: c for c in components}
+    gated_roles: list[ComponentRoleVerdict] = []
+    for verdict in llm_knowledge.component_roles:
+        c = structural_by_id.get(verdict.id)
+        if c is None:
+            continue  # LLM named a component id that isn't this agent's — discard, never invent
+        admissible = admissible_roles(c.get('is_tool'), c.get('constructor_fanout'))
+        role = verdict.role
+        if role not in admissible or verdict.confidence < ROLE_CONFIDENCE_THRESHOLD:
+            role = 'unknown'
+        gated_roles.append(ComponentRoleVerdict(
+            id=verdict.id, role=role, confidence=verdict.confidence, reasoning=verdict.reasoning
+        ))
+    llm_knowledge.component_roles = gated_roles
+
+    # 6. Static-wins merge — structural fields never come from the LLM
     llm_knowledge.evidence_hash = evidence_hash
     llm_knowledge.query_count = query_count
     llm_knowledge.confidence = 'low' if llm_knowledge.degraded else 'high'
@@ -663,10 +805,10 @@ If you need more information to provide complete answers, set need_more to true 
         prompt_sites_by_file = evidence.get('prompt_sites_by_file', {})
         for file, sites in prompt_sites_by_file.items():
             if file in comp_files:
-                llm_knowledge.prompt_sites.extend(sites)
+                llm_knowledge.prompt_sites.extend(PromptSiteRef(**asdict(s)) for s in sites)
 
-    # 6. Verify citations — mutates knowledge.needs_human for unverified/phantom claims
-    vreport = verify_citations(llm_knowledge, _resolve_repo_root())
+    # 7. Verify citations — mutates knowledge.needs_human for unverified/phantom claims
+    vreport = verify_citations(llm_knowledge, _resolve_repo_root(ctx.repo_root))
     if vreport.claims:
         logger.debug(
             "Citation verification for %s: %d claims, %d phantom, %d unverified",

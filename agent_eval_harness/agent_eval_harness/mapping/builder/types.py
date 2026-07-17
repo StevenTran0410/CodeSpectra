@@ -50,18 +50,9 @@ class CandidateComponent:
 
 
 @dataclass
-class RoleClassification:
-    """LLM classification of a candidate into a role."""
-
-    candidate_id: str
-    role: str
-    confidence: float
-    reasoning: str
-
-
-@dataclass
 class TopologyEdges:
     """Upstream and downstream nodes in the component graph."""
 
     upstream: list[str] = field(default_factory=list)
     downstream: list[str] = field(default_factory=list)
+    constructor_downstream: list[str] = field(default_factory=list)  # sibling components this one constructs/owns

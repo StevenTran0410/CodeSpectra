@@ -1,143 +1,44 @@
 """Golden tests for map builder against T1 and T2 targets."""
+import asyncio
 from pathlib import Path
 
 import pytest
 
-from agent_eval_harness.llm.client import LLMResponse
 from agent_eval_harness.mapping.builder.pipeline import SystemMapBuilder
-from tests._stubs import KeyedFakeLLMClient
 
 
-@pytest.fixture
-def t1_fixtures() -> dict[str, LLMResponse]:
-    """Role classification responses for T1."""
-    import json
+class _NeverCallClient:
+    """CS-300: Stage 2 no longer classifies role, and constraint Phase B fires 0 calls on
+    T1/T2 (verified in test_map_builder_unit.py) — the builder must never call the LLM here."""
 
-    return {
-        "RetrieverComponent": LLMResponse(
-            content=json.dumps({
-                "role": "retrieval_agent",
-                "confidence": 0.9,
-                "reasoning": "Pure Python keyword overlap ranker, reads corpus to produce ranked "
-                "results.",
-            }),
-            model="fake-gpt",
-        ),
-        "WriterComponent": LLMResponse(
-            content=json.dumps({
-                "role": "writer",
-                "confidence": 0.95,
-                "reasoning": "Answers strictly from retrieved context using LLM."
-            }),
-            model="fake-gpt",
-        ),
-    }
-
-
-@pytest.fixture
-def t2_fixtures() -> dict[str, LLMResponse]:
-    """Role classification responses for T2."""
-    import json
-
-    return {
-        "GuardComponent (sub-role: rule)": LLMResponse(
-            content=json.dumps({
-                "role": "input_guard.rule",
-                "confidence": 0.95,
-                "reasoning": "Deterministic length-based input filtering."
-            }),
-            model="fake-gpt",
-        ),
-        "GuardComponent (sub-role: llm)": LLMResponse(
-            content=json.dumps({
-                "role": "input_guard.llm",
-                "confidence": 0.9,
-                "reasoning": "LLM-based policy violation detection."
-            }),
-            model="fake-gpt",
-        ),
-        "PlannerComponent": LLMResponse(
-            content=json.dumps({
-                "role": "orchestrator",
-                "confidence": 0.95,
-                "reasoning": "Decomposes intents, routes to worker, manages retry logic with judge."
-            }),
-            model="fake-gpt",
-        ),
-        "WorkerComponent": LLMResponse(
-            content=json.dumps({
-                "role": "retrieval_agent",
-                "confidence": 0.9,
-                "reasoning": "Manages tools to gather context based on decomposed intents."
-            }),
-            model="fake-gpt",
-        ),
-        "JudgeComponent": LLMResponse(
-            content=json.dumps({
-                "role": "validator",
-                "confidence": 0.9,
-                "reasoning": "Judges sufficiency of retrieved context, can trigger retry."
-            }),
-            model="fake-gpt",
-        ),
-        "WriterComponent": LLMResponse(
-            content=json.dumps({
-                "role": "writer",
-                "confidence": 0.95,
-                "reasoning": "Produces final grounded output from judged context."
-            }),
-            model="fake-gpt",
-        ),
-        "case_law_search": LLMResponse(
-            content=json.dumps({
-                "role": "tool",
-                "confidence": 0.95,
-                "reasoning": "Leaf capability invoked by worker to search case law."
-            }),
-            model="fake-gpt",
-        ),
-        "decoy_lookup": LLMResponse(
-            content=json.dumps({
-                "role": "tool",
-                "confidence": 0.95,
-                "reasoning": "Leaf capability invoked by worker (decoy tool)."
-            }),
-            model="fake-gpt",
-        ),
-    }
+    async def complete(self, *args, **kwargs):
+        raise AssertionError("SystemMapBuilder.build() should not call the LLM for T1/T2")
 
 
 class TestMapBuilderGolden:
-    def test_golden_t1_components_and_roles(self, target_root: Path, t1_fixtures: dict):
-        """T1 golden test: find 2 components with correct roles."""
-        import asyncio
+    def test_golden_t1_components_and_roles(self, target_root: Path):
+        """T1 golden test: find 2 components; role is 'unknown' — pending Stage 2.5 (CS-300)."""
 
         async def run_test():
             t1_dir = target_root / "linear_rag"
-            builder = SystemMapBuilder(KeyedFakeLLMClient(t1_fixtures))
+            builder = SystemMapBuilder(_NeverCallClient())
             system_map, summary = await builder.build(t1_dir)
 
-            # Should have 2 components
             assert len(system_map.components) == 2
+            assert all(c.role == "unknown" for c in system_map.components)
 
-            # Check roles
-            roles = {c.role for c in system_map.components}
-            assert roles == {"retrieval_agent", "writer"}
-
-            # Check IDs
             ids = {c.id for c in system_map.components}
             assert "retriever" in ids
             assert "writer" in ids
 
         asyncio.run(run_test())
 
-    def test_golden_t1_topology(self, target_root: Path, t1_fixtures: dict):
+    def test_golden_t1_topology(self, target_root: Path):
         """T1 golden test: retriever -> writer edge present."""
-        import asyncio
 
         async def run_test():
             t1_dir = target_root / "linear_rag"
-            builder = SystemMapBuilder(KeyedFakeLLMClient(t1_fixtures))
+            builder = SystemMapBuilder(_NeverCallClient())
             system_map, summary = await builder.build(t1_dir)
 
             retriever = system_map.component_by_id("retriever")
@@ -150,46 +51,33 @@ class TestMapBuilderGolden:
 
         asyncio.run(run_test())
 
-    def test_golden_t2_components_and_roles(self, target_root: Path, t1_fixtures: dict,
-                                              t2_fixtures: dict):
-        """T2 golden test: 8 logical components with correct roles."""
-        import asyncio
+    def test_golden_t2_components_and_roles(self, target_root: Path):
+        """T2 golden test: 8 logical components; role is 'unknown' — pending Stage 2.5 (CS-300)."""
 
         async def run_test():
             t2_dir = target_root / "multi_agent"
-            # Merge fixtures (T2 imports WriterComponent from T1)
-            merged_fixtures = {**t1_fixtures, **t2_fixtures}
-            builder = SystemMapBuilder(KeyedFakeLLMClient(merged_fixtures))
+            builder = SystemMapBuilder(_NeverCallClient())
             system_map, summary = await builder.build(t2_dir)
 
-            # 8 components: guard_rule, guard_llm, planner, worker, judge, writer
+            # 8 components: guard_rule, guard_llm, planner, worker, judge, writer, 2 tools
             assert len(system_map.components) == 8
+            assert all(c.role == "unknown" for c in system_map.components)
 
-            # Check that core roles are present
-            roles = [c.role for c in system_map.components]
-            role_set = set(roles)
-            expected_core = {
-                "input_guard.rule",
-                "input_guard.llm",
-                "orchestrator",
-                "retrieval_agent",
-                "validator",
-                "tool",
+            ids = {c.id for c in system_map.components}
+            expected_ids = {
+                "guard_rule", "guard_llm", "planner", "worker",
+                "judge", "writer", "case_law_search", "decoy_lookup",
             }
-            assert expected_core.issubset(role_set)
+            assert expected_ids.issubset(ids)
 
         asyncio.run(run_test())
 
-    def test_golden_t2_constraints_cited(self, target_root: Path, t1_fixtures: dict,
-                                         t2_fixtures: dict):
+    def test_golden_t2_constraints_cited(self, target_root: Path):
         """T2 golden test: both planted constraints have correct value + citation."""
-        import asyncio
 
         async def run_test():
             t2_dir = target_root / "multi_agent"
-            # Merge fixtures (T2 imports WriterComponent from T1)
-            merged_fixtures = {**t1_fixtures, **t2_fixtures}
-            builder = SystemMapBuilder(KeyedFakeLLMClient(merged_fixtures))
+            builder = SystemMapBuilder(_NeverCallClient())
             system_map, summary = await builder.build(t2_dir)
 
             # Find guard and planner
@@ -224,13 +112,12 @@ class TestMapBuilderGolden:
 
         asyncio.run(run_test())
 
-    def test_golden_t2_topology_planner_fanout(self, target_root: Path, t2_fixtures: dict):
+    def test_golden_t2_topology_planner_fanout(self, target_root: Path):
         """T2 golden test: planner has worker/judge/writer downstream."""
-        import asyncio
 
         async def run_test():
             t2_dir = target_root / "multi_agent"
-            builder = SystemMapBuilder(KeyedFakeLLMClient(t2_fixtures))
+            builder = SystemMapBuilder(_NeverCallClient())
             system_map, summary = await builder.build(t2_dir)
 
             planner = system_map.component_by_id("planner")
@@ -261,16 +148,12 @@ class TestMapBuilderGolden:
                 }],
             })
 
-    def test_golden_summary_format_has_fixed_headers(self, target_root: Path, t1_fixtures: dict,
-                                                     t2_fixtures: dict):
+    def test_golden_summary_format_has_fixed_headers(self, target_root: Path):
         """Summary should have fixed header format."""
-        import asyncio
 
         async def run_test():
             t2_dir = target_root / "multi_agent"
-            # Merge fixtures (T2 imports WriterComponent from T1)
-            merged_fixtures = {**t1_fixtures, **t2_fixtures}
-            builder = SystemMapBuilder(KeyedFakeLLMClient(merged_fixtures))
+            builder = SystemMapBuilder(_NeverCallClient())
             system_map, summary = await builder.build(t2_dir)
 
             # Check for fixed headers

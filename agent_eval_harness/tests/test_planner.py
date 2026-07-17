@@ -8,10 +8,15 @@ import pytest
 
 from agent_eval_harness.llm.client import LLMResponse
 from agent_eval_harness.llm.fake_client import FakeLLMClient
+from agent_eval_harness.mapping.builder.roles import VALID_ROLES
+from agent_eval_harness.mapping.system_map import Component, Constraint, SystemMap
 from agent_eval_harness.planning.planner import (
+    _component_role_rules,
     _resolve_dataset_ref,
+    baseline_gates_for_component,
     generate_plan,
     get_component_info,
+    role_skip_note,
 )
 
 _LINEAR_RAG_MAP = Path(__file__).parent.parent / "test_targets" / "linear_rag" / "system_map.yaml"
@@ -80,6 +85,69 @@ async def test_generate_plan_multi_agent() -> None:
     assert "judge.classifier" in suite_entries
     assert "writer.faithfulness" in suite_entries
     assert "writer.answer_relevancy" in suite_entries
+
+
+async def test_baseline_gates_for_component_tool_role_still_returns_constraint_entries() -> None:
+    """CS-299: the old early return at planner.py:373 discarded AST-mined constraint gates
+    for tool/unknown roles even though constraints are unrelated to role — this is a real
+    latent bug, inert only because the CodeSpectra fixture map has zero mined constraints."""
+    component = Component(
+        id="important_files", role="tool", entry_point="m:ImportantFiles",
+        constraints=[Constraint(name="max_retries", value=3, source="test.py:1")],
+    )
+    system_map = SystemMap(target_system_id="t", components=[component])
+    llm_client = FakeLLMClient(LLMResponse(content="{}", model="fake"))
+
+    entries = await baseline_gates_for_component(
+        component, {component.id: component}, None, system_map, llm_client
+    )
+
+    assert len(entries) == 1
+    assert entries[0].metric == "max_retries"
+    assert entries[0].id == "important_files.max_retries"
+    assert entries[0].provenance == "rule"
+
+
+async def test_role_skip_note_fires_for_tool_and_unknown_only() -> None:
+    tool_comp = Component(id="c1", role="tool", entry_point="m:C1")
+    unknown_comp = Component(id="c2", role="unknown", entry_point="m:C2")
+    worker_comp = Component(id="c3", role="worker", entry_point="m:C3")
+
+    assert role_skip_note(tool_comp) == (
+        "c1: role=tool has no role-derived gate (constraints, if any, still apply)"
+    )
+    assert role_skip_note(unknown_comp) is not None
+    assert role_skip_note(worker_comp) is None
+
+
+@pytest.mark.parametrize("role", sorted(VALID_ROLES))
+async def test_component_role_rules_unchanged_for_every_valid_role(role: str) -> None:
+    """CS-300 AC5: role now comes from Stage 2.5 instead of Stage 2, but _component_role_rules
+    itself is untouched by this ticket — this test proves it by exercising every role in the
+    vocabulary and pinning the exact rule set each one fires, on a minimal single-component map
+    (no downstream tools, no validator retry loop, so retrieval_agent fires nothing here)."""
+    component = Component(id="c1", role=role, entry_point="m:C1")
+    components_by_id = {"c1": component}
+    system_map = SystemMap(target_system_id="t", components=[component])
+
+    rules = _component_role_rules(component, components_by_id, None, system_map)
+    metrics = {r["metric"] for r in rules}
+
+    if role in ("input_guard.rule", "input_guard.llm"):
+        assert metrics == {"classifier.c1_accuracy"}
+        assert rules[0]["dataset_kind"] == "guard_classification"
+    elif role == "validator":
+        assert metrics == {"classifier.c1_accuracy"}
+        assert rules[0]["dataset_kind"] == "sufficiency_labeled"
+    elif role == "orchestrator":
+        assert metrics == {"geval.decomposition_coverage", "allowed_downstream"}
+    elif role == "retrieval_agent":
+        assert metrics == set()
+    elif role == "writer":
+        assert metrics == {"ragas.faithfulness", "ragas.answer_relevancy"}
+    else:
+        assert role in ("tool", "worker", "unknown"), f"unhandled role in VALID_ROLES: {role}"
+        assert metrics == set()
 
 
 async def test_geval_rubric_tailoring() -> None:

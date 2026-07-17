@@ -26,6 +26,11 @@ class Constraint(BaseModel):
 class Component(BaseModel):
     id: str
     role: str
+    role_confidence: float | None = None
+    role_source: str | None = None
+    is_tool: bool | None = None
+    constructor_fanout: int | None = None
+    constructor_downstream: list[str] | None = None  # WHICH siblings this constructs; fanout is its count
     model: str | None = None
     entry_point: str
     file: str = ""

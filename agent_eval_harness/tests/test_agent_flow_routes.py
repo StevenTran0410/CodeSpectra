@@ -52,7 +52,7 @@ def _patch_external_calls(monkeypatch, tmp_path):
     async def fake_get_snapshot(self, snapshot_id: str) -> dict:
         return {"local_path": str(tmp_path)}
 
-    async def fake_complete(self, messages, *, max_tokens=512, temperature=0.2, json_mode=False):
+    async def fake_complete(self, messages, *, max_tokens=512, temperature=0.2, json_mode=False, **kwargs):
         return LLMResponse(content=CANNED_GROUPING, model="fake-llm-2")
 
     monkeypatch.setattr(CodeSpectraClient, "get_snapshot", fake_get_snapshot)

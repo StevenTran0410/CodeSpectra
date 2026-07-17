@@ -18,7 +18,7 @@ from agent_eval_harness.mapping.system_map import Component, SystemMap
 from agent_eval_harness.metrics.assertions.registry import get_assertion, ASSERTIONS, _import_all as _import_all_assertions
 from agent_eval_harness.metrics.registry import DATASET_KINDS, get_spec, validate_metric
 from agent_eval_harness.metrics.suite import DatasetRef, Suite, SuiteEntry
-from agent_eval_harness.planning.planner import baseline_gates_for_agent
+from agent_eval_harness.planning.planner import baseline_gates_for_agent, role_skip_note
 from agent_eval_harness.planning.contract import EvaluationContract
 from agent_eval_harness.planning.report import (
     AgentDataProfile,
@@ -951,6 +951,8 @@ def reconcile(
     for gate in handoff_gates:
         handoff_by_agent.setdefault(gate.agent_id, []).append(gate)
 
+    components_by_id = {c.id: c for c in system_map.components} if system_map else {}
+
     all_suite_entries: list[SuiteEntry] = []
     agent_reports: list[AgentPlanReport] = []
 
@@ -994,6 +996,12 @@ def reconcile(
 
         contract = (contracts or {}).get(agent.id)
         post_notes: list[str] = []
+        for cid in agent.component_ids:
+            comp = components_by_id.get(cid)
+            if comp is not None:
+                note = role_skip_note(comp)
+                if note:
+                    post_notes.append(note)
 
         # Merge observability
         if contract is not None:

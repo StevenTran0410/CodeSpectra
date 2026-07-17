@@ -101,6 +101,7 @@ async def test_static_wins_llm_cannot_override() -> None:
         depth: str = "normal"
         force_agent_ids: list = None
         semaphore: object = None
+        repo_root: object = None
 
         def __post_init__(self):
             if self.agent_flow_map is None:

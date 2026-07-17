@@ -424,6 +424,57 @@ async def test_reconcile_baseline_never_dropped_llm_dedup_and_needs_human() -> N
     # real-contract case where a baseline gate CAN be dropped.
 
 
+async def test_reconcile_crowding_out_role_orchestrator_vs_worker() -> None:
+    """CS-299 B2's real thesis: a role=orchestrator rule gate claims (component, metric) at
+    dedup (agentic_planner.py:988-993) BEFORE the llm_suggested handoff gate can, silently
+    deleting a correctly-parameterised gate the system already generated. role=worker has no
+    role rule, so the handoff gate survives instead."""
+    agent_flow_map = AgentFlowMap(
+        target_system_id="t",
+        agents=[AgentFlow(id="a1", role="orchestrator", label="A1", component_ids=["comp1"])],
+    )
+    evidence_by_agent = {
+        "a1": ap.AgentEvidence(agent=agent_flow_map.agents[0], owned=[{"id": "comp1"}]),
+    }
+    profiles_by_agent = {"a1": AgentDataProfile(agent_id="a1")}
+    handoff_gate = ap.EvaluationGate(
+        id="comp1.allowed_downstream.handoff0", agent_id="a1", component="comp1",
+        location="handoff", property="handoff.allowed_downstream", metric="allowed_downstream",
+        metric_class="assertion", toolkit="assertion", params={"allowed": ["comp2"]},
+        rationale="comp1 may only hand off to comp2.", provenance="llm_suggested",
+    )
+    rule_gate = ap.SuiteEntry(
+        id="comp1.allowed_downstream", component="comp1", metric="allowed_downstream",
+        metric_class="assertion", params={"allowed": []},
+        rationale="role=orchestrator ⇒ orchestrator must only fan out to its declared downstream components.",
+        provenance="rule",
+    )
+
+    # Mis-role (today's bug): the rule gate claims the key first, killing the good handoff gate.
+    suite_orch, report_orch = ap.reconcile(
+        agent_flow_map, evidence_by_agent, profiles_by_agent,
+        baseline_by_agent={"a1": [rule_gate]},
+        llm_gates_by_agent={"a1": []}, handoff_gates=[handoff_gate],
+    )
+    orch_gates = [g for g in report_orch.agents[0].gates if g.metric == "allowed_downstream"]
+    assert len(orch_gates) == 1
+    assert orch_gates[0].provenance == "rule"
+    assert orch_gates[0].id == "comp1.allowed_downstream"  # NOT handoff0 -> the good gate is gone
+
+    # Fixed role (worker has no role rule): no rule gate is emitted, so the llm_suggested
+    # handoff gate is never shadowed and survives dedup untouched.
+    suite_worker, report_worker = ap.reconcile(
+        agent_flow_map, evidence_by_agent, profiles_by_agent,
+        baseline_by_agent={"a1": []},
+        llm_gates_by_agent={"a1": []}, handoff_gates=[handoff_gate],
+    )
+    worker_gates = [g for g in report_worker.agents[0].gates if g.metric == "allowed_downstream"]
+    assert len(worker_gates) == 1
+    assert worker_gates[0].provenance == "llm_suggested"
+    assert worker_gates[0].id == "comp1.allowed_downstream.handoff0"
+    assert worker_gates[0].params == {"allowed": ["comp2"]}
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # _apply_feasibility on baseline (rule) gates — CS-288
 # ──────────────────────────────────────────────────────────────────────────────

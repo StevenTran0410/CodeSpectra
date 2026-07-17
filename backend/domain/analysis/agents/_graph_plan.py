@@ -110,10 +110,24 @@ async def promote_dominant_symbols(bundle: RetrievalBundle, snapshot_id: str) ->
     jointly a strong signal the symbol is central to the question. Complete any symbol
     whose parts reach _DOMINANT_THRESHOLD across the merged set and tag every member
     'dominant-seed' so render_bundle can surface it as one fully-assembled block instead
-    of scattering its parts through the regular per-chunk list."""
+    of scattering its parts through the regular per-chunk list.
+
+    Promotion is an enhancement over an already-usable merged bundle, so a failure here
+    degrades to the un-promoted bundle instead of taking the whole section down with it."""
     if not bundle.evidences:
         return bundle
+    try:
+        return await _promote_dominant_symbols(bundle, snapshot_id)
+    except Exception as e:
+        logger.warning(
+            "[retrieve_multi] dominant-symbol promotion skipped (%s: %s) — returning the merged "
+            "bundle un-promoted; split symbols may appear as scattered parts.",
+            type(e).__name__, e,
+        )
+        return bundle
 
+
+async def _promote_dominant_symbols(bundle: RetrievalBundle, snapshot_id: str) -> RetrievalBundle:
     db = get_db()
     chunk_ids = [e.chunk_id for e in bundle.evidences]
     placeholders = ",".join("?" for _ in chunk_ids)

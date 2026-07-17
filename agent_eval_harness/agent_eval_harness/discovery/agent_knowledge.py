@@ -72,6 +72,23 @@ class PromptSiteRef(BaseModel):
     snippet: str
 
 
+class ComponentRoleVerdict(BaseModel):
+    """One component's role verdict from Stage 2.5 (CS-300), post structural hard-gate.
+    Raw LLM-derived output — NEVER read for gating; see Component.role on the persisted
+    system_map, which is the authoritative value this same verdict was written onto."""
+    id: str
+    role: str = 'unknown'
+    confidence: float = 0.0
+    reasoning: str = ''
+
+    @field_validator('role')
+    @classmethod
+    def validate_role(cls, v: str) -> str:
+        """A pre-CS-300 or otherwise malformed cached sidecar must never crash the cache
+        path — an empty/falsy role coerces to 'unknown' rather than raising."""
+        return v if v else 'unknown'
+
+
 class ContextBuilderRef(BaseModel):
     """A helper that builds context for this agent. file/line optional — see Citation."""
     name: str
@@ -104,6 +121,10 @@ class AgentKnowledge(BaseModel):
     input_contract: list[ContractArg] = Field(default_factory=list)
     output_contract: OutputContract | None = None
     prompt_sites: list[PromptSiteRef] = Field(default_factory=list)
+
+    # Role verdicts (CS-300) — first conclusion of the LLM round, post hard-gate. NEVER
+    # authoritative; the same gated values are written onto Component.role on the system_map.
+    component_roles: list[ComponentRoleVerdict] = Field(default_factory=list)
 
     # Semantic fields (LLM-derived, all with citations)
     functionality: str = ''
@@ -142,6 +163,11 @@ class AgentKnowledge(BaseModel):
             lines.append(f"## Components")
             for c in self.components:
                 lines.append(f"- {c.id} ({c.role}): {c.file}:{c.line}")
+
+        if self.component_roles:
+            lines.append(f"## Role (non-authoritative — see system_map for the persisted value)")
+            for r in self.component_roles:
+                lines.append(f"- {r.id}: {r.role} (confidence={r.confidence:.2f}) — {r.reasoning}")
 
         if self.functionality:
             lines.append(f"## Functionality")

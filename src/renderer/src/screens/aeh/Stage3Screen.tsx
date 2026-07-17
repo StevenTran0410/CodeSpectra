@@ -445,7 +445,7 @@ export default function Stage3Screen(): React.ReactElement {
             <div className="flex items-center gap-2 min-w-0">
               <span
                 className="w-2.5 h-2.5 rounded-full shrink-0"
-                style={{ background: ROLE_COLORS[viewingAgent.role] ?? ROLE_COLORS.unknown }}
+                style={{ background: ROLE_COLORS[viewingAgent.role as AEHRole] ?? ROLE_COLORS.unknown }}
               />
               <div className="min-w-0">
                 <h1 className="screen-title truncate">{viewingAgent.label || viewingAgent.id}</h1>
@@ -884,7 +884,7 @@ function AgentCard({
       <div className="flex items-center gap-1.5 min-w-0">
         <span
           className="w-2 h-2 rounded-full shrink-0"
-          style={{ background: ROLE_COLORS[agent.role] ?? ROLE_COLORS.unknown }}
+          style={{ background: ROLE_COLORS[agent.role as AEHRole] ?? ROLE_COLORS.unknown }}
         />
         <span className="text-[11px] font-semibold text-slate-200 truncate flex-1">{agent.label || agent.id}</span>
         {needsHumanCount > 0 && (
@@ -1097,7 +1097,7 @@ function AgentDetailView({
                         <span
                           className="w-2 h-2 rounded-full shrink-0"
                           style={{
-                            background: ROLE_COLORS[roleByComponentId.get(entry.component) ?? 'unknown'] ?? ROLE_COLORS.unknown,
+                            background: ROLE_COLORS[(roleByComponentId.get(entry.component) ?? 'unknown') as AEHRole] ?? ROLE_COLORS.unknown,
                           }}
                           title={roleByComponentId.get(entry.component) ?? 'unknown'}
                         />

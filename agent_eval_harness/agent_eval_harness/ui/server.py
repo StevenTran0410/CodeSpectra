@@ -1204,6 +1204,11 @@ async def generate_plan_route(session_id: str, body: GeneratePlanRequest):
             status_code=400,
             detail="Run Stage 2 agent-flow separation first — Stage 3 plans per agent.",
         )
+    if not await repository.list_agent_knowledge(session_id):
+        raise HTTPException(
+            status_code=400,
+            detail="Run Stage 2.5 enrichment first — component roles come from enrichment.",
+        )
 
     config = AEHConfig.load()
     provider_id = body.provider_id or config.provider_id
@@ -1747,6 +1752,8 @@ async def enrich_agents_route(session_id: str, body: EnrichAgentsRequest):
     sess = await _get_expansion_session_or_404(session_id)
     if sess["status"] != "completed":
         raise HTTPException(status_code=400, detail="Expansion has not completed.")
+    if not sess["map_path"]:
+        raise HTTPException(status_code=400, detail="No system map for this session.")
     agent_flows_path_str = sess.get("agent_flows_path")
     if not agent_flows_path_str or not Path(agent_flows_path_str).exists():
         raise HTTPException(
@@ -1778,6 +1785,11 @@ async def enrich_agents_route(session_id: str, body: EnrichAgentsRequest):
         system_map = load_system_map(sess["map_path"])
         agent_flow_map = load_agent_flow_map(agent_flows_path_str)
 
+        snapshot = await client.get_snapshot(sess["snapshot_id"])
+        local_path_str = snapshot.get("local_path")
+        if not local_path_str:
+            raise HTTPException(status_code=400, detail="Snapshot is missing local_path context.")
+
         from agent_eval_harness.discovery.enrichment import enrich_agents
 
         knowledge_list = await enrich_agents(
@@ -1792,11 +1804,14 @@ async def enrich_agents_route(session_id: str, body: EnrichAgentsRequest):
             depth=body.depth or 'normal',
             agent_ids=body.agent_ids,
             force_agent_ids=body.force_agent_ids,
+            map_path=sess["map_path"],
+            agent_flows_path=agent_flows_path_str,
+            repo_root=Path(local_path_str),
         )
 
         enriched_count = sum(1 for k in knowledge_list if not k.degraded)
         degraded_count = sum(1 for k in knowledge_list if k.degraded)
-        skipped_count = 0
+        skipped_count = len(agent_flow_map.agents) - len(knowledge_list)
 
         return {
             "enriched_count": enriched_count,

@@ -16,18 +16,27 @@ from agent_eval_harness.mapping.agent_flow import (
 from agent_eval_harness.mapping.system_map import Component, SystemMap
 
 
-def _map_with(*component_ids: str) -> SystemMap:
+def _map_with(*component_ids: str, constructs: dict[str, list[str]] | None = None) -> SystemMap:
+    """`constructs` marks real constructor ownership — the only thing parent_agent is derived from."""
     return SystemMap(
         target_system_id="test_system",
         components=[
-            Component(id=cid, role="unknown", entry_point=f"mod:{cid}", file=f"{cid}.py")
+            Component(
+                id=cid, role="unknown", entry_point=f"mod:{cid}", file=f"{cid}.py",
+                constructor_downstream=(constructs or {}).get(cid, []),
+            )
             for cid in component_ids
         ],
     )
 
 
 async def test_separate_agent_flows_happy_path_groups_and_covers_every_component() -> None:
-    system_map = _map_with("orchestrator", "rag_tool", "validator", "writer")
+    # orchestrator genuinely constructs validator, so parent_agent is derivable; nothing
+    # constructs orchestrator, so it stays a root.
+    system_map = _map_with(
+        "orchestrator", "rag_tool", "validator", "writer",
+        constructs={"orchestrator": ["validator"]},
+    )
 
     llm_response = LLMResponse(
         content=json.dumps({
@@ -81,8 +90,14 @@ async def test_separate_agent_flows_happy_path_groups_and_covers_every_component
     assert set(orchestrator.component_ids) == {"orchestrator", "rag_tool"}
     assert orchestrator.parent_agent is None
 
+    # Derived from constructor_downstream, NOT from the LLM (which conflated "feeds me" with
+    # "owns me" and invented a hierarchy over a connect()-wired DAG).
     validator = next(a for a in result.agents if a.id == "validator")
     assert validator.parent_agent == "orchestrator"
+
+    # writer is only fed by validator, never constructed by it — a data edge is not ownership.
+    writer = next(a for a in result.agents if a.id == "writer")
+    assert writer.parent_agent is None
 
     # Every input component id ends up in exactly one agent's component_ids.
     all_claimed = [cid for a in result.agents for cid in a.component_ids]

@@ -65,6 +65,7 @@ def extract_symbol_snippet(content: str, symbol_identifier: str) -> str:
 
 
 MAX_CLASSIFY_BATCH_SIZE = 6
+_CLASSIFY_MAX_TOKENS = 2048  # 6 verdicts x ~150 tokens; the 512 default truncates the batch to empty
 
 VALID_ROLE_HINTS = {"orchestrator", "agent_core", "prompt", "tool", "context_builder", "model_client", "config", "util"}
 
@@ -126,8 +127,14 @@ async def _classify_nodes_batch(
                 LLMMessage(role="system", content=system_prompt),
                 LLMMessage(role="user", content=user_prompt),
             ],
+            max_tokens=_CLASSIFY_MAX_TOKENS,
             json_mode=True,
+            reasoning_effort="low",  # structured extraction: reasoning burns the completion budget and returns empty content
         )
+        if not (response.content or "").strip():
+            raise ValueError(
+                "LLM returned empty content — reasoning likely consumed the whole completion budget"
+            )
         data = json.loads(response.content)
         for entry in data.get("verdicts", []):
             unique_id = entry.get("id")
@@ -146,7 +153,11 @@ async def _classify_nodes_batch(
                     "skip": bool(entry.get("skip", False)),
                 }
     except Exception as e:
-        logger.warning(f"Batch classification failed: {e}. Defaulting batch to 'boundary'.")
+        logger.warning(
+            f"Batch classification failed: {e}. Defaulting {len(items)} node(s) to 'boundary' — "
+            f"they will NOT be expanded, so the map may be under-discovered: "
+            f"{', '.join(f'{p}::{c}' for p, _, c in items)}"
+        )
     return result
 
 

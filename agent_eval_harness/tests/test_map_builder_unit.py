@@ -1,12 +1,49 @@
 """Unit tests for map builder components (no LLM)."""
+import asyncio
 import tempfile
 from pathlib import Path
 
 import pytest
 
 from agent_eval_harness.mapping.builder.constraints import mine_constraints
+from agent_eval_harness.mapping.builder.pipeline import SystemMapBuilder
+from agent_eval_harness.mapping.builder.prompts import ROLE_TAXONOMY
 from agent_eval_harness.mapping.builder.scanners import HaystackScanner
 from agent_eval_harness.mapping.builder.topology import extract_topology
+
+
+class TestNoRoleLLMCallsInStage2:
+    """CS-300 AC2: Stage 2 emits 0 role-classification LLM calls. Content-based, not
+    call-count-based — the builder still makes constraint-mining calls (pipeline.py), so a
+    bare call_count==0 would silently stop meaning anything once mining changes."""
+
+    def test_no_call_carries_the_role_taxonomy_as_a_system_prompt(self, target_root: Path):
+        class _RecordingClient:
+            def __init__(self):
+                self.calls = []
+
+            async def complete(
+                self, messages, *, max_tokens=512, temperature=0.2, json_mode=False, reasoning_effort=None
+            ):
+                from agent_eval_harness.llm.client import LLMResponse
+                self.calls.append(messages)
+                return LLMResponse(content="[]", model="fake")
+
+        async def run_test():
+            t2_dir = target_root / "multi_agent"
+            client = _RecordingClient()
+            builder = SystemMapBuilder(client)
+            await builder.build(t2_dir)
+
+            for messages in client.calls:
+                for m in messages:
+                    if m.role == "system":
+                        assert ROLE_TAXONOMY not in m.content, (
+                            "a Stage 2 LLM call carried the role taxonomy — "
+                            "role classification leaked back into Stage 2"
+                        )
+
+        asyncio.run(run_test())
 
 
 class TestHaystackScanner:
@@ -274,6 +311,34 @@ class TestTopology:
             # Should include worker, judge, writer
             expected = {"worker", "judge", "writer"}
             assert expected.issubset(downstream)
+
+    def test_topology_constructor_downstream_planner_fanout_three(self, target_root: Path):
+        """CS-299 B2: planner's constructor_downstream carries exactly its 3 constructor-injected siblings."""
+        scanner = HaystackScanner()
+        files = sorted(target_root.glob("**/*.py"))
+
+        candidates = scanner.scan(files)
+        topology = extract_topology(files, candidates)
+
+        planner = topology.get("planner")
+        assert planner is not None
+        assert set(planner.constructor_downstream) == {"worker", "judge", "writer"}
+        # upstream/downstream stay byte-identical to the pre-CS-299 assertions above
+        assert {"worker", "judge", "writer"}.issubset(set(planner.downstream))
+
+    def test_topology_constructor_downstream_empty_for_connect_only_wiring(self, target_root: Path):
+        """CS-299 B2: T1's retriever->writer edge is connect()-based, not constructor injection."""
+        scanner = HaystackScanner()
+        t1_dir = target_root / "linear_rag"
+        files = sorted(t1_dir.glob("**/*.py"))
+
+        candidates = scanner.scan(files)
+        topology = extract_topology(files, candidates)
+
+        retriever = topology.get("retriever")
+        assert retriever is not None
+        assert retriever.constructor_downstream == []
+        assert "writer" in retriever.downstream  # unchanged: still populated via connect()
 
 
 class TestConstraints:

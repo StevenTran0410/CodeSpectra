@@ -597,6 +597,7 @@ async def _discover_command(args: argparse.Namespace) -> int:
 
 async def _enrich_command(args: argparse.Namespace) -> int:
     import json
+    from pathlib import Path
     _apply_data_dir(args)
 
     from agent_eval_harness.store import repository
@@ -640,6 +641,9 @@ async def _enrich_command(args: argparse.Namespace) -> int:
             system_map = load_system_map(sess["map_path"])
             agent_flow_map = load_agent_flow_map(sess["agent_flows_path"])
 
+            snapshot = await client.get_snapshot(sess["snapshot_id"])
+            local_path_str = snapshot.get("local_path")
+
             force_ids = [args.session_id] if args.force else []
 
             knowledge_list = await enrich_agents(
@@ -650,9 +654,13 @@ async def _enrich_command(args: argparse.Namespace) -> int:
                 accepted_edges=sess.get("accepted_edges", []),
                 client=client,
                 llm_client=llm_client,
+                snapshot_id=sess["snapshot_id"],
                 depth=args.depth,
                 agent_ids=args.agent_ids,
                 force_agent_ids=force_ids,
+                map_path=sess["map_path"],
+                agent_flows_path=sess["agent_flows_path"],
+                repo_root=Path(local_path_str) if local_path_str else None,
             )
 
             enriched_count = sum(1 for k in knowledge_list if not k.degraded)

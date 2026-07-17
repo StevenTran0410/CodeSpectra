@@ -217,6 +217,8 @@ def _component_role_rules(
                 "user's original query."
             ),
         })
+    elif role == "worker":
+        pass  # ordinary transform node — no role-derived gate
 
     return role_rules
 
@@ -360,6 +362,13 @@ def _find_validator(system_map: SystemMap) -> Component | None:
     return None
 
 
+def role_skip_note(component: Component) -> str | None:
+    """Legibility note: tool/unknown roles have no role-derived rule, only mined constraints."""
+    if component.role in ("tool", "unknown"):
+        return f"{component.id}: role={component.role} has no role-derived gate (constraints, if any, still apply)"
+    return None
+
+
 async def baseline_gates_for_component(
     component: Component,
     components_by_id: dict[str, Component],
@@ -369,10 +378,7 @@ async def baseline_gates_for_component(
     *,
     agent_id: str | None = None,
 ) -> list[SuiteEntry]:
-    """Deterministic role+constraint baseline for ONE component; tool/unknown roles get nothing."""
-    if component.role in ("tool", "unknown"):
-        return []
-
+    """Deterministic role+constraint baseline for ONE component; role rules no-op for tool/unknown/worker, constraints always apply."""
     entries: list[SuiteEntry] = []
     for rule in _component_role_rules(component, components_by_id, validator_comp, system_map):
         entries.append(

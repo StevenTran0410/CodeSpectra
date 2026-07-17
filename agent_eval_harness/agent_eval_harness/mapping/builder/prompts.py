@@ -1,23 +1,57 @@
 """LLM system prompts for the map builder."""
 from __future__ import annotations
 
-# Role taxonomy: 7 concrete roles + unknown
-ROLE_CLASSIFICATION_SYSTEM = """You classify a single source-code component into exactly \
-one role from this taxonomy. Return JSON only: {"role": "<role>", "confidence": <0.0-1.0>, \
-"reasoning": "<one sentence>"}.
+# Role taxonomy: 7 concrete roles + worker + unknown. Single source of truth for role prose —
+# both ROLE_CLASSIFICATION_SYSTEM below (unused since CS-300 moved classification to Stage 2.5)
+# and discovery/enrichment.py's per-component prompt import this verbatim, so the vocabulary
+# never drifts into a second copy (CS-299's judge already had to pay that down once).
+ROLE_TAXONOMY = """MUST REMEMBER — read before choosing:
+"worker" is the NORMAL, EXPECTED answer. In a typical pipeline MOST components are workers.
+Answering "worker" is a correct classification, not a failure to classify.
+Every specific role below is a STRONG CLAIM about behaviour the component has BEYOND transforming
+its input. Answer one only when you can name the evidence in the code that earns it. If you cannot
+name that evidence, the answer is "worker" — do not reach for a specific role to seem decisive.
 
 Roles:
-- input_guard.rule: deterministic input filtering (length, format, gibberish) — no LLM call
-- input_guard.llm: LLM-based admission control (topic, jailbreak, policy)
-- orchestrator: decomposes intent, routes to sub-agents, manages retries
-- retrieval_agent: agentic retrieval — picks tools, gathers context
-- tool: leaf capability invoked by an agent (no sub-agents of its own)
-- validator: judges sufficiency/quality of intermediate results, can trigger retry
-- writer: produces final grounded output from what it is given
-- unknown: none of the above fit, or you are not confident
+- worker: an ordinary node — takes input, transforms it (possibly with one LLM call), emits
+  output. THE DEFAULT. Producing a section/field/artifact of its own does not disqualify it.
+- input_guard.rule: deterministic input filtering (length, format, gibberish) — no LLM call.
+  Evidence: it admits/rejects input before real work happens.
+- input_guard.llm: LLM-based admission control (topic, jailbreak, policy). Same evidence, LLM-based.
+- orchestrator: constructs and invokes sub-components and routes between them.
+  Evidence: it owns/instantiates the sub-components it calls. Merely having downstream nodes is NOT
+  evidence — every non-terminal node has downstream.
+- retrieval_agent: decides AT RUNTIME what evidence to fetch — it computes or generates its own
+  queries (e.g. an LLM sub-call that plans them from a goal) instead of issuing queries fixed in
+  the source. THE TEST: given the same input twice, could it fetch different things? If no, its
+  queries are constants the developer chose — it is a worker, however many retrieve calls it makes.
+  Evidence: a query-planning step whose output feeds the retrieve call. Passing a hardcoded query
+  string (or several) to a retriever is NOT evidence — that is a worker.
+- tool: leaf capability invoked by an agent, with no sub-agents of its own.
+- validator: judges the quality/sufficiency of ANOTHER component's output and can trigger a retry.
+  Evidence: it scores/accepts/rejects work that a different component produced. Validating the shape
+  of its OWN output is NOT evidence — that is a worker.
+- writer: produces the run's FINAL artifact — nothing downstream consumes its output.
+  Evidence: it is terminal and composes other components' outputs. Writing text is NOT evidence —
+  most components write something.
+- unknown: you genuinely cannot tell.
+
+You will be given a list of admissible roles for each component — structural facts have already
+ruled some out. Only answer with a role from that component's own admissible list.
+
+You will be given structural facts (fan-in, fan-out) as EVIDENCE, not as rules. High fan-in means
+many siblings feed it, which supports validator or writer. Ordinary fan-in/fan-out supports
+nothing — judge from the code, and expect "worker".
 
 If uncertain, prefer a lower confidence score and let the caller apply the threshold —
 never guess a specific role just to avoid "unknown"."""
+
+# Kept for reference; unused since CS-300 moved role classification into Stage 2.5 enrichment.
+ROLE_CLASSIFICATION_SYSTEM = (
+    "You classify a single source-code component into exactly one role from this taxonomy. "
+    'Return JSON only: {"role": "<role>", "confidence": <0.0-1.0>, "reasoning": "<one sentence>"}.\n\n'
+    + ROLE_TAXONOMY
+)
 
 # Constraint mining: extract machine-checkable limits from prompt-embedded text
 CONSTRAINT_EXTRACTION_SYSTEM = """A source code component contains one or more string \
@@ -27,9 +61,11 @@ objects {"name": "<snake_case_name>", "value": <number>, "quote": "<the exact su
 of the literal that states the limit>"}. If no such limit is stated, return an empty list \
 []. Never invent a limit that is not explicitly stated in the text."""
 
-# Agent-flow separation: one holistic pass over the whole map, not per-component
-AGENT_FLOW_SYSTEM = """You are given every component of ONE agentic system: its id, a role \
-hint, file, entry point, upstream/downstream component-id edges, mined constraints, and a \
+# Agent-flow separation: one holistic pass over the whole map, not per-component. Role is
+# CS-300's job (Stage 2.5, per-component, evidence-gated) — grouping judges from structural
+# facts (fan-in/fan-out/constructor-fanout/is_tool) + edges + code, not from a role guess.
+AGENT_FLOW_SYSTEM = """You are given every component of ONE agentic system: its id, structural \
+facts, file, entry point, upstream/downstream component-id edges, mined constraints, and a \
 source code snippet. Group these components into AGENTS.
 
 An agent is a unit whose input comes from another agent and whose output is consumed by \
@@ -40,18 +76,16 @@ own — attach it to the agent that owns it via component_ids, do not list it as
 agent.
 
 Judge each component carefully and independently based on the evidence given (edges, code, \
-role hint) — do not force a component into a grouping the evidence does not support. Every \
-component id you were given must end up either inside exactly one agent's component_ids, or \
-in unassigned_component_ids if you cannot confidently place it. Never invent a component id \
+structural facts) — do not force a component into a grouping the evidence does not support. \
+Every component id you were given must end up either inside exactly one agent's component_ids, \
+or in unassigned_component_ids if you cannot confidently place it. Never invent a component id \
 that was not given to you.
 
 Return JSON only, in this exact schema:
 {"agents": [{"id": "<head component id>", "label": "<short human name>", \
-"role": "<orchestrator|retrieval_agent|validator|writer|input_guard.rule|input_guard.llm|tool|unknown>", \
 "summary": "<one sentence: what this agent does in the flow>", \
 "component_ids": ["<component id>", ...], \
 "upstream_agents": ["<agent id that feeds this agent>", ...], \
-"downstream_agents": ["<agent id this agent feeds>", ...], \
-"parent_agent": "<primary calling agent id, or null for an entry/root agent>"}], \
+"downstream_agents": ["<agent id this agent feeds>", ...]}], \
 "entry_agent_ids": ["<agent id>", ...], \
 "unassigned_component_ids": ["<component id>", ...]}"""

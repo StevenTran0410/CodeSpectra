@@ -81,6 +81,23 @@ def _fallback_snippet(component: Component, files: list[Path]) -> str:
     return extract_symbol_snippet(content, class_name)
 
 
+def _derive_parent_agents(agents: list[AgentFlow], system_map: SystemMap) -> None:
+    """parent = "the agent that CONSTRUCTS me", read off constructor_downstream — never asked of
+    the LLM, which conflated "who feeds me" with "who owns me" and invented a hierarchy over a
+    connect()-wired DAG where nothing constructs anything."""
+    agent_of_component = {cid: a.id for a in agents for cid in a.component_ids}
+    for agent in agents:
+        owners = {
+            agent_of_component[c.id]
+            for c in system_map.components
+            for owned_id in (c.constructor_downstream or [])
+            if owned_id in agent.component_ids
+            and c.id in agent_of_component
+            and agent_of_component[c.id] != agent.id
+        }
+        agent.parent_agent = owners.pop() if len(owners) == 1 else None
+
+
 def _build_user_prompt(
     system_map: SystemMap,
     source_by_component: dict[str, str],
@@ -93,7 +110,10 @@ def _build_user_prompt(
         )
         snippet = source_by_component.get(component.id) or "(no source available)"
         lines.append(f"### component: {component.id}")
-        lines.append(f"role_hint: {component.role}")
+        lines.append(
+            f"structural_facts: fan_in={len(component.upstream)}, fan_out={len(component.downstream)}, "
+            f"constructor_fanout={component.constructor_fanout}, is_tool={component.is_tool}"
+        )
         lines.append(f"file: {component.file}")
         lines.append(f"entry_point: {component.entry_point}")
         lines.append(f"upstream: {component.upstream}")
@@ -133,12 +153,20 @@ async def separate_agent_flows(
             ],
             max_tokens=4096,
             json_mode=True,
+            reasoning_effort="low",  # structured extraction: reasoning burns the completion budget and returns empty content
         )
+        if not (response.content or "").strip():
+            raise ValueError(
+                "LLM returned empty content — reasoning likely consumed the whole completion budget"
+            )
         loaded = json.loads(response.content)
         if isinstance(loaded, dict):
             parsed = loaded
     except (json.JSONDecodeError, TypeError, ValueError) as e:
-        logger.warning(f"Agent-flow separation: unparseable LLM response: {e}")
+        logger.warning(
+            f"Agent-flow separation failed: {e}. Falling back to ZERO separated agents — "
+            "the UI will show one undivided flow instead of per-agent flows."
+        )
 
     raw_agents = parsed.get("agents", [])
     if not isinstance(raw_agents, list):
@@ -164,13 +192,14 @@ async def separate_agent_flows(
         remaining.difference_update(owned)
         seen_agent_ids.add(agent_id)
 
+        # CS-300: AGENT_FLOW_SYSTEM no longer asks for role — it's derived from gated component
+        # roles by Stage 2.5's _persist. Validation kept as cheap defence against a stray field.
         role = raw.get("role")
         if not isinstance(role, str) or role not in VALID_ROLES:
             role = "unknown"
 
         label = raw.get("label")
         summary = raw.get("summary")
-        parent = raw.get("parent_agent")
 
         agents.append(
             AgentFlow(
@@ -185,9 +214,10 @@ async def separate_agent_flows(
                 downstream_agents=[
                     a for a in raw.get("downstream_agents", []) if isinstance(a, str)
                 ],
-                parent_agent=parent if isinstance(parent, str) else None,
             )
         )
+
+    _derive_parent_agents(agents, system_map)
 
     # drop dangling/self agent-id references so the frontend tree never has to guard for them
     for agent in agents:
@@ -197,8 +227,6 @@ async def separate_agent_flows(
         agent.downstream_agents = [
             a for a in agent.downstream_agents if a in seen_agent_ids and a != agent.id
         ]
-        if agent.parent_agent not in seen_agent_ids or agent.parent_agent == agent.id:
-            agent.parent_agent = None
 
     raw_entry_ids = parsed.get("entry_agent_ids", [])
     if not isinstance(raw_entry_ids, list):

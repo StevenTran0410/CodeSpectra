@@ -7,6 +7,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from agent_eval_harness.discovery.prompt_resolver import (
+    build_module_constants,
+    resolve_constant,
+    resolve_import_site,
+)
+
 logger = logging.getLogger("agent_eval_harness.discovery.prompt_site_scan")
 
 
@@ -27,7 +33,9 @@ def scan_for_prompt_sites(repo_root: Path, accepted_files: list[str]) -> dict[st
     Three detectors:
     1. module_assignment: ast.Assign/AugAssign where target matches *_SYSTEM|*PROMPT*|*TEMPLATE*
     2. sdk_call: ast.Call where func matches LLM SDK patterns and first arg is string literal
-    3. prompt_import: ast.ImportFrom where module contains 'prompt' or 'system'
+    3. prompt_import: ast.ImportFrom where an IMPORTED ALIAS (not the module name) matches
+       *_SYSTEM|*PROMPT*|*TEMPLATE* — no module-name assumption, the constant can live in any
+       file (e.g. a target that doesn't call its prompts module `prompts.py`)
     """
     result: dict[str, list[PromptSite]] = {}
 
@@ -50,6 +58,8 @@ def scan_for_prompt_sites(repo_root: Path, accepted_files: list[str]) -> dict[st
             logger.warning(f"SyntaxError in {file_rel}: {e}")
             continue
 
+        consts = build_module_constants(tree)
+
         for node in ast.walk(tree):
             # Detector 1: Module-level prompt constants
             if isinstance(node, (ast.Assign, ast.AugAssign)):
@@ -57,7 +67,7 @@ def scan_for_prompt_sites(repo_root: Path, accepted_files: list[str]) -> dict[st
                 for target in targets:
                     target_name = _get_name(target)
                     if target_name and _matches_prompt_pattern(target_name):
-                        snippet = _extract_snippet(node, source_code)
+                        snippet = _extract_snippet(node, consts)
                         sites.append(PromptSite(
                             file=file_rel,
                             line=node.lineno,
@@ -78,16 +88,23 @@ def scan_for_prompt_sites(repo_root: Path, accepted_files: list[str]) -> dict[st
                             snippet=snippet
                         ))
 
-            # Detector 3: Prompt imports
+            # Detector 3: Prompt imports — one PromptSite per matching alias, snippet resolved
+            # from the target module (never the hardcoded '' this used to be, B4).
             elif isinstance(node, ast.ImportFrom):
-                if node.module and ('prompt' in node.module.lower() or 'system' in node.module.lower()):
-                    snippet = ''
-                    sites.append(PromptSite(
-                        file=file_rel,
-                        line=node.lineno,
-                        kind='prompt_import',
-                        snippet=snippet
-                    ))
+                prompt_aliases = [
+                    alias for alias in node.names
+                    if _matches_prompt_pattern(alias.asname or alias.name)
+                ]
+                if prompt_aliases:
+                    resolved = resolve_import_site(node, file_path, repo_root)
+                    for alias in prompt_aliases:
+                        local_name = alias.asname or alias.name
+                        sites.append(PromptSite(
+                            file=file_rel,
+                            line=node.lineno,
+                            kind='prompt_import',
+                            snippet=resolved.get(local_name) or ''
+                        ))
 
         result[file_rel] = sites
 
@@ -131,9 +148,15 @@ def _matches_sdk_pattern(func_name: str) -> bool:
     return any(p.lower() in func_name.lower() for p in patterns)
 
 
-def _extract_snippet(node: ast.stmt, source_code: str) -> str:
-    """Extract first 120 chars from assignment value."""
-    if isinstance(node, ast.Assign):
-        if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
-            return node.value.value[:120]
-    return ''
+def _extract_snippet(node: ast.Assign | ast.AugAssign, consts: dict[str, ast.expr]) -> str:
+    """Resolve the assigned/augmented value via the shared resolver. A module-level name is
+    looked up in `consts` (already folded across any AugAssign, in source order); anything else
+    falls back to resolving this node's own right-hand side directly."""
+    target = node.targets[0] if isinstance(node, ast.Assign) else node.target
+    name = target.id if isinstance(target, ast.Name) else None
+    if name is not None and name in consts:
+        value = resolve_constant(consts[name], consts)
+        if value is not None:
+            return value
+    value = resolve_constant(node.value, consts)
+    return value if value is not None else ''

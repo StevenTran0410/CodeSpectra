@@ -239,6 +239,7 @@ async def test_zero_query_fast_path_when_coverage_sufficient() -> None:
         depth: str = "normal"
         force_agent_ids: list = None
         semaphore: object = None
+        repo_root: object = None
 
         def __post_init__(self):
             if self.agent_flow_map is None:
@@ -337,6 +338,7 @@ async def test_rerun_cache_hit_reads_actual_json(tmp_path: Path, monkeypatch: py
         depth: str = "normal"
         force_agent_ids: list = None
         semaphore: object = None
+        repo_root: object = None
 
         def __post_init__(self):
             if self.agent_flow_map is None:
@@ -439,3 +441,448 @@ async def test_functional_run_multi_agent_target() -> None:
         assert isinstance(knowledge.degraded, bool)
         if knowledge.degraded:
             assert knowledge.degraded_reason is not None
+
+
+class _CapturingLLMClient:
+    """Records every user prompt it is sent, answers with an empty-but-valid profile."""
+
+    def __init__(self):
+        self.captured_prompts: list[str] = []
+
+    async def complete(self, messages, *, max_tokens=512, temperature=0.2, json_mode=False, reasoning_effort=None):
+        from agent_eval_harness.llm.client import LLMResponse
+        user_msg = next((m.content for m in messages if m.role == "user"), "")
+        self.captured_prompts.append(user_msg)
+        return LLMResponse(content=json.dumps({
+            "component_roles": [],
+            "functionality": "captured",
+            "functionality_citations": [], "context_builders": [],
+            "upstream_consumers": [], "downstream_consumers": [], "failure_modes": [],
+            "need_more": False, "next_queries": [],
+        }), model="fake")
+
+
+@pytest.mark.anyio
+async def test_prompt_text_reaches_the_llm_on_a_foreign_repo_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CS-300 §6: AC6 alone goes green whether or not the prompt-resolver plumbing works,
+    because test_targets/multi_agent has zero prompt constants. This drives the REAL call path
+    (enrich_agents -> _gather_evidence -> scan_for_prompt_sites) against a root that is NOT
+    AEH's own repo and NOT test_targets/, with a module deliberately NOT named prompts.py — it
+    fails today for the PLUMBING reason (_resolve_repo_root() would resolve AEH's own root, not
+    the target's), not merely for a resolver bug. A resolver unit test alone would pass while
+    this feature stayed dead on every target except this one repo."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "_appdata")
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "agent_texts.py").write_text(
+        'PLANNER_SYSTEM = "You are a planning component. Decompose the query into intents."\n'
+        '_RUBRIC = "Score 1-5."\n'
+        "JUDGE_SYSTEM = f\"You are a critical judge reviewing another component's output. {_RUBRIC}\"\n"
+        'WRITER_PROMPT = "Write an answer."\n'
+        'WRITER_PROMPT += " Cite every source."\n',
+        encoding="utf-8",
+    )
+    (pkg / "agent.py").write_text(
+        "from pkg.agent_texts import PLANNER_SYSTEM, JUDGE_SYSTEM\n", encoding="utf-8"
+    )
+    (pkg / "agent_writer.py").write_text(
+        "from .agent_texts import WRITER_PROMPT\n", encoding="utf-8"
+    )
+
+    system_map = SystemMap(
+        target_system_id="pkgsys",
+        components=[
+            Component(id="planner_comp", role="unknown", entry_point="pkg.agent:X", file="pkg/agent.py"),
+        ],
+    )
+    agent_flow_map = AgentFlowMap(
+        target_system_id="pkgsys",
+        agents=[AgentFlow(id="planner_agent", label="Planner", component_ids=["planner_comp"])],
+    )
+
+    llm_client = _CapturingLLMClient()
+
+    await enrich_agents(
+        session_id="ac6bis",
+        agent_flow_map=agent_flow_map,
+        system_map=system_map,
+        accepted_with_annotations=["pkg/agent.py", "pkg/agent_writer.py"],
+        accepted_edges=[],
+        client=None,
+        llm_client=llm_client,
+        snapshot_id="",  # gates off DB/RRF paths — only the direct AST scan is exercised
+        repo_root=tmp_path,
+    )
+
+    assert llm_client.captured_prompts
+    full_prompt = "\n".join(llm_client.captured_prompts)
+    assert "critical judge reviewing another component's output" in full_prompt
+    assert "Decompose the query into intents" in full_prompt
+
+
+def test_resolve_repo_root_never_falls_back_to_aeh_own_root_when_supplied(tmp_path: Path) -> None:
+    """Regression guard (CS-300 §6): with repo_root supplied, _resolve_repo_root()'s value is
+    never the AEH-own-repo default."""
+    from agent_eval_harness.discovery.enrichment import _resolve_repo_root
+
+    assert _resolve_repo_root(tmp_path) == tmp_path
+    assert _resolve_repo_root(tmp_path) != _resolve_repo_root(None)
+
+
+class _FixedRoleClient:
+    """Every named component gets the SAME role, at a confidence that survives the gate."""
+
+    def __init__(self, role: str = "worker"):
+        self._role = role
+
+    async def complete(self, messages, *, max_tokens=512, temperature=0.2, json_mode=False, reasoning_effort=None):
+        import re
+        from agent_eval_harness.llm.client import LLMResponse
+        prompt = messages[-1].content
+        ids = re.findall(r"^  - (\S+) @", prompt, re.MULTILINE)
+        component_roles = [
+            {"id": cid, "role": self._role, "confidence": 0.95, "reasoning": "fixed"} for cid in ids
+        ]
+        return LLMResponse(content=json.dumps({
+            "component_roles": component_roles,
+            "functionality": "fixed", "functionality_citations": [], "context_builders": [],
+            "upstream_consumers": [], "downstream_consumers": [], "failure_modes": [],
+            "need_more": False, "next_queries": [],
+        }), model="fake")
+
+
+@pytest.mark.anyio
+async def test_write_back_map_path_none_writes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Write-back: map_path=None must degrade-don't-break — no system_map YAML written to
+    disk (the sidecar .md/.json still are; that write-path is independent and unconditional)."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    system_map = SystemMap(
+        target_system_id="t",
+        components=[Component(id="c1", role="unknown", entry_point="m:C1", file="c1.py")],
+    )
+    agent_flow_map = AgentFlowMap(
+        target_system_id="t", agents=[AgentFlow(id="a1", label="A1", component_ids=["c1"])]
+    )
+
+    await enrich_agents(
+        session_id="writeback-none",
+        agent_flow_map=agent_flow_map,
+        system_map=system_map,
+        accepted_with_annotations=[],
+        accepted_edges=[],
+        client=None,
+        llm_client=_FixedRoleClient("worker"),
+        snapshot_id="",
+    )
+
+    yaml_files = list(tmp_path.rglob("*.yaml"))
+    assert yaml_files == [], f"expected no system_map YAML written, found: {yaml_files}"
+
+
+@pytest.mark.anyio
+async def test_write_back_map_path_set_lands_role_on_right_component_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_eval_harness.mapping.system_map import load_system_map
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    system_map = SystemMap(
+        target_system_id="t",
+        components=[
+            Component(id="c1", role="unknown", entry_point="m:C1", file="c1.py"),
+            Component(id="c2", role="unknown", entry_point="m:C2", file="c2.py"),
+        ],
+    )
+    agent_flow_map = AgentFlowMap(
+        target_system_id="t", agents=[AgentFlow(id="a1", label="A1", component_ids=["c1", "c2"])]
+    )
+    map_path = tmp_path / "map.yaml"
+
+    await enrich_agents(
+        session_id="writeback-set",
+        agent_flow_map=agent_flow_map,
+        system_map=system_map,
+        accepted_with_annotations=[],
+        accepted_edges=[],
+        client=None,
+        llm_client=_FixedRoleClient("worker"),
+        snapshot_id="",
+        map_path=map_path,
+    )
+
+    saved = load_system_map(map_path)
+    assert saved.component_by_id("c1").role == "worker"
+    assert saved.component_by_id("c2").role == "worker"
+
+
+@pytest.mark.anyio
+async def test_partial_run_agent_ids_subset_merges_not_rewrites(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PARTIAL-RUN HAZARD (CS-300 §8): a subset run via agent_ids must MERGE into the freshly
+    loaded map, never rewrite the components list from the subset — agent_b's component here
+    is untouched by this run and must keep its prior role."""
+    from agent_eval_harness.mapping.system_map import load_system_map
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    system_map = SystemMap(
+        target_system_id="t",
+        components=[
+            Component(id="c1", role="unknown", entry_point="m:C1", file="c1.py"),
+            Component(id="c2", role="validator", role_confidence=0.9, role_source="llm_constrained", entry_point="m:C2", file="c2.py"),
+        ],
+    )
+    agent_flow_map = AgentFlowMap(
+        target_system_id="t",
+        agents=[
+            AgentFlow(id="agent_a", label="A", component_ids=["c1"]),
+            AgentFlow(id="agent_b", label="B", component_ids=["c2"]),
+        ],
+    )
+    map_path = tmp_path / "map.yaml"
+
+    await enrich_agents(
+        session_id="partial-run",
+        agent_flow_map=agent_flow_map,
+        system_map=system_map,
+        accepted_with_annotations=[],
+        accepted_edges=[],
+        client=None,
+        llm_client=_FixedRoleClient("worker"),
+        snapshot_id="",
+        agent_ids=["agent_a"],
+        map_path=map_path,
+    )
+
+    saved = load_system_map(map_path)
+    assert saved.component_by_id("c1").role == "worker"
+    # agent_b was not part of this run — its previously-good role must survive untouched.
+    assert saved.component_by_id("c2").role == "validator"
+    assert saved.component_by_id("c2").role_confidence == 0.9
+
+
+@pytest.mark.anyio
+async def test_degraded_agent_never_blanks_siblings_nor_aborts_map_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A degraded agent's verdicts are skipped entirely — one agent failing must never blank
+    the other agents' roles, nor prevent the map write for the agents that succeeded."""
+    from agent_eval_harness.mapping.system_map import load_system_map
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    system_map = SystemMap(
+        target_system_id="t",
+        components=[
+            Component(id="good", role="unknown", entry_point="m:Good", file="good.py"),
+            Component(id="bad", role="unknown", entry_point="m:Bad", file="bad.py"),
+        ],
+    )
+    agent_flow_map = AgentFlowMap(
+        target_system_id="t",
+        agents=[
+            AgentFlow(id="agent_good", label="Good", component_ids=["good"]),
+            AgentFlow(id="agent_bad", label="Bad", component_ids=["bad"]),
+        ],
+    )
+
+    class _SelectivelyFailingClient:
+        async def complete(self, messages, *, max_tokens=512, temperature=0.2, json_mode=False, reasoning_effort=None):
+            prompt = messages[-1].content
+            if "bad" in prompt:
+                raise RuntimeError("intentional failure for agent_bad")
+            from agent_eval_harness.llm.client import LLMResponse
+            return LLMResponse(content=json.dumps({
+                "component_roles": [{"id": "good", "role": "worker", "confidence": 0.9, "reasoning": "ok"}],
+                "functionality": "ok", "functionality_citations": [], "context_builders": [],
+                "upstream_consumers": [], "downstream_consumers": [], "failure_modes": [],
+                "need_more": False, "next_queries": [],
+            }), model="fake")
+
+    map_path = tmp_path / "map.yaml"
+
+    result = await enrich_agents(
+        session_id="degraded-isolation",
+        agent_flow_map=agent_flow_map,
+        system_map=system_map,
+        accepted_with_annotations=[],
+        accepted_edges=[],
+        client=None,
+        llm_client=_SelectivelyFailingClient(),
+        snapshot_id="",
+        map_path=map_path,
+    )
+
+    assert any(k.degraded for k in result)
+    assert any(not k.degraded for k in result)
+
+    saved = load_system_map(map_path)
+    assert saved.component_by_id("good").role == "worker"
+    assert saved.component_by_id("bad").role == "unknown"  # degraded agent's verdict never applied
+
+
+@pytest.mark.anyio
+async def test_ac1_unit_proxy_validator_survives_for_high_fan_in_auditor_shaped_agent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC1 unit proxy (§9 — the empirical run itself needs a live LLM, this proxies it): a
+    scripted fake LLM returns 'validator' for a high-fan-in component whose evidence carries
+    auditor-shaped prompt text ('critical auditor reviewing the outputs of 10 code analysis
+    agents') — assert the verdict survives the hard gate (validator has no structural
+    subtraction) and lands on the component in the saved map."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "auditor_texts.py").write_text(
+        "AGENT_K_SYSTEM = 'You are a critical auditor reviewing the outputs of 10 code "
+        "analysis agents (sections A-J). Do not simply parrot self-reported confidence — "
+        "evaluate it.'\n",
+        encoding="utf-8",
+    )
+    (pkg / "auditor.py").write_text(
+        "from pkg.auditor_texts import AGENT_K_SYSTEM\n", encoding="utf-8"
+    )
+
+    system_map = SystemMap(
+        target_system_id="t",
+        components=[
+            Component(
+                id="auditor", role="unknown", entry_point="pkg.auditor:Auditor", file="pkg/auditor.py",
+                is_tool=False, constructor_fanout=0,
+                upstream=[f"section_{i}" for i in range(10)],
+            ),
+        ],
+    )
+    agent_flow_map = AgentFlowMap(
+        target_system_id="t", agents=[AgentFlow(id="auditor_agent", label="Auditor", component_ids=["auditor"])]
+    )
+
+    class _ValidatorClient:
+        async def complete(self, messages, *, max_tokens=512, temperature=0.2, json_mode=False, reasoning_effort=None):
+            from agent_eval_harness.llm.client import LLMResponse
+            return LLMResponse(content=json.dumps({
+                "component_roles": [
+                    {"id": "auditor", "role": "validator", "confidence": 0.93, "reasoning": "judges 10 upstream agents"}
+                ],
+                "functionality": "Audits section agent outputs", "functionality_citations": [],
+                "context_builders": [], "upstream_consumers": [], "downstream_consumers": [],
+                "failure_modes": [], "need_more": False, "next_queries": [],
+            }), model="fake")
+
+    map_path = tmp_path / "map.yaml"
+
+    await enrich_agents(
+        session_id="ac1-proxy",
+        agent_flow_map=agent_flow_map,
+        system_map=system_map,
+        accepted_with_annotations=["pkg/auditor.py"],
+        accepted_edges=[],
+        client=None,
+        llm_client=_ValidatorClient(),
+        snapshot_id="",
+        repo_root=tmp_path,
+        map_path=map_path,
+    )
+
+    from agent_eval_harness.mapping.system_map import load_system_map
+    saved = load_system_map(map_path)
+    assert saved.component_by_id("auditor").role == "validator"
+
+
+def test_agent_flow_role_derivation_is_deterministic_never_llm() -> None:
+    """CS-300 §5: AgentFlow.role is derived in code, never asked of the LLM."""
+    from agent_eval_harness.discovery.enrichment import _derive_agent_role
+
+    all_unknown_map = SystemMap(
+        target_system_id="t",
+        components=[Component(id="c1", role="unknown", entry_point="m:C1")],
+    )
+    all_unknown_agent = AgentFlow(id="a", label="A", component_ids=["c1"])
+    assert _derive_agent_role(all_unknown_agent, all_unknown_map) == "unknown"
+
+    single_special_map = SystemMap(
+        target_system_id="t",
+        components=[
+            Component(id="c1", role="validator", entry_point="m:C1"),
+            Component(id="c2", role="worker", entry_point="m:C2"),
+        ],
+    )
+    single_special_agent = AgentFlow(id="a", label="A", component_ids=["c1", "c2"])
+    assert _derive_agent_role(single_special_agent, single_special_map) == "validator"
+
+    diverse_map = SystemMap(
+        target_system_id="t",
+        components=[
+            Component(id="c1", role="orchestrator", entry_point="m:C1"),
+            Component(id="c2", role="retrieval_agent", entry_point="m:C2"),
+            Component(id="c3", role="validator", entry_point="m:C3"),
+            Component(id="c4", role="writer", entry_point="m:C4"),
+        ],
+    )
+    diverse_agent = AgentFlow(id="a", label="A", component_ids=["c1", "c2", "c3", "c4"])
+    assert _derive_agent_role(diverse_agent, diverse_map) == "worker"
+
+
+@pytest.mark.anyio
+async def test_cache_hit_coerces_pre_cs300_empty_role_to_unknown_never_crashes(tmp_path: Path) -> None:
+    """Cache path: a pre-CS-300 sidecar (component_roles entries with role='') must coerce to
+    'unknown', not crash."""
+    from agent_eval_harness.discovery.enrichment import _enrich_single_agent
+    from dataclasses import dataclass
+
+    json_dir = tmp_path / "knowledge"
+    json_dir.mkdir()
+    json_path = json_dir / "test_agent.json"
+    cached_knowledge = {
+        "functionality": "Cached content",
+        "component_roles": [{"id": "c1", "role": "", "confidence": 0.5, "reasoning": ""}],
+    }
+    json_path.write_text(json.dumps(cached_knowledge), encoding="utf-8")
+
+    await repository.upsert_agent_knowledge(
+        session_id="cache-coerce", agent_id="test_agent",
+        md_path=str(json_dir / "test_agent.md"), json_path=str(json_path),
+        evidence_hash="hash123", confidence="medium", query_count=0,
+    )
+
+    agent = AgentFlow(id="test_agent", label="Test", component_ids=[])
+    flow_map = AgentFlowMap(target_system_id="test", agents=[agent])
+    system_map = SystemMap(target_system_id="test", components=[])
+    evidence = {
+        "prompt_sites_by_file": {}, "component_by_agent": {"test_agent": []},
+        "edges_by_agent": {"test_agent": []}, "source_coverage": {"test_agent": 0.0},
+    }
+
+    @dataclass
+    class _EnrichCtx:
+        session_id: str = "cache-coerce"
+        snapshot_id: str = ""
+        agent_flow_map: AgentFlowMap = None
+        system_map: SystemMap = None
+        accepted_with_annotations: list = None
+        accepted_edges: list = None
+        client: object = None
+        llm_client: object = None
+        depth: str = "normal"
+        force_agent_ids: list = None
+        semaphore: object = None
+        repo_root: object = None
+
+        def __post_init__(self):
+            self.agent_flow_map = self.agent_flow_map or flow_map
+            self.system_map = self.system_map or system_map
+            self.accepted_with_annotations = self.accepted_with_annotations or []
+            self.accepted_edges = self.accepted_edges or []
+            self.force_agent_ids = self.force_agent_ids or []
+
+    depth_cap = {"queries": 3, "llm_calls": 2, "read_file": 2}
+    knowledge = await _enrich_single_agent("test_agent", evidence, _EnrichCtx(), depth_cap, [])
+
+    assert knowledge.functionality == "Cached content"
+    assert knowledge.component_roles[0].role == "unknown"

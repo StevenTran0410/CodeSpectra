@@ -4,12 +4,13 @@ import '@xyflow/react/dist/style.css'
 import { getDagreGraphLayout, type GraphLayoutNode, type GraphLayoutEdge } from './graphLayout'
 // AEHDiscoveryCandidate/AEHExpansionSession/AEHSystemMap/AEHAgentFlow/AEHAgentFlowMap are global ambient types.
 
-export const ROLE_COLORS: Record<string, string> = {
+export const ROLE_COLORS: Record<AEHRole, string> = {
   orchestrator: '#6366f1',
   retrieval_agent: '#0ea5e9',
   tool: '#f59e0b',
   writer: '#10b981',
   validator: '#ec4899',
+  worker: '#14b8a6',
   'input_guard.rule': '#ef4444',
   'input_guard.llm': '#ef4444',
   unknown: '#475569',
@@ -113,7 +114,7 @@ export function AgentSubGraphPanel({
     for (const cid of ownedIds) {
       const comp = componentById.get(cid)
       if (!comp) continue
-      addNode({ id: comp.id, label: comp.id, color: ROLE_COLORS[comp.role] ?? ROLE_COLORS.unknown })
+      addNode({ id: comp.id, label: comp.id, color: ROLE_COLORS[comp.role as AEHRole] ?? ROLE_COLORS.unknown })
     }
     for (const nid of neighborAgentIds) {
       const neighbor = agentById.get(nid)

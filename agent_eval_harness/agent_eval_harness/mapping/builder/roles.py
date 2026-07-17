@@ -1,11 +1,11 @@
-"""Pass 2: Classify component roles via LLM."""
+"""Role vocabulary + structural subtraction — the sole owner of VALID_ROLES.
+
+Role classification itself moved to Stage 2.5 enrichment (CS-300): Stage 2 no longer calls an
+LLM here. This module keeps the taxonomy and the two deterministic subtractions that Stage 2.5's
+hard gate applies against the LLM's answer — primitives only, no system_map/types import, so it
+can be called from either stage without a cycle.
+"""
 from __future__ import annotations
-
-import json
-
-from agent_eval_harness.llm.client import LLMClient, LLMMessage
-from agent_eval_harness.mapping.builder.prompts import ROLE_CLASSIFICATION_SYSTEM
-from agent_eval_harness.mapping.builder.types import CandidateComponent, RoleClassification
 
 ROLE_CONFIDENCE_THRESHOLD: float = 0.7
 VALID_ROLES = frozenset({
@@ -16,47 +16,22 @@ VALID_ROLES = frozenset({
     "tool",
     "validator",
     "writer",
+    "worker",
     "unknown",
 })
 
 
-async def classify_roles(
-    candidates: list[CandidateComponent],
-    llm_client: LLMClient,
-    threshold: float = ROLE_CONFIDENCE_THRESHOLD,
-) -> list[RoleClassification]:
-    """Classify each candidate into a role."""
-    results = []
+def admissible_roles(is_tool: bool | None, constructor_fanout: int | None) -> frozenset[str]:
+    """Structure SUBTRACTS impossible roles from VALID_ROLES; it never assigns one.
+    None means "unknown" (e.g. a hand-written or pre-CS-300 map) — no subtraction fires."""
+    admissible = set(VALID_ROLES)
+    if is_tool is False:
+        admissible.discard("tool")
+    if constructor_fanout is not None and constructor_fanout < 2:
+        admissible.discard("orchestrator")
+    return frozenset(admissible)
 
-    for candidate in candidates:
-        # Build user prompt: class_name (with sub-role), docstring, source
-        user_prompt = candidate.class_name
-        if candidate.tag_suffix:
-            user_prompt += f" (sub-role: {candidate.tag_suffix})"
-        user_prompt += (
-            f"\n\nDocstring: {candidate.docstring}\n\nSource:\n{candidate.source_snippet}"
-        )
 
-        response = await llm_client.complete(
-            [
-                LLMMessage(role="system", content=ROLE_CLASSIFICATION_SYSTEM),
-                LLMMessage(role="user", content=user_prompt),
-            ],
-            json_mode=True,
-        )
-
-        try:
-            parsed = json.loads(response.content)
-            role = parsed.get("role", "unknown")
-            confidence = float(parsed.get("confidence", 0.0))
-            reasoning = parsed.get("reasoning", "")
-        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
-            role, confidence, reasoning = "unknown", 0.0, "unparseable LLM response"
-
-        # Apply threshold
-        if role not in VALID_ROLES or confidence < threshold:
-            role = "unknown"
-
-        results.append(RoleClassification(candidate.candidate_id, role, confidence, reasoning))
-
-    return results
+def structural_facts(fan_in: int, fan_out: int) -> str:
+    """Shown as evidence, not as a rule — degree alone cannot separate the semantic axis."""
+    return f"fan-in: {fan_in}, fan-out: {fan_out}"

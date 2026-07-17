@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ast
+import logging
 import re
 from pathlib import Path
 
@@ -9,10 +10,12 @@ from agent_eval_harness.llm.client import LLMClient
 from agent_eval_harness.mapping.system_map import Component, SpanMatchBlock, SystemMap
 
 from .constraints import mine_constraints, mine_constraints_llm_phase
-from .roles import ROLE_CONFIDENCE_THRESHOLD, classify_roles
+from .roles import ROLE_CONFIDENCE_THRESHOLD
 from .scanners import FrameworkScanner, HaystackScanner
 from .topology import extract_topology
-from .types import CandidateComponent, RoleClassification, TopologyEdges
+
+logger = logging.getLogger("agent_eval_harness.mapping.builder.pipeline")
+from .types import CandidateComponent, TopologyEdges
 
 
 class SystemMapBuilder:
@@ -66,15 +69,17 @@ class SystemMapBuilder:
         target_system_id: str,
         docs_path: Path | None,
     ) -> tuple[SystemMap, str]:
-        """Passes 2-6: role classification through system map assembly, shared by build() and build_from_files()."""
-        role_classifications = await classify_roles(candidates, self._llm_client, self._threshold)
+        """Passes 2-6: structural mining through system map assembly, shared by build() and
+        build_from_files(). Role classification moved to Stage 2.5 enrichment (CS-300) — every
+        component leaves Stage 2 with role='unknown'; is_tool/constructor_fanout are persisted
+        as data for Stage 2.5's hard gate."""
         topology_map = extract_topology(files, candidates)
         constraint_map = mine_constraints(files, candidates, package_root)
         constraint_map = await mine_constraints_llm_phase(
             candidates, self._llm_client, constraint_map
         )
         components = self._assemble_components(
-            candidates, role_classifications, topology_map, constraint_map, package_root
+            candidates, topology_map, constraint_map, package_root
         )
         discrepancies = await self._reconcile_docs(docs_path, components) if docs_path else []
         system_map = SystemMap.model_validate({
@@ -82,7 +87,7 @@ class SystemMapBuilder:
             "components": [c.model_dump() for c in components],
             "discrepancies": discrepancies,
         })
-        summary = self._build_summary(system_map, role_classifications)
+        summary = self._build_summary(system_map)
         return system_map, summary
 
     def _discover_source_files(self, target_path: Path) -> tuple[list[Path], set[str]]:
@@ -236,21 +241,14 @@ class SystemMapBuilder:
     def _assemble_components(
         self,
         candidates: list[CandidateComponent],
-        role_classifications: list[RoleClassification],
         topology_map: dict[str, TopologyEdges],
         constraint_map: dict[str, list],
         package_root: Path,
     ) -> list[Component]:
-        """Assemble final Component objects."""
-        # Build lookup
-        roles_by_id = {rc.candidate_id: rc for rc in role_classifications}
-
+        """Assemble final Component objects. role='unknown' — Stage 2.5 enrichment assigns it
+        (CS-300); is_tool/constructor_fanout are persisted as the structural evidence it gates on."""
         components = []
         for candidate in candidates:
-            role_class = roles_by_id.get(candidate.candidate_id)
-            if not role_class:
-                continue
-
             entry_point = self._resolve_entry_point(candidate, package_root)
             span_match = self._generate_span_match(candidate, candidates)
             constraints = constraint_map.get(candidate.candidate_id, [])
@@ -266,7 +264,12 @@ class SystemMapBuilder:
 
             component = Component(
                 id=candidate.candidate_id,
-                role=role_class.role,
+                role="unknown",
+                role_confidence=None,
+                role_source=None,
+                is_tool=candidate.is_tool,
+                constructor_fanout=len(topology.constructor_downstream),
+                constructor_downstream=list(topology.constructor_downstream),
                 model=model,
                 entry_point=entry_point,
                 file=rel_file,
@@ -279,10 +282,9 @@ class SystemMapBuilder:
 
         return components
 
-    def _build_summary(
-        self, system_map: SystemMap, role_classifications: list[RoleClassification]
-    ) -> str:
-        """Build a fixed-header summary."""
+    def _build_summary(self, system_map: SystemMap) -> str:
+        """Build a fixed-header summary. Role is pending Stage 2.5 enrichment (CS-300) — Stage 2
+        no longer classifies it, so an all-'unknown' map here is expected, not a failure."""
         if not system_map.components:
             return (
                 "=== AEH System Map Summary ===\n"
@@ -291,28 +293,14 @@ class SystemMapBuilder:
             )
 
         total = len(system_map.components)
-        unknown_count = sum(
-            1 for rc in role_classifications if rc.role == "unknown"
-        )
-        classified_count = total - unknown_count
-        pct = int(100 * classified_count / total) if total > 0 else 0
-
-        review_required = []
-        for rc in role_classifications:
-            if rc.confidence < 1.0:
-                review_required.append(f"  {rc.candidate_id}   confidence={rc.confidence:.2f}")
+        unknown_count = sum(1 for c in system_map.components if c.role == "unknown")
 
         summary = "=== AEH System Map Summary ===\n"
         summary += f"target:           {system_map.target_system_id}\n"
         summary += f"components_found: {total}\n"
-        summary += f"classified:       {classified_count}  ({pct}%)\n"
-        summary += f"unknown:          {unknown_count}\n"
+        summary += "role:             pending Stage 2.5 enrichment\n"
+        summary += f"unknown:          {unknown_count}  (role classification happens in Stage 2.5, not here)\n"
         summary += f"discrepancies:    {len(system_map.discrepancies)}\n"
-
-        if review_required:
-            summary += "review_required:\n"
-            summary += "\n".join(review_required)
-            summary += "\n"
 
         return summary
 

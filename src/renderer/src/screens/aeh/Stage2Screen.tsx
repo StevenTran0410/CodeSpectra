@@ -223,6 +223,12 @@ export default function Stage2Screen(): React.ReactElement {
         `Enriched ${result.enriched_count} agent${result.enriched_count === 1 ? '' : 's'}` +
           (result.degraded_count > 0 ? ` (${result.degraded_count} degraded)` : '')
       )
+      // Enrichment assigns component roles and rewrites both maps (CS-300), so the in-memory
+      // copies are stale the moment it returns — reload them or the graph keeps the old colours.
+      const map = await window.api.aeh.getExpansionMap(expansionSession.id)
+      setSystemMap(map)
+      const flows = await window.api.aeh.getAgentFlowMap(expansionSession.id)
+      if (flows) setAgentFlowMap(flows)
       await loadAgentKnowledge(expansionSession.id)
     } catch (err: any) {
       toast.error(err?.message ?? 'Failed to enrich agents.')
@@ -1106,7 +1112,7 @@ function SystemMapGraphPanel({
     const nodes = acceptedFilePaths(expansionSession.accepted).map((path) => ({
       id: path,
       label: path.split('/').pop() || path,
-      color: ROLE_COLORS[roleByFile.get(path) ?? 'unknown'] ?? ROLE_COLORS.unknown,
+      color: ROLE_COLORS[(roleByFile.get(path) ?? 'unknown') as AEHRole] ?? ROLE_COLORS.unknown,
     }))
     return getDagreGraphLayout(nodes, mergedEdges)
   }, [expansionSession, roleByFile, mergedEdges])
@@ -1207,7 +1213,7 @@ function AgentFlowListPanel({
             {depth > 0 && <ChevronRight className="w-3 h-3 text-slate-700 shrink-0" />}
             <span
               className="w-2 h-2 rounded-full shrink-0"
-              style={{ background: ROLE_COLORS[agent.role] ?? ROLE_COLORS.unknown }}
+              style={{ background: ROLE_COLORS[agent.role as AEHRole] ?? ROLE_COLORS.unknown }}
               title={agent.role}
             />
             <span className="text-[11px] font-semibold text-slate-200 truncate flex-1">
