@@ -2,9 +2,16 @@
 from __future__ import annotations
 
 import ast
+import logging
 from pathlib import Path
 
-from agent_eval_harness.mapping.builder.types import CandidateComponent, TopologyEdges
+from agent_eval_harness.mapping.builder.types import (
+    CandidateComponent,
+    TopologyEdges,
+    parse_python_source,
+)
+
+logger = logging.getLogger("agent_eval_harness.mapping.builder.topology")
 
 
 def extract_topology(
@@ -25,18 +32,19 @@ def extract_topology(
     # Cache ASTs to avoid re-parsing files multiple times across three passes
     asts: dict[Path, ast.Module] = {}
     for file in source_files:
-        try:
-            source = file.read_text(encoding="utf-8")
-            asts[file] = ast.parse(source, filename=str(file))
-        except SyntaxError:
-            continue
+        parsed = parse_python_source(file)
+        if parsed is not None:
+            asts[file] = parsed[1]
 
-    # Phase A: Extract connect() edges using unified wiring detector
+    # Phase A: Extract connect() edges using unified wiring detector. Read separately from the
+    # ast cache above — the wiring detector works on raw text and must still see files that fail
+    # to ast.parse.
     file_contents = {}
     for file in source_files:
         try:
             file_contents[str(file)] = file.read_text(encoding="utf-8")
-        except Exception:
+        except OSError as exc:
+            logger.warning("skipping unreadable file %s: %s", file, exc)
             continue
 
     from agent_eval_harness.discovery.wiring import detect_wiring_block_static
@@ -114,7 +122,7 @@ def extract_topology(
     for candidate in candidates:
         edges[candidate.candidate_id] = TopologyEdges()
 
-    # Populate constructor_downstream before the merge below discards edge-kind (B2: orchestrator signal)
+    # Populate constructor_downstream before the merge below discards edge-kind (orchestrator signal)
     for source, targets in constructor_edges.items():
         if source not in edges:
             edges[source] = TopologyEdges()

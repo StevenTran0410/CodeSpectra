@@ -3,11 +3,16 @@ from __future__ import annotations
 import ast
 import json
 import logging
-from agent_eval_harness.llm.client import LLMClient, LLMMessage
-from agent_eval_harness.discovery.client import CodeSpectraClient
+from typing import Any
+
 from agent_eval_harness.discovery.analysis_context import ProjectContext
+from agent_eval_harness.discovery.client import CodeSpectraClient
+from agent_eval_harness.llm.client import LLMClient, LLMMessage
 
 logger = logging.getLogger("agent_eval_harness.discovery.expansion")
+
+_SNIPPET_FALLBACK_LINES = 50  # used only when the AST node has no end_lineno
+_MAX_SNIPPET_LINES = 100
 
 
 def extract_symbol_snippet(content: str, symbol_identifier: str) -> str:
@@ -15,7 +20,8 @@ def extract_symbol_snippet(content: str, symbol_identifier: str) -> str:
     'my_function'), or empty string if it can't be parsed or found."""
     try:
         tree = ast.parse(content)
-    except SyntaxError:
+    except SyntaxError as e:
+        logger.debug(f"Could not parse content for snippet {symbol_identifier!r}: {e}")
         return ""
 
     lines = content.splitlines()
@@ -56,11 +62,11 @@ def extract_symbol_snippet(content: str, symbol_identifier: str) -> str:
     start_line = matched_node.lineno - 1
     end_line = getattr(matched_node, "end_lineno", None)
     if end_line is None:
-        end_line = start_line + 50
+        end_line = start_line + _SNIPPET_FALLBACK_LINES
 
     snippet_lines = lines[start_line:end_line]
-    if len(snippet_lines) > 100:
-        snippet_lines = snippet_lines[:100]
+    if len(snippet_lines) > _MAX_SNIPPET_LINES:
+        snippet_lines = snippet_lines[:_MAX_SNIPPET_LINES]
     return "\n".join(snippet_lines)
 
 
@@ -68,6 +74,19 @@ MAX_CLASSIFY_BATCH_SIZE = 6
 _CLASSIFY_MAX_TOKENS = 2048  # 6 verdicts x ~150 tokens; the 512 default truncates the batch to empty
 
 VALID_ROLE_HINTS = {"orchestrator", "agent_core", "prompt", "tool", "context_builder", "model_client", "config", "util"}
+
+
+def _default_verdict() -> dict[str, Any]:
+    """Fallback verdict for a chunk the LLM's response didn't cover."""
+    return {
+        "verdict": "boundary",
+        "reason": "",
+        "role_hint": None,
+        "key_symbols": [],
+        "follow": False,
+        "skip": False,
+    }
+
 
 async def _classify_nodes_batch(
     items: list[tuple[str, str, str | None]],
@@ -111,14 +130,7 @@ async def _classify_nodes_batch(
     )
 
     result: dict[str, dict] = {
-        f"{path}::{chunk_id}": {
-            "verdict": "boundary",
-            "reason": "",
-            "role_hint": None,
-            "key_symbols": [],
-            "follow": False,
-            "skip": False,
-        }
+        f"{path}::{chunk_id}": _default_verdict()
         for path, _, chunk_id in items
     }
     try:
@@ -159,6 +171,37 @@ async def _classify_nodes_batch(
             f"{', '.join(f'{p}::{c}' for p, _, c in items)}"
         )
     return result
+
+
+def _build_expansion_result(
+    accepted_files: set[str],
+    boundary_files: set[str],
+    boundary_reasons: list[str],
+    raw_file_edges: set[tuple[str, str]],
+    annotations: dict[str, dict],
+    stop_reason: str,
+) -> dict[str, Any]:
+    """Shared result shape for both the node-budget early exit and normal frontier-exhausted
+    completion."""
+    accepted_edges = sorted(
+        {(s, d) for s, d in raw_file_edges if s in accepted_files and d in accepted_files}
+    )
+    accepted_list = [
+        {
+            "file": f,
+            "role_hint": annotations.get(f, {}).get("role_hint"),
+            "key_symbols": annotations.get(f, {}).get("key_symbols", []),
+            "follow": annotations.get(f, {}).get("follow", False),
+        }
+        for f in sorted(accepted_files)
+    ]
+    return {
+        "accepted": accepted_list,
+        "boundary": sorted(boundary_files - accepted_files),
+        "boundary_reasons": boundary_reasons,
+        "stop_reason": stop_reason,
+        "accepted_edges": [{"src": s, "dst": d} for s, d in accepted_edges],
+    }
 
 
 async def expand_candidate(
@@ -210,31 +253,15 @@ async def expand_candidate(
 
     # annotations tracks verdict data for each file
     annotations = {}
-    # boundary_reasons collects reason strings for all boundary verdicts (for A9 log)
+    # boundary_reasons collects reason strings for all boundary verdicts
     boundary_reasons: list[str] = []
 
     while frontier:
         if len(accepted_chunks) >= node_budget:
-            accepted_edges = sorted(
-                {(s, d) for s, d in raw_file_edges if s in accepted_files and d in accepted_files}
+            return _build_expansion_result(
+                accepted_files, boundary_files, boundary_reasons,
+                raw_file_edges, annotations, "node_budget",
             )
-            edges_out = [{"src": s, "dst": d} for s, d in accepted_edges]
-            accepted_list = [
-                {
-                    "file": f,
-                    "role_hint": annotations.get(f, {}).get("role_hint"),
-                    "key_symbols": annotations.get(f, {}).get("key_symbols", []),
-                    "follow": annotations.get(f, {}).get("follow", False),
-                }
-                for f in sorted(accepted_files)
-            ]
-            return {
-                "accepted": accepted_list,
-                "boundary": sorted(list(boundary_files - accepted_files)),
-                "boundary_reasons": boundary_reasons,
-                "stop_reason": "node_budget",
-                "accepted_edges": edges_out
-            }
 
         level = []
         while frontier and len(level) < MAX_CLASSIFY_BATCH_SIZE:
@@ -284,27 +311,8 @@ async def expand_candidate(
 
         for file_path, chunk_id, snippet in level:
             content, skip_classify = resolved[(file_path, chunk_id)]
-            verdict_data = verdicts.get(f"{file_path}::{chunk_id}", {
-                "verdict": "boundary",
-                "reason": "",
-                "role_hint": None,
-                "key_symbols": [],
-                "follow": False,
-                "skip": False,
-            })
-            if isinstance(verdict_data, str):
-                # Handle old format compatibility (shouldn't happen in phase 1, but be safe)
-                verdict = verdict_data
-                verdict_data = {
-                    "verdict": verdict,
-                    "reason": "",
-                    "role_hint": None,
-                    "key_symbols": [],
-                    "follow": False,
-                    "skip": False,
-                }
-            else:
-                verdict = verdict_data.get("verdict", "boundary")
+            verdict_data = verdicts.get(f"{file_path}::{chunk_id}", _default_verdict())
+            verdict = verdict_data.get("verdict", "boundary")
 
             if skip_classify:
                 verdict = "expand"
@@ -330,7 +338,7 @@ async def expand_candidate(
                         src_sym = edge.get("src_symbol")
                         dst_sym = edge.get("dst_symbol")
                         if src_sym and dst_sym and "::" in src_sym and "::" in dst_sym:
-                            sf, src_id = src_sym.split("::", 1)
+                            _, src_id = src_sym.split("::", 1)
                             df, dst_id = dst_sym.split("::", 1)
                             if chunk_id is None or src_id == chunk_id:
                                 if df != file_path:
@@ -345,7 +353,7 @@ async def expand_candidate(
                         dst_sym = edge.get("dst_symbol")
                         if src_sym and dst_sym and "::" in src_sym and "::" in dst_sym:
                             sf, src_id = src_sym.split("::", 1)
-                            df, dst_id = dst_sym.split("::", 1)
+                            _, dst_id = dst_sym.split("::", 1)
                             if chunk_id is None or dst_id == chunk_id:
                                 if sf != file_path:
                                     raw_file_edges.add((sf, file_path))
@@ -356,15 +364,13 @@ async def expand_candidate(
                 except Exception as e:
                     logger.warning(f"Failed to get symbol edges for {file_path}: {e}")
 
-        # BFS frontier sort: partition frontier within same hop level
-        # Items matching follow=True key_symbols go to front
+        # Reorder the frontier within this hop level so follow=True key_symbols are explored first.
         follow_symbols = set()
         for annotation in annotations.values():
             if annotation.get("follow", False):
                 follow_symbols.update(annotation.get("key_symbols", []))
 
         if follow_symbols and frontier:
-            # Partition frontier: matching items first, then rest
             matching = []
             rest = []
             for item in frontier:
@@ -376,23 +382,7 @@ async def expand_candidate(
                     rest.append(item)
             frontier = matching + rest
 
-    accepted_edges = sorted(
-        {(s, d) for s, d in raw_file_edges if s in accepted_files and d in accepted_files}
+    return _build_expansion_result(
+        accepted_files, boundary_files, boundary_reasons,
+        raw_file_edges, annotations, "frontier_exhausted",
     )
-    edges_out = [{"src": s, "dst": d} for s, d in accepted_edges]
-    accepted_list = [
-        {
-            "file": f,
-            "role_hint": annotations.get(f, {}).get("role_hint"),
-            "key_symbols": annotations.get(f, {}).get("key_symbols", []),
-            "follow": annotations.get(f, {}).get("follow", False),
-        }
-        for f in sorted(accepted_files)
-    ]
-    return {
-        "accepted": accepted_list,
-        "boundary": sorted(list(boundary_files - accepted_files)),
-        "boundary_reasons": boundary_reasons,
-        "stop_reason": "frontier_exhausted",
-        "accepted_edges": edges_out
-    }

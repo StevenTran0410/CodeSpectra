@@ -1,12 +1,15 @@
 """FastAPI UI Server for AEH per-agent drill-down dashboard."""
 from __future__ import annotations
 
+import asyncio
+import functools
 import json
 import logging
 import os
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, TypeVar
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,13 +17,19 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-import asyncio
+from agent_eval_harness.code_injection.injection_target import BranchInjectionTarget, InjectionTargetError
+from agent_eval_harness.code_injection.plan_renderer import render_eval_plan_md
+from agent_eval_harness.code_injection.wiring import build_wiring_for_codespectra
 from agent_eval_harness.config import AEHConfig
-from agent_eval_harness.llm.proxy_client import CodeSpectraProxyClient
+from agent_eval_harness.datasets.fulfillment import export_dataset
+from agent_eval_harness.discovery.analysis_context import load_project_context
 from agent_eval_harness.discovery.client import CodeSpectraClient
 from agent_eval_harness.discovery.engine import run_discovery_background
-from agent_eval_harness.discovery.analysis_context import load_project_context
 from agent_eval_harness.discovery.expansion import expand_candidate
+from agent_eval_harness.judging.case_judge import judge_case_semantic_match, summarize_agent_judgments
+from agent_eval_harness.llm.client import LLMResponse
+from agent_eval_harness.llm.fake_client import FakeLLMClient
+from agent_eval_harness.llm.proxy_client import CodeSpectraProxyClient
 from agent_eval_harness.mapping.agent_flow import (
     build_source_by_component,
     load_agent_flow_map,
@@ -29,25 +38,17 @@ from agent_eval_harness.mapping.agent_flow import (
 )
 from agent_eval_harness.mapping.builder.pipeline import SystemMapBuilder
 from agent_eval_harness.mapping.system_map import load_system_map, save_system_map, SystemMap
+from agent_eval_harness.metrics.suite import load_suite
 from agent_eval_harness.planning.agentic_planner import generate_plan_agentic
 from agent_eval_harness.planning.report import load_plan_report, save_plan_report
-from agent_eval_harness.code_injection.injection_target import BranchInjectionTarget, InjectionTargetError
-from agent_eval_harness.code_injection.plan_renderer import render_eval_plan_md
-from agent_eval_harness.code_injection.wiring import build_wiring_for_codespectra
-from agent_eval_harness.datasets.fulfillment import export_dataset
-from agent_eval_harness.judging.case_judge import judge_case_semantic_match, summarize_agent_judgments
-from agent_eval_harness.llm.client import LLMResponse
-from agent_eval_harness.llm.fake_client import FakeLLMClient
-from agent_eval_harness.metrics.suite import load_suite
 from agent_eval_harness.store import repository
-from agent_eval_harness.store.database import close_db, get_db, init_db
+from agent_eval_harness.store.database import DB_FILENAME, close_db, get_db, init_db
 
 logger = logging.getLogger("agent_eval_harness.ui.server")
 
-# Life-span manager for db initialization
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Set the data directory if env is not already set
+    # Default AEH_DATA_DIR to cwd if the caller hasn't set it
     if not os.getenv("AEH_DATA_DIR"):
         os.environ["AEH_DATA_DIR"] = os.getcwd()
     await init_db()
@@ -132,6 +133,25 @@ class TraceDetailResponse(BaseModel):
 
 # --- API Routes ---
 
+_F = TypeVar("_F", bound=Callable[..., Any])
+
+
+def _log_and_500(action: str) -> Callable[[_F], _F]:
+    """Route decorator: log an unexpected exception and convert it to HTTP 500; HTTPException passes through unchanged."""
+    def decorator(func: _F) -> _F:
+        @functools.wraps(func)
+        async def wrapper(*args: Any, **kwargs: Any) -> Any:
+            try:
+                return await func(*args, **kwargs)
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"{action}: {e}", exc_info=True)
+                raise HTTPException(status_code=500, detail=str(e)) from e
+        return wrapper  # type: ignore[return-value]
+    return decorator
+
+
 async def _get_run_or_404(run_id: str) -> dict:
     run = await repository.get_run(run_id)
     if not run:
@@ -140,35 +160,32 @@ async def _get_run_or_404(run_id: str) -> dict:
 
 
 @app.get("/api/runs", response_model=list[RunListItem])
+@_log_and_500("Failed to list runs")
 async def get_runs(target_system_id: str | None = None):
-    try:
-        db_runs = await repository.list_runs(target_system_id)
-        results = []
-        for r in db_runs:
-            defects = []
-            if r.get("active_defects"):
-                try:
-                    defects = json.loads(r["active_defects"])
-                except Exception:
-                    pass
-            results.append(
-                RunListItem(
-                    id=r["id"],
-                    target_system_id=r["target_system_id"],
-                    eval_plan_id=r["eval_plan_id"],
-                    started_at=r["started_at"],
-                    finished_at=r["finished_at"],
-                    status=r["status"],
-                    map_path=r["map_path"],
-                    active_defects=defects,
-                    pass_rate=r["pass_rate"],
-                    judge_cost=r["judge_cost"],
-                )
+    db_runs = await repository.list_runs(target_system_id)
+    results = []
+    for r in db_runs:
+        defects = []
+        if r.get("active_defects"):
+            try:
+                defects = json.loads(r["active_defects"])
+            except Exception as e:
+                logger.warning(f"Could not parse active_defects for run {r['id']}: {e}")
+        results.append(
+            RunListItem(
+                id=r["id"],
+                target_system_id=r["target_system_id"],
+                eval_plan_id=r["eval_plan_id"],
+                started_at=r["started_at"],
+                finished_at=r["finished_at"],
+                status=r["status"],
+                map_path=r["map_path"],
+                active_defects=defects,
+                pass_rate=r["pass_rate"],
+                judge_cost=r["judge_cost"],
             )
-        return results
-    except Exception as e:
-        logger.error(f"Failed to list runs: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        )
+    return results
 
 
 @app.get("/api/runs/{run_id}", response_model=RunDetailResponse)
@@ -212,8 +229,8 @@ async def get_run_detail(run_id: str):
     if run.get("active_defects"):
         try:
             defects = json.loads(run["active_defects"])
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Could not parse active_defects for run {run_id}: {e}")
 
     # Fetch overall pass rate from database
     async with db.execute(
@@ -231,8 +248,8 @@ async def get_run_detail(run_id: str):
     if run.get("model_overrides"):
         try:
             model_overrides = json.loads(run["model_overrides"])
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Could not parse model_overrides for run {run_id}: {e}")
 
     return RunDetailResponse(
         id=run["id"],
@@ -280,8 +297,8 @@ async def get_component_evaluations(run_id: str, component_id: str):
         if r["details_json"]:
             try:
                 details = json.loads(r["details_json"])
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Could not parse details_json for evaluation {r['id']}: {e}")
         results.append(
             EvaluationDetailItem(
                 id=r["id"],
@@ -474,8 +491,6 @@ _rerun_in_flight: set[str] = set()
 
 @app.post("/api/runs/{run_id}/rerun")
 async def rerun_run(run_id: str, body: RerunRequest):
-    from agent_eval_harness.llm.client import LLMResponse
-    from agent_eval_harness.llm.fake_client import FakeLLMClient
     from agent_eval_harness.llm.routing_client import RoutingLLMClient
     from agent_eval_harness.metrics.sweep import run_sweep
 
@@ -505,7 +520,8 @@ async def rerun_run(run_id: str, body: RerunRequest):
             active_defects = (
                 json.loads(parent["active_defects"]) if parent.get("active_defects") else []
             )
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Could not parse parent active_defects for rerun of {run_id}: {e}")
             active_defects = []
 
     # 2. Insert the new run row in "running" state
@@ -603,8 +619,8 @@ async def rerun_run(run_id: str, body: RerunRequest):
             logger.error(f"Background rerun failed: {e}", exc_info=True)
             try:
                 await repository.finish_run(new_run_id, "failed")
-            except Exception:
-                pass
+            except Exception as finish_err:
+                logger.error(f"Also failed to mark run {new_run_id} as failed: {finish_err}")
         finally:
             _rerun_in_flight.discard(run_id)
 
@@ -618,9 +634,7 @@ class IngestEvalRunRequest(BaseModel):
 
 @app.post("/api/eval-runs/ingest")
 async def ingest_eval_run_route(body: IngestEvalRunRequest):
-    """Stage 4's offline half: reads a manifest + spanlog an injected target produced,
-    persists it as an 'ingested' run. Parsing + a handful of DB writes for one case is fast
-    enough to run synchronously — unlike rerun, this never makes an LLM call itself."""
+    """Stage 4's offline half: reads a manifest + spanlog an injected target produced and persists it as an 'ingested' run."""
     from agent_eval_harness.ingest.spanlog_ingest import IngestError, parse_spanlog, persist_spanlog
 
     manifest_path = Path(body.manifest_path)
@@ -716,9 +730,7 @@ async def _get_expansion_session_or_404(session_id: str) -> dict:
 
 
 def _get_repo_root() -> Path:
-    """backend_source_path (config.py / backend_bridge.py's pre-existing convention) points
-    directly AT the backend/ folder, not the git repo root — its parent is the actual repo
-    root (where .git lives, and where injected paths like backend/.aeh/... are relative to)."""
+    """backend_source_path points AT the target's backend/ folder; its parent is the actual git repo root."""
     config = AEHConfig.load()
     if not config.backend_source_path:
         raise HTTPException(
@@ -740,10 +752,20 @@ def _get_repo_root() -> Path:
     return repo_root
 
 
+class _LLMConfigRequest(Protocol):
+    """Structural type for any request body carrying the six provider/backend override fields."""
+    provider_id: str | None
+    model_id: str | None
+    backend_url: str | None
+    backend_token: str | None
+    reasoning_effort: str | None
+    thinking_budget: int | None
+
+
 def _resolve_synthesis_config(
-    body: StartDiscoveryRequest | ExpandCandidateRequest, config: AEHConfig
+    body: _LLMConfigRequest, config: AEHConfig
 ) -> tuple[str, str, str, str | None, str | None, int | None]:
-    """Resolve provider/backend config for Pass C synthesis LLM calls, or raise 400."""
+    """Resolve provider/backend config for an LLM-calling endpoint from request overrides + AEHConfig, or raise 400."""
     provider_id = body.provider_id or config.provider_id
     backend_url = body.backend_url or config.backend_url
     backend_token = body.backend_token or config.backend_token
@@ -756,8 +778,7 @@ def _resolve_synthesis_config(
     if not provider_id:
         raise HTTPException(
             status_code=400,
-            detail="No LLM provider configured for Pass C synthesis. Set up a provider in "
-            "Settings, then select it before running Discovery.",
+            detail="No LLM provider configured. Set up a provider in Settings, then select it.",
         )
     return (
         provider_id,
@@ -770,56 +791,46 @@ def _resolve_synthesis_config(
 
 
 @app.post("/api/discovery/sessions")
+@_log_and_500("Failed to start discovery session")
 async def start_discovery(body: StartDiscoveryRequest):
-    try:
-        config = AEHConfig.load()
-        provider_id, backend_url, backend_token, model_id, reasoning_effort, thinking_budget = (
-            _resolve_synthesis_config(body, config)
-        )
-        llm_client = CodeSpectraProxyClient(
-            backend_url, backend_token, provider_id, model_id,
-            reasoning_effort=reasoning_effort, thinking_budget=thinking_budget,
-        )
+    config = AEHConfig.load()
+    provider_id, backend_url, backend_token, model_id, reasoning_effort, thinking_budget = (
+        _resolve_synthesis_config(body, config)
+    )
+    llm_client = CodeSpectraProxyClient(
+        backend_url, backend_token, provider_id, model_id,
+        reasoning_effort=reasoning_effort, thinking_budget=thinking_budget,
+    )
 
-        client = CodeSpectraClient(backend_url, backend_token)
+    client = CodeSpectraClient(backend_url, backend_token)
 
-        # Start session
-        session_id = await repository.insert_discovery_session(body.repo_ref, body.snapshot_id)
+    session_id = await repository.insert_discovery_session(body.repo_ref, body.snapshot_id)
 
-        # Execute background scan
-        asyncio.create_task(
-            run_discovery_background(session_id, body.snapshot_id, body.repo_ref, client, llm_client)
-        )
+    asyncio.create_task(
+        run_discovery_background(session_id, body.snapshot_id, body.repo_ref, client, llm_client)
+    )
 
-        return {"session_id": session_id}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to start discovery session: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+    return {"session_id": session_id}
 
 
 @app.get("/api/discovery/sessions", response_model=list[DiscoverySessionResponse])
+@_log_and_500("Failed to list discovery sessions")
 async def list_discovery_sessions(repo_ref: str | None = None, snapshot_id: str | None = None):
-    try:
-        sessions = await repository.list_discovery_sessions(repo_ref, snapshot_id)
-        return [
-            DiscoverySessionResponse(
-                id=s["id"],
-                repo_ref=s["repo_ref"],
-                snapshot_id=s["snapshot_id"],
-                status=s["status"],
-                error=s["error"],
-                created_at=s["created_at"],
-                finished_at=s["finished_at"],
-                pause_info=s.get("pause_info"),
-                pipeline_stage=s["pipeline_stage"],
-            )
-            for s in sessions
-        ]
-    except Exception as e:
-        logger.error(f"Failed to list discovery sessions: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+    sessions = await repository.list_discovery_sessions(repo_ref, snapshot_id)
+    return [
+        DiscoverySessionResponse(
+            id=s["id"],
+            repo_ref=s["repo_ref"],
+            snapshot_id=s["snapshot_id"],
+            status=s["status"],
+            error=s["error"],
+            created_at=s["created_at"],
+            finished_at=s["finished_at"],
+            pause_info=s.get("pause_info"),
+            pipeline_stage=s["pipeline_stage"],
+        )
+        for s in sessions
+    ]
 
 
 @app.get("/api/discovery/sessions/{session_id}", response_model=DiscoverySessionResponse)
@@ -839,57 +850,46 @@ async def get_discovery_session(session_id: str):
 
 
 @app.get("/api/discovery/sessions/{session_id}/candidates", response_model=list[DiscoveryCandidateResponse])
+@_log_and_500("Failed to list discovery candidates")
 async def list_discovery_candidates(session_id: str):
-    try:
-        candidates = await repository.get_discovery_candidates(session_id)
-        return [
-            DiscoveryCandidateResponse(
-                id=c["id"],
-                session_id=c["session_id"],
-                name=c["name"],
-                frameworks=c["frameworks"],
-                entry_points=c["entry_points"],
-                evidence=c["evidence"],
-                confidence=c["confidence"],
-                needs_human=c.get("needs_human", False),
-                verdict=c["verdict"],
-                community_id=c.get("community_id"),
-                cluster_files=c.get("cluster_files", []),
-                hub_paths=c.get("hub_paths", []),
-                wiring_block=c.get("wiring_block"),
-                excluded_files=c.get("excluded_files", []),
-                matched_files=c.get("matched_files", []),
-                file_provenance=c.get("file_provenance", {}),
-            )
-            for c in candidates
-        ]
-    except Exception as e:
-        logger.error(f"Failed to list discovery candidates: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+    candidates = await repository.get_discovery_candidates(session_id)
+    return [
+        DiscoveryCandidateResponse(
+            id=c["id"],
+            session_id=c["session_id"],
+            name=c["name"],
+            frameworks=c["frameworks"],
+            entry_points=c["entry_points"],
+            evidence=c["evidence"],
+            confidence=c["confidence"],
+            needs_human=c.get("needs_human", False),
+            verdict=c["verdict"],
+            community_id=c.get("community_id"),
+            cluster_files=c.get("cluster_files", []),
+            hub_paths=c.get("hub_paths", []),
+            wiring_block=c.get("wiring_block"),
+            excluded_files=c.get("excluded_files", []),
+            matched_files=c.get("matched_files", []),
+            file_provenance=c.get("file_provenance", {}),
+        )
+        for c in candidates
+    ]
 
 
 @app.post("/api/discovery/candidates/{candidate_id}/verdict")
+@_log_and_500("Failed to update candidate verdict")
 async def update_candidate_verdict(candidate_id: str, body: UpdateVerdictRequest):
-    try:
-        if body.verdict not in ["proposed", "confirmed", "rejected"]:
-            raise HTTPException(status_code=400, detail="Invalid verdict")
-        await repository.update_candidate_verdict(candidate_id, body.verdict)
-        return {"success": True}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to update candidate verdict: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+    if body.verdict not in ["proposed", "confirmed", "rejected"]:
+        raise HTTPException(status_code=400, detail="Invalid verdict")
+    await repository.update_candidate_verdict(candidate_id, body.verdict)
+    return {"success": True}
 
 
 @app.post("/api/discovery/candidates/{candidate_id}/excluded-files")
+@_log_and_500("Failed to update excluded files")
 async def update_candidate_excluded_files_route(candidate_id: str, body: UpdateExcludedFilesRequest):
-    try:
-        await repository.update_candidate_excluded_files(candidate_id, body.excluded_files)
-        return {"success": True}
-    except Exception as e:
-        logger.error(f"Failed to update excluded files: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+    await repository.update_candidate_excluded_files(candidate_id, body.excluded_files)
+    return {"success": True}
 
 
 class ResumeDiscoveryRequest(BaseModel):
@@ -985,7 +985,7 @@ async def run_expansion_background(
             hop_cap=hop_cap,
         )
 
-        # A9: log scanner summary so an empty map is diagnosable
+        # Log scanner summary so an empty map is diagnosable
         _reasons = res.get("boundary_reasons", [])
         from collections import Counter
         top_skip = [r for r, _ in Counter(r for r in _reasons if r).most_common(3)]
@@ -1041,72 +1041,67 @@ async def run_expansion_background(
 
 
 @app.post("/api/discovery/candidates/{candidate_id}/expand")
+@_log_and_500("Failed to start expansion session")
 async def start_expansion(candidate_id: str, body: ExpandCandidateRequest):
-    try:
-        candidate = await repository.get_discovery_candidate(candidate_id)
-        if not candidate:
-            raise HTTPException(status_code=404, detail="Candidate component not found.")
+    candidate = await repository.get_discovery_candidate(candidate_id)
+    if not candidate:
+        raise HTTPException(status_code=404, detail="Candidate component not found.")
 
-        # discovery_candidates has no snapshot_id column — resolve it via the parent session
-        session = await repository.get_discovery_session(candidate["session_id"])
-        if not session:
-            raise HTTPException(status_code=404, detail="Parent discovery session not found.")
-        snapshot_id = session["snapshot_id"]
+    # discovery_candidates has no snapshot_id column — resolve it via the parent session
+    session = await repository.get_discovery_session(candidate["session_id"])
+    if not session:
+        raise HTTPException(status_code=404, detail="Parent discovery session not found.")
+    snapshot_id = session["snapshot_id"]
 
-        config = AEHConfig.load()
-        provider_id, backend_url, backend_token, model_id, reasoning_effort, thinking_budget = (
-            _resolve_synthesis_config(body, config)
-        )
-        llm_client = CodeSpectraProxyClient(
-            backend_url, backend_token, provider_id, model_id,
-            reasoning_effort=reasoning_effort, thinking_budget=thinking_budget,
-        )
+    config = AEHConfig.load()
+    provider_id, backend_url, backend_token, model_id, reasoning_effort, thinking_budget = (
+        _resolve_synthesis_config(body, config)
+    )
+    llm_client = CodeSpectraProxyClient(
+        backend_url, backend_token, provider_id, model_id,
+        reasoning_effort=reasoning_effort, thinking_budget=thinking_budget,
+    )
 
-        classify_provider_id = body.classify_provider_id or provider_id
-        classify_model_id = body.classify_model_id or model_id
-        classify_reasoning_effort = body.classify_reasoning_effort or reasoning_effort
-        classify_thinking_budget = (
-            body.classify_thinking_budget
-            if body.classify_thinking_budget is not None
-            else thinking_budget
-        )
-        if (
-            classify_provider_id == provider_id
-            and classify_model_id == model_id
-            and classify_reasoning_effort == reasoning_effort
-            and classify_thinking_budget == thinking_budget
-        ):
-            classify_llm_client = llm_client
-        else:
-            classify_llm_client = CodeSpectraProxyClient(
-                backend_url, backend_token, classify_provider_id, classify_model_id,
-                reasoning_effort=classify_reasoning_effort, thinking_budget=classify_thinking_budget,
-            )
-
-        client = CodeSpectraClient(backend_url, backend_token)
-
-        session_id = repository.new_id()
-        await repository.insert_expansion_session(session_id, candidate_id, snapshot_id)
-
-        asyncio.create_task(
-            run_expansion_background(
-                session_id,
-                snapshot_id,
-                candidate,
-                client,
-                llm_client,
-                classify_llm_client,
-                body.node_budget,
-                body.hop_cap,
-            )
+    classify_provider_id = body.classify_provider_id or provider_id
+    classify_model_id = body.classify_model_id or model_id
+    classify_reasoning_effort = body.classify_reasoning_effort or reasoning_effort
+    classify_thinking_budget = (
+        body.classify_thinking_budget
+        if body.classify_thinking_budget is not None
+        else thinking_budget
+    )
+    if (
+        classify_provider_id == provider_id
+        and classify_model_id == model_id
+        and classify_reasoning_effort == reasoning_effort
+        and classify_thinking_budget == thinking_budget
+    ):
+        classify_llm_client = llm_client
+    else:
+        classify_llm_client = CodeSpectraProxyClient(
+            backend_url, backend_token, classify_provider_id, classify_model_id,
+            reasoning_effort=classify_reasoning_effort, thinking_budget=classify_thinking_budget,
         )
 
-        return {"session_id": session_id}
-    except Exception as e:
-        if isinstance(e, HTTPException):
-            raise e
-        logger.error(f"Failed to start expansion session: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+    client = CodeSpectraClient(backend_url, backend_token)
+
+    session_id = repository.new_id()
+    await repository.insert_expansion_session(session_id, candidate_id, snapshot_id)
+
+    asyncio.create_task(
+        run_expansion_background(
+            session_id,
+            snapshot_id,
+            candidate,
+            client,
+            llm_client,
+            classify_llm_client,
+            body.node_budget,
+            body.hop_cap,
+        )
+    )
+
+    return {"session_id": session_id}
 
 
 @app.get("/api/discovery/expansion-sessions/{session_id}")
@@ -1191,8 +1186,7 @@ class EnrichAgentsRequest(BaseModel):
 
 @app.post("/api/discovery/expansion-sessions/{session_id}/plan")
 async def generate_plan_route(session_id: str, body: GeneratePlanRequest):
-    """Stage 3's own DAG orchestrator. Hard-gated on Stage 2's agent-flow separation having
-    already run — the agent is the planning unit, so there is no flat-component fallback."""
+    """Stage 3 plans per agent — hard-gated on Stage 2's agent-flow separation, no flat-component fallback."""
     sess = await _get_expansion_session_or_404(session_id)
     if sess["status"] != "completed":
         raise HTTPException(status_code=400, detail="Expansion has not completed.")
@@ -1211,18 +1205,8 @@ async def generate_plan_route(session_id: str, body: GeneratePlanRequest):
         )
 
     config = AEHConfig.load()
-    provider_id = body.provider_id or config.provider_id
-    backend_url = body.backend_url or config.backend_url
-    backend_token = body.backend_token or config.backend_token
-    if not backend_url or not backend_token:
-        raise HTTPException(status_code=400, detail="Missing backend connection config.")
-    if not provider_id:
-        raise HTTPException(status_code=400, detail="No LLM provider configured.")
-
-    model_id = body.model_id or config.model_id
-    reasoning_effort = body.reasoning_effort or config.reasoning_effort
-    thinking_budget = (
-        body.thinking_budget if body.thinking_budget is not None else config.thinking_budget
+    provider_id, backend_url, backend_token, model_id, reasoning_effort, thinking_budget = (
+        _resolve_synthesis_config(body, config)
     )
     llm_client = CodeSpectraProxyClient(
         backend_url, backend_token, provider_id, model_id,
@@ -1252,8 +1236,6 @@ async def generate_plan_route(session_id: str, body: GeneratePlanRequest):
         plan_report_path = map_path.with_name(map_path.stem + "_plan_report.yaml")
         previous_suite = None
         if plan_path.exists():
-            from agent_eval_harness.metrics.suite import load_suite
-
             try:
                 previous_suite = load_suite(plan_path)
             except Exception as e:
@@ -1265,12 +1247,12 @@ async def generate_plan_route(session_id: str, body: GeneratePlanRequest):
             except Exception as e:
                 logger.warning(f"generate_plan: could not load previous plan report for incremental reuse: {e}")
 
-        # B6: load project context once for all analyst prompts
+        # Load project context once, shared across all analyst prompts
         _plan_project_ctx = None
         try:
             _plan_project_ctx = await load_project_context(client, sess["snapshot_id"])
         except Exception as _pce:
-            logger.warning(f"generate_plan: could not load project context for B6: {_pce}")
+            logger.warning(f"generate_plan: could not load project context: {_pce}")
 
         suite, plan_report = await generate_plan_agentic(
             system_map, agent_flow_map, source_by_component, sess["accepted_edges"], llm_client,
@@ -1381,7 +1363,6 @@ async def run_eval_route(session_id: str, body: EvalRunRequest):
 
     from agent_eval_harness.injection.judge_selection import pick_judge_provider
     from agent_eval_harness.injection.suite_runner import run_synthetic_agent_io_suite
-    from agent_eval_harness.metrics.suite import load_suite
 
     plan_report = load_plan_report(plan_report_path_str)
     suite = load_suite(plan_path_str)
@@ -1471,8 +1452,6 @@ async def reset_stage3_route(session_id: str):
     plan_path_str = sess.get("plan_path")
     if plan_path_str and Path(plan_path_str).exists():
         try:
-            from agent_eval_harness.metrics.suite import load_suite
-
             suite = load_suite(plan_path_str)
             dataset_ids = {e.dataset.ref for e in suite.entries if e.dataset and e.dataset.ref}
             for dataset_id in dataset_ids:
@@ -1508,7 +1487,6 @@ async def get_plan_route(session_id: str):
     if not plan_path_str or not Path(plan_path_str).exists():
         raise HTTPException(status_code=404, detail="No plan file for this session.")
     try:
-        from agent_eval_harness.metrics.suite import load_suite
         from agent_eval_harness.planning.validation import validate_plan
         suite = load_suite(plan_path_str)
         report = await validate_plan(plan_path_str)
@@ -1537,30 +1515,22 @@ class FulfillDatasetsRequest(BaseModel):
 
 
 @app.post("/api/discovery/expansion-sessions/{session_id}/datasets/fulfill")
+@_log_and_500("fulfill_datasets failed")
 async def fulfill_datasets_route(session_id: str, body: FulfillDatasetsRequest):
     sess = await _get_expansion_session_or_404(session_id)
     if not sess.get("plan_path") or not Path(sess["plan_path"]).exists():
         raise HTTPException(status_code=400, detail="No plan for this session — generate a plan first.")
 
     config = AEHConfig.load()
-    provider_id = body.provider_id or config.provider_id
-    backend_url = body.backend_url or config.backend_url
-    backend_token = body.backend_token or config.backend_token
-    if not backend_url or not backend_token:
-        raise HTTPException(status_code=400, detail="Missing backend connection config.")
-    if not provider_id:
-        raise HTTPException(status_code=400, detail="No LLM provider configured.")
-    model_id = body.model_id or config.model_id
-    reasoning_effort = body.reasoning_effort or config.reasoning_effort
-    thinking_budget = (
-        body.thinking_budget if body.thinking_budget is not None else config.thinking_budget
+    provider_id, backend_url, backend_token, model_id, reasoning_effort, thinking_budget = (
+        _resolve_synthesis_config(body, config)
     )
 
     llm_client = CodeSpectraProxyClient(
         backend_url, backend_token, provider_id, model_id,
         reasoning_effort=reasoning_effort, thinking_budget=thinking_budget,
     )
-    
+
     embedding_client = None
     if body.use_local_embedding or body.embedding_provider_id:
         from agent_eval_harness.llm.embedding_client import CodeSpectraEmbeddingProxyClient
@@ -1591,11 +1561,6 @@ async def fulfill_datasets_route(session_id: str, body: FulfillDatasetsRequest):
             session_id=session_id,
         )
         return report
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"fulfill_datasets failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
     finally:
         await client.aclose()
         if hasattr(llm_client, "aclose"):
@@ -1660,6 +1625,7 @@ class AgentFlowRequest(BaseModel):
 
 
 @app.post("/api/discovery/expansion-sessions/{session_id}/agent-flows")
+@_log_and_500("generate_agent_flows failed")
 async def generate_agent_flows_route(session_id: str, body: AgentFlowRequest):
     sess = await _get_expansion_session_or_404(session_id)
     if sess["status"] != "completed":
@@ -1668,17 +1634,8 @@ async def generate_agent_flows_route(session_id: str, body: AgentFlowRequest):
         raise HTTPException(status_code=400, detail="No system map for this session.")
 
     config = AEHConfig.load()
-    provider_id = body.provider_id or config.provider_id
-    backend_url = body.backend_url or config.backend_url
-    backend_token = body.backend_token or config.backend_token
-    if not backend_url or not backend_token:
-        raise HTTPException(status_code=400, detail="Missing backend connection config.")
-    if not provider_id:
-        raise HTTPException(status_code=400, detail="No LLM provider configured.")
-    model_id = body.model_id or config.model_id
-    reasoning_effort = body.reasoning_effort or config.reasoning_effort
-    thinking_budget = (
-        body.thinking_budget if body.thinking_budget is not None else config.thinking_budget
+    provider_id, backend_url, backend_token, model_id, reasoning_effort, thinking_budget = (
+        _resolve_synthesis_config(body, config)
     )
 
     llm_client = CodeSpectraProxyClient(
@@ -1702,7 +1659,7 @@ async def generate_agent_flows_route(session_id: str, body: AgentFlowRequest):
 
         source_by_component = build_source_by_component(abs_files, system_map)
 
-        # B5: inject project feature map as a hint into the agent-flow grouping prompt
+        # Feature map hint nudges the agent-flow grouping prompt with product-level context
         project_ctx = await load_project_context(client, sess["snapshot_id"])
         feature_map_hint = (
             project_ctx.feature_map.as_context_block()
@@ -1722,11 +1679,6 @@ async def generate_agent_flows_route(session_id: str, body: AgentFlowRequest):
         )
 
         return agent_flow_map.model_dump()
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"generate_agent_flows failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
     finally:
         await client.aclose()
         if hasattr(llm_client, "aclose"):
@@ -1747,6 +1699,7 @@ async def get_agent_flows_route(session_id: str):
 
 
 @app.post("/api/discovery/expansion-sessions/{session_id}/enrich-agents")
+@_log_and_500("enrich_agents failed")
 async def enrich_agents_route(session_id: str, body: EnrichAgentsRequest):
     """Stage 2.5 enrichment: concurrent LLM analysis of discovered agents."""
     sess = await _get_expansion_session_or_404(session_id)
@@ -1762,18 +1715,8 @@ async def enrich_agents_route(session_id: str, body: EnrichAgentsRequest):
         )
 
     config = AEHConfig.load()
-    provider_id = body.provider_id or config.provider_id
-    backend_url = body.backend_url or config.backend_url
-    backend_token = body.backend_token or config.backend_token
-    if not backend_url or not backend_token:
-        raise HTTPException(status_code=400, detail="Missing backend connection config.")
-    if not provider_id:
-        raise HTTPException(status_code=400, detail="No LLM provider configured.")
-
-    model_id = body.model_id or config.model_id
-    reasoning_effort = body.reasoning_effort or config.reasoning_effort
-    thinking_budget = (
-        body.thinking_budget if body.thinking_budget is not None else config.thinking_budget
+    provider_id, backend_url, backend_token, model_id, reasoning_effort, thinking_budget = (
+        _resolve_synthesis_config(body, config)
     )
     llm_client = CodeSpectraProxyClient(
         backend_url, backend_token, provider_id, model_id,
@@ -1818,11 +1761,6 @@ async def enrich_agents_route(session_id: str, body: EnrichAgentsRequest):
             "degraded_count": degraded_count,
             "skipped_count": skipped_count,
         }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"enrich_agents failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
     finally:
         await client.aclose()
         if hasattr(llm_client, "aclose"):
@@ -1923,7 +1861,7 @@ async def create_eval_plan(session_id: str, base_ref: str = "main"):
             "example_case": cases[0].model_dump() if cases else None,
         })
     wiring = build_wiring_for_codespectra(system_map, session_id)
-    wiring["aeh_db_path"] = str((Path(os.getenv("AEH_DATA_DIR", ".")) / "aeh.db").resolve())
+    wiring["aeh_db_path"] = str((Path(os.getenv("AEH_DATA_DIR", ".")) / DB_FILENAME).resolve())
     wiring["dataset_ids"] = sorted(datasets_to_gate_ids.keys())
     md_content = render_eval_plan_md(
         system_map, wiring, dataset_summaries, session_id, eval_branch,
@@ -1988,9 +1926,7 @@ async def load_eval_results(session_id: str):
 
 @app.get("/api/eval-runs/{run_id}/cases")
 async def get_eval_run_cases(run_id: str):
-    """Per-agent input/result/expected for an ingested run — cheap to compute directly from
-    traces + dataset_cases, no gate scoring required. agent_id comes from the dataset case's
-    own labels_json (set at generation time), not re-derived."""
+    """Per-agent input/result/expected for an ingested run; agent_id comes from the dataset case's own labels_json."""
     run = await repository.get_run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Run not found.")
@@ -2014,10 +1950,13 @@ async def get_eval_run_cases(run_id: str):
                 "avg_score": ev["score"],
             }
 
+    case_ids = [t["dataset_case_id"] for t in traces if t.get("dataset_case_id")]
+    cases_by_id = await repository.get_dataset_cases_by_ids(case_ids)
+
     agents: dict[str, list[dict]] = {}
     for trace in traces:
         case_id = trace.get("dataset_case_id")
-        dataset_case = await repository.get_dataset_case(case_id) if case_id else None
+        dataset_case = cases_by_id.get(case_id) if case_id else None
         agent_id = "unknown"
         expected = None
         if dataset_case:
@@ -2047,14 +1986,7 @@ _JUDGE_BATCH_SIZE = 4  # concurrent LLM calls per batch — this is a dev-only t
 
 @app.post("/api/eval-runs/{run_id}/judge")
 async def judge_eval_run_agent_cases(run_id: str, body: JudgeAgentCasesRequest):
-    """Ad-hoc per-case scoring for Stage 5's results view (see judging/case_judge.py) — one
-    LLM call per case for a single agent, chosen explicitly by the caller so cost stays
-    bounded and visible (never all agents at once). Cases are judged _JUDGE_BATCH_SIZE at a
-    time (concurrent LLM calls, sequential DB writes) rather than one at a time — this tool is
-    dev-only, so wall-clock speed matters more than strict request ordering. Produces the
-    overall semantic-match score plus synonym-aware precision/recall on list-valued fields
-    (falls back to exact-string matching per field if the judge doesn't return usable pairs).
-    Idempotent per case: a case with an existing 'semantic_match' evaluation is skipped."""
+    """Ad-hoc per-agent semantic-match + field precision/recall scoring; idempotent per case (existing 'semantic_match' eval is skipped)."""
     run = await repository.get_run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Run not found.")
@@ -2075,13 +2007,16 @@ async def judge_eval_run_agent_cases(run_id: str, body: JudgeAgentCasesRequest):
         e["trace_id"] for e in existing if e["metric_name"] == "semantic_match"
     }
 
+    case_ids = [t["dataset_case_id"] for t in traces if t.get("dataset_case_id")]
+    cases_by_id = await repository.get_dataset_cases_by_ids(case_ids)
+
     pending: list[tuple[dict, Any, Any]] = []
     skipped = 0
     for trace in traces:
         case_id = trace.get("dataset_case_id")
         if not case_id:
             continue
-        dataset_case = await repository.get_dataset_case(case_id)
+        dataset_case = cases_by_id.get(case_id)
         if not dataset_case:
             continue
         try:
@@ -2132,11 +2067,7 @@ async def judge_eval_run_agent_cases(run_id: str, body: JudgeAgentCasesRequest):
 
 @app.post("/api/eval-runs/{run_id}/agent-summary")
 async def summarize_eval_run_agent(run_id: str, body: JudgeAgentCasesRequest):
-    """One extra LLM call for a single agent (see judging/case_judge.py) that reads its
-    already-judged per-case semantic_match scores+notes and synthesizes one holistic insight —
-    recurring strengths, recurring weaknesses, structural red flags. Requires /judge to have
-    already scored at least one case for this agent. Idempotent: skipped if an agent_summary
-    already exists for this agent on this run."""
+    """Synthesizes one holistic insight from an agent's already-judged per-case scores; idempotent per run."""
     run = await repository.get_run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Run not found.")

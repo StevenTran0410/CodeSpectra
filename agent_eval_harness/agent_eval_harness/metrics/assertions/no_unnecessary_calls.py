@@ -2,9 +2,14 @@
 from __future__ import annotations
 
 import json
+import logging
 
 from agent_eval_harness.metrics.assertions.registry import register
 from agent_eval_harness.metrics.types import MetricResult
+
+logger = logging.getLogger("agent_eval_harness.metrics.assertions.no_unnecessary_calls")
+
+RESULT_SNIPPET_MAX_CHARS = 120
 
 
 def _extract_result_string(output_json: str | None) -> str | None:
@@ -27,8 +32,7 @@ def _extract_result_string(output_json: str | None) -> str | None:
 
 @register("no_unnecessary_calls")
 def no_unnecessary_calls(spans: list[dict], component_id: str, params: dict) -> MetricResult:
-    # spans is assumed to already be in true execution order (see
-
+    # spans are ordered by insertion order (repository.get_spans_for_trace) — the "later span" scan below relies on this.
     flagged: list[dict] = []
 
     for i, span in enumerate(spans):
@@ -50,13 +54,13 @@ def no_unnecessary_calls(spans: list[dict], component_id: str, params: dict) -> 
             try:
                 details = json.loads(span.get("details_json") or "{}")
                 tool_name = details.get("raw_tags", {}).get("aeh.tool.name")
-            except Exception:  # noqa: BLE001
-                pass
+            except (json.JSONDecodeError, AttributeError) as exc:
+                logger.debug("no_unnecessary_calls: could not extract tool_name for span %s: %s", span.get("id"), exc)
             flagged.append(
                 {
                     "span_id": span["id"],
                     "tool_name": tool_name,
-                    "result_snippet": result[:120],
+                    "result_snippet": result[:RESULT_SNIPPET_MAX_CHARS],
                 }
             )
 

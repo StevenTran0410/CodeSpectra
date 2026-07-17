@@ -1,13 +1,14 @@
 """Post-review metamorphic derivation pass — an explicit route, not a fulfill_plan phase
-(Q1 ruling: fulfill_plan's min_cases floor runs PRE-review over freshly-synthesized cases in
-the same pass; this pass runs AFTER a human has finished reviewing the source cohort, so it
-cannot share fulfill_plan's loop). Enforces the double precondition at runtime: (1) the source
+(fulfill_plan's min_cases floor runs PRE-review over freshly-synthesized cases in the same
+pass; this pass runs AFTER a human has finished reviewing the source cohort, so it cannot
+share fulfill_plan's loop). Enforces the double precondition at runtime: (1) the source
 cohort is fully reviewed (repository.list_dataset_ids()'s review_complete), and (2) the relation
 itself has been preview-approved for THIS source cohort. Either unmet -> MetamorphicPreconditionError
 with an explicit reason, zero derived+reviewed rows minted."""
 from __future__ import annotations
 
 import json
+import logging
 import math
 import random
 from typing import Any
@@ -16,6 +17,8 @@ from agent_eval_harness.datasets.metamorphic_ops import apply_transform
 from agent_eval_harness.datasets.metamorphic_relations import RelationSpec, get_relation
 from agent_eval_harness.datasets.registry import get_generator
 from agent_eval_harness.store import repository
+
+logger = logging.getLogger("agent_eval_harness.datasets.metamorphic_derive")
 
 _FIELD_PARAM_SUFFIXES = ("_field", "_fields")
 
@@ -63,7 +66,8 @@ def _known_field_names(source_cases: list[dict]) -> set[str]:
                 continue
             try:
                 data = json.loads(raw)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"_known_field_names: skipping unparseable {col} on case sample: {e}")
                 continue
             if isinstance(data, dict):
                 names.update(data.keys())
@@ -96,8 +100,8 @@ async def preview_relation(
     relation_id: str, source_dataset_id: str, sample_size: int = 5
 ) -> dict[str, Any]:
     """Renders up to sample_size sample derivations for human approval — this preview IS the
-    runtime relation-review precondition (Q3 ruling: the only check that catches a relation
-    that is unit-test-clean but conceptually wrong)."""
+    runtime relation-review precondition (the only check that catches a relation that is
+    unit-test-clean but conceptually wrong)."""
     relation, source_cases = await _load_relation_and_source(relation_id, source_dataset_id)
 
     samples = []
@@ -158,9 +162,9 @@ async def derive_dataset(
     here (source reviewed AND relation preview-approved) — unmet either => zero rows minted.
     Idempotent: re-running skips source cases already derived (keyed by their labels.source_case_id).
     spot_audit_pct routes a bounded sample back to the existing review UI as 'synthetic' instead
-    of trusting them outright (correlated-error mitigation, Q3 ruling) — spot_audit_pct=0
-    mints purely mechanical derived+reviewed rows (the AC2 amortization proof)."""
-    relation, _source_cases = await _load_relation_and_source(relation_id, source_dataset_id)
+    of trusting them outright (correlated-error mitigation) — spot_audit_pct=0 mints purely
+    mechanical derived+reviewed rows."""
+    _relation, _source_cases = await _load_relation_and_source(relation_id, source_dataset_id)
     if not await _relation_approved(relation_id, source_dataset_id):
         raise MetamorphicPreconditionError(
             f"Relation {relation_id!r} has not been preview-approved for source dataset "

@@ -1,8 +1,23 @@
 """Shared types for the map builder pipeline."""
 from __future__ import annotations
 
+import ast
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+
+logger = logging.getLogger("agent_eval_harness.mapping.builder.types")
+
+
+def parse_python_source(file: Path) -> tuple[str, ast.Module] | None:
+    """Read+parse one Python file; None (and a logged skip) if it can't be read or parsed —
+    shared by every pass so a bad file is dropped consistently instead of crashing the scan."""
+    try:
+        source = file.read_text(encoding="utf-8")
+        return source, ast.parse(source, filename=str(file))
+    except (SyntaxError, OSError, UnicodeDecodeError) as exc:
+        logger.warning("skipping unparseable file %s: %s", file, exc)
+        return None
 
 
 @dataclass
@@ -25,12 +40,9 @@ class CandidateComponent:
     class_name: str  # Python class or function name
     tag_suffix: str | None = None  # e.g. "rule" / "llm" for split candidates
     haystack_name: str | None = None  # name from add_component()
-    is_haystack_component: bool = False  # @component + add_component()
-    is_composed: bool = False  # injected into another component's __init__
     is_tool: bool = False  # async def referenced in dict at call site
     registered_name: str | None = None  # dict key for tool candidates
     owner_class_name: str | None = None  # class that owns this tool
-    docstring: str = ""
     source_snippet: str = ""  # first ~30 lines of the class/function body
     model_hints: list[str] = field(default_factory=list)
     manual_span_hints: list[ManualSpanHint] = field(default_factory=list)

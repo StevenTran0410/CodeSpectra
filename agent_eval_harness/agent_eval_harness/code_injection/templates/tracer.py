@@ -1,13 +1,4 @@
-"""AEH Stage 4 span logger — implements Haystack's own tracing.Tracer protocol (the same
-shape proven by AEH's in-process HarnessTracer) so every component span carries Haystack's
-own component identity, never tag-matched. Depends only on the standard library plus
-`haystack` itself (already a dependency of this target, not a new one AEH adds). Makes no
-LLM calls, no network calls, and reads/writes no credentials — it only serializes what
-Haystack's pipeline already computed.
-
-Writes one JSON object per line to out/eval_log.{pid}.jsonl, appended synchronously between
-await points — safe without a lock, since asyncio coroutines in this process only interleave
-at await boundaries, never mid-statement."""
+"""AEH Stage 4 span logger: implements Haystack's own tracing.Tracer protocol (matching AEH's in-process HarnessTracer) so spans carry real component identity rather than tag-matching, and appends JSON lines to out/eval_log.{pid}.jsonl without a lock since asyncio only interleaves at await points."""
 from __future__ import annotations
 
 import contextlib
@@ -50,8 +41,7 @@ def log_path() -> Path:
 
 @contextlib.contextmanager
 def set_current_trace(trace_id: str) -> Iterator[None]:
-    """run_eval.py wraps each dataset case's pipeline invocation in this — spans emitted
-    while it's active are stamped with this trace_id, giving every case its own root trace."""
+    """Wraps a dataset case's pipeline invocation so spans emitted while active are stamped with this trace_id, giving each case its own root trace."""
     token = _current_trace_id.set(trace_id)
     try:
         yield
@@ -80,9 +70,7 @@ def _classify_span_type(operation_name: str, tags: dict[str, Any]) -> str:
 
 
 def _extract_tokens(output: Any) -> tuple[str | None, int | None, int | None, str | None]:
-    """Best-effort: CodeSpectra's own agents attach usage under common key names in their
-    dict output; anything not found is left None (never guessed), and no token_source is
-    reported as "measured" unless a real usage block was actually found."""
+    """Best-effort: looks for usage under common key names in the agent's dict output; anything not found is left None (never guessed), and token_source is "measured" only when a real usage block was found."""
     if not isinstance(output, dict):
         return None, None, None, None
     usage = output.get("usage") or output.get("token_usage")
@@ -118,8 +106,7 @@ class AehTracer(HaystackTracer):
         parent_span: HaystackSpan | None = None,
     ) -> Iterator[AehSpan]:
         parent = parent_span if isinstance(parent_span, AehSpan) else self._current.get()
-        # Pipeline-root spans are never written (below), so a direct child of one is a
-        # top-level span in the log — never a dangling parent_span_id.
+        # Pipeline-root spans are never written, so their direct children are top-level (never a dangling parent_span_id).
         has_written_parent = parent is not None and parent.operation_name not in _PIPELINE_ROOT_OPS
         parent_id = parent.span_id if has_written_parent else None
         span = AehSpan(str(uuid.uuid4()), parent_id, operation_name)
@@ -166,8 +153,7 @@ class AehTracer(HaystackTracer):
 
 
 def register_tracer() -> None:
-    """Call once, as early as possible — before any other `haystack` import in the process
-    (haystack.tracing checks HAYSTACK_CONTENT_TRACING_ENABLED once, at its own first import)."""
+    """Call once, before any other `haystack` import in the process (haystack.tracing checks HAYSTACK_CONTENT_TRACING_ENABLED only at its own first import)."""
     from haystack.tracing import tracer as haystack_global_tracer
     from haystack.tracing import enable_tracing
 

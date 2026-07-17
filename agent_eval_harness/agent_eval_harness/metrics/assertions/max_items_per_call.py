@@ -6,15 +6,20 @@ import json
 from agent_eval_harness.metrics.assertions.registry import register
 from agent_eval_harness.metrics.types import MetricResult
 
+DEFAULT_MAX_ITEMS_PER_CALL = 2
+
 
 @register("max_items_per_call")
 def max_items_per_call(spans: list[dict], component_id: str, params: dict) -> MetricResult:
-    limit = int(params.get("limit", params.get("value", 2)))
+    limit = int(params.get("limit", params.get("value", DEFAULT_MAX_ITEMS_PER_CALL)))
     offending: list[str] = []
     for span in spans:
         if span.get("component_id") != component_id:
             continue
-        output = json.loads(span.get("output_json") or "{}")
+        try:
+            output = json.loads(span.get("output_json") or "{}")
+        except json.JSONDecodeError:
+            continue
         intents = output.get("intents")
         if isinstance(intents, list) and len(intents) > limit:
             offending.append(span["id"])

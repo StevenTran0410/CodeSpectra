@@ -2,9 +2,8 @@
 from __future__ import annotations
 
 # Role taxonomy: 7 concrete roles + worker + unknown. Single source of truth for role prose —
-# both ROLE_CLASSIFICATION_SYSTEM below (unused since CS-300 moved classification to Stage 2.5)
-# and discovery/enrichment.py's per-component prompt import this verbatim, so the vocabulary
-# never drifts into a second copy (CS-299's judge already had to pay that down once).
+# discovery/enrichment.py's per-component prompt imports this verbatim, so the vocabulary never
+# drifts into a second copy (a past duplicate needed a costly fix).
 ROLE_TAXONOMY = """MUST REMEMBER — read before choosing:
 "worker" is the NORMAL, EXPECTED answer. In a typical pipeline MOST components are workers.
 Answering "worker" is a correct classification, not a failure to classify.
@@ -46,13 +45,6 @@ nothing — judge from the code, and expect "worker".
 If uncertain, prefer a lower confidence score and let the caller apply the threshold —
 never guess a specific role just to avoid "unknown"."""
 
-# Kept for reference; unused since CS-300 moved role classification into Stage 2.5 enrichment.
-ROLE_CLASSIFICATION_SYSTEM = (
-    "You classify a single source-code component into exactly one role from this taxonomy. "
-    'Return JSON only: {"role": "<role>", "confidence": <0.0-1.0>, "reasoning": "<one sentence>"}.\n\n'
-    + ROLE_TAXONOMY
-)
-
 # Constraint mining: extract machine-checkable limits from prompt-embedded text
 CONSTRAINT_EXTRACTION_SYSTEM = """A source code component contains one or more string \
 literals that look like LLM prompts. Read them for machine-checkable numeric limits \
@@ -61,9 +53,9 @@ objects {"name": "<snake_case_name>", "value": <number>, "quote": "<the exact su
 of the literal that states the limit>"}. If no such limit is stated, return an empty list \
 []. Never invent a limit that is not explicitly stated in the text."""
 
-# Agent-flow separation: one holistic pass over the whole map, not per-component. Role is
-# CS-300's job (Stage 2.5, per-component, evidence-gated) — grouping judges from structural
-# facts (fan-in/fan-out/constructor-fanout/is_tool) + edges + code, not from a role guess.
+# Agent-flow separation: one holistic pass over the whole map, not per-component. Role
+# assignment happens elsewhere (Stage 2.5, per-component, evidence-gated) — grouping judges
+# from structural facts (fan-in/fan-out/constructor-fanout/is_tool) + edges + code, not a role guess.
 AGENT_FLOW_SYSTEM = """You are given every component of ONE agentic system: its id, structural \
 facts, file, entry point, upstream/downstream component-id edges, mined constraints, and a \
 source code snippet. Group these components into AGENTS.

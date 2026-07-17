@@ -11,6 +11,8 @@ from typing import Protocol, runtime_checkable
 
 import httpx
 
+_DEFAULT_HTTP_TIMEOUT_SECONDS = 120.0
+
 
 @runtime_checkable
 class EmbeddingClient(Protocol):
@@ -42,7 +44,7 @@ class CodeSpectraEmbeddingProxyClient:
         self._model_id = model_id
         self._use_local = use_local
         self._task_type = task_type
-        self._http = http_client or httpx.AsyncClient(timeout=120.0)
+        self._http = http_client or httpx.AsyncClient(timeout=_DEFAULT_HTTP_TIMEOUT_SECONDS)
 
     async def embed_texts(self, texts: list[str]) -> list[list[float]]:
         body: dict = {"texts": texts, "use_local": self._use_local}

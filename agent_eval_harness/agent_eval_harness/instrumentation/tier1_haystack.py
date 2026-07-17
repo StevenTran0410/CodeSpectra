@@ -27,7 +27,7 @@ from agent_eval_harness.instrumentation.base import (
 from agent_eval_harness.mapping.engine import map_spans_to_components
 from agent_eval_harness.mapping.system_map import SystemMap
 
-# Operation-name vocabulary AEH's own component code uses to emit manual inner
+# Operation names AEH's own code uses for manual inner spans, distinct from Haystack's automatic component spans
 OP_LLM_CALL = "aeh.llm_call"
 OP_TOOL_CALL = "aeh.tool_call"
 OP_VALIDATOR_DECISION = "aeh.validator_decision"
@@ -179,7 +179,7 @@ class HaystackAdapter(InstrumentationAdapter):
         raw_spans = [s for s in self._tracer.captured if s.operation_name not in _PIPELINE_ROOT_OPS]
         captured = [_normalize(s) for s in raw_spans]
 
-        # Pipeline-root spans are dropped above, so any span whose parent WAS the
+        # Pipeline-root spans were dropped above; null out any parent ref that pointed at one so no span is left with a dangling parent
         captured_ids = {c.span_id for c in captured}
         for c in captured:
             if c.parent_span_id is not None and c.parent_span_id not in captured_ids:

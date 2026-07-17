@@ -13,9 +13,9 @@ from .constraints import mine_constraints, mine_constraints_llm_phase
 from .roles import ROLE_CONFIDENCE_THRESHOLD
 from .scanners import FrameworkScanner, HaystackScanner
 from .topology import extract_topology
+from .types import CandidateComponent, TopologyEdges, parse_python_source
 
 logger = logging.getLogger("agent_eval_harness.mapping.builder.pipeline")
-from .types import CandidateComponent, TopologyEdges
 
 
 class SystemMapBuilder:
@@ -70,9 +70,9 @@ class SystemMapBuilder:
         docs_path: Path | None,
     ) -> tuple[SystemMap, str]:
         """Passes 2-6: structural mining through system map assembly, shared by build() and
-        build_from_files(). Role classification moved to Stage 2.5 enrichment (CS-300) — every
-        component leaves Stage 2 with role='unknown'; is_tool/constructor_fanout are persisted
-        as data for Stage 2.5's hard gate."""
+        build_from_files(). Role classification moved to Stage 2.5 enrichment — every component
+        leaves Stage 2 with role='unknown'; is_tool/constructor_fanout are persisted as data for
+        Stage 2.5's hard gate."""
         topology_map = extract_topology(files, candidates)
         constraint_map = mine_constraints(files, candidates, package_root)
         constraint_map = await mine_constraints_llm_phase(
@@ -106,11 +106,10 @@ class SystemMapBuilder:
         imported_in_composed_context: set[str] = set()
 
         for file in sorted(files):
-            try:
-                source = file.read_text(encoding="utf-8")
-                tree = ast.parse(source, filename=str(file))
-            except (SyntaxError, OSError):
+            parsed = parse_python_source(file)
+            if parsed is None:
                 continue
+            _, tree = parsed
 
             # Collect ImportFrom statements
             for node in ast.walk(tree):
@@ -245,8 +244,8 @@ class SystemMapBuilder:
         constraint_map: dict[str, list],
         package_root: Path,
     ) -> list[Component]:
-        """Assemble final Component objects. role='unknown' — Stage 2.5 enrichment assigns it
-        (CS-300); is_tool/constructor_fanout are persisted as the structural evidence it gates on."""
+        """Assemble final Component objects. role='unknown' — Stage 2.5 enrichment assigns it;
+        is_tool/constructor_fanout are persisted as the structural evidence it gates on."""
         components = []
         for candidate in candidates:
             entry_point = self._resolve_entry_point(candidate, package_root)
@@ -283,8 +282,8 @@ class SystemMapBuilder:
         return components
 
     def _build_summary(self, system_map: SystemMap) -> str:
-        """Build a fixed-header summary. Role is pending Stage 2.5 enrichment (CS-300) — Stage 2
-        no longer classifies it, so an all-'unknown' map here is expected, not a failure."""
+        """Build a fixed-header summary. Role is pending Stage 2.5 enrichment — Stage 2 no
+        longer classifies it, so an all-'unknown' map here is expected, not a failure."""
         if not system_map.components:
             return (
                 "=== AEH System Map Summary ===\n"

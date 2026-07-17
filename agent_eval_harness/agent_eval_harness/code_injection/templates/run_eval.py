@@ -1,11 +1,4 @@
-"""AEH Stage 4 eval driver — reads dataset cases directly from AEH's own sqlite database
-(path + dataset ids come from wiring.json, stdlib sqlite3 only — no agent_eval_harness
-dependency), drives this repo's own analysis pipeline directly (bypassing the job-queue
-/start route), writes out/eval_log.{pid}.jsonl + manifest.json. Cases are read live on every
-run — never a static exported snapshot that can go stale relative to AEH's own review state.
-Makes no LLM/network calls of its own and reads no keys — provider_id/model_id/API keys all
-come from THIS repo's own already-configured provider service, exactly as a normal analysis
-run would use them.
+"""AEH Stage 4 eval driver: reads dataset cases live from AEH's own sqlite DB (stdlib sqlite3 only, via wiring.json — no agent_eval_harness dependency), drives this repo's analysis pipeline directly (bypassing the job-queue /start route), and writes out/eval_log.{pid}.jsonl + manifest.json.
 
 Run as a route (POST /aeh/run-eval, see api/aeh_eval.py) or standalone:
     python .aeh/run_eval.py --verify   # one case, confirms >=1 span was captured
@@ -62,13 +55,7 @@ def _load_wiring() -> dict[str, Any]:
 
 
 def _load_cases(wiring: dict[str, Any], limit: int | None = None) -> list[dict[str, Any]]:
-    """Reads dataset cases directly from AEH's own sqlite database — aeh_db_path and
-    dataset_ids come from wiring.json. Always the current, live data (whatever's been
-    reviewed in AEH as of THIS run), never a static snapshot that can go stale relative to
-    AEH's own review state. Only 'generated+reviewed'/'handwritten' cases are used — this
-    mirrors agent_eval_harness/datasets/fulfillment.py::export_dataset()'s exact provenance
-    filter (AEH's mandatory human-review gate), reimplemented here via stdlib sqlite3 only
-    since this file has no agent_eval_harness dependency."""
+    """Reads dataset cases live from AEH's sqlite DB (path/ids from wiring.json, stdlib-only), filtered to reviewed/handwritten provenance to mirror datasets/fulfillment.py::export_dataset()'s gate."""
     aeh_db_path = wiring.get("aeh_db_path")
     dataset_ids = wiring.get("dataset_ids", [])
     if not aeh_db_path or not dataset_ids:

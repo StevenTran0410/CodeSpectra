@@ -19,8 +19,7 @@ async def generate(
     
     dataset_name = parsed_config.dataset_name
     source_id = parsed_config.source_dataset_id
-    
-    # Retrieve source cases from repository
+
     source_db_cases = await repository.get_dataset_cases(source_id)
     if not source_db_cases:
         raise ValueError(f"No source dataset cases found for dataset_id: {source_id}")
@@ -28,9 +27,8 @@ async def generate(
     cases: list[DatasetCase] = []
     
     for db_case in source_db_cases:
-        # Load input_json, labels_json
         input_data = json.loads(db_case["input_json"])
-        
+
         labels_data = {}
         if db_case["labels_json"]:
             labels_data = json.loads(db_case["labels_json"])

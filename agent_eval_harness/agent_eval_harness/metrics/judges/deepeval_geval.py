@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 
 from agent_eval_harness.llm.client import LLMClient
+from agent_eval_harness.metrics.scoring_helpers import JUDGE_PASS_THRESHOLD
 from agent_eval_harness.metrics.types import MetricResult, extract_cost_tokens
 
 
@@ -60,7 +61,7 @@ async def run_geval(
         metric_name=f"llm_judge.geval.{metric_name}",
         metric_class="llm_judge",
         score=score,
-        passed=score is not None and score >= 0.5,
+        passed=score is not None and score >= JUDGE_PASS_THRESHOLD,
         details={
             "rubric": rubric_text,
             "reason": reason,

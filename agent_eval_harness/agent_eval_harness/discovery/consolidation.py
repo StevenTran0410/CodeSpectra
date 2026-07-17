@@ -5,10 +5,11 @@ judge for whatever's still ambiguous. Never mutates cluster_files/hub_paths/comm
 adds matched_files + file_provenance alongside."""
 from __future__ import annotations
 
-import logging
 import json
+import logging
 
 from agent_eval_harness.discovery.client import CodeSpectraClient
+from agent_eval_harness.discovery.wiring import strip_json_code_fence
 from agent_eval_harness.llm.client import LLMClient, LLMMessage, RateLimitExceeded
 
 logger = logging.getLogger("agent_eval_harness.discovery.consolidation")
@@ -16,6 +17,7 @@ logger = logging.getLogger("agent_eval_harness.discovery.consolidation")
 MIN_WIRING_NODES_FOR_ANCHOR = 2       # a 1-node "wiring block" is likely noise, not a real anchor
 IMPORT_MATCH_MIN_SCORE = 1            # >=1 real symbol edge into a block's core seed = a match
 MAX_CONSOLIDATION_LLM_JUDGE_CALLS = 15  # bounded, but generous
+JUDGE_FILE_CONTENT_CHAR_BUDGET = 4000
 
 
 def _core_seed_for(candidate: dict) -> tuple[set[str], str]:
@@ -87,9 +89,8 @@ async def consolidate_candidates(
         tied = [cid for cid, s in ranked if s == top_score]
         if top_score == 0 or len(tied) > 1:
             def _path_overlap(cid: str) -> int:
-                # Exact-same-directory only — a "shared top-level segment" tier was tried and
-                # dropped: it trivially wins with only one candidate in the run, silently
-                # attaching unrelated files that merely share a common root like "backend/".
+                # Exact-same-directory only — a shared-top-level-segment tier was tried and
+                # dropped: it over-matches with only one candidate in the run.
                 seed = next(s for cand, s, kind in anchors if str(cand["community_id"]) == cid)
                 best = 0
                 for sf in seed:
@@ -114,8 +115,8 @@ async def consolidate_candidates(
             ) else "path_matched"
             continue
 
-        # No confident single winner from heuristics — real ambiguity, not a hopeless orphan.
-        # Only spend an LLM call when there's an actual plausible shortlist to judge between.
+        # No confident single winner from heuristics — real ambiguity, not a hopeless orphan, but
+        # only spend an LLM call when there's an actual plausible shortlist to judge between.
         shortlist = tied[:2] if top_score > 0 else []
         if not shortlist:
             # No signal at all connecting this file to any block — leave unassigned rather
@@ -164,9 +165,10 @@ async def _llm_judge_file_membership(
     by_cid = {str(c["community_id"]): c for c in candidates}
     try:
         content = (await client.read_file(snapshot_id, file_path)).get("content", "")
-    except Exception:
+    except Exception as e:
+        logger.warning(f"Could not read {file_path} for consolidation judge, judging blind: {e}")
         content = ""
-    content = content[:4000]
+    content = content[:JUDGE_FILE_CONTENT_CHAR_BUDGET]
 
     options = []
     for cid in shortlist_cids:
@@ -190,8 +192,9 @@ async def _llm_judge_file_membership(
         json_mode=True,
     )
     try:
-        parsed = json.loads(response.content.strip().strip("`"))
-    except Exception:
+        parsed = json.loads(strip_json_code_fence(response.content))
+    except Exception as e:
+        logger.warning(f"Could not parse consolidation judge response for {file_path}: {e}")
         return None
     if parsed.get("confidence") == "low":
         return None

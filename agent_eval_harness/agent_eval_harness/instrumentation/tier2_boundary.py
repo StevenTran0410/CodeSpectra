@@ -19,6 +19,8 @@ from agent_eval_harness.instrumentation.base import (
 )
 from agent_eval_harness.mapping.system_map import SystemMap
 
+_HTTP_TIMEOUT_SECONDS = 60.0
+
 
 def _resolve_entry_point(entry_point: str) -> Callable[..., Awaitable[Any]]:
     """entry_point is "module.path:function_name" (the Python-callable form)
@@ -31,7 +33,7 @@ def _resolve_entry_point(entry_point: str) -> Callable[..., Awaitable[Any]]:
                 payload = {"query": query}
                 if prior_output is not None:
                     payload["prior_output"] = prior_output
-                resp = await client.post(entry_point, json=payload, timeout=60.0)
+                resp = await client.post(entry_point, json=payload, timeout=_HTTP_TIMEOUT_SECONDS)
                 resp.raise_for_status()
                 return resp.json()
 

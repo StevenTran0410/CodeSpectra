@@ -13,6 +13,9 @@ from agent_eval_harness.store import repository
 
 logger = logging.getLogger("agent_eval_harness.planning.planner")
 
+DEFAULT_MIN_CASES = 20
+GUARD_CLASSIFICATION_MIN_CASES = 40
+
 # System prompts for LLM assistant
 TAILOR_RUBRIC_SYSTEM = (
     "You are an AI evaluation planner. Given a component's docstring and source "
@@ -89,12 +92,10 @@ def get_tool_name_from_component(tc: Component) -> str:
 
 
 def _resolve_dataset_ref(dataset_kind: str) -> DatasetRef | None:
-    """Every dataset requirement always starts fresh (never links to an already-existing
-    dataset in the DB) — so regenerating a plan can't silently resurface a stale dataset;
-    Fulfill Datasets always re-runs the real generators and produces a brand-new one."""
+    """Always starts fresh (never links to an existing DB dataset) so regenerating a plan can't silently resurface stale data — Fulfill Datasets re-runs the real generators."""
     if not dataset_kind:
         return None
-    min_cases = 40 if dataset_kind == "guard_classification" else 20
+    min_cases = GUARD_CLASSIFICATION_MIN_CASES if dataset_kind == "guard_classification" else DEFAULT_MIN_CASES
     return DatasetRef(required={"kind": dataset_kind, "min_cases": min_cases})
 
 
@@ -129,8 +130,7 @@ def _component_role_rules(
             ),
         })
     elif role == "orchestrator":
-        # Assigned unconditionally; agentic_planner.py::_apply_feasibility drops/demotes
-        # this downstream when input_kind != "query" (CS-288) — don't fix it here.
+        # Assigned unconditionally; agentic_planner._apply_feasibility drops/demotes it downstream when input_kind != "query".
         role_rules.append({
             "metric": "geval.decomposition_coverage",
             "metric_class": "llm_judge",
@@ -208,7 +208,7 @@ def _component_role_rules(
                 "property. writer must not fabricate facts."
             ),
         })
-        # Same as the orchestrator branch above — feasibility pass corrects it (CS-288).
+        # Same as the orchestrator branch above — feasibility pass corrects it downstream.
         role_rules.append({
             "metric": "ragas.answer_relevancy",
             "metric_class": "llm_judge",
@@ -251,8 +251,8 @@ async def _hydrate_rule_to_entry(
                         sample_queries.append(q)
                 if sample_queries:
                     params["queries"] = sample_queries
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Could not fetch sample queries for dataset {dataset_ref.ref}: {e}")
 
     if "queries" not in params:
         params["queries"] = [
@@ -484,7 +484,8 @@ async def _tailor_geval_rubric(
     try:
         parsed = json.loads(response.content)
         return parsed.get("rubric_text", fallback_rubric)
-    except Exception:
+    except Exception as e:
+        logger.warning(f"Could not parse tailored rubric for {component.id}, using fallback: {e}")
         return fallback_rubric
 
 
@@ -554,5 +555,6 @@ async def _suggest_unknown_component_suite(
                 )
             )
         return results
-    except Exception:
+    except Exception as e:
+        logger.warning(f"Could not parse suggested suite entries for {component.id}, using fallback: {e}")
         return fallback_entries

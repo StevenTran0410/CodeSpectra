@@ -1,7 +1,4 @@
-"""AEH Stage 4 eval route — thin wrapper that loads .aeh/run_eval.py by path (".aeh" isn't a
-valid dotted package segment) and calls its driver directly, in-process. No LLM/network calls
-of its own; the driver's own provider calls use this repo's own already-configured provider
-service."""
+"""AEH Stage 4 eval route: loads .aeh/run_eval.py by path (".aeh" isn't a valid dotted package segment) and calls its driver in-process; makes no LLM/network calls of its own."""
 from __future__ import annotations
 
 import importlib.util

@@ -11,6 +11,7 @@ import yaml
 
 from agent_eval_harness.config import ContractConventions
 from agent_eval_harness.mapping.agent_flow import AgentFlowMap
+from agent_eval_harness.mapping.builder.types import parse_python_source
 from agent_eval_harness.mapping.system_map import Component, SystemMap
 from agent_eval_harness.planning.contract import (
     EvaluationContract,
@@ -27,6 +28,8 @@ _QUERYISH_PARAMS = frozenset({"query", "question", "prompt", "text", "message", 
 _CONFIG_PARAMS = frozenset({"provider_id", "model_id"})
 _SCHEMA_NAME_RE = re.compile(r"SCHEMA", re.IGNORECASE)
 _DYNAMIC = "<dynamic>"
+_MAX_TRACE_DEPTH = 6  # recursion cap for field-consumer call tracing (_trace_stmts)
+_SCHEMA_SNIPPET_MAX_CHARS = 200  # upstream_context_specs preview length
 
 
 def _parse_files(files: list[Path]) -> dict[Path, ast.Module]:
@@ -34,10 +37,9 @@ def _parse_files(files: list[Path]) -> dict[Path, ast.Module]:
     for file in files:
         if file.suffix != ".py":
             continue
-        try:
-            asts[file] = ast.parse(file.read_text(encoding="utf-8"), filename=str(file))
-        except (SyntaxError, OSError, UnicodeDecodeError):
-            continue
+        parsed = parse_python_source(file)
+        if parsed is not None:
+            asts[file] = parsed[1]
     return asts
 
 
@@ -212,14 +214,12 @@ def _find_name_assignment(tree: ast.Module, name: str) -> tuple[ast.expr, int] |
     return None
 
 
-def _find_module_str_constant(
-    asts: dict[Path, ast.Module],
-    name: str,
-    files_root: Path | None,
-    *,
-    own_file: Path | None = None,
-) -> tuple[str, str] | None:
-    """Find a module-level `NAME = <str literal>`, preferring own_file's import source then own_file, else scan others."""
+def _name_search_order(
+    asts: dict[Path, ast.Module], name: str, own_file: Path | None
+) -> list[Path]:
+    """File search order for resolving a module-level NAME: own_file's import source, then
+    own_file itself, then every other parsed file — shared by the str-constant and dict-literal
+    resolvers below since they both need "prefer where NAME was imported from."""
     search_order: list[Path] = []
     if own_file is not None and own_file in asts:
         imported_from = _import_source_file(asts[own_file], name, asts)
@@ -229,8 +229,18 @@ def _find_module_str_constant(
     for path in asts:
         if path not in search_order:
             search_order.append(path)
+    return search_order
 
-    for path in search_order:
+
+def _find_module_str_constant(
+    asts: dict[Path, ast.Module],
+    name: str,
+    files_root: Path | None,
+    *,
+    own_file: Path | None = None,
+) -> tuple[str, str] | None:
+    """Find a module-level `NAME = <str literal>`, preferring own_file's import source then own_file, else scan others."""
+    for path in _name_search_order(asts, name, own_file):
         found = _find_name_assignment(asts[path], name)
         if found is None:
             continue
@@ -357,7 +367,7 @@ def _find_pipeline_fallback_function(
     asts: dict[Path, ast.Module], letter: str, files_root: Path | None,
     conventions: ContractConventions | None = None,
 ) -> tuple[dict, str] | None:
-    """A5 fallthrough: agents without their own try/except (e.g. K/L) have a module-level `_section_<letter>_pipeline_fallback()` instead."""
+    """Fallthrough for agents without their own try/except (e.g. K/L): they have a module-level `_section_<letter>_pipeline_fallback()` instead."""
     pattern = (conventions or ContractConventions()).pipeline_fallback_name_pattern
     target_name = pattern.format(letter=letter.lower())
     for path, tree in asts.items():
@@ -558,15 +568,18 @@ def harvest_contracts(
         agent_flow_map, system_map, asts
     )
 
-    # D1: load keyword signals from discovery/contract_signals.yaml
+    # Load keyword signals from discovery/contract_signals.yaml
     _signals_path = Path(__file__).parent.parent.parent / "discovery" / "contract_signals.yaml"
     _kw_signals: list[str] = []
     if _signals_path.exists():
         try:
             _sig_data = yaml.safe_load(_signals_path.read_text(encoding="utf-8")) or {}
             _kw_signals = [str(k) for k in (_sig_data.get("keywords") or [])]
-        except Exception:
-            pass
+        except (yaml.YAMLError, OSError, AttributeError) as exc:
+            logger.warning(
+                "could not load %s — has_retrieval_signal keyword tier disabled: %s",
+                _signals_path, exc,
+            )
 
     for agent in agent_flow_map.agents:
         head_id = agent.id if agent.id in components_by_id else (agent.component_ids[0] if agent.component_ids else "")
@@ -602,7 +615,7 @@ def harvest_contracts(
         contract.observability = ObservabilityContract(has_tools=has_tools, input_kind=input_kind)
         contract.query_planning_subcall = _detect_query_planning_subcall(component, asts, conventions)
 
-        # D1: OR-combine keyword-tier and role-tier to set has_retrieval_signal
+        # OR-combine keyword-tier and role-tier to set has_retrieval_signal
         constructor_deps = invocation.constructor_deps if invocation else []
         tier1 = bool(_kw_signals) and any(kw in dep for dep in constructor_deps for kw in _kw_signals)
         tier2 = any(
@@ -617,7 +630,7 @@ def harvest_contracts(
 
         contracts[agent.id] = contract
 
-    # D3 pass-2: fill upstream_context_specs from harvested output contracts
+    # Second pass: fill upstream_context_specs from harvested output contracts
     comp_to_agent: dict[str, str] = {}
     for agent in agent_flow_map.agents:
         for cid in agent.component_ids:
@@ -635,7 +648,9 @@ def harvest_contracts(
                 continue
             up_contract = contracts[up_agent_id]
             if up_contract.output and up_contract.output.json_schema:
-                schema_snippet = json.dumps(up_contract.output.json_schema, ensure_ascii=False)[:200]
+                schema_snippet = json.dumps(
+                    up_contract.output.json_schema, ensure_ascii=False
+                )[:_SCHEMA_SNIPPET_MAX_CHARS]
                 specs.append({
                     "name": f"{up_agent_id}_output",
                     "description": f"the {up_agent_id} agent's output — JSON schema: {schema_snippet}",
@@ -670,12 +685,6 @@ def _detect_query_planning_subcall(
     return False
 
 
-_COMPOUND_WITH_BODY = (
-    ast.For, ast.AsyncFor, ast.If, ast.While, ast.Try, ast.With, ast.AsyncWith,
-    ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef,
-)
-
-
 def _find_function(tree: ast.Module, name: str) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
@@ -687,17 +696,7 @@ def _find_module_dict_literal(
     asts: dict[Path, ast.Module], name: str, *, own_file: Path | None = None
 ) -> dict[str, list[str]] | None:
     """A module-level `NAME = {...}` dict[str, list[str]] literal (e.g. _SECTION_PREVIEW_KEYS); None if not found or shape doesn't match."""
-    search_order: list[Path] = []
-    if own_file is not None and own_file in asts:
-        imported_from = _import_source_file(asts[own_file], name, asts)
-        if imported_from is not None:
-            search_order.append(imported_from)
-        search_order.append(own_file)
-    for path in asts:
-        if path not in search_order:
-            search_order.append(path)
-
-    for path in search_order:
+    for path in _name_search_order(asts, name, own_file):
         found = _find_name_assignment(asts[path], name)
         if found is None:
             continue
@@ -798,7 +797,7 @@ def _trace_stmts(
     fields_by_letter: dict[str, set[str]],
     depth: int,
 ) -> None:
-    if depth > 6:
+    if depth > _MAX_TRACE_DEPTH:
         return
     for stmt in stmts:
         if isinstance(stmt, (ast.For, ast.AsyncFor)) and isinstance(stmt.target, ast.Name):

@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from agent_eval_harness.datasets.metamorphic_ops import apply_transform
 from agent_eval_harness.datasets.metamorphic_relations import get_relation
-from agent_eval_harness.datasets.types import DatasetCase, TRUSTED_PROVENANCE
+from agent_eval_harness.datasets.types import TRUSTED_PROVENANCE, DatasetCase
 from agent_eval_harness.llm.client import LLMClient
 from agent_eval_harness.store import repository
 from agent_eval_harness.store.repository import new_id
@@ -36,7 +36,7 @@ async def generate(
     cases: list[DatasetCase] = []
     for db_case in source_db_cases:
         if db_case["provenance"] not in TRUSTED_PROVENANCE:
-            continue  # never derive from an unreviewed source case (Q1-b guard)
+            continue  # never derive from an unreviewed source case
 
         input_data = json.loads(db_case["input_json"])
         input_data.pop("kind", None)  # kind-sniffing artifact from an older storage shape

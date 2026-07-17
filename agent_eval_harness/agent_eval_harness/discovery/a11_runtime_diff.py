@@ -1,4 +1,4 @@
-"""A11 observe-first experiment: runtime vs static component diff.
+"""Observe-first experiment: runtime vs static component diff.
 
 Standalone diagnostic script that captures component_ids at runtime via HarnessTracer
 and compares against the static SystemMap to detect scanner over-detection and missed
@@ -17,7 +17,7 @@ from agent_eval_harness.instrumentation.tier1_haystack import HarnessTracer, _no
 from agent_eval_harness.mapping.engine import map_spans_to_components
 from agent_eval_harness.mapping.system_map import load_system_map
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("agent_eval_harness.discovery.a11_runtime_diff")
 
 
 async def main(system_map_path: str, target_module: str | None = None) -> None:
@@ -32,7 +32,6 @@ async def main(system_map_path: str, target_module: str | None = None) -> None:
     Prints three sections: MATCHED, STATIC-ONLY, RUNTIME-ONLY.
     Logs WARNING if RUNTIME-ONLY is non-empty (scanner missed components).
     """
-    # Load static system map
     system_map = load_system_map(system_map_path)
     static_ids = {c.id for c in system_map.components}
 
@@ -41,16 +40,13 @@ async def main(system_map_path: str, target_module: str | None = None) -> None:
         f"with {len(static_ids)} components"
     )
 
-    # Set up tracer
     tracer = HarnessTracer()
     enable_tracing(tracer)
 
     try:
-        # Try to run a pipeline if target_module is provided
         if target_module:
             try:
                 module = importlib.import_module(target_module)
-                # Try to find and run a pipeline or main function
                 if hasattr(module, "run_pipeline"):
                     result = module.run_pipeline()
                     if asyncio.iscoroutine(result) or asyncio.isfuture(result):
@@ -71,7 +67,6 @@ async def main(system_map_path: str, target_module: str | None = None) -> None:
                 "Pass --target-module to capture runtime components."
             )
 
-        # Normalize and map spans
         normalized_spans = [_normalize(s) for s in tracer.captured]
         if normalized_spans:
             map_spans_to_components(normalized_spans, system_map)
@@ -87,12 +82,10 @@ async def main(system_map_path: str, target_module: str | None = None) -> None:
                 f"Captured {len(tracer.captured)} spans but no component_ids mapped"
             )
 
-        # Diff results
         matched = static_ids & runtime_ids
         static_only = static_ids - runtime_ids
         runtime_only = runtime_ids - static_ids
 
-        # Print results
         print("\n=== MATCHED ===")
         for cid in sorted(matched):
             print(f"  {cid}")
@@ -113,7 +106,6 @@ async def main(system_map_path: str, target_module: str | None = None) -> None:
         if not runtime_only:
             print("  (none)")
 
-        # Log structured WARNING if scanner missed components
         if runtime_only:
             logger.warning(
                 f"Scanner missed {len(runtime_only)} components at runtime: "

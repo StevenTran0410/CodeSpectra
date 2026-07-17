@@ -12,12 +12,17 @@ from agent_eval_harness.llm.client import LLMClient
 from agent_eval_harness.llm.embedding_client import EmbeddingClient
 from agent_eval_harness.mapping.system_map import SystemMap, load_system_map
 from agent_eval_harness.metrics.assertions.registry import get_assertion
+from agent_eval_harness.metrics.registry import get_dispatch
 from agent_eval_harness.metrics.suite import SuiteEntry, load_suite
 from agent_eval_harness.metrics.types import MetricResult
 from agent_eval_harness.runner import execute_run
 from agent_eval_harness.store import repository
 
 logger = logging.getLogger("agent_eval_harness.sweep")
+
+# Fallback query used when a suite entry has no params.queries — keeps a trace-requiring
+# assertion/judge entry runnable even without a wired dataset.
+_DEFAULT_SWEEP_QUERY = "Test query for evaluation sweep."
 
 
 @dataclass
@@ -89,7 +94,6 @@ async def run_sweep(
                 sweep_result.errors.append({"entry_id": entry.id, "error": str(outcome)})
             elif isinstance(outcome, list):
                 sweep_result.results.extend(outcome)
-                # Persist each result
                 for mr in outcome:
                     await repository.insert_evaluation(
                         run_id=run_id,
@@ -107,8 +111,7 @@ async def run_sweep(
                         agent_id=entry.agent_id,
                     )
     except Exception:
-        # An ingested run's status already reflects the injected execution itself (set at
-        # ingest time) — a scoring failure here is a separate concern and must not overwrite it.
+        # Ingested run status is set at ingest time; a scoring failure here must not overwrite it.
         if source == "live":
             await repository.finish_run(run_id, "failed")
         raise
@@ -153,7 +156,6 @@ async def _run_entry(
         elif entry.metric_class == "llm_judge":
             return await _score_judge_entry(
                 entry,
-                system_map,
                 target,
                 map_path,
                 llm_client,
@@ -187,7 +189,7 @@ async def _score_assertion_entry(
 ) -> list[MetricResult]:
     """Run traces for all dataset cases, then apply the assertion to each."""
     assertion_fn = get_assertion(entry.metric)
-    queries = _get_queries_for_entry(entry, system_map)
+    queries = _get_queries_for_entry(entry)
     params = _derive_assertion_params(entry, system_map)
 
     # Batch all queries into one execute_run call rather than one call per query.
@@ -248,7 +250,6 @@ async def _score_classifier_entry(
     if not dataset_ref:
         raise ValueError(f"Entry '{entry.id}' requires a dataset.ref for classifier scoring")
 
-    # Resolve the component entry_point from entry.params
     entry_point = entry.params.get("entry_point", "")
     if not entry_point:
         raise ValueError(f"Entry '{entry.id}' requires params.entry_point for classifier scoring")
@@ -265,7 +266,6 @@ async def _score_classifier_entry(
 
 async def _score_judge_entry(
     entry: SuiteEntry,
-    system_map: SystemMap,
     target: str,
     map_path: str,
     llm_client: LLMClient,
@@ -276,7 +276,7 @@ async def _score_judge_entry(
 ) -> list[MetricResult]:
     """Run traces and apply LLM-judge scoring."""
     results: list[MetricResult] = []
-    queries = _get_queries_for_entry(entry, system_map)
+    queries = _get_queries_for_entry(entry)
 
     # Batch all queries into one execute_run call — see _score_assertion_entry for why.
     outcomes = await execute_run(
@@ -302,15 +302,18 @@ async def _dispatch_judge(
     embedding_client: EmbeddingClient | None = None,
 ) -> MetricResult | None:
     metric = entry.metric
+    # Route by the registry's dispatch field (not the metric name literal) so any metric
+    # registered with dispatch="geval" — e.g. grounding_judge_span_prompt — reaches run_geval too.
+    handler = get_dispatch(metric)
 
-    if metric.startswith("geval."):
+    if handler == "geval":
         from agent_eval_harness.metrics.judges.deepeval_geval import run_geval
 
         rubric_text = entry.params.get("rubric_text", "Evaluate the quality of the response.")
-        # Extract actual output from the component's span
         actual_output = _extract_span_output(spans, entry.component)
+        metric_name = metric[len("geval."):] if metric.startswith("geval.") else metric
         return await run_geval(
-            metric_name=metric[len("geval."):],
+            metric_name=metric_name,
             rubric_text=rubric_text,
             input_text=query,
             actual_output=actual_output,
@@ -319,7 +322,7 @@ async def _dispatch_judge(
             trace_id=trace_id,
         )
 
-    elif metric == "ragas.faithfulness":
+    elif handler == "ragas_faithfulness":
         from agent_eval_harness.metrics.judges.ragas_judge import run_ragas_faithfulness
 
         actual_answer = _extract_span_output(spans, entry.component)
@@ -333,7 +336,7 @@ async def _dispatch_judge(
             trace_id=trace_id,
         )
 
-    elif metric == "ragas.answer_relevancy":
+    elif handler == "ragas_answer_relevancy":
         from agent_eval_harness.metrics.judges.ragas_judge import run_ragas_answer_relevancy
 
         actual_answer = _extract_span_output(spans, entry.component)
@@ -346,7 +349,7 @@ async def _dispatch_judge(
             embedding_client=embedding_client,
         )
 
-    elif metric == "tool_correctness":
+    elif handler == "tool_correctness":
         from agent_eval_harness.metrics.judges.deepeval_geval import run_tool_correctness
 
         expected_tools = entry.params.get("expected_tools", [])
@@ -367,14 +370,12 @@ async def _dispatch_judge(
     )
 
 
-def _get_queries_for_entry(entry: SuiteEntry, system_map: SystemMap) -> list[str]:
-    """Resolve queries for a suite entry: from dataset or from entry.params."""
-    # Assertion/judge entries that need traces use params.queries or a default
+def _get_queries_for_entry(entry: SuiteEntry) -> list[str]:
+    """Resolve queries for a suite entry: params.queries, or the default sweep query."""
     queries = entry.params.get("queries")
     if queries:
         return list(queries)
-    # Default test query
-    return ["Test query for evaluation sweep."]
+    return [_DEFAULT_SWEEP_QUERY]
 
 
 def _resolve_dataset_ref(entry: SuiteEntry) -> str | None:

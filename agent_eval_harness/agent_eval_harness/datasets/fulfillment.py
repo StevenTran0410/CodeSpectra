@@ -10,8 +10,8 @@ import yaml
 
 from agent_eval_harness.datasets.generator_utils import seed_cases_to_dataset_cases
 from agent_eval_harness.datasets.registry import get_generator
-from agent_eval_harness.datasets.versioning import next_version
 from agent_eval_harness.datasets.types import TRUSTED_PROVENANCE
+from agent_eval_harness.datasets.versioning import next_version
 from agent_eval_harness.discovery.client import CodeSpectraClient
 from agent_eval_harness.llm.client import LLMClient
 from agent_eval_harness.llm.embedding_client import EmbeddingClient
@@ -154,7 +154,7 @@ async def _derive_config(
         contract = (contract_by_agent or {}).get(agent_id)
         if contract is None:
             return None
-        # D2: 3-tier purpose: knowledge.functionality > profile.purpose > archetype generic (in generator)
+        # 3-tier purpose fallback: knowledge.functionality > profile.purpose > archetype generic (in generator)
         knowledge = (knowledge_by_agent or {}).get(agent_id) or {}
         base_profile = dict((profile_by_agent or {}).get(agent_id) or {})
         resolved_purpose = knowledge.get("functionality") or base_profile.get("purpose") or ""
@@ -200,7 +200,7 @@ async def _derive_config(
     if kind == "snapshot_fixture":
         if extra_snapshot_ids and not codespectra_client:
             return None
-        snapshot_ids = [snapshot_id] + extra_snapshot_ids
+        snapshot_ids = [snapshot_id, *extra_snapshot_ids]
         if extra_snapshot_ids:
             try:
                 for extra_id in extra_snapshot_ids:
@@ -216,7 +216,7 @@ async def _derive_config(
     if kind == "field_match_gold":
         if extra_snapshot_ids and not codespectra_client:
             return None
-        snapshot_ids = [snapshot_id] + extra_snapshot_ids
+        snapshot_ids = [snapshot_id, *extra_snapshot_ids]
         local_paths = {snapshot_id: snapshot_local_path}
         if extra_snapshot_ids:
             try:
@@ -338,7 +338,7 @@ async def fulfill_plan(
         except Exception as e:
             logger.warning(f"fulfillment: could not load plan report for synthetic_agent_io wiring: {e}")
 
-    # D2: load AgentKnowledge per agent from the DB when session_id is available
+    # load AgentKnowledge per agent from the DB when session_id is available
     knowledge_by_agent: dict[str, dict[str, Any]] = {}
     if session_id and plan_report is not None:
         for agent_report in plan_report.agents:

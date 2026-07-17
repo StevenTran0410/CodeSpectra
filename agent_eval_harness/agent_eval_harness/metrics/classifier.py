@@ -9,13 +9,14 @@ from agent_eval_harness.llm.client import LLMClient
 from agent_eval_harness.metrics.types import MetricResult
 from agent_eval_harness.store import repository
 
+CLASSIFIER_PASS_THRESHOLD = 0.8
+
 
 async def score_classifier(
     dataset_id: str,
     component_entry_point: str,
     llm_client: LLMClient,
     *,
-    run_id: str | None = None,
     component_id: str | None = None,
     metric_name: str = "classifier.accuracy",
 ) -> MetricResult:
@@ -40,7 +41,6 @@ async def score_classifier(
             evaluator="sklearn",
         )
 
-    # Resolve the component class and instantiate
     component_cls = _resolve_entry_point(component_entry_point)
     component = component_cls(llm_client)
 
@@ -110,7 +110,7 @@ async def score_classifier(
         metric_name=metric_name,
         metric_class="classifier",
         score=accuracy,
-        passed=accuracy >= 0.8,
+        passed=accuracy >= CLASSIFIER_PASS_THRESHOLD,
         details={
             "total_cases": len(cases),
             "evaluated": len(y_true),

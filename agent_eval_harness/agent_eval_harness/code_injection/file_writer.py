@@ -51,10 +51,7 @@ def apply_marker_block(
     original = _read_raw(path)
     newline = _detect_newline(original)
     begin, end = _marker_lines(marker_id, newline)
-    # `block` is caller-supplied Python source using plain "\n" — normalize every internal
-    # line ending to the target file's own style before inserting, or a multi-line block
-    # into a CRLF file mixes conventions (git then rewrites it on the next checkout/diff,
-    # and a stray extra blank line appears wherever "\n" met the appended newline).
+    # Normalize block's "\n" line endings to the target file's own style, or a CRLF file ends up with mixed conventions.
     normalized_block = block.replace("\r\n", "\n").replace("\n", newline)
     block_text = normalized_block if normalized_block.endswith(newline) else normalized_block + newline
 

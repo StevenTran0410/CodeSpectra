@@ -33,6 +33,7 @@ class AEHConfig:
             return cls()
         data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
         cc = data.get("contract_conventions") or {}
+        defaults = ContractConventions()
         return cls(
             backend_url=data.get("backend_url"),
             backend_token=data.get("backend_token"),
@@ -42,8 +43,10 @@ class AEHConfig:
             thinking_budget=data.get("thinking_budget"),
             backend_source_path=data.get("backend_source_path"),
             contract_conventions=ContractConventions(
-                rerun_section_route=cc.get("rerun_section_route", "/api/analysis/rerun_section"),
-                pipeline_fallback_name_pattern=cc.get("pipeline_fallback_name_pattern", "_section_{letter}_pipeline_fallback"),
-                plan_queries_symbol=cc.get("plan_queries_symbol", "plan_queries"),
+                rerun_section_route=cc.get("rerun_section_route", defaults.rerun_section_route),
+                pipeline_fallback_name_pattern=cc.get(
+                    "pipeline_fallback_name_pattern", defaults.pipeline_fallback_name_pattern
+                ),
+                plan_queries_symbol=cc.get("plan_queries_symbol", defaults.plan_queries_symbol),
             ),
         )

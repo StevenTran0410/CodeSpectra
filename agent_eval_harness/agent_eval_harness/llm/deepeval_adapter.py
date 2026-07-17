@@ -18,7 +18,7 @@ import typing
 from pydantic import ValidationError
 
 from agent_eval_harness.llm.client import LLMClient, LLMMessage
-from agent_eval_harness.llm.ragas_adapter import _run_async_blocking
+from agent_eval_harness.llm.ragas_adapter import run_async_blocking
 
 _MAX_SCHEMA_ATTEMPTS = 2
 
@@ -45,7 +45,7 @@ def make_deepeval_llm_adapter(llm_client: LLMClient):
             return self
 
         def generate(self, prompt: str, schema: typing.Any = None) -> typing.Any:
-            return _run_async_blocking(self.a_generate, prompt, schema)
+            return run_async_blocking(self.a_generate, prompt, schema)
 
         async def a_generate(self, prompt: str, schema: typing.Any = None) -> typing.Any:
             if schema is not None:
@@ -114,14 +114,14 @@ def make_deepeval_embedding_model(embedding_client):
             return "CodeSpectra Embedding Proxy"
 
         def embed_text(self, text: str) -> list[float]:
-            return _run_async_blocking(self.a_embed_text, text)
+            return run_async_blocking(self.a_embed_text, text)
 
         async def a_embed_text(self, text: str) -> list[float]:
             results = await embedding_client.embed_texts([text])
             return results[0]
 
         def embed_texts(self, texts: list[str]) -> list[list[float]]:
-            return _run_async_blocking(self.a_embed_texts, texts)
+            return run_async_blocking(self.a_embed_texts, texts)
 
         async def a_embed_texts(self, texts: list[str]) -> list[list[float]]:
             return await embedding_client.embed_texts(texts)

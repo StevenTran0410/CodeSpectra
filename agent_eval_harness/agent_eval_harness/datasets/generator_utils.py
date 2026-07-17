@@ -1,9 +1,13 @@
 """Common utilities shared across dataset generators."""
 import json
+import logging
+from collections.abc import Callable
 from typing import Any
 
 from agent_eval_harness.datasets.types import DatasetCase
 from agent_eval_harness.store.repository import new_id
+
+logger = logging.getLogger("agent_eval_harness.datasets.generator_utils")
 
 
 def apply_painpoint(prompt: str, painpoint: str | None) -> str:
@@ -51,7 +55,7 @@ def strip_markdown_code_block(content: str) -> str:
 
 
 def parse_json_with_fallback(
-    content: str, fallback_count: int, fallback_fn: callable
+    content: str, fallback_count: int, fallback_fn: Callable[[int], Any]
 ) -> list[Any]:
     """Parse JSON content with a fallback generator for parse failures."""
     try:
@@ -59,8 +63,8 @@ def parse_json_with_fallback(
         if not isinstance(items, list):
             raise ValueError("Response is not a list")
         return items
-    except Exception:
-        # Fallback: generate items using the provided function
+    except Exception as e:
+        logger.warning(f"parse_json_with_fallback: falling back after parse failure: {e}")
         return [fallback_fn(i) for i in range(fallback_count)]
 
 
@@ -68,7 +72,6 @@ def build_qa_testset_case(
     dataset_name: str, query: str, answer: str, contexts: Any
 ) -> DatasetCase:
     """Build a QA testset DatasetCase with standard structure."""
-    # Ensure contexts is a list
     if not isinstance(contexts, list):
         contexts = [contexts] if contexts else []
 
@@ -77,8 +80,7 @@ def build_qa_testset_case(
         dataset=dataset_name,
         kind="qa_testset",
         input={"query": query},
-        # "answer" kept for existing consumers; "expected_response" is the GroundTruth-reserved
-        # key that downstream deterministic gates read as primary.
+        # "answer" kept for existing consumers; "expected_response" is the GroundTruth-reserved key downstream gates read as primary.
         expected={"answer": answer, "expected_response": answer},
         labels={"contexts": contexts},
         provenance="synthetic"

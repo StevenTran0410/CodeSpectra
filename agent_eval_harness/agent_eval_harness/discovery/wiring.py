@@ -1,11 +1,29 @@
 import ast
-from dataclasses import dataclass, asdict
 import json
 import logging
+from dataclasses import asdict, dataclass
 from typing import Any
-from agent_eval_harness.llm.client import RateLimitExceeded, LLMMessage
+
+from agent_eval_harness.llm.client import LLMMessage, RateLimitExceeded
 
 logger = logging.getLogger("agent_eval_harness.discovery.wiring")
+
+_LLM_FALLBACK_MAX_TOKENS = 1024
+_LLM_FALLBACK_FILE_CHAR_LIMIT = 6000
+
+
+def strip_json_code_fence(content: str) -> str:
+    """Strip a ```/```json markdown fence an LLM sometimes wraps a json_mode response in."""
+    content = content.strip()
+    if content.startswith("```"):
+        lines = content.splitlines()
+        if lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        content = "\n".join(lines).strip()
+    return content
+
 
 @dataclass
 class WiringNode:
@@ -13,10 +31,12 @@ class WiringNode:
     class_name: str
     source_hint_file: str
 
+
 @dataclass
 class WiringEdge:
     src: str
     dst: str
+
 
 @dataclass
 class WiringBlock:
@@ -34,13 +54,28 @@ class WiringBlock:
         }
 
 
-def _iter_parsed_files(file_contents: dict[str, str]):
-    """Parse each file once, silently skipping any with a syntax error."""
+def _iter_parsed_files(
+    file_contents: dict[str, str], cache: dict[str, ast.AST | None] | None = None
+):
+    """Parse each file once, silently skipping any with a syntax error; `cache` (when given) is
+    shared across the 3 static detectors and nested class-resolution lookups so a file within one
+    detection call is never re-parsed."""
     for file, content in file_contents.items():
-        try:
-            yield file, ast.parse(content, filename=file)
-        except SyntaxError:
+        if cache is not None and file in cache:
+            tree = cache[file]
+            if tree is not None:
+                yield file, tree
             continue
+        try:
+            tree = ast.parse(content, filename=file)
+        except SyntaxError as e:
+            logger.debug(f"Skipping {file} for wiring detection, syntax error: {e}")
+            if cache is not None:
+                cache[file] = None
+            continue
+        if cache is not None:
+            cache[file] = tree
+        yield file, tree
 
 
 def _const_str(node: ast.expr) -> str | None:
@@ -92,18 +127,24 @@ def _find_self_attr_reference(node: ast.AST) -> str | None:
     return None
 
 
-def _find_class_definition_file(class_name: str, file_contents: dict[str, str]) -> str | None:
+def _find_class_definition_file(
+    class_name: str, file_contents: dict[str, str], cache: dict[str, ast.AST | None] | None = None
+) -> str | None:
     """Return the file that actually DEFINES class_name (ground truth, robust to re-exports/lazy
     imports); None if zero or more than one file defines it."""
     matches = [
-        fpath for fpath, tree in _iter_parsed_files(file_contents)
+        fpath for fpath, tree in _iter_parsed_files(file_contents, cache)
         if any(isinstance(n, ast.ClassDef) and n.name == class_name for n in ast.walk(tree))
     ]
     return matches[0] if len(matches) == 1 else None
 
 
 def _resolve_component_class_and_file(
-    arg1: ast.expr, file: str, self_attr_classes: dict[str, str], file_contents: dict[str, str]
+    arg1: ast.expr,
+    file: str,
+    self_attr_classes: dict[str, str],
+    file_contents: dict[str, str],
+    cache: dict[str, ast.AST | None] | None = None,
 ) -> tuple[str, str]:
     """Resolve add_component()/add_node()'s constructor arg to the real (possibly wrapper-hidden)
     component class and the file it's defined in, via a nested constructor call or a self.<attr>
@@ -116,7 +157,7 @@ def _resolve_component_class_and_file(
             if isinstance(sub, ast.Call):
                 candidate_name = _call_func_name(sub)
                 # PascalCase only — a lowercase helper call (e.g. RetrieverComponent(_load_corpus()))
-                # is data, not a nested component, and must not be mistaken for the real class.
+                # is data, not a component.
                 if candidate_name and candidate_name[0].isupper():
                     inner_name = candidate_name
                     break
@@ -127,17 +168,19 @@ def _resolve_component_class_and_file(
                 inner_name = self_attr_classes[attr]
 
     if inner_name:
-        resolved_file = _find_class_definition_file(inner_name, file_contents) or file
+        resolved_file = _find_class_definition_file(inner_name, file_contents, cache) or file
         return inner_name, resolved_file
 
     # No wrapper detected — the file where add_component()/add_node() itself is called.
     return outer_name, file
 
 
-def _detect_haystack(file_contents: dict[str, str]) -> WiringBlock | None:
+def _detect_haystack(
+    file_contents: dict[str, str], cache: dict[str, ast.AST | None] | None = None
+) -> WiringBlock | None:
     nodes = {}
     edges = []
-    parsed_files = list(_iter_parsed_files(file_contents))
+    parsed_files = list(_iter_parsed_files(file_contents, cache))
 
     for file, tree in parsed_files:
         self_attr_classes = _build_self_attr_classes(tree)
@@ -151,7 +194,7 @@ def _detect_haystack(file_contents: dict[str, str]) -> WiringBlock | None:
 
                         alias = _const_str(arg0)
                         class_name, source_hint_file = _resolve_component_class_and_file(
-                            arg1, file, self_attr_classes, file_contents
+                            arg1, file, self_attr_classes, file_contents, cache
                         )
 
                         if alias:
@@ -182,11 +225,13 @@ def _detect_haystack(file_contents: dict[str, str]) -> WiringBlock | None:
     return None
 
 
-def _detect_langgraph(file_contents: dict[str, str]) -> WiringBlock | None:
+def _detect_langgraph(
+    file_contents: dict[str, str], cache: dict[str, ast.AST | None] | None = None
+) -> WiringBlock | None:
     nodes = {}
     edges = []
 
-    for file, tree in _iter_parsed_files(file_contents):
+    for file, tree in _iter_parsed_files(file_contents, cache):
         self_attr_classes = _build_self_attr_classes(tree)
 
         for node in ast.walk(tree):
@@ -206,7 +251,7 @@ def _detect_langgraph(file_contents: dict[str, str]) -> WiringBlock | None:
                             class_name = arg1.attr
                         elif isinstance(arg1, ast.Call):
                             class_name, source_hint_file = _resolve_component_class_and_file(
-                                arg1, file, self_attr_classes, file_contents
+                                arg1, file, self_attr_classes, file_contents, cache
                             )
 
                         if alias:
@@ -254,11 +299,13 @@ def _looks_like_type_union(operands: list) -> bool:
     return False
 
 
-def _detect_langchain_lcel(file_contents: dict[str, str]) -> WiringBlock | None:
+def _detect_langchain_lcel(
+    file_contents: dict[str, str], cache: dict[str, ast.AST | None] | None = None
+) -> WiringBlock | None:
     nodes = {}
     edges = []
 
-    for file, tree in _iter_parsed_files(file_contents):
+    for file, tree in _iter_parsed_files(file_contents, cache):
         processed_binops = set()
 
         for node in ast.walk(tree):
@@ -313,8 +360,10 @@ def _detect_langchain_lcel(file_contents: dict[str, str]) -> WiringBlock | None:
 
 
 def detect_wiring_block_static(file_contents: dict[str, str]) -> WiringBlock | None:
+    # Shared across all 3 detectors so a file isn't re-parsed for each one.
+    cache: dict[str, ast.AST | None] = {}
     for detector in (_detect_haystack, _detect_langgraph, _detect_langchain_lcel):
-        result = detector(file_contents)
+        result = detector(file_contents, cache)
         if result is not None:
             return result
     return None
@@ -335,7 +384,7 @@ async def detect_wiring_block(
 async def _detect_via_llm(file_contents: dict[str, str], llm_client: Any) -> WiringBlock | None:
     context_parts = []
     for path, content in file_contents.items():
-        truncated = content[:6000]
+        truncated = content[:_LLM_FALLBACK_FILE_CHAR_LIMIT]
         context_parts.append(f"=== File: {path} ===\n{truncated}\n")
 
     files_context = "\n".join(context_parts)
@@ -362,16 +411,10 @@ async def _detect_via_llm(file_contents: dict[str, str], llm_client: Any) -> Wir
             LLMMessage(role="system", content=system_prompt),
             LLMMessage(role="user", content=user_prompt),
         ]
-        response = await llm_client.complete(messages, max_tokens=1024, json_mode=True)
-        content = response.content.strip()
-
-        if content.startswith("```"):
-            lines = content.splitlines()
-            if lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines[-1].startswith("```"):
-                lines = lines[:-1]
-            content = "\n".join(lines).strip()
+        response = await llm_client.complete(
+            messages, max_tokens=_LLM_FALLBACK_MAX_TOKENS, json_mode=True
+        )
+        content = strip_json_code_fence(response.content)
 
         parsed = json.loads(content)
         nodes_raw = parsed.get("nodes") or []

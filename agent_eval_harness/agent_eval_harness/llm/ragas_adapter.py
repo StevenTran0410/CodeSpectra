@@ -4,7 +4,7 @@ from __future__ import annotations
 from agent_eval_harness.llm.client import LLMClient, LLMMessage
 
 
-def _run_async_blocking(coro_fn, *args, **kwargs):
+def run_async_blocking(coro_fn, *args, **kwargs):
     """Run an async function from a blocking context."""
     import asyncio
 
@@ -57,7 +57,7 @@ def make_ragas_llm_adapter(llm_client: LLMClient):
             run_manager=None,
             **kwargs,
         ) -> ChatResult:
-            return _run_async_blocking(self._agenerate, messages, stop, run_manager, **kwargs)
+            return run_async_blocking(self._agenerate, messages, stop, run_manager, **kwargs)
 
         async def _agenerate(
             self,
@@ -102,10 +102,10 @@ def make_ragas_embeddings(embedding_client):
 
     class RealEmbeddings(Embeddings):
         def embed_documents(self, texts: list[str]) -> list[list[float]]:
-            return _run_async_blocking(embedding_client.embed_texts, texts)
+            return run_async_blocking(embedding_client.embed_texts, texts)
 
         def embed_query(self, text: str) -> list[float]:
-            results = _run_async_blocking(embedding_client.embed_texts, [text])
+            results = run_async_blocking(embedding_client.embed_texts, [text])
             return results[0]
 
     return RealEmbeddings()

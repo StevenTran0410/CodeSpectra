@@ -9,7 +9,7 @@ Provenance = Literal["synthetic", "handwritten", "generated+reviewed", "derived+
 # Single source of truth for export-eligible provenance values.
 TRUSTED_PROVENANCE: tuple[str, ...] = ("generated+reviewed", "handwritten", "derived+reviewed")
 
-__all__ = ["DATASET_KINDS", "DatasetCase", "Provenance", "TRUSTED_PROVENANCE"]
+__all__ = ["DATASET_KINDS", "TRUSTED_PROVENANCE", "DatasetCase", "Provenance"]
 
 class DatasetCase(BaseModel):
     id: str

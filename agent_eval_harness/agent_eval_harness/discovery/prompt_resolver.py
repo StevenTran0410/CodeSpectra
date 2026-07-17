@@ -37,7 +37,8 @@ def resolve_constant(
             elif isinstance(value, ast.FormattedValue):
                 try:
                     parts.append("{" + ast.unparse(value.value) + "}")
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"Could not unparse f-string expression, using placeholder: {e}")
                     parts.append("{...}")
             else:
                 return None

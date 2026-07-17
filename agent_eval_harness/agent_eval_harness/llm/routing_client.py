@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import contextvars
+import logging
 
 from agent_eval_harness.llm.client import LLMClient, LLMMessage, LLMResponse
+
+logger = logging.getLogger("agent_eval_harness.llm.routing_client")
 
 current_component_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "current_component_id_var", default=None
@@ -50,7 +53,11 @@ class RoutingLLMClient:
                         json_mode=json_mode,
                     )
         except Exception:
-            pass
+            logger.debug(
+                "routing: failed to inspect the current haystack span for component routing "
+                "— falling back to the default client",
+                exc_info=True,
+            )
 
         # 3. Fallback to default client
         return await self._default.complete(

@@ -22,7 +22,7 @@ def pick_judge_provider(generator: _HasKind, available: list[_HasKind]) -> _HasK
     logger.warning(
         "pick_judge_provider: no configured provider has a kind different from the "
         "generator's (%s) — falling back to the generator's own provider; scores are more "
-        "exposed to generator/judge circularity than with a cross-family judge (CS-289 §5.2).",
+        "exposed to generator/judge circularity than with a cross-family judge.",
         generator.kind,
     )
     for candidate in available:

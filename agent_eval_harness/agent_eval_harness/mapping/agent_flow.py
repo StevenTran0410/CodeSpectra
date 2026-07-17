@@ -19,6 +19,8 @@ from .system_map import Component, SystemMap
 
 logger = logging.getLogger("agent_eval_harness.mapping.agent_flow")
 
+_AGENT_FLOW_MAX_TOKENS = 4096
+
 
 class AgentFlow(BaseModel):
     id: str
@@ -73,7 +75,8 @@ def _fallback_snippet(component: Component, files: list[Path]) -> str:
         return ""
     try:
         content = match.read_text(encoding="utf-8")
-    except OSError:
+    except OSError as exc:
+        logger.debug("could not read %s for fallback snippet: %s", match, exc)
         return ""
     _, _, class_name = component.entry_point.partition(":")
     if not class_name:
@@ -122,7 +125,7 @@ def _build_user_prompt(
         lines.append("source:")
         lines.append(snippet)
         lines.append("")
-    # B5: inject project feature map summary when available so LLM can infer agent boundaries
+    # Inject project feature map summary when available so LLM can infer agent boundaries
     if feature_map_hint:
         lines.append("\n\nProject feature map summary:")
         lines.append(feature_map_hint)
@@ -151,7 +154,7 @@ async def separate_agent_flows(
                     content=_build_user_prompt(system_map, source_by_component, feature_map_hint),
                 ),
             ],
-            max_tokens=4096,
+            max_tokens=_AGENT_FLOW_MAX_TOKENS,
             json_mode=True,
             reasoning_effort="low",  # structured extraction: reasoning burns the completion budget and returns empty content
         )
@@ -192,8 +195,8 @@ async def separate_agent_flows(
         remaining.difference_update(owned)
         seen_agent_ids.add(agent_id)
 
-        # CS-300: AGENT_FLOW_SYSTEM no longer asks for role — it's derived from gated component
-        # roles by Stage 2.5's _persist. Validation kept as cheap defence against a stray field.
+        # AGENT_FLOW_SYSTEM no longer asks for role — it's derived from gated component roles
+        # by Stage 2.5's _persist. Validation kept as cheap defence against a stray field.
         role = raw.get("role")
         if not isinstance(role, str) or role not in VALID_ROLES:
             role = "unknown"

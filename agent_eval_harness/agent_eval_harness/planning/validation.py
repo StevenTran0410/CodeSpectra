@@ -11,11 +11,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from agent_eval_harness.metrics.registry import (
-    DATASET_KINDS,
-    get_spec,
-    validate_metric,
-)
+from agent_eval_harness.metrics.registry import DATASET_KINDS, get_spec
 from agent_eval_harness.metrics.suite import load_suite
 from agent_eval_harness.store import repository
 
@@ -28,10 +24,8 @@ _REASON_MISSING_PARAMS = "missing_params"
 _REASON_NOT_DISPATCHABLE = "metric_not_dispatchable"
 _REASON_CLASSIFIER_UNBOUND = "classifier_unbound"
 _REASON_INVALID_DATASET_KIND = "invalid_dataset_kind"
-_REASON_BIND_UNRESOLVABLE = "bind_unresolvable"  # not wired yet
 
-# Prefix, not "<TODO>" — the real placeholder is "<TODO: add a representative query
-# for this target>" (planner.py:304,385), which never contains a literal "<TODO>".
+# Prefix match, not equality — the real placeholder text (planner.py) never contains a literal "<TODO>".
 _TODO_PATTERN = "<TODO"
 
 

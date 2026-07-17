@@ -23,10 +23,7 @@ _MAIN_PY_ANCHORS = (
 
 
 def _validate_main_py_anchors(repo_root: Path) -> None:
-    """Fails loudly at plan-render time if backend/main.py doesn't actually contain the
-    anchor lines the diff instructions reference — better than silently handing a coding
-    agent (which has zero other context and can't tell a stale anchor from a real one)
-    instructions that won't apply."""
+    """Fails loudly if backend/main.py lacks the anchor lines the diff instructions reference, rather than handing a context-free coding agent instructions that silently won't apply."""
     main_py_path = repo_root / "backend" / "main.py"
     if not main_py_path.is_file():
         raise ValueError(f"backend/main.py not found at {main_py_path}")
@@ -68,10 +65,8 @@ def render_eval_plan_md(
             When None, falls back to a thin wiring table (legacy sessions with no report).
         repo_root: required when plan_report is given, to resolve prompt-location references
             against real files on disk.
-        base_ref: branch/ref the coding agent should create the eval branch FROM. AEH itself
-            never creates this branch (a locally-created-but-unpushed branch is invisible to
-            anything checking remotely) — the plan tells the coding agent to create it as its
-            own first step instead.
+        base_ref: branch/ref the coding agent should create the eval branch from — AEH never
+            creates it itself, since a locally-created-but-unpushed branch is invisible remotely.
         knowledge_dir: optional directory containing enriched AgentKnowledge JSON sidecars
             for agents. When provided, enriched agents use prompt_sites from their knowledge
             instead of calling locate_prompt_reference.
@@ -88,7 +83,7 @@ def render_eval_plan_md(
         f"Session: {session_id}\n"
         f"Branch: {branch_name}\n"
         f"plan_id: {wiring['plan_id']}\n"
-        f"Generated: {datetime.datetime.utcnow().isoformat()}Z\n\n"
+        f"Generated: {datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).isoformat()}Z\n\n"
         f"This document is a self-contained briefing for an external coding agent. You "
         f"have NO other context about this project or AEH beyond what's written here — "
         f"do not assume anything not stated explicitly. It contains all file content, "
@@ -109,8 +104,7 @@ def render_eval_plan_md(
         "land here, not on whatever branch happened to be checked out when you started."
     )
 
-    # Section 2: Agents — rich per-agent context pulled from Stage 3's already-computed
-    # plan_report, falling back to a thin component table when no report is available.
+    # Section 2: Agents — rich context from Stage 3's plan_report, or a thin table if none.
     if plan_report is not None:
         if repo_root is None:
             raise ValueError("repo_root is required when plan_report is provided")

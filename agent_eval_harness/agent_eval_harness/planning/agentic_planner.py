@@ -3,6 +3,7 @@ joins against the baseline, critic reviews."""
 from __future__ import annotations
 
 import asyncio
+import difflib
 import json
 import logging
 from collections.abc import Awaitable, Callable
@@ -10,15 +11,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import difflib
-
 from agent_eval_harness.llm.client import LLMClient, LLMMessage
 from agent_eval_harness.mapping.agent_flow import AgentFlow, AgentFlowMap
 from agent_eval_harness.mapping.system_map import Component, SystemMap
-from agent_eval_harness.metrics.assertions.registry import get_assertion, ASSERTIONS, _import_all as _import_all_assertions
+from agent_eval_harness.metrics.assertions.registry import ASSERTIONS, _import_all as _import_all_assertions
 from agent_eval_harness.metrics.registry import DATASET_KINDS, get_spec, validate_metric
 from agent_eval_harness.metrics.suite import DatasetRef, Suite, SuiteEntry
-from agent_eval_harness.planning.planner import baseline_gates_for_agent, role_skip_note
+from agent_eval_harness.planning.planner import (
+    DEFAULT_MIN_CASES,
+    baseline_gates_for_agent,
+    get_tool_name_from_component,
+    role_skip_note,
+)
 from agent_eval_harness.planning.contract import EvaluationContract
 from agent_eval_harness.planning.report import (
     AgentDataProfile,
@@ -35,6 +39,7 @@ _BASELINE_HANDOFF_METRICS = {
     "allowed_downstream", "max_items_per_call", "max_retries", "retry_on_reject_required",
 }
 MAX_LLM_JUDGE_GATES_PER_AGENT = 3  # cap on LLM-judge gates per agent; baseline judges exempt
+GEVAL_RUBRIC_MERGE_THRESHOLD = 0.85  # SequenceMatcher ratio above which two geval rubrics are treated as duplicates
 
 ANALYST_SYSTEM = (
     "You are an AI evaluation-planning analyst. Given one agent's real source code, its "
@@ -281,26 +286,18 @@ def _evidence_user_prompt(evidence: AgentEvidence) -> str:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Shared LLM-JSON call: retries once with a larger budget on truncation, and records a
-# fully-failed round in dag_notes instead of vanishing silently.
+# Shared LLM-JSON call — retries once at a larger token budget on truncation, records failures in dag_notes
 # ──────────────────────────────────────────────────────────────────────────────
 
 _RETRY_TOKEN_MULTIPLIER = 4  # unparseable JSON is almost always truncation, not garbage
 
-# Per-DAG-node reasoning depth: how much judgment each node's task actually needs, not a
-# blanket setting. analyst reads real source and must infer/cross-check actual behavior —
-# genuine judgment. gate_designer picks from an explicit, prompt-given catalog under an
-# explicit decision rule ("cheapest toolkit that decides it") — closer to classification.
-# handoff_gates is the one node that reasons across ALL agents at once. critic is the final
-# holistic reviewer catching gaps the rest of the DAG missed — the highest-judgment node.
+# Reasoning effort matches each node's judgment load — analyst/handoff_gates read and cross-check real code, gate_designer follows an explicit decision rule, critic is the final holistic reviewer.
 REASONING_EFFORT_ANALYST = "medium"
 REASONING_EFFORT_GATE_DESIGNER = "low"
 REASONING_EFFORT_HANDOFF_GATES = "medium"
 REASONING_EFFORT_CRITIC = "high"
 
-# On a reasoning-tier model, effort isn't free: it eats into the same max_completion_tokens
-# budget as the visible output, so a node rated for more reasoning gets more headroom too —
-# same "base + step per unit of scale" shape as handoff_gates' existing agent-count scaling.
+# Reasoning effort also consumes max_completion_tokens, so higher-effort nodes get a larger token floor too.
 _EFFORT_TOKEN_BASE = 4000
 _EFFORT_TOKEN_STEP = 500
 _EFFORT_TIERS = ("minimal", "low", "medium", "high", "xhigh")
@@ -321,15 +318,7 @@ async def complete_json(
     dag_notes: list[str] | None = None,
     reasoning_effort: str = "low",
 ) -> dict | None:
-    """Calls the LLM in json_mode at `reasoning_effort`, retrying once at
-    `max_tokens * _RETRY_TOKEN_MULTIPLIER` if the first response is unparseable. Returns
-    None (never raises) on repeated failure, but appends a note to `dag_notes` so a
-    degraded round is visible in the plan report.
-
-    The retry also drops to "low" effort regardless of what the first attempt used: on a
-    reasoning-tier model, a higher effort can burn the entire token budget on hidden
-    reasoning and return empty content, which looks identical to truncation but — unlike
-    truncation — doesn't get fixed by retrying with more tokens at the same effort."""
+    """Calls the LLM in json_mode, retrying once at a larger token budget and forced "low" effort (a higher effort can silently burn the budget on hidden reasoning) if the first response is unparseable; never raises — appends a note to `dag_notes` on repeated failure so the degraded round stays visible in the plan report."""
     last_error: Exception | None = None
     for attempt, tokens in enumerate((max_tokens, max_tokens * _RETRY_TOKEN_MULTIPLIER)):
         effort = reasoning_effort if attempt == 0 else "low"
@@ -593,7 +582,7 @@ def _gate_to_suite_entry(gate: EvaluationGate) -> SuiteEntry:
     if gate.dataset is not None:
         dataset_ref = gate.dataset
     elif gate.dataset_kind:
-        dataset_ref = DatasetRef(required={"kind": gate.dataset_kind, "min_cases": 20})
+        dataset_ref = DatasetRef(required={"kind": gate.dataset_kind, "min_cases": DEFAULT_MIN_CASES})
     else:
         dataset_ref = None
     # classifier gates run in entrypoint mode.
@@ -652,7 +641,6 @@ def _merge_observability(
 
 def _derive_expected_tools(component: Component, system_map: SystemMap) -> list[str]:
     """Downstream tool component names for tool_correctness / no_unnecessary_calls."""
-    from agent_eval_harness.planning.planner import get_tool_name_from_component
     components_by_id = {c.id: c for c in system_map.components}
     tool_comps = []
     for d in component.downstream:
@@ -739,10 +727,7 @@ def _apply_feasibility(
     agent_id: str,
     report_notes: list[str],
 ) -> list[EvaluationGate]:
-    """Evaluate meaningless_when against the contract; replace/drop/needs_human.
-    Baseline gates (provenance='rule') are immune except for metrics declaring the
-    "input_kind_is_query" precondition (CS-288) — everything else is never dropped.
-    LLM-only observability flags (in llm_fields) demote to needs_human; static flags execute."""
+    """Evaluate meaningless_when against the contract, replacing/dropping/demoting gates; baseline gates are immune except metrics gated on the "input_kind_is_query" precondition, and LLM-only observability flags demote to needs_human while static flags execute the drop/replace."""
     if contract is None:
         return gates
 
@@ -815,8 +800,7 @@ def _apply_feasibility(
                 result.append(gate.model_copy(update={"status": "needs_human"}))
                 continue
 
-        # geval.decomposition_coverage on input_kind != query: fixed-fan-out has no
-        # decomposition artifact to grade (02_metric_selection_framework.md §2.5, §6 #1).
+        # geval.decomposition_coverage on input_kind != query: a fixed-fan-out step has no decomposition artifact to grade.
         if gate.metric == "geval.decomposition_coverage":
             static_non_query = obs.input_kind != "query" and "input_kind" not in llm_fields
             llm_non_query = obs.input_kind != "query" and "input_kind" in llm_fields
@@ -836,11 +820,9 @@ def _apply_feasibility(
                 result.append(gate.model_copy(update={"status": "needs_human"}))
                 continue
 
-        # tool_correctness / no_unnecessary_calls on has_tools=False
+        # tool_correctness / no_unnecessary_calls on has_tools=False (always static — no llm-only variant to handle here)
         if gate.metric in ("tool_correctness", "no_unnecessary_calls"):
             static_no_tools = obs.has_tools is False and "has_tools" not in llm_fields
-            llm_no_tools = obs.has_tools is False and "has_tools" in llm_fields
-            # has_tools is always static (role:tool descendants — never LLM-inferred)
             if static_no_tools:
                 report_notes.append(
                     f"{gate.id}: {gate.metric} replaced by llm_call_budget (has_tools=False, static)"
@@ -871,7 +853,7 @@ def _rebalance_gates(
     report_notes: list[str],
 ) -> list[EvaluationGate]:
     """1) Prefer assertions over llm_judge for trace-decidable properties.
-    2) Merge near-duplicate geval rubrics (SequenceMatcher ≥ 0.85).
+    2) Merge near-duplicate geval rubrics (SequenceMatcher ≥ GEVAL_RUBRIC_MERGE_THRESHOLD).
     3) Cap llm_suggested judges at MAX_LLM_JUDGE_GATES_PER_AGENT (baseline exempt)."""
     _import_all_assertions()
 
@@ -910,7 +892,7 @@ def _rebalance_gates(
                 continue
             rj = gj.params.get("rubric_text", "")
             ratio = difflib.SequenceMatcher(None, ri.lower(), rj.lower()).ratio()
-            if ratio >= 0.85:
+            if ratio >= GEVAL_RUBRIC_MERGE_THRESHOLD:
                 merged_ids.add(gj.id)
                 merged_rationale = gi.rationale + " | " + gj.rationale
                 gi = gi.model_copy(update={"rationale": merged_rationale})
@@ -944,9 +926,7 @@ def reconcile(
     contracts: dict[str, EvaluationContract] | None = None,
     system_map: SystemMap | None = None,
 ) -> tuple[Suite, EvaluationPlanReport]:
-    """Baseline always wins on (component, metric) conflict, except the feasibility pass may
-    still drop input_kind_is_query-gated metrics on a non-query agent (CS-288).
-    Runs params completion, feasibility, and judge rebalance after merge."""
+    """Baseline always wins on (component, metric) conflicts, except the feasibility pass may still drop input_kind_is_query-gated metrics on a non-query agent; then runs params completion, feasibility, and judge rebalance."""
     handoff_by_agent: dict[str, list[EvaluationGate]] = {}
     for gate in handoff_gates:
         handoff_by_agent.setdefault(gate.agent_id, []).append(gate)
@@ -1025,10 +1005,10 @@ def reconcile(
                         metric="schema_valid",
                         metric_class="assertion",
                         toolkit="assertion",
-                        dataset=DatasetRef(required={"kind": "synthetic_agent_io", "min_cases": 20}),
+                        dataset=DatasetRef(required={"kind": "synthetic_agent_io", "min_cases": DEFAULT_MIN_CASES}),
                         rationale=(
                             f"archetype={archetype} ⇒ opt-in auto-generated workflow-eval "
-                            "dataset at the agent's real LLM-call boundary (CS-289)."
+                            "dataset at the agent's real LLM-call boundary."
                         ),
                         provenance="rule",
                     )
@@ -1127,14 +1107,9 @@ async def generate_plan_agentic(
     previous_report: EvaluationPlanReport | None = None,
     project_context: Any | None = None,
 ) -> tuple[Suite, EvaluationPlanReport]:
-    """Builds and executes the Stage-3 DAG; every agent gets its own gate set. When
-    `previous_report` is given, an agent whose prior run already produced a data profile
-    and gates skips the analyst/gate_designer LLM calls and reuses that result — only
-    agents missing from (or never analyzed in) the previous report get freshly analyzed.
-    Contracts, baseline gates, handoff_gates, reconcile, and critic still always run fresh."""
+    """Builds and executes the Stage-3 DAG per agent; when `previous_report` is given, an agent whose prior run already produced a data profile and gates reuses them and skips the analyst/gate_designer LLM calls, while contracts, baseline gates, handoff_gates, reconcile, and critic always run fresh."""
     agents = agent_flow_map.agents
-    # Shared across all concurrent DAG nodes — list.append() is safe since asyncio
-    # coroutines only interleave at await points, never mid-statement.
+    # Shared across all concurrent DAG nodes; list.append() is safe since asyncio coroutines only interleave at await points.
     dag_notes: list[str] = []
     previous_by_agent = {r.agent_id: r for r in previous_report.agents} if previous_report else {}
     reused_agent_ids: list[str] = []

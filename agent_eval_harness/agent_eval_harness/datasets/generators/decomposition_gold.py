@@ -19,7 +19,7 @@ class DecompositionGoldConfig(BaseModel):
     system_map_path: str
     component_id: str = "planner"
     count: int = 15  # Total count. Will be divided among clean, rambling, over_limit.
-    painpoint: str | None = None  
+    painpoint: str | None = None
 
 async def generate(
     config: dict, llm_client: LLMClient | None, seed: int | None = None
@@ -126,14 +126,11 @@ async def generate(
             intents = item.get("intents", [])
             if not isinstance(intents, list):
                 intents = [str(intents)]
-            
-            # Ensure intents are strings
             intents = [str(it) for it in intents]
 
             # "expected_response" is the GroundTruth-reserved key; downstream deterministic gates read it as primary.
             expected: dict[str, Any] = {"intents": intents, "expected_response": intents}
-            
-            # If over-limit, compute call split math using plain Python
+
             if limit is not None and len(intents) > limit:
                 call_split = [intents[i : i + limit] for i in range(0, len(intents), limit)]
                 expected["call_split"] = call_split

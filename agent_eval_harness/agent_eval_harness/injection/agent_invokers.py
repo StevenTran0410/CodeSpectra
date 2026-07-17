@@ -199,5 +199,5 @@ async def invoke_agent(
 ) -> dict[str, Any]:
     invoker = _INVOKERS.get(agent_id)
     if invoker is None:
-        raise NotImplementedError(f"no injection invoker for agent '{agent_id}' yet (CS-289 phasing)")
+        raise NotImplementedError(f"no injection invoker for agent '{agent_id}' yet")
     return await invoker(case_input, provider_service, provider_id, model_id)

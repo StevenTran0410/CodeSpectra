@@ -21,7 +21,6 @@ def format_sweep_results(
     system_map_id: str = "",
 ) -> str:
     """Format all MetricResult items grouped by component_id."""
-    # Group by component_id
     by_component: dict[str, list[MetricResult]] = {}
     for mr in results:
         key = mr.component_id or "(global)"

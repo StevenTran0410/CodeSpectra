@@ -7,10 +7,13 @@ import re
 import traceback
 from pathlib import Path
 from typing import Any
+
 import yaml
 
-from agent_eval_harness.discovery.client import CodeSpectraClient
 from agent_eval_harness.discovery.analysis_context import ProjectContext, load_project_context
+from agent_eval_harness.discovery.client import CodeSpectraClient
+from agent_eval_harness.discovery.consolidation import consolidate_candidates
+from agent_eval_harness.discovery.wiring import detect_wiring_block, strip_json_code_fence
 from agent_eval_harness.llm.client import LLMClient, LLMMessage, RateLimitExceeded
 from agent_eval_harness.store import repository
 
@@ -20,8 +23,12 @@ logger = logging.getLogger("agent_eval_harness.discovery.engine")
 MAX_LLM_SYNTHESIZED_CLUSTERS = 12
 
 # Separate, smaller budget for Pass D's wiring-detection LLM fallback (static
-# detection is free and always tried first; this only bounds the escalation).
+# detection is free and tried first).
 MAX_WIRING_LLM_FALLBACK_CALLS = 5
+
+MAX_HITS_PER_CLUSTER_PROMPT = 15  # top-N highest-weight hits shown to the synthesis LLM
+MAX_LISTED_FILES = 30             # cap on community file paths listed verbatim in the prompt
+SYNTHESIS_MAX_TOKENS = 1024
 
 
 def load_fingerprints() -> list[dict[str, Any]]:
@@ -48,9 +55,8 @@ def _encode_hits_toon(hits: list[dict[str, Any]]) -> str:
 
 
 class DiscoveryPaused(Exception):
-    """Raised when a sustained rate limit interrupts Pass C/D. Carries every cluster that
-    finished successfully before the pause, so the caller can persist progress and resume
-    without re-synthesizing clusters that are already done."""
+    """Raised when a sustained rate limit interrupts Pass C/D; carries every cluster finished
+    before the pause so the caller can resume without re-synthesizing them."""
     def __init__(
         self,
         candidates_so_far: list[dict],
@@ -191,7 +197,7 @@ async def discover_agentic_systems(
             continue
 
         sorted_hits = sorted(cluster["hits"], key=lambda h: h["weight"], reverse=True)
-        top_hits = sorted_hits[:15]
+        top_hits = sorted_hits[:MAX_HITS_PER_CLUSTER_PROMPT]
 
         if rank >= MAX_LLM_SYNTHESIZED_CLUSTERS:
             # LLM budget limit exceeded: mark cluster as unknown/needs_human without LLM call.
@@ -233,7 +239,7 @@ async def discover_agentic_systems(
         user_prompt = (
             f"Community/Cluster ID: {cid}\n"
             f"Hub Paths (potential entry points): {', '.join(cluster['hub_paths'])}\n"
-            f"All community files: {', '.join(cluster['files'][:30])}\n\n"
+            f"All community files: {', '.join(cluster['files'][:MAX_LISTED_FILES])}\n\n"
             f"Evidence Hits:\n{evidence_bundle_str}\n\n"
         )
         if project_context:
@@ -266,16 +272,10 @@ async def discover_agentic_systems(
                 LLMMessage(role="system", content=system_prompt),
                 LLMMessage(role="user", content=user_prompt),
             ]
-            response = await llm_client.complete(messages, max_tokens=1024, json_mode=True)
-            content = response.content.strip()
-
-            if content.startswith("```"):
-                lines = content.splitlines()
-                if lines[0].startswith("```"):
-                    lines = lines[1:]
-                if lines[-1].startswith("```"):
-                    lines = lines[:-1]
-                content = "\n".join(lines).strip()
+            response = await llm_client.complete(
+                messages, max_tokens=SYNTHESIS_MAX_TOKENS, json_mode=True
+            )
+            content = strip_json_code_fence(response.content)
 
             parsed = json.loads(content)
             if not parsed.get("is_agentic_system", True):
@@ -293,12 +293,11 @@ async def discover_agentic_systems(
         except Exception as exc:
             logger.warning(f"LLM synthesis failed for cluster {cid}: {exc}. Using fallback.")
 
-        # Low confidence or unknown name candidates are flagged for human review.
         candidate_profile["needs_human"] = (
             candidate_profile["name"] == "unknown" or candidate_profile["confidence"] == "low"
         )
 
-        # B3: Risk flag propagation from analysis to candidate profile
+        # Risk flag propagation from analysis to candidate profile
         if project_context and project_context.risk_findings:
             hub_path_set = set(cluster["hub_paths"])
             for finding in project_context.risk_findings:
@@ -315,9 +314,7 @@ async def discover_agentic_systems(
             except Exception as e:
                 logger.warning(f"Failed to read {path} for wiring detection: {e}")
 
-        from agent_eval_harness.discovery.wiring import detect_wiring_block
-        # Static detection is always attempted (free); the LLM fallback is only
-        # allowed for candidates worth naming, within its own separate budget.
+        # Static detection is always attempted (free); LLM fallback is only allowed for candidates worth naming.
         allow_wiring_llm_fallback = (
             not candidate_profile["needs_human"]
             and wiring_llm_fallback_used < MAX_WIRING_LLM_FALLBACK_CALLS
@@ -338,7 +335,6 @@ async def discover_agentic_systems(
         candidates.append(candidate_profile)
 
     try:
-        from agent_eval_harness.discovery.consolidation import consolidate_candidates
         candidates = await consolidate_candidates(candidates, client, snapshot_id, llm_client)
     except RateLimitExceeded as rle:
         raise DiscoveryPaused(
@@ -358,7 +354,6 @@ async def run_discovery_background(
 ) -> None:
     """Executes discovery process asynchronously and stores the output candidates in the DB."""
     try:
-        # Load project context (code-analysis report) for this snapshot
         project_context = await load_project_context(client, snapshot_id)
         await repository.update_discovery_session_project_context(session_id, project_context)
 

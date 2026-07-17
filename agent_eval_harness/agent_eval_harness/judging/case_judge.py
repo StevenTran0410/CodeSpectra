@@ -12,6 +12,10 @@ from typing import Any
 
 from agent_eval_harness.llm.client import LLMClient, LLMMessage
 
+_CASE_JUDGE_BASE_MAX_TOKENS = 400
+_CASE_JUDGE_TOKENS_PER_LIST_ITEM = 12
+_AGENT_SUMMARY_MAX_TOKENS = 500
+
 SEMANTIC_MATCH_SYSTEM = (
     "You are a strict but fair evaluator comparing one AI agent's actual output against a "
     "human-reviewed expected (gold) output, for a single evaluation case. The case can come "
@@ -147,7 +151,7 @@ async def judge_case_semantic_match(
             LLMMessage(role="system", content=SEMANTIC_MATCH_SYSTEM),
             LLMMessage(role="user", content=_judge_user_prompt(result, expected, fields)),
         ],
-        max_tokens=400 + item_count * 12,
+        max_tokens=_CASE_JUDGE_BASE_MAX_TOKENS + item_count * _CASE_JUDGE_TOKENS_PER_LIST_ITEM,
         json_mode=True,
     )
     try:
@@ -221,7 +225,7 @@ async def summarize_agent_judgments(
             LLMMessage(role="system", content=AGENT_SUMMARY_SYSTEM),
             LLMMessage(role="user", content=_agent_summary_prompt(case_summaries)),
         ],
-        max_tokens=500,
+        max_tokens=_AGENT_SUMMARY_MAX_TOKENS,
         json_mode=True,
     )
     try:

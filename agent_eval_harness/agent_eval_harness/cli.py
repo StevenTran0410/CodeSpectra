@@ -24,6 +24,8 @@ from agent_eval_harness.runner import execute_run  # noqa: E402
 from agent_eval_harness.store.database import close_db, init_db  # noqa: E402
 from test_targets._shared.defects import DefectConfig  # noqa: E402
 
+_DISCOVERY_ERROR_MAX_LEN = 2000
+
 
 def _add_provider_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--provider-id", dest="provider_id", default=None)
@@ -161,6 +163,18 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     _add_data_dir_arg(enrich_parser)
 
     return parser
+
+
+def _extract_category(raw_json: str | None, dataset_id: str) -> str | None:
+    """Best-effort category lookup from a case's JSON blob; warns rather than crashing `ls` on malformed data."""
+    if not raw_json:
+        return None
+    import json
+    try:
+        return json.loads(raw_json).get("category")
+    except (json.JSONDecodeError, AttributeError) as e:
+        print(f"[aeh] warning: dataset {dataset_id} has a case with malformed JSON: {e}")
+        return None
 
 
 def _read_queries(args: argparse.Namespace) -> list[str]:
@@ -320,7 +334,6 @@ async def _dataset_command(args: argparse.Namespace) -> int:
             return 0
 
         elif args.dataset_command == "ls":
-            import json
             dataset_summaries = await repository.list_dataset_ids()
             if not dataset_summaries:
                 print("[aeh] No datasets found in database.")
@@ -333,19 +346,11 @@ async def _dataset_command(args: argparse.Namespace) -> int:
 
                 categories = {}
                 for case in cases:
-                    cat = None
-                    if case["labels_json"]:
-                        try:
-                            cat = json.loads(case["labels_json"]).get("category")
-                        except Exception:
-                            pass
-                    if not cat and case["input_json"]:
-                        try:
-                            cat = json.loads(case["input_json"]).get("category")
-                        except Exception:
-                            pass
-                    if not cat:
-                        cat = "unknown"
+                    cat = (
+                        _extract_category(case["labels_json"], dataset_id)
+                        or _extract_category(case["input_json"], dataset_id)
+                        or "unknown"
+                    )
                     categories[cat] = categories.get(cat, 0) + 1
 
                 if ds["synthetic_count"] == 0:
@@ -439,7 +444,6 @@ async def _map_command(args: argparse.Namespace) -> int:
     builder = SystemMapBuilder(llm_client, confidence_threshold=args.confidence_threshold)
     system_map, summary = await builder.build(target_path, docs_path)
 
-    # Write output
     output_path = Path(args.output_path) if args.output_path else target_path / "system_map.yaml"
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
@@ -568,11 +572,12 @@ async def _discover_command(args: argparse.Namespace) -> int:
             except Exception as e:
                 import traceback
                 err_msg = "".join(traceback.format_exception(None, e, e.__traceback__))
-                await repository.finish_discovery_session(session_id, "failed", err_msg[:2000])
+                await repository.finish_discovery_session(
+                    session_id, "failed", err_msg[:_DISCOVERY_ERROR_MAX_LEN]
+                )
                 print(f"[aeh] discover failed  session_id={session_id} error={e}")
                 raise
 
-            # Print output
             if args.json:
                 out = {
                     "session_id": session_id,
@@ -628,7 +633,6 @@ async def _enrich_command(args: argparse.Namespace) -> int:
         from agent_eval_harness.discovery.client import CodeSpectraClient
         from agent_eval_harness.discovery.enrichment import enrich_agents
         from agent_eval_harness.mapping.agent_flow import load_agent_flow_map
-        from agent_eval_harness.mapping.system_map import load_system_map
 
         client = CodeSpectraClient(backend_url, backend_token)
 

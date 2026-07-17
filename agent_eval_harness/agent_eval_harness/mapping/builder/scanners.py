@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import ast
-import sys
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -16,7 +15,10 @@ from agent_eval_harness.discovery.wiring import (
 from agent_eval_harness.mapping.builder.types import (
     CandidateComponent,
     ManualSpanHint,
+    parse_python_source,
 )
+
+_SNIPPET_LINE_COUNT = 30  # first N lines of a class/function body kept as its source_snippet
 
 
 @runtime_checkable
@@ -42,14 +44,12 @@ class HaystackScanner:
 
         # Parse all files once upfront
         for file in source_files:
-            try:
-                source = file.read_text(encoding="utf-8")
-                tree = ast.parse(source, filename=str(file))
-                asts[file] = tree
-                file_contents[str(file)] = source
-            except SyntaxError as exc:
-                print(f"[aeh map] skipping {file}: {exc}", file=sys.stderr)
+            parsed = parse_python_source(file)
+            if parsed is None:
                 continue
+            source, tree = parsed
+            asts[file] = tree
+            file_contents[str(file)] = source
 
         # First pass: build known_classes and add_component_names
         for file, tree in asts.items():
@@ -162,18 +162,10 @@ class HaystackScanner:
                                                         known_classes.add(name_node.id)
 
             # Now extract candidates
-            source = file.read_text(encoding="utf-8")
-            source_lines = source.splitlines()
+            source_lines = file_contents[str(file)].splitlines()
 
             for node in tree.body:
                 if isinstance(node, ast.ClassDef) and node.name in known_classes:
-                    # Check if it has @component decorator
-                    is_component = False
-                    for decorator in node.decorator_list:
-                        if self._is_component_decorator(decorator):
-                            is_component = True
-                            break
-
                     # Get haystack_name if it's registered via add_component
                     haystack_name = None
                     for name, class_name in add_component_names.items():
@@ -181,23 +173,16 @@ class HaystackScanner:
                             haystack_name = name
                             break
 
-                    docstring = ast.get_docstring(node) or ""
                     source_snippet = self._extract_source_snippet(
                         file, node.lineno, source_lines
                     )
                     manual_span_hints = self._extract_manual_spans(node, file)
-
-                    # If not @component-decorated but in known_classes, it's composed
-                    is_composed = not is_component
 
                     candidate = CandidateComponent(
                         file=file,
                         line=node.lineno,
                         class_name=node.name,
                         haystack_name=haystack_name,
-                        is_haystack_component=is_component,
-                        is_composed=is_composed,
-                        docstring=docstring,
                         source_snippet=source_snippet,
                         manual_span_hints=manual_span_hints,
                     )
@@ -258,7 +243,7 @@ class HaystackScanner:
             return ""
         # Start from the line after the def/class line
         start = line
-        end = min(line + 29, len(lines))
+        end = min(line + _SNIPPET_LINE_COUNT - 1, len(lines))
         return "\n".join(lines[start : end + 1])
 
     def _extract_manual_spans(self, node: ast.ClassDef, file: Path) -> list[ManualSpanHint]:
@@ -363,7 +348,6 @@ class HaystackScanner:
                 continue
 
             func_node = module_level_async_functions[func_name]
-            docstring = ast.get_docstring(func_node) or ""
             # Use pre-parsed source_lines if available, else read from file
             if source_lines is None:
                 source_lines = file.read_text(encoding="utf-8").splitlines()
@@ -376,7 +360,6 @@ class HaystackScanner:
                 is_tool=True,
                 registered_name=registered_name,
                 owner_class_name=owner_class_name,
-                docstring=docstring,
                 source_snippet=source_snippet,
             )
             candidates.append(candidate)
@@ -433,11 +416,8 @@ class HaystackScanner:
                             class_name=candidate.class_name,
                             tag_suffix=tag_value,
                             haystack_name=candidate.haystack_name,
-                            is_haystack_component=candidate.is_haystack_component,
-                            is_composed=candidate.is_composed,
                             is_tool=candidate.is_tool,
                             registered_name=candidate.registered_name,
-                            docstring=candidate.docstring,
                             source_snippet=candidate.source_snippet,
                             model_hints=candidate.model_hints,
                             manual_span_hints=hints_for_value,

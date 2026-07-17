@@ -24,6 +24,8 @@ _MAX_GENERATION_ROUNDS = 8
 _MAX_CONSECUTIVE_DRY_ROUNDS = 2
 _GENERATION_MAX_TOKENS = 20000
 _CONFIDENCE_ENUM = ("low", "medium", "high")
+_CONFIDENCE_FIELD_RULE = f"Any field literally named 'confidence' must be one of: {', '.join(_CONFIDENCE_ENUM)}."
+_AVOID_LIMIT_CHARS = 2000
 
 _GENERIC_PURPOSE_BY_ARCHETYPE: dict[str, str] = {
     "fan_in_judge": "Synthesizes and evaluates outputs from multiple upstream agents.",
@@ -79,7 +81,7 @@ class SyntheticAgentIOConfig(BaseModel):
     archetype: str
     contract: dict[str, Any]
     profile: dict[str, Any] = {}
-    failure_modes: list[str] = []  # D2b: from AgentKnowledge, drives edge-case case generation
+    failure_modes: list[str] = []  # from AgentKnowledge; drives edge-case generation
     count: int = 20
     painpoint: str | None = None
 
@@ -150,6 +152,36 @@ def _upstream_field_spec(field_downstream_consumers: dict[str, list[str]]) -> st
     return "\n".join(lines)
 
 
+def _failure_modes_addendum(failure_modes: list[str], *, detailed: bool) -> str:
+    """Shared by every prompt builder; `detailed` selects the fuller fan-in/rag-writer wording vs the generic builder's shorter one."""
+    header = (
+        "\n\nADDITIONALLY, include 1-2 extra cases covering EDGE-CASE or NEGATIVE scenarios "
+        "based on the agent's known failure modes"
+    )
+    header += (
+        ". Gold for these cases must reflect correct handling of the failure mode "
+        "(graceful degradation or error, not the failure itself):\n"
+        if detailed
+        else ":\n"
+    )
+    return header + "\n".join(f"- {fm}" for fm in failure_modes[:5])
+
+
+def _avoid_addendum(avoid: list[dict[str, Any]], *, detailed: bool) -> str:
+    """Shared by every prompt builder; `detailed` selects the fuller fan-in/rag-writer wording vs the generic builder's shorter one."""
+    if detailed:
+        header = (
+            f"\n\nThese {len(avoid)} candidate case(s) failed schema validation last attempt — "
+            f"generate genuinely different, schema-valid replacements, not near-copies:\n"
+        )
+    else:
+        header = (
+            f"\n\nThese {len(avoid)} candidate(s) failed last attempt — generate different, "
+            f"valid replacements:\n"
+        )
+    return header + json.dumps(avoid, ensure_ascii=False)[:_AVOID_LIMIT_CHARS]
+
+
 def _fan_in_judge_prompt(
     parsed: SyntheticAgentIOConfig, n: int, avoid: list[dict[str, Any]] | None = None
 ) -> str:
@@ -168,7 +200,7 @@ def _fan_in_judge_prompt(
         f"synthesizing them. The agent NEVER sees any field beyond what's listed below — do "
         f"not invent additional fields per letter.\n\n"
         f"UPSTREAM FIELDS THE AGENT ACTUALLY READS, PER LETTER:\n{_upstream_field_spec(fields_by_letter)}\n\n"
-        f"Any field literally named 'confidence' must be one of: {', '.join(_CONFIDENCE_ENUM)}.\n"
+        f"{_CONFIDENCE_FIELD_RULE}\n"
         f"Any field literally named 'blind_spots' must be a short list (0-3) of one-sentence "
         f"strings describing a specific gap in that section's own analysis.\n\n"
         f"THE AGENT'S OWN REQUIRED OUTPUT JSON SCHEMA (this is the 'gold' you must match):\n"
@@ -186,18 +218,9 @@ def _fan_in_judge_prompt(
         f"Respond ONLY with a JSON array of {n} such objects. No markdown, no explanation."
     )
     if parsed.failure_modes:
-        prompt += (
-            "\n\nADDITIONALLY, include 1–2 extra cases covering EDGE-CASE or NEGATIVE scenarios "
-            "based on the agent's known failure modes. Gold for these cases must reflect correct "
-            "handling of the failure mode (graceful degradation or error, not the failure itself):\n"
-            + "\n".join(f"- {fm}" for fm in parsed.failure_modes[:5])
-        )
+        prompt += _failure_modes_addendum(parsed.failure_modes, detailed=True)
     if avoid:
-        prompt += (
-            f"\n\nThese {len(avoid)} candidate case(s) failed schema validation last attempt — "
-            f"generate genuinely different, schema-valid replacements, not near-copies:\n"
-            f"{json.dumps(avoid, ensure_ascii=False)[:2000]}"
-        )
+        prompt += _avoid_addendum(avoid, detailed=True)
     return apply_painpoint(prompt, parsed.painpoint)
 
 
@@ -215,8 +238,7 @@ async def _generate_fan_in_judge(
     )
 
 
-# CS-297: remove after (1) 240-case diff-run proves no CodeSpectra activation AND
-#         (2) >= 1 green multi_agent/linear_rag Stage 1→3 exercises the generic/harvested path.
+# Legacy fast-path for CodeSpectra's known agent shapes; remove once the generic path is proven equivalent.
 _LEGACY_OVERRIDE: dict[str, list[tuple[str, str]]] = {
     "violations": [(
         "conventions_output",
@@ -247,7 +269,7 @@ def _upstream_specs_for(parsed: SyntheticAgentIOConfig) -> list[tuple[str, str]]
     contract_specs = (parsed.contract.get("upstream_context_specs") or [])
     if contract_specs:
         return [(s["name"], s["description"]) for s in contract_specs if s.get("name")]
-    return _LEGACY_OVERRIDE.get(parsed.agent_id, [])  # CS-297
+    return _LEGACY_OVERRIDE.get(parsed.agent_id, [])
 
 _FOLDER_TREE_SPEC = (
     "folder_tree",
@@ -307,7 +329,7 @@ def _rag_writer_prompt(
         )
     if extra_instruction:
         parts.append(extra_instruction)
-    parts.append(f"Any field literally named 'confidence' must be one of: {', '.join(_CONFIDENCE_ENUM)}.")
+    parts.append(_CONFIDENCE_FIELD_RULE)
     parts.append(
         "Keep any list-of-object fields (e.g. rules, violations_found, signals) realistic but "
         "short — 2-4 items each, never padded with filler entries."
@@ -325,18 +347,9 @@ def _rag_writer_prompt(
     )
     prompt = "\n\n".join(parts)
     if parsed.failure_modes:
-        prompt += (
-            "\n\nADDITIONALLY, include 1–2 extra cases covering EDGE-CASE or NEGATIVE scenarios "
-            "based on the agent's known failure modes. Gold for these cases must reflect correct "
-            "handling of the failure mode (graceful degradation or error, not the failure itself):\n"
-            + "\n".join(f"- {fm}" for fm in parsed.failure_modes[:5])
-        )
+        prompt += _failure_modes_addendum(parsed.failure_modes, detailed=True)
     if avoid:
-        prompt += (
-            f"\n\nThese {len(avoid)} candidate case(s) failed schema validation last attempt — "
-            f"generate genuinely different, schema-valid replacements, not near-copies:\n"
-            f"{json.dumps(avoid, ensure_ascii=False)[:2000]}"
-        )
+        prompt += _avoid_addendum(avoid, detailed=True)
     return apply_painpoint(prompt, parsed.painpoint)
 
 
@@ -405,8 +418,12 @@ async def _generate_validated_cases(
                         if max_sim >= 0.80:
                             extra_labels["near_duplicate"] = True
                     accepted_embeddings.append(emb)
-                except Exception:
-                    pass  # degrade cleanly — accept without dedup check
+                except Exception as e:
+                    logger.debug(
+                        "synthetic_agent_io[%s/%s]: embedding dedup check failed for a "
+                        "candidate — accepting without dedup: %s",
+                        parsed.agent_id, parsed.archetype, e,
+                    )
 
             accepted.append(candidate)
             accepted_extra_labels.append(extra_labels)
@@ -585,8 +602,7 @@ async def _generate_rag_query_planning_mem_ctx(
     )
 
 
-# CS-297: remove fast-path table after (1) 240-case diff-run proves no CodeSpectra activation AND
-#         (2) >= 1 green multi_agent/linear_rag Stage 1→3 exercises the generic path.
+# Known CodeSpectra kwarg shapes; remove once the generic path is validated against them.
 _KNOWN_SHAPE_KWARG_SETS: dict[str, frozenset[str]] = {
     "rag_single_shot:glossary": frozenset({"provider_id", "model_id", "snapshot_id", "profile"}),
     "rag_single_shot:important_files": frozenset({"provider_id", "model_id", "snapshot_id", "graph_summary", "profile"}),
@@ -602,7 +618,6 @@ _KNOWN_SHAPE_KWARG_SETS: dict[str, frozenset[str]] = {
 
 _KNOWN_KWARG_SET_VALUES: frozenset[frozenset[str]] = frozenset(_KNOWN_SHAPE_KWARG_SETS.values())
 
-# CS-297: retained with the known-kwarg-set fast-path
 _ARCHETYPE_BUILDERS: dict[
     str,
     Callable[[SyntheticAgentIOConfig, LLMClient, EmbeddingClient | None], Awaitable[list[DatasetCase]]],
@@ -664,16 +679,9 @@ async def _generate_generic(
             f"Respond ONLY with a JSON array of {n} such objects. No markdown, no explanation."
         )
         if parsed.failure_modes:
-            prompt += (
-                "\n\nADDITIONALLY, include 1–2 extra cases covering EDGE-CASE or NEGATIVE scenarios "
-                "based on the agent's known failure modes:\n"
-                + "\n".join(f"- {fm}" for fm in parsed.failure_modes[:5])
-            )
+            prompt += _failure_modes_addendum(parsed.failure_modes, detailed=False)
         if avoid:
-            prompt += (
-                f"\n\nThese {len(avoid)} candidate(s) failed last attempt — generate different, "
-                f"valid replacements:\n{json.dumps(avoid, ensure_ascii=False)[:2000]}"
-            )
+            prompt += _avoid_addendum(avoid, detailed=False)
         return apply_painpoint(prompt, parsed.painpoint)
 
     cases = await _generate_validated_cases(
@@ -703,7 +711,7 @@ async def generate(
         )
     if parsed.archetype == "fan_in_judge":
         return await _generate_fan_in_judge(parsed, llm_client, embedding_client)
-    # CS-297: fast-path for known CodeSpectra kwarg shapes; remove once generic path is validated
+    # Fast-path for known CodeSpectra kwarg shapes; remove once the generic path is validated.
     kwarg_names = frozenset(
         k["name"] for k in ((parsed.contract.get("invocation") or {}).get("kwargs") or []) if k.get("name")
     )

@@ -11,7 +11,7 @@ def write_jsonl(cases: list[DatasetCase], path: str | Path) -> None:
             f.write(case.model_dump_json() + "\n")
 
 def read_jsonl(path: str | Path) -> list[DatasetCase]:
-    cases = []
+    cases: list[DatasetCase] = []
     p = Path(path)
     if not p.exists():
         return cases

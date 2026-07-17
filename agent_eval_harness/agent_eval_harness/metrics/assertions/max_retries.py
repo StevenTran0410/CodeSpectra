@@ -4,10 +4,12 @@ from __future__ import annotations
 from agent_eval_harness.metrics.assertions.registry import register
 from agent_eval_harness.metrics.types import MetricResult
 
+DEFAULT_MAX_RETRIES = 1
+
 
 @register("max_retries")
 def max_retries(spans: list[dict], component_id: str, params: dict) -> MetricResult:
-    limit = int(params.get("limit", params.get("value", 1)))
+    limit = int(params.get("limit", params.get("value", DEFAULT_MAX_RETRIES)))
     component_spans = [s for s in spans if s.get("component_id") == component_id]
     count = len(component_spans)
     max_allowed = limit + 1  # initial attempt + retries

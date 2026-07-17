@@ -1,9 +1,4 @@
-"""Async SQLite database access via aiosqlite with sequential migrations.
-
-Mirrors backend/infrastructure/db/database.py's pattern exactly (module-level
-connection, migrations-as-data, schema_version in app_metadata, WAL mode) —
-this is AEH's own store (aeh.db), fully independent of codespectra.db.
-"""
+"""Async SQLite store for aeh.db — module-level connection, migrations-as-data, WAL mode, fully independent of codespectra.db."""
 import logging
 import os
 from pathlib import Path
@@ -12,6 +7,8 @@ from typing import Any
 import aiosqlite
 
 logger = logging.getLogger("agent_eval_harness.store")
+
+DB_FILENAME = "aeh.db"
 
 _db: aiosqlite.Connection | None = None
 
@@ -345,7 +342,7 @@ async def init_db() -> None:
     global _db
 
     data_dir = os.getenv("AEH_DATA_DIR", ".")
-    db_path = Path(data_dir) / "aeh.db"
+    db_path = Path(data_dir) / DB_FILENAME
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
     logger.info(f"Opening database: {db_path}")

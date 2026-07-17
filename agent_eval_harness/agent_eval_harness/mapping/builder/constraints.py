@@ -3,12 +3,20 @@ from __future__ import annotations
 
 import ast
 import json
+import logging
 from pathlib import Path
 
 from agent_eval_harness.llm.client import LLMClient, LLMMessage
 from agent_eval_harness.mapping.system_map import Constraint
 
-from .types import CandidateComponent
+from .types import CandidateComponent, parse_python_source
+
+logger = logging.getLogger("agent_eval_harness.mapping.builder.constraints")
+
+# Phase B pre-filter: only send string literals that look like they state a numeric limit to the LLM
+_LIMIT_KEYWORDS = ("max", "retry", "retries", "at most", "fan-out", "limit")
+_MIN_LITERAL_LEN = 30  # shorter literals are unlikely to be full prompt text worth mining
+_QUOTE_CITATION_MAX_LEN = 60
 
 
 def mine_constraints(
@@ -23,11 +31,10 @@ def mine_constraints(
         repo_root = Path(".")
 
     for file in source_files:
-        try:
-            source = file.read_text(encoding="utf-8")
-            tree = ast.parse(source, filename=str(file))
-        except SyntaxError:
+        parsed = parse_python_source(file)
+        if parsed is None:
             continue
+        _, tree = parsed
 
         for node in tree.body:
             if isinstance(node, ast.ClassDef):
@@ -80,9 +87,6 @@ async def mine_constraints_llm_phase(
 
     results = dict(phase_a_results)  # Start with Phase A results
 
-    # Pre-filter keywords
-    KEYWORDS = ("max", "retry", "retries", "at most", "fan-out", "limit")
-
     # Cache ASTs by file to avoid re-parsing the same file for each candidate
     ast_cache: dict[Path, ast.Module | None] = {}
 
@@ -96,12 +100,8 @@ async def mine_constraints_llm_phase(
         for hint in candidate.manual_span_hints:
             # Get or parse the candidate's file, using cache to avoid re-parsing
             if candidate.file not in ast_cache:
-                try:
-                    source = candidate.file.read_text(encoding="utf-8")
-                    ast_cache[candidate.file] = ast.parse(source, filename=str(candidate.file))
-                except SyntaxError:
-                    ast_cache[candidate.file] = None
-                    continue
+                parsed = parse_python_source(candidate.file)
+                ast_cache[candidate.file] = parsed[1] if parsed is not None else None
 
             tree = ast_cache[candidate.file]
             if tree is None:
@@ -115,14 +115,14 @@ async def mine_constraints_llm_phase(
                                 if isinstance(child, ast.Constant) and isinstance(
                                     child.value, str
                                 ):
-                                    if len(child.value) > 30:
+                                    if len(child.value) > _MIN_LITERAL_LEN:
                                         literals.append(child.value)
 
         # Pre-filter by keywords
         filtered_literals = []
         for literal in literals:
             if any(
-                keyword.lower() in literal.lower() for keyword in KEYWORDS
+                keyword.lower() in literal.lower() for keyword in _LIMIT_KEYWORDS
             ):
                 filtered_literals.append(literal)
 
@@ -161,7 +161,7 @@ async def mine_constraints_llm_phase(
 
                 # Accept the constraint
                 if value is not None and isinstance(value, (int, float)):
-                    quoted = quote[:60]
+                    quoted = quote[:_QUOTE_CITATION_MAX_LEN]
                     constraint = Constraint(
                         name=name,
                         value=int(value),
@@ -174,7 +174,11 @@ async def mine_constraints_llm_phase(
                     if candidate.candidate_id not in results:
                         results[candidate.candidate_id] = []
                     results[candidate.candidate_id].append(constraint)
-        except (json.JSONDecodeError, TypeError, KeyError):
+        except (json.JSONDecodeError, TypeError, KeyError) as exc:
+            logger.warning(
+                "%s: discarding Phase B LLM constraint response — unparseable: %s",
+                candidate.candidate_id, exc,
+            )
             continue
 
     return results

@@ -13,7 +13,6 @@ def allowed_downstream(spans: list[dict], component_id: str, params: dict) -> Me
     for span in spans:
         if span.get("component_id") != component_id:
             continue
-        # Find children
         children = [s for s in spans if s.get("parent_span_id") == span["id"]]
         for child in children:
             child_cid = child.get("component_id")

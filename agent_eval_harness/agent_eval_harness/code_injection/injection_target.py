@@ -1,8 +1,4 @@
-"""Stage 4 branch management: creates the eval branch WITHOUT checking it out — the user
-switches to it themselves (their own git tooling / editor) whenever they're ready, since an
-automatic checkout was switching their working directory out from under them mid-session.
-`git branch <name> <base_ref>` only writes a new ref; it never touches the working tree or
-HEAD, so there's no dirty-tree precondition to enforce here."""
+"""Stage 4 branch management: creates the eval branch without checking it out, since an automatic checkout would switch the user's working directory mid-session — they switch to it themselves when ready."""
 from __future__ import annotations
 
 import subprocess

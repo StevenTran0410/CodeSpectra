@@ -6,8 +6,6 @@ from pathlib import Path
 
 from agent_eval_harness.config import AEHConfig
 
-_bridged = False
-
 
 def default_backend_path() -> Path:
     """This repo's own backend/ — pass explicitly in tests, don't fall through to
@@ -18,7 +16,6 @@ def default_backend_path() -> Path:
 
 def ensure_backend_importable(backend_source_path: str | None = None) -> Path:
     """Safe to call repeatedly — skips the sys.path insert if the path is already present."""
-    global _bridged
     root = Path(
         backend_source_path
         or AEHConfig.load().backend_source_path
@@ -32,5 +29,4 @@ def ensure_backend_importable(backend_source_path: str | None = None) -> Path:
     s = str(root)
     if s not in sys.path:
         sys.path.insert(0, s)
-    _bridged = True
     return root

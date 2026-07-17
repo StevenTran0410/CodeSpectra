@@ -1,8 +1,4 @@
-"""Ingests an injected target's spanlog JSONL into AEH's own store — the offline half of
-Stage 4's instrument-in-place model. Redacts credential-shaped strings before persistence,
-refuses a spanlog whose schema major it doesn't recognize, and marks a run 'partial' rather
-than 'completed' whenever any case didn't finish cleanly or produced zero spans — coverage
-is reported, never displayed as a fake-green run."""
+"""Ingests an injected target's spanlog JSONL into AEH's own store: redacts credential-shaped strings, refuses an unrecognized schema, and marks a run 'partial' rather than 'completed' whenever any case failed or produced zero spans, so coverage is never reported fake-green."""
 from __future__ import annotations
 
 import json

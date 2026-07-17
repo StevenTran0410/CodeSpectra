@@ -73,7 +73,7 @@ class PromptSiteRef(BaseModel):
 
 
 class ComponentRoleVerdict(BaseModel):
-    """One component's role verdict from Stage 2.5 (CS-300), post structural hard-gate.
+    """One component's role verdict from Stage 2.5 enrichment, post structural hard-gate.
     Raw LLM-derived output — NEVER read for gating; see Component.role on the persisted
     system_map, which is the authoritative value this same verdict was written onto."""
     id: str
@@ -84,8 +84,8 @@ class ComponentRoleVerdict(BaseModel):
     @field_validator('role')
     @classmethod
     def validate_role(cls, v: str) -> str:
-        """A pre-CS-300 or otherwise malformed cached sidecar must never crash the cache
-        path — an empty/falsy role coerces to 'unknown' rather than raising."""
+        """A malformed cached sidecar must never crash the cache path — an empty/falsy
+        role coerces to 'unknown' rather than raising."""
         return v if v else 'unknown'
 
 
@@ -98,7 +98,8 @@ class ContextBuilderRef(BaseModel):
 
 
 class ConsumerRef(BaseModel):
-    """A downstream service that consumes output from this agent. file/line optional — see Citation."""
+    """A downstream service that consumes output from this agent. file/line optional —
+    see Citation."""
     name: str
     file: str | None = None
     line: int | None = None
@@ -122,8 +123,8 @@ class AgentKnowledge(BaseModel):
     output_contract: OutputContract | None = None
     prompt_sites: list[PromptSiteRef] = Field(default_factory=list)
 
-    # Role verdicts (CS-300) — first conclusion of the LLM round, post hard-gate. NEVER
-    # authoritative; the same gated values are written onto Component.role on the system_map.
+    # Role verdicts — first conclusion of the LLM round, post hard-gate. NEVER authoritative;
+    # the same gated values are written onto Component.role on the system_map.
     component_roles: list[ComponentRoleVerdict] = Field(default_factory=list)
 
     # Semantic fields (LLM-derived, all with citations)
@@ -155,56 +156,56 @@ class AgentKnowledge(BaseModel):
         lines.append(f"**Query Count**: {self.query_count}")
 
         if self.location:
-            lines.append(f"## Location")
+            lines.append("## Location")
             lines.append(f"- File: {self.location.file}:{self.location.line_start}-{self.location.line_end}")
             lines.append(f"- Entry: {self.location.entry_method}:{self.location.entry_line}")
 
         if self.components:
-            lines.append(f"## Components")
+            lines.append("## Components")
             for c in self.components:
                 lines.append(f"- {c.id} ({c.role}): {c.file}:{c.line}")
 
         if self.component_roles:
-            lines.append(f"## Role (non-authoritative — see system_map for the persisted value)")
+            lines.append("## Role (non-authoritative — see system_map for the persisted value)")
             for r in self.component_roles:
                 lines.append(f"- {r.id}: {r.role} (confidence={r.confidence:.2f}) — {r.reasoning}")
 
         if self.functionality:
-            lines.append(f"## Functionality")
+            lines.append("## Functionality")
             lines.append(self.functionality)
 
         if self.context_builders:
-            lines.append(f"## Context Builders")
+            lines.append("## Context Builders")
             for cb in self.context_builders:
                 loc = f" ({cb.file}:{cb.line})" if cb.file and cb.line else ""
                 lines.append(f"- {cb.name} → builds `{cb.builds_kwarg}`{loc}")
 
         if self.upstream_consumers:
-            lines.append(f"## Upstream Consumers")
+            lines.append("## Upstream Consumers")
             for consumer in self.upstream_consumers:
                 loc = f" ({consumer.file}:{consumer.line})" if consumer.file and consumer.line else ""
                 lines.append(f"- {consumer.name}{loc}")
 
         if self.downstream_consumers:
-            lines.append(f"## Downstream Consumers")
+            lines.append("## Downstream Consumers")
             for consumer in self.downstream_consumers:
                 loc = f" ({consumer.file}:{consumer.line})" if consumer.file and consumer.line else ""
                 lines.append(f"- {consumer.name}{loc}")
 
         if self.failure_modes:
-            lines.append(f"## Known Failure Modes")
+            lines.append("## Known Failure Modes")
             for mode in self.failure_modes:
                 loc = f" ({mode.file}:{mode.line})" if mode.file and mode.line else ""
                 lines.append(f"- {mode.description}{loc}")
 
         if self.functionality_citations:
-            lines.append(f"## Functionality Citations")
+            lines.append("## Functionality Citations")
             for cit in self.functionality_citations:
                 if cit.file and cit.line:
                     lines.append(f"- {cit.file}:{cit.line} ({cit.symbol})")
 
         if self.needs_human:
-            lines.append(f"## Needs Human Review")
+            lines.append("## Needs Human Review")
             for item in self.needs_human:
                 lines.append(f"- {item}")
 
@@ -248,17 +249,12 @@ def verify_citations(knowledge: AgentKnowledge, repo_root: Path) -> Verification
     semantic_citations: list[tuple[str, int, str]] = []
 
     # Sources missing file/line are skipped (unclaimed), not flagged as phantom.
-    for builder in knowledge.context_builders:
-        if builder.file and builder.line and builder.line > 0:
-            semantic_citations.append((builder.file, builder.line, builder.name))
-
-    for consumer in knowledge.upstream_consumers:
-        if consumer.file and consumer.line and consumer.line > 0:
-            semantic_citations.append((consumer.file, consumer.line, consumer.name))
-
-    for consumer in knowledge.downstream_consumers:
-        if consumer.file and consumer.line and consumer.line > 0:
-            semantic_citations.append((consumer.file, consumer.line, consumer.name))
+    for named_source in (
+        knowledge.context_builders, knowledge.upstream_consumers, knowledge.downstream_consumers
+    ):
+        for item in named_source:
+            if item.file and item.line and item.line > 0:
+                semantic_citations.append((item.file, item.line, item.name))
 
     for mode in knowledge.failure_modes:
         if mode.file and mode.line and mode.line > 0:
@@ -315,6 +311,7 @@ def verify_citations(knowledge: AgentKnowledge, repo_root: Path) -> Verification
             report.claims.append(claim)
 
         except Exception as e:
+            logger.debug(f"Citation verification could not read {file}:{line}: {e}")
             claim = ClaimVerification(
                 status='unverified',
                 citation=Citation(file=file, line=line, symbol=symbol),

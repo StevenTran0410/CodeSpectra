@@ -1,29 +1,24 @@
-"""ProjectContext dataclasses and async loader for code-analysis integration (CS-290 §B1)."""
+"""ProjectContext dataclasses and async loader for code-analysis integration."""
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
 from typing import Any
 
-from agent_eval_harness.discovery.client import CodeSpectraClient
 from agent_eval_harness.discovery.analysis_context_extractors import (
-    _extract_important_files,
-    _filter_risk_findings,
     _extract_identity,
+    _extract_important_files,
     _extract_synthesis,
+    _filter_risk_findings,
 )
+from agent_eval_harness.discovery.client import CodeSpectraClient
 
 logger = logging.getLogger("agent_eval_harness.discovery.analysis_context")
 
-# Re-export extractors at module level for consumer convenience
 __all__ = [
     "ReportSection",
     "ProjectContext",
     "load_project_context",
-    "_extract_important_files",
-    "_filter_risk_findings",
-    "_extract_identity",
-    "_extract_synthesis",
 ]
 
 
@@ -80,14 +75,12 @@ async def load_project_context(
         ProjectContext with extracted sections, or None if any step fails.
     """
     try:
-        # Step 1: Get snapshot
         snap = await client.get_snapshot(snapshot_id)
         local_repo_id = snap.get("local_repo_id")
         if not local_repo_id:
             logger.debug(f"No local_repo_id in snapshot {snapshot_id}")
             return None
 
-        # Step 2: Get repo
         repo = await client.get_repo(local_repo_id)
         repo_path = repo.get("path")
         workspace_id = repo.get("workspace_id")
@@ -95,7 +88,6 @@ async def load_project_context(
             logger.debug(f"Missing repo path or workspace in {local_repo_id}")
             return None
 
-        # Step 3: Find sibling code-analysis repo by path
         all_repos = await client.list_repos(workspace_id=workspace_id, mode="code_analysis")
         sibling_repo = None
         for r in all_repos:
@@ -107,7 +99,6 @@ async def load_project_context(
             logger.debug(f"No sibling code-analysis repo found for path {repo_path}")
             return None
 
-        # Step 4: Get latest report for sibling repo
         reports = await client.list_reports(repo_id=sibling_repo["id"])
         if not reports:
             logger.debug(f"No analysis reports found for repo {sibling_repo['id']}")
@@ -115,13 +106,11 @@ async def load_project_context(
 
         latest_report_id = reports[0]["id"]
 
-        # Step 5: Get full report and extract sections
         full_report = await client.get_report(latest_report_id)
         report_data = full_report.get("report", {})
         sections = report_data.get("sections") or {}
 
-        # Build ReportSection objects from extractors
-        # Check staleness by comparing commit hashes
+        # Staleness is a commit-hash mismatch between the snapshot and the report.
         snapshot_commit_hash = (
             snap.get("commit_hash")
             or snap.get("commit")
@@ -143,7 +132,6 @@ async def load_project_context(
         important_files_section = sections.get("G")
         risk_section = sections.get("J")
 
-        # Build context object
         return ProjectContext(
             identity=(
                 ReportSection(_extract_identity(identity_section), is_stale)

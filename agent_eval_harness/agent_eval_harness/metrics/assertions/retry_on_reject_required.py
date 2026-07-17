@@ -13,12 +13,15 @@ def retry_on_reject_required(spans: list[dict], component_id: str, params: dict)
     worker_cid = params.get("worker_component_id", "worker")
     writer_cid = params.get("writer_component_id", "writer")
 
-    # spans is assumed to already be in true execution order (see docstring).
+    # spans are ordered by insertion order (repository.get_spans_for_trace) — index arithmetic below relies on this.
     rejection_indices: list[int] = []
     for i, span in enumerate(spans):
         if span.get("component_id") != judge_cid:
             continue
-        output = json.loads(span.get("output_json") or "{}")
+        try:
+            output = json.loads(span.get("output_json") or "{}")
+        except json.JSONDecodeError:
+            continue
         if output.get("sufficient") is False:
             rejection_indices.append(i)
 

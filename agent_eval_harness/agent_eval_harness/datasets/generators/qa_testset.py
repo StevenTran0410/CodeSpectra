@@ -10,6 +10,11 @@ from agent_eval_harness.datasets.types import DatasetCase
 from agent_eval_harness.llm.client import LLMClient
 from agent_eval_harness.llm.embedding_client import EmbeddingClient
 
+_MAX_GOLDENS_PER_CONTEXT = 2
+# Ragas rejects short source docs outright; pad below this floor rather than fail the run.
+_RAGAS_MIN_WORD_COUNT = 150
+_RAGAS_PADDING_WORD_COUNT = 200
+
 
 class QATestsetConfig(BaseModel):
     dataset_name: str
@@ -66,7 +71,7 @@ class DeepEvalQATestsetBackend:
         )
         goldens = synthesizer.generate_goldens_from_docs(
             document_paths=paths_str,
-            max_goldens_per_context=2,
+            max_goldens_per_context=_MAX_GOLDENS_PER_CONTEXT,
             include_expected_output=True,
             context_construction_config=context_config
         )
@@ -118,9 +123,8 @@ class RagasQATestsetBackend:
         for path in corpus_paths:
             with open(path, encoding="utf-8") as f:
                 content = f.read()
-            # Pad short document to satisfy Ragas default minimum length requirement
-            if len(content.split()) < 150:
-                content = content + "\n" + (" ".join(["placeholder"] * 200))
+            if len(content.split()) < _RAGAS_MIN_WORD_COUNT:
+                content = content + "\n" + (" ".join(["placeholder"] * _RAGAS_PADDING_WORD_COUNT))
             docs.append(Document(page_content=content, metadata={"source": str(path.name)}))
 
         generator = TestsetGenerator.from_langchain(llm, embeddings)

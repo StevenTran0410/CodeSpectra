@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import logging
+from collections import deque
 from dataclasses import dataclass
 
 from agent_eval_harness.instrumentation.base import (
@@ -16,7 +18,9 @@ from agent_eval_harness.llm.client import LLMClient
 from agent_eval_harness.mapping.system_map import SystemMap, load_system_map
 from agent_eval_harness.store import repository
 
-# Lock is used to serialize execution of execute_run to prevent global tracer corruption.
+logger = logging.getLogger("agent_eval_harness.runner")
+
+# Haystack's global tracer is process-wide state; serialize execute_run to avoid cross-run corruption.
 _EXECUTE_RUN_LOCK = asyncio.Lock()
 
 
@@ -31,9 +35,9 @@ def _resolve_linear_order(system_map: SystemMap) -> list[str]:
     roots = [c.id for c in system_map.components if not c.upstream]
     order: list[str] = []
     seen: set[str] = set()
-    queue = list(roots)
+    queue: deque[str] = deque(roots)
     while queue:
-        component_id = queue.pop(0)
+        component_id = queue.popleft()
         if component_id in seen:
             continue
         seen.add(component_id)
@@ -55,13 +59,15 @@ def build_adapter(
     system_map = load_system_map(map_path)
 
     if tier == "2":
+        module_path, _, _ = target.partition(":")
         try:
-            module_path, _, _ = target.partition(":")
             module = importlib.import_module(module_path)
-            if hasattr(module, "set_default_llm_client"):
-                getattr(module, "set_default_llm_client")(llm_client)
-        except Exception:
-            pass
+        except ImportError:
+            logger.warning("tier-2 target module %r could not be imported; LLM client not wired", module_path)
+        else:
+            set_client = getattr(module, "set_default_llm_client", None)
+            if set_client is not None:
+                set_client(llm_client)
         component_order = _resolve_linear_order(system_map)
         return BoundaryWrapperAdapter(system_map, component_order), system_map
 

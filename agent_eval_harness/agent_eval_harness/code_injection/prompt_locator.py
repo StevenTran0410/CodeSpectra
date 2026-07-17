@@ -1,7 +1,4 @@
-"""Best-effort static heuristic: point at where an agent's prompt likely lives, by scanning
-its own file's imports for anything that looks prompt-related. Never guaranteed — when it
-finds nothing, the caller should tell the coding agent to search manually instead of
-claiming a location that wasn't actually found."""
+"""Best-effort static heuristic: scans an agent's file for a prompt-related import; returns None (never a guess) when nothing is found, so callers know to tell the coding agent to search manually."""
 from __future__ import annotations
 
 import re
@@ -28,7 +25,7 @@ def locate_prompt_reference(component_file: str, repo_root: Path) -> str | None:
         if not _PROMPT_HINT.search(module):
             continue
         names_clean = ", ".join(n.strip().split(" as ")[0] for n in names.split(","))
-        resolved = _resolve_relative_module(module, abs_path.parent, repo_root)
+        resolved = _resolve_relative_module(module, abs_path.parent)
         if resolved is None:
             return f"module '{module}' (imported as {names_clean}) — could not resolve to a file, check import manually"
         rel = resolved.relative_to(repo_root) if _is_within(resolved, repo_root) else resolved
@@ -44,10 +41,8 @@ def _is_within(path: Path, root: Path) -> bool:
         return False
 
 
-def _resolve_relative_module(module: str, file_dir: Path, repo_root: Path) -> Path | None:
-    """Resolves a Python relative import ('.'/'..'/... prefix) to a .py file path. Absolute
-    (non-relative) imports return None — this heuristic only follows an agent's own package,
-    not third-party or top-level absolute imports."""
+def _resolve_relative_module(module: str, file_dir: Path) -> Path | None:
+    """Resolves a relative import ('.'/'..' prefix) to a .py file path; absolute imports return None since this heuristic only follows the agent's own package."""
     dots = 0
     while dots < len(module) and module[dots] == ".":
         dots += 1

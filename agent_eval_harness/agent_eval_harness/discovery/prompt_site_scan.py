@@ -15,6 +15,8 @@ from agent_eval_harness.discovery.prompt_resolver import (
 
 logger = logging.getLogger("agent_eval_harness.discovery.prompt_site_scan")
 
+_SDK_CALL_SNIPPET_CHARS = 120
+
 
 @dataclass
 class PromptSite:
@@ -80,7 +82,7 @@ def scan_for_prompt_sites(repo_root: Path, accepted_files: list[str]) -> dict[st
                 func_name = _get_call_func_name(node)
                 if func_name and _matches_sdk_pattern(func_name):
                     if node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
-                        snippet = node.args[0].value[:120]
+                        snippet = node.args[0].value[:_SDK_CALL_SNIPPET_CHARS]
                         sites.append(PromptSite(
                             file=file_rel,
                             line=node.lineno,
@@ -88,8 +90,8 @@ def scan_for_prompt_sites(repo_root: Path, accepted_files: list[str]) -> dict[st
                             snippet=snippet
                         ))
 
-            # Detector 3: Prompt imports — one PromptSite per matching alias, snippet resolved
-            # from the target module (never the hardcoded '' this used to be, B4).
+            # Detector 3: Prompt imports — one PromptSite per matching alias, snippet
+            # resolved from the target module.
             elif isinstance(node, ast.ImportFrom):
                 prompt_aliases = [
                     alias for alias in node.names

@@ -170,13 +170,12 @@ DATASET_KINDS: frozenset[str] = frozenset(
         "field_match_gold",
         "retrieval_grounded",
         "multi_turn_session",
-        # Repo-input snapshot kinds — added to the registry that already shipped the 3
-        # kinds above; not a rename, these didn't exist before.
+        # Repo-input snapshot kinds.
         "snapshot_fixture",
         "snapshot_regression_baseline",
         "recorded_report_replay",  # mines real analysis_reports rows for K/L, no new ingestion needed
-        "synthetic_agent_io",  # CS-289: LLM-synthesized input+gold at an agent's real LLM boundary
-        "metamorphic_relation",  # CS-298: mechanically-derived gold from a reviewed source + config relation
+        "synthetic_agent_io",  # LLM-synthesized input+gold at an agent's real LLM boundary
+        "metamorphic_relation",  # mechanically-derived gold from a reviewed source + config relation
     }
 )
 

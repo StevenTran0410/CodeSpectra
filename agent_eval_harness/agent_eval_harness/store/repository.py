@@ -137,11 +137,17 @@ async def get_traces_for_run(run_id: str) -> list[dict]:
     return [dict(row) for row in rows]
 
 
-async def get_dataset_case(case_id: str) -> dict | None:
+async def get_dataset_cases_by_ids(case_ids: list[str]) -> dict[str, dict]:
+    """Batch-fetch dataset cases keyed by id, avoiding one query per case in a loop."""
+    if not case_ids:
+        return {}
     db = get_db()
-    async with db.execute("SELECT * FROM dataset_cases WHERE id = ?", (case_id,)) as cur:
-        row = await cur.fetchone()
-    return dict(row) if row else None
+    placeholders = ",".join("?" * len(case_ids))
+    async with db.execute(
+        f"SELECT * FROM dataset_cases WHERE id IN ({placeholders})", case_ids
+    ) as cur:
+        rows = await cur.fetchall()
+    return {row["id"]: dict(row) for row in rows}
 
 
 async def get_spans_for_trace(trace_id: str) -> list[dict]:
@@ -222,9 +228,7 @@ async def get_dataset_case_by_id(case_id: str) -> dict | None:
 
 
 async def list_dataset_ids() -> list[dict]:
-    """Per-dataset case counts, left-joined with the `datasets` metadata table. A dataset
-    with no metadata row (legacy data) gets kind=None, min_cases=1 — review_complete then
-    just depends on synthetic_count, same as before."""
+    """Per-dataset case counts, left-joined with `datasets` metadata (a missing row means legacy/unknown-kind)."""
     db = get_db()
     async with db.execute(
         """
@@ -294,8 +298,7 @@ async def update_case_provenance(
     input_json: str | None = None,
     labels_json: str | None = None,
 ) -> None:
-    """Flip a case's provenance, optionally editing any of its three JSON fields
-    (review UI edit action; originally only expected_json was editable)."""
+    """Flip a case's provenance, optionally editing any of its three JSON fields."""
     fields = ["provenance = ?"]
     values: list[str] = [provenance]
     for col, val in (("expected_json", expected_json), ("input_json", input_json), ("labels_json", labels_json)):
@@ -463,10 +466,7 @@ async def finish_discovery_session(
 async def update_discovery_session_project_context(
     session_id: str, ctx: Any,
 ) -> None:
-    """Update a discovery session's project context JSON (code-analysis report).
-
-    If ctx is None, the update is skipped (degrade-don't-break).
-    """
+    """Update a discovery session's project context JSON; a no-op if ctx is None (degrade-don't-break)."""
     if ctx is None:
         return
 
@@ -558,6 +558,21 @@ def _decode_expansion_session_row(d: dict) -> dict:
     return d
 
 
+async def _candidate_ids_with_completed_expansion(candidate_ids: list[str]) -> set[str]:
+    """Batch-check which of these candidate ids have >=1 completed expansion session (one query, not one per id)."""
+    if not candidate_ids:
+        return set()
+    db = get_db()
+    placeholders = ",".join("?" * len(candidate_ids))
+    async with db.execute(
+        f"SELECT DISTINCT candidate_id FROM expansion_sessions "
+        f"WHERE candidate_id IN ({placeholders}) AND status = 'completed'",
+        candidate_ids,
+    ) as cur:
+        rows = await cur.fetchall()
+    return {r[0] for r in rows}
+
+
 async def _resolve_effective_pipeline_stage(d: dict) -> str:
     db = get_db()
     stage = d.get("pipeline_stage", "fingerprinting")
@@ -576,20 +591,8 @@ async def _resolve_effective_pipeline_stage(d: dict) -> str:
     if not confirmed_ids:
         return "awaiting_candidate_review"
 
-    completed_expansions = 0
-    for cand_id in confirmed_ids:
-        async with db.execute(
-            "SELECT COUNT(*) FROM expansion_sessions WHERE candidate_id = ? AND status = 'completed'",
-            (cand_id,)
-        ) as cur:
-            count_row = await cur.fetchone()
-        if count_row and count_row[0] > 0:
-            completed_expansions += 1
-
-    if completed_expansions > 0:
-        return "awaiting_map_review"
-
-    return "expanding"
+    completed = await _candidate_ids_with_completed_expansion(confirmed_ids)
+    return "awaiting_map_review" if completed else "expanding"
 
 
 async def list_discovery_sessions(
@@ -763,17 +766,9 @@ async def finish_expansion_session(
                     confirmed_cands = [c for c in all_candidates if c["verdict"] == "confirmed"]
 
                     if confirmed_cands:
-                        all_completed = True
-                        for cand in confirmed_cands:
-                            async with db.execute(
-                                "SELECT COUNT(*) FROM expansion_sessions WHERE candidate_id = ? AND status = 'completed'",
-                                (cand["id"],)
-                            ) as cur2:
-                                count_row = await cur2.fetchone()
-                            has_completed = count_row and count_row[0] > 0
-                            if not has_completed:
-                                all_completed = False
-                                break
+                        confirmed_ids = [c["id"] for c in confirmed_cands]
+                        completed_ids = await _candidate_ids_with_completed_expansion(confirmed_ids)
+                        all_completed = set(confirmed_ids) <= completed_ids
 
                         if all_completed:
                             await db.execute(
@@ -868,9 +863,7 @@ async def update_expansion_session_eval_run(
 
 
 async def cancel_orphaned_running_sessions() -> None:
-    """Mark any status='running' session as failed — AEH's background tasks don't persist
-    across process restarts, so a 'running' row at startup can only be a leftover from a
-    process that died mid-task, never one still genuinely in progress."""
+    """Mark any status='running' session as failed — background tasks don't persist across process restarts, so a 'running' row at startup is always a leftover from a killed process."""
     db = get_db()
     now = utc_now_iso()
     error = "Interrupted: app closed before this run finished."
