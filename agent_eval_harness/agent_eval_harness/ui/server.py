@@ -1733,7 +1733,7 @@ async def enrich_agents_route(session_id: str, body: EnrichAgentsRequest):
         if not local_path_str:
             raise HTTPException(status_code=400, detail="Snapshot is missing local_path context.")
 
-        from agent_eval_harness.discovery.enrichment import enrich_agents
+        from agent_eval_harness.discovery.enrichment import enrich_agents, agent_knowledge_dir
 
         knowledge_list = await enrich_agents(
             session_id=session_id,
@@ -1863,9 +1863,11 @@ async def create_eval_plan(session_id: str, base_ref: str = "main"):
     wiring = build_wiring_for_codespectra(system_map, session_id)
     wiring["aeh_db_path"] = str((Path(os.getenv("AEH_DATA_DIR", ".")) / DB_FILENAME).resolve())
     wiring["dataset_ids"] = sorted(datasets_to_gate_ids.keys())
+    from agent_eval_harness.discovery.enrichment import agent_knowledge_dir
     md_content = render_eval_plan_md(
         system_map, wiring, dataset_summaries, session_id, eval_branch,
         plan_report=plan_report, repo_root=repo_root, base_ref=base_ref,
+        knowledge_dir=agent_knowledge_dir(session_id),
     )
     plan_md_path.write_text(md_content, encoding="utf-8")
     await repository.update_expansion_session_eval_plan_md_path(

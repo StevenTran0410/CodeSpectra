@@ -1262,11 +1262,6 @@ declare global {
     example: string
   }
 
-  export interface AEHOutputContract {
-    json_schema: string
-    example: string
-  }
-
   export interface AEHPromptSiteRef {
     file: string
     line: number
@@ -1279,7 +1274,6 @@ declare global {
     location: AEHLocationInfo | null
     components: AEHComponentRef[]
     input_contract: AEHContractArg[]
-    output_contract: AEHOutputContract | null
     prompt_sites: AEHPromptSiteRef[]
     functionality: string
     functionality_citations: AEHCitation[]

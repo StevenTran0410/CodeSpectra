@@ -238,7 +238,9 @@ async def _generate_fan_in_judge(
     )
 
 
-# Legacy fast-path for CodeSpectra's known agent shapes; remove once the generic path is proven equivalent.
+# CS-297/CS-303: remove after (1) 240-case diff-run proves no CodeSpectra activation AND
+#         (2) >= 1 green multi_agent/linear_rag Stage 1→3 exercises the generic/harvested path.
+# Both conditions are the removal criterion — do not compress them away.
 _LEGACY_OVERRIDE: dict[str, list[tuple[str, str]]] = {
     "violations": [(
         "conventions_output",
@@ -269,7 +271,7 @@ def _upstream_specs_for(parsed: SyntheticAgentIOConfig) -> list[tuple[str, str]]
     contract_specs = (parsed.contract.get("upstream_context_specs") or [])
     if contract_specs:
         return [(s["name"], s["description"]) for s in contract_specs if s.get("name")]
-    return _LEGACY_OVERRIDE.get(parsed.agent_id, [])
+    return _LEGACY_OVERRIDE.get(parsed.agent_id, [])  # CS-297/CS-303
 
 _FOLDER_TREE_SPEC = (
     "folder_tree",
@@ -602,7 +604,9 @@ async def _generate_rag_query_planning_mem_ctx(
     )
 
 
-# Known CodeSpectra kwarg shapes; remove once the generic path is validated against them.
+# CS-297/CS-303: remove fast-path table after (1) 240-case diff-run proves no CodeSpectra
+#         activation AND (2) >= 1 green multi_agent/linear_rag Stage 1→3 exercises the generic path.
+# Introduced by CS-292 itself — a new CodeSpectra-agent-id hardcode added while removing the old ones.
 _KNOWN_SHAPE_KWARG_SETS: dict[str, frozenset[str]] = {
     "rag_single_shot:glossary": frozenset({"provider_id", "model_id", "snapshot_id", "profile"}),
     "rag_single_shot:important_files": frozenset({"provider_id", "model_id", "snapshot_id", "graph_summary", "profile"}),
@@ -618,6 +622,7 @@ _KNOWN_SHAPE_KWARG_SETS: dict[str, frozenset[str]] = {
 
 _KNOWN_KWARG_SET_VALUES: frozenset[frozenset[str]] = frozenset(_KNOWN_SHAPE_KWARG_SETS.values())
 
+# CS-297/CS-303: retained with the known-kwarg-set fast-path
 _ARCHETYPE_BUILDERS: dict[
     str,
     Callable[[SyntheticAgentIOConfig, LLMClient, EmbeddingClient | None], Awaitable[list[DatasetCase]]],
@@ -711,7 +716,9 @@ async def generate(
         )
     if parsed.archetype == "fan_in_judge":
         return await _generate_fan_in_judge(parsed, llm_client, embedding_client)
-    # Fast-path for known CodeSpectra kwarg shapes; remove once the generic path is validated.
+    # CS-297/CS-303: fast-path for known CodeSpectra kwarg shapes; remove once generic path is validated.
+    # `not kwarg_names` routes an unknown agent whose harvest yielded nothing INTO the CodeSpectra
+    # builders rather than the generic path — CS-303 §2.3 tracks that hole.
     kwarg_names = frozenset(
         k["name"] for k in ((parsed.contract.get("invocation") or {}).get("kwargs") or []) if k.get("name")
     )

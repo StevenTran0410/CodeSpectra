@@ -53,15 +53,9 @@ class ComponentRef(BaseModel):
 class ContractArg(BaseModel):
     """Input parameter to this agent."""
     kwarg: str
-    source_kind: str
-    type_hint: str
-    example: str
-
-
-class OutputContract(BaseModel):
-    """Output specification for this agent."""
-    json_schema: str
-    example: str
+    source_kind: str = ''
+    type_hint: str = ''
+    example: str = ''
 
 
 class PromptSiteRef(BaseModel):
@@ -120,7 +114,6 @@ class AgentKnowledge(BaseModel):
     location: LocationInfo | None = None
     components: list[ComponentRef] = Field(default_factory=list)
     input_contract: list[ContractArg] = Field(default_factory=list)
-    output_contract: OutputContract | None = None
     prompt_sites: list[PromptSiteRef] = Field(default_factory=list)
 
     # Role verdicts — first conclusion of the LLM round, post hard-gate. NEVER authoritative;
@@ -242,10 +235,36 @@ class VerificationReport(BaseModel):
     claims: list[ClaimVerification] = Field(default_factory=list)
 
 
-def verify_citations(knowledge: AgentKnowledge, repo_root: Path) -> VerificationReport:
+_CITATION_LINE_TOLERANCE = 3  # a cite just above a symbol (decorator/blank line) still resolves to it
+
+
+def verify_citations(
+    knowledge: AgentKnowledge,
+    repo_root: Path,
+    symbols_by_file: dict[str, list[dict]] | None = None,
+) -> VerificationReport:
     """Verify semantic-field citations against the real repo (structural fields are
-    static-wins, never re-verified). Invalid citations are added to needs_human."""
+    static-wins, never re-verified). A citation is valid if it can be resolved to
+    readable context — the symbol text is on the line, OR the line falls inside/just
+    above an indexed symbol span (downstream reads the whole function/class anyway), OR
+    it coincides with a detected prompt site. Only citations that resolve to nothing are
+    flagged. symbols_by_file (from code_symbols) enables the span check; absent it, only
+    the line-text and prompt-site checks run."""
     report = VerificationReport(agent_id='', claims=[])
+    symbols_by_file = symbols_by_file or {}
+    prompt_site_locs = {
+        (p.file, p.line) for p in knowledge.prompt_sites if p.file and p.line
+    }
+
+    def _resolves_to_symbol(file: str, line: int) -> bool:
+        for sym in symbols_by_file.get(file) or []:
+            ls, le = sym.get('line_start'), sym.get('line_end')
+            if ls and le and ls <= line <= le:
+                return True
+            if ls and 0 <= ls - line <= _CITATION_LINE_TOLERANCE:
+                return True
+        return False
+
     semantic_citations: list[tuple[str, int, str]] = []
 
     # Sources missing file/line are skipped (unclaimed), not flagged as phantom.
@@ -293,11 +312,18 @@ def verify_citations(knowledge: AgentKnowledge, repo_root: Path) -> Verification
                 continue
 
             actual_line = lines[line - 1]
-            if symbol and symbol not in actual_line:
+            # A citation resolves to readable context if the symbol text is on the line, OR the line
+            # falls inside/just above an indexed symbol span, OR it lands on a detected prompt site.
+            resolved = (
+                (not symbol or symbol in actual_line)
+                or _resolves_to_symbol(file, line)
+                or (file, line) in prompt_site_locs
+            )
+            if not resolved:
                 claim = ClaimVerification(
                     status='unverified',
                     citation=Citation(file=file, line=line, symbol=symbol),
-                    reason=f"Symbol '{symbol}' not found on line {line}"
+                    reason=f"Line {line} resolves to no symbol span or prompt site"
                 )
                 report.claims.append(claim)
                 knowledge.needs_human.append(f"Unverified citation: {file}:{line}:{symbol}")

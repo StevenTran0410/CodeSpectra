@@ -321,6 +321,31 @@ async def test_rerun_cache_hit_reads_actual_json(tmp_path: Path, monkeypatch: py
         'source_coverage': {"test_agent": 0.0},
     }
 
+    # Compute the correct hash based on evidence and accepted_files (empty in this case)
+    import hashlib
+    from agent_eval_harness.discovery.enrichment import _STRUCTURAL_PRODUCER_VERSION
+    component_ids = sorted([c['id'] for c in evidence['component_by_agent'].get("test_agent", [])])
+    edges = sorted([(e['src'], e['dst']) for e in evidence['edges_by_agent'].get("test_agent", [])])
+    accepted_files = []
+    hash_input = '|'.join([
+        str(_STRUCTURAL_PRODUCER_VERSION),
+        ':'.join(component_ids),
+        ':'.join(str(len(accepted_files))),
+        ':'.join(f"{s}→{d}" for s, d in edges),
+    ])
+    correct_hash = hashlib.sha256(hash_input.encode('utf-8')).hexdigest()
+
+    # Update the stored hash to match the computed hash
+    await repository.upsert_agent_knowledge(
+        session_id="test_session",
+        agent_id="test_agent",
+        md_path=str(json_dir / "test_agent.md"),
+        json_path=str(json_path),
+        evidence_hash=correct_hash,
+        confidence="medium",
+        query_count=0,
+    )
+
     class _FailLLMClient:
         async def complete(self, messages, *, max_tokens=512, temperature=0.2, json_mode=False, reasoning_effort=None):
             raise AssertionError("Should not call LLM in cache-hit")
@@ -366,7 +391,7 @@ async def test_rerun_cache_hit_reads_actual_json(tmp_path: Path, monkeypatch: py
         evidence,
         _EnrichCtx(),
         depth_cap,
-        [],
+        accepted_files,
     )
 
     assert knowledge.functionality == "Cached content from disk"
@@ -833,8 +858,9 @@ def test_agent_flow_role_derivation_is_deterministic_never_llm() -> None:
 async def test_cache_hit_coerces_pre_cs300_empty_role_to_unknown_never_crashes(tmp_path: Path) -> None:
     """Cache path: a pre-CS-300 sidecar (component_roles entries with role='') must coerce to
     'unknown', not crash."""
-    from agent_eval_harness.discovery.enrichment import _enrich_single_agent
+    from agent_eval_harness.discovery.enrichment import _enrich_single_agent, _STRUCTURAL_PRODUCER_VERSION
     from dataclasses import dataclass
+    import hashlib
 
     json_dir = tmp_path / "knowledge"
     json_dir.mkdir()
@@ -845,12 +871,6 @@ async def test_cache_hit_coerces_pre_cs300_empty_role_to_unknown_never_crashes(t
     }
     json_path.write_text(json.dumps(cached_knowledge), encoding="utf-8")
 
-    await repository.upsert_agent_knowledge(
-        session_id="cache-coerce", agent_id="test_agent",
-        md_path=str(json_dir / "test_agent.md"), json_path=str(json_path),
-        evidence_hash="hash123", confidence="medium", query_count=0,
-    )
-
     agent = AgentFlow(id="test_agent", label="Test", component_ids=[])
     flow_map = AgentFlowMap(target_system_id="test", agents=[agent])
     system_map = SystemMap(target_system_id="test", components=[])
@@ -858,6 +878,24 @@ async def test_cache_hit_coerces_pre_cs300_empty_role_to_unknown_never_crashes(t
         "prompt_sites_by_file": {}, "component_by_agent": {"test_agent": []},
         "edges_by_agent": {"test_agent": []}, "source_coverage": {"test_agent": 0.0},
     }
+
+    # Compute the correct hash
+    component_ids = sorted([c['id'] for c in evidence['component_by_agent'].get("test_agent", [])])
+    edges = sorted([(e['src'], e['dst']) for e in evidence['edges_by_agent'].get("test_agent", [])])
+    accepted_files = []
+    hash_input = '|'.join([
+        str(_STRUCTURAL_PRODUCER_VERSION),
+        ':'.join(component_ids),
+        ':'.join(str(len(accepted_files))),
+        ':'.join(f"{s}→{d}" for s, d in edges),
+    ])
+    correct_hash = hashlib.sha256(hash_input.encode('utf-8')).hexdigest()
+
+    await repository.upsert_agent_knowledge(
+        session_id="cache-coerce", agent_id="test_agent",
+        md_path=str(json_dir / "test_agent.md"), json_path=str(json_path),
+        evidence_hash=correct_hash, confidence="medium", query_count=0,
+    )
 
     @dataclass
     class _EnrichCtx:
@@ -882,7 +920,198 @@ async def test_cache_hit_coerces_pre_cs300_empty_role_to_unknown_never_crashes(t
             self.force_agent_ids = self.force_agent_ids or []
 
     depth_cap = {"queries": 3, "llm_calls": 2, "read_file": 2}
-    knowledge = await _enrich_single_agent("test_agent", evidence, _EnrichCtx(), depth_cap, [])
+    knowledge = await _enrich_single_agent("test_agent", evidence, _EnrichCtx(), depth_cap, accepted_files)
 
     assert knowledge.functionality == "Cached content"
     assert knowledge.component_roles[0].role == "unknown"
+
+
+# CS-301 Tests (Slice 1: Cache hash comparison and force flag)
+@pytest.mark.anyio
+async def test_cs301_slice1_cache_hash_comparison(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """AC1: Cache re-enriches when evidence_hash differs from stored."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    try:
+        from agent_eval_harness.store.database import get_db
+        get_db()
+    except RuntimeError:
+        await init_db()
+
+    # Store a cached record with old hash
+    json_dir = tmp_path / "AppData" / "Local" / "codespectra" / "agents" / "test-session"
+    json_dir.mkdir(parents=True, exist_ok=True)
+    json_path = json_dir / "test_agent.json"
+    old_cached = {"functionality": "Old cached", "component_roles": []}
+    json_path.write_text(json.dumps(old_cached), encoding="utf-8")
+
+    old_hash = "old_hash_123"
+    await repository.upsert_agent_knowledge(
+        session_id="test-session", agent_id="test_agent",
+        md_path=str(json_dir / "test_agent.md"), json_path=str(json_path),
+        evidence_hash=old_hash, confidence="medium", query_count=0,
+    )
+
+    from dataclasses import dataclass
+    from agent_eval_harness.discovery.enrichment import _enrich_single_agent
+
+    agent = AgentFlow(id="test_agent", label="Test", component_ids=[])
+    flow_map = AgentFlowMap(target_system_id="test", agents=[agent])
+    system_map = SystemMap(target_system_id="test", components=[])
+    evidence = {
+        "prompt_sites_by_file": {}, "component_by_agent": {"test_agent": []},
+        "edges_by_agent": {"test_agent": []}, "source_coverage": {"test_agent": 0.0},
+    }
+
+    llm_client = _StubLLMClient({"functionality": "Fresh LLM response"})
+
+    @dataclass
+    class _EnrichCtx:
+        session_id: str = "test-session"
+        snapshot_id: str = ""
+        agent_flow_map: AgentFlowMap = None
+        system_map: SystemMap = None
+        accepted_with_annotations: list = None
+        accepted_edges: list = None
+        client: object = None
+        llm_client: object = None
+        depth: str = "normal"
+        force_agent_ids: list = None
+        semaphore: object = None
+        repo_root: object = None
+
+        def __post_init__(self):
+            self.agent_flow_map = self.agent_flow_map or flow_map
+            self.system_map = self.system_map or system_map
+            self.accepted_with_annotations = self.accepted_with_annotations or []
+            self.accepted_edges = self.accepted_edges or []
+            self.force_agent_ids = self.force_agent_ids or []
+
+    depth_cap = {"queries": 3, "llm_calls": 2, "read_file": 2}
+    knowledge = await _enrich_single_agent("test_agent", evidence, _EnrichCtx(client=_StubClient({}, {}), llm_client=llm_client), depth_cap, [])
+
+    # Hash is different, so LLM was called and we get fresh response
+    assert knowledge.functionality == "Fresh LLM response"
+    assert llm_client.call_count == 1
+
+
+@pytest.mark.anyio
+async def test_cs301_slice4_confidence_needs_human_cap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """AC5: needs_human non-empty => confidence != 'high'."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    try:
+        from agent_eval_harness.store.database import get_db
+        get_db()
+    except RuntimeError:
+        await init_db()
+
+    from dataclasses import dataclass
+    from agent_eval_harness.discovery.enrichment import _enrich_single_agent
+
+    agent = AgentFlow(id="test_agent", label="Test", component_ids=[])
+    flow_map = AgentFlowMap(target_system_id="test", agents=[agent])
+    system_map = SystemMap(target_system_id="test", components=[])
+    evidence = {
+        "prompt_sites_by_file": {}, "component_by_agent": {"test_agent": []},
+        "edges_by_agent": {"test_agent": []}, "source_coverage": {"test_agent": 0.0},
+    }
+
+    # LLM response with all fields filled but will have needs_human flagged
+    llm_client = _StubLLMClient({
+        "functionality": "Full function",
+        "functionality_citations": [{"file": "test.py", "line": 10, "snippet": "test"}],
+        "context_builders": [{"name": "builder1"}],
+        "failure_modes": [{"description": "fail mode"}],
+    })
+
+    @dataclass
+    class _EnrichCtx:
+        session_id: str = "cs301-test"
+        snapshot_id: str = ""
+        agent_flow_map: AgentFlowMap = None
+        system_map: SystemMap = None
+        accepted_with_annotations: list = None
+        accepted_edges: list = None
+        client: object = None
+        llm_client: object = None
+        depth: str = "normal"
+        force_agent_ids: list = None
+        semaphore: object = None
+        repo_root: object = None
+
+        def __post_init__(self):
+            self.agent_flow_map = self.agent_flow_map or flow_map
+            self.system_map = self.system_map or system_map
+            self.accepted_with_annotations = self.accepted_with_annotations or []
+            self.accepted_edges = self.accepted_edges or []
+            self.force_agent_ids = self.force_agent_ids or []
+
+    depth_cap = {"queries": 3, "llm_calls": 2, "read_file": 2}
+    knowledge = await _enrich_single_agent(
+        "test_agent", evidence,
+        _EnrichCtx(client=_StubClient({}, {}), llm_client=llm_client),
+        depth_cap, []
+    )
+
+    # Manually add needs_human to simulate citation verification finding issues
+    knowledge.needs_human.append("Unverified citation")
+
+    # Even with all fields filled, confidence must not be 'high' if needs_human is non-empty
+    assert knowledge.needs_human
+    assert knowledge.confidence != 'high'
+
+
+@pytest.mark.anyio
+async def test_cs301_slice4_confidence_degraded_is_low() -> None:
+    """AC5: degraded => confidence 'low'."""
+    from dataclasses import dataclass
+    from agent_eval_harness.discovery.enrichment import _enrich_single_agent
+    from agent_eval_harness.mapping.agent_flow import AgentFlow, AgentFlowMap
+    from agent_eval_harness.mapping.system_map import SystemMap
+
+    agent = AgentFlow(id="test_agent", label="Test", component_ids=[])
+    flow_map = AgentFlowMap(target_system_id="test", agents=[agent])
+    system_map = SystemMap(target_system_id="test", components=[])
+    evidence = {
+        "prompt_sites_by_file": {}, "component_by_agent": {"test_agent": []},
+        "edges_by_agent": {"test_agent": []}, "source_coverage": {"test_agent": 0.0},
+    }
+
+    # LLM that returns an error (will cause degraded)
+    class _ErrorLLM:
+        async def complete(self, *args, **kwargs):
+            raise Exception("LLM error")
+
+    @dataclass
+    class _EnrichCtx:
+        session_id: str = "cs301-test"
+        snapshot_id: str = ""
+        agent_flow_map: AgentFlowMap = None
+        system_map: SystemMap = None
+        accepted_with_annotations: list = None
+        accepted_edges: list = None
+        client: object = None
+        llm_client: object = None
+        depth: str = "normal"
+        force_agent_ids: list = None
+        semaphore: object = None
+        repo_root: object = None
+
+        def __post_init__(self):
+            self.agent_flow_map = self.agent_flow_map or flow_map
+            self.system_map = self.system_map or system_map
+            self.accepted_with_annotations = self.accepted_with_annotations or []
+            self.accepted_edges = self.accepted_edges or []
+            self.force_agent_ids = self.force_agent_ids or []
+
+    depth_cap = {"queries": 3, "llm_calls": 2, "read_file": 2}
+    knowledge = await _enrich_single_agent(
+        "test_agent", evidence,
+        _EnrichCtx(client=_StubClient({}, {}), llm_client=_ErrorLLM()),
+        depth_cap, []
+    )
+
+    # When degraded is True, confidence must be 'low'
+    assert knowledge.degraded
+    assert knowledge.confidence == 'low'

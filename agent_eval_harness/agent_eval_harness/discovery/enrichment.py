@@ -12,12 +12,14 @@ from typing import Any
 
 from agent_eval_harness.discovery.agent_knowledge import (
     AgentKnowledge,
+    ComponentRef,
     ComponentRoleVerdict,
+    ContractArg,
+    LocationInfo,
     PromptSiteRef,
     verify_citations,
 )
 from agent_eval_harness.discovery.prompt_site_scan import scan_for_prompt_sites
-from agent_eval_harness.injection.backend_bridge import default_backend_path
 from agent_eval_harness.instrumentation._extract import utc_now_iso
 from agent_eval_harness.llm.client import LLMClient
 from agent_eval_harness.mapping.agent_flow import AgentFlow, AgentFlowMap, save_agent_flow_map
@@ -33,6 +35,8 @@ from agent_eval_harness.planning.agentic_planner import DagNode, complete_json, 
 from agent_eval_harness.store import repository
 
 logger = logging.getLogger("agent_eval_harness.discovery.enrichment")
+
+_STRUCTURAL_PRODUCER_VERSION = 1  # Bump to invalidate all caches when shipping structural-field fill
 
 _PROMPT_SITE_CHAR_BUDGET = 2000  # per-site, keeping the HEAD — the role-defining opening survives
 _PROMPT_SITE_BLOCK_BUDGET = 20000  # total across all sites for one agent
@@ -50,12 +54,54 @@ _ENRICH_MAX_TOKENS = 16000
 _ENRICH_REASONING_EFFORT = "medium"
 
 
-def _resolve_repo_root(override_root: Path | None = None) -> Path:
-    """Repo root containing backend/ — never Path.cwd(), which is agent_eval_harness/ under Electron dev mode."""
+def agent_knowledge_dir(session_id: str) -> Path:
+    """Directory for enriched AgentKnowledge JSON sidecars."""
+    return Path.home() / "AppData" / "Local" / "codespectra" / "agents" / session_id
+
+
+_ENTRY_METHOD_NAMES = ("run", "run_async", "__call__")
+
+
+def _parse_signature_kwargs(signature: str) -> list[str]:
+    """Extract kwarg names from a method signature, skipping self/cls.
+
+    On any parse ambiguity (e.g., nested generics with commas), return empty
+    so the caller can defensively drop input_contract for this agent.
+    """
+    if not signature or '(' not in signature:
+        return []
+    try:
+        # Extract the parameter list between ( and )
+        start = signature.index('(')
+        end = signature.rindex(')')
+        params_str = signature[start + 1:end]
+        if not params_str:
+            return []
+
+        # Split by comma, but only at the top level (no nesting check for simplicity)
+        parts = params_str.split(',')
+        kwargs = []
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+            # Extract just the name (before : or = or space)
+            kwarg_name = part.split(':')[0].split('=')[0].split()[0]
+            if kwarg_name and kwarg_name not in ('self', 'cls'):
+                kwargs.append(kwarg_name)
+        return kwargs
+    except (ValueError, IndexError):
+        # Parse ambiguity — return empty so we drop the field
+        return []
+
+
+def _resolve_repo_root(override_root: Path | None = None) -> Path | None:
+    """The TARGET's repo root, or None when unknown — never AEH's own repo, whose files would
+    resolve the target's relative paths against a different codebase entirely."""
     if override_root is not None:
         return override_root
     override = os.getenv("AEH_REPO_ROOT")
-    return Path(override) if override else default_backend_path().parent
+    return Path(override) if override else None
 
 _ENRICH_SYSTEM = (
     "You are an expert AI software architect analyzing one agent within a discovered "
@@ -83,7 +129,7 @@ _ENRICH_SYSTEM = (
     "rather than returning null or an empty string.\n"
     "3. \"component_roles\" is REQUIRED — one entry per component listed in the evidence, "
     "each role taken from THAT component's own admissible set. Do NOT add fields like "
-    "\"degraded\", \"location\", \"components\", \"input_contract\", or \"output_contract\" "
+    "\"degraded\", \"location\", \"components\", or \"input_contract\" "
     "— those are computed separately from static analysis, not from you, and including "
     "them will be ignored or cause an error."
 )
@@ -404,7 +450,7 @@ async def enrich_agents(
     enrich_names = [f"enrich:{a.id}" for a in target_agents]
 
     async def _persist(results: dict[str, Any]) -> None:
-        appdata_dir = Path.home() / "AppData" / "Local" / "codespectra" / "agents" / session_id
+        appdata_dir = agent_knowledge_dir(session_id)
         appdata_dir.mkdir(parents=True, exist_ok=True)
 
         role_by_component: dict[str, tuple[str, float]] = {}
@@ -486,7 +532,15 @@ async def _gather_evidence(ctx: _EnrichmentContext) -> dict[str, Any]:
         for item in ctx.accepted_with_annotations
     ]
 
-    prompt_sites_by_file = scan_for_prompt_sites(_resolve_repo_root(ctx.repo_root), accepted_files)
+    scan_root = _resolve_repo_root(ctx.repo_root)
+    if scan_root is None:
+        logger.warning(
+            "No target repo root — prompt-site scan skipped, every agent will be enriched without "
+            "its real prompt text. Pass repo_root= or set AEH_REPO_ROOT."
+        )
+    prompt_sites_by_file = (
+        scan_for_prompt_sites(scan_root, accepted_files) if scan_root is not None else {}
+    )
 
     # Build per-agent component info
     component_by_agent: dict[str, list[dict]] = {}
@@ -548,11 +602,27 @@ async def _enrich_single_agent(
 ) -> AgentKnowledge:
     """Enrich a single agent: check cache, verify coverage, run queries/LLM, persist."""
 
-    # 1. Check cache
+    # 1. Compute evidence hash (hoisted before cache check)
+    component_ids = sorted([
+        c['id'] for c in evidence['component_by_agent'].get(agent_id, [])
+    ])
+    edges = sorted([
+        (e['src'], e['dst']) for e in evidence['edges_by_agent'].get(agent_id, [])
+    ])
+
+    hash_input = '|'.join([
+        str(_STRUCTURAL_PRODUCER_VERSION),
+        ':'.join(component_ids),
+        ':'.join(str(len(accepted_files))),
+        ':'.join(f"{s}→{d}" for s, d in edges),
+    ])
+    evidence_hash = hashlib.sha256(hash_input.encode('utf-8')).hexdigest()
+
+    # 2. Check cache — short-circuit only when hash matches and agent not forced
     cached = await repository.get_agent_knowledge(ctx.session_id, agent_id)
     if (
         cached and
-        cached.get('evidence_hash') and
+        cached.get('evidence_hash') == evidence_hash and
         agent_id not in ctx.force_agent_ids
     ):
         # Return cached knowledge without LLM calls — read from json_path on disk
@@ -563,21 +633,6 @@ async def _enrich_single_agent(
                 return AgentKnowledge.from_json(cached_data)
         except Exception as e:
             logger.warning(f"Failed to deserialize cached knowledge for {agent_id}: {e}")
-
-    # 2. Compute evidence hash
-    component_ids = sorted([
-        c['id'] for c in evidence['component_by_agent'].get(agent_id, [])
-    ])
-    edges = sorted([
-        (e['src'], e['dst']) for e in evidence['edges_by_agent'].get(agent_id, [])
-    ])
-
-    hash_input = '|'.join([
-        ':'.join(component_ids),
-        ':'.join(str(len(accepted_files))),
-        ':'.join(f"{s}→{d}" for s, d in edges),
-    ])
-    evidence_hash = hashlib.sha256(hash_input.encode('utf-8')).hexdigest()
 
     # 3. Coverage check — gates the SUPPLEMENTARY pre-query only; the LLM call always runs.
     prompt_sites = evidence['prompt_sites_by_file']
@@ -801,10 +856,79 @@ If you need more information to provide complete answers, set need_more to true 
     # 6. Static-wins merge — structural fields never come from the LLM
     llm_knowledge.evidence_hash = evidence_hash
     llm_knowledge.query_count = query_count
-    llm_knowledge.confidence = 'low' if llm_knowledge.degraded else 'high'
     llm_knowledge.generated_at = utc_now_iso()
-    llm_knowledge.location = None
-    llm_knowledge.components = []
+
+    # code_symbols rows keyed by file, reused for both the structural fill and citation verification.
+    symbols_by_file: dict[str, list[dict]] = {}
+
+    # Fill location/components/input_contract from code_symbols if snapshot_id is available
+    if ctx.snapshot_id and agent_id in evidence.get('component_by_agent', {}):
+        components_list = evidence['component_by_agent'][agent_id]
+        if components_list:
+            try:
+                # Get all unique files for this agent's components
+                comp_files = {c['file'] for c in components_list if c.get('file')}
+                if comp_files:
+                    # Query for each file to get symbol info
+                    for comp_file in comp_files:
+                        try:
+                            file_basename = Path(comp_file).name
+                            symbols_response = await ctx.client.search_repo_map(ctx.snapshot_id, q=file_basename)
+                            symbols = symbols_response.get('symbols', [])
+                            symbols_by_file[comp_file] = symbols
+
+                            # Extract class name from the first component's entry_point
+                            if components_list[0].get('entry_point'):
+                                _, _, class_name = components_list[0]['entry_point'].partition(':')
+                                class_name = class_name.split('.')[0]
+
+                                # Find class row for location
+                                class_row = None
+                                method_row = None
+                                for sym in symbols:
+                                    if sym.get('kind') == 'class' and sym.get('name') == class_name:
+                                        class_row = sym
+                                    elif (sym.get('parent_name') == class_name and
+                                          sym.get('kind') == 'method' and
+                                          sym.get('name') in _ENTRY_METHOD_NAMES):
+                                        if method_row is None or _ENTRY_METHOD_NAMES.index(sym.get('name')) < _ENTRY_METHOD_NAMES.index(method_row.get('name')):
+                                            method_row = sym
+
+                                # Fill location from class and method rows
+                                if class_row and method_row:
+                                    llm_knowledge.location = LocationInfo(
+                                        file=comp_file,
+                                        line_start=class_row.get('line_start', 0),
+                                        line_end=class_row.get('line_end', 0),
+                                        entry_method=method_row.get('name', ''),
+                                        entry_line=method_row.get('line_start', 0),
+                                    )
+                                    # Fill input_contract from method signature
+                                    sig = method_row.get('signature', '')
+                                    kwargs = _parse_signature_kwargs(sig)
+                                    if kwargs is not None and len(kwargs) > 0:
+                                        llm_knowledge.input_contract = [
+                                            ContractArg(kwarg=kw, source_kind='signature', type_hint='', example='')
+                                            for kw in kwargs
+                                        ]
+
+                                # Fill components
+                                for comp in components_list:
+                                    if class_row and comp.get('file') == comp_file:
+                                        llm_knowledge.components.append(ComponentRef(
+                                            id=comp['id'],
+                                            role=comp.get('role', 'unknown'),
+                                            file=comp_file,
+                                            line=class_row.get('line_start', 0),
+                                        ))
+                        except Exception as e:
+                            logger.warning(f"Failed to fill structural fields for {agent_id} from {comp_file}: {e}")
+            except Exception as e:
+                logger.warning(f"Failed to fill structural fields for {agent_id}: {e}")
+    else:
+        # No snapshot or no components — degrade silently
+        if not ctx.snapshot_id:
+            logger.warning(f"No snapshot_id for {agent_id} — cannot fill structural fields")
 
     # Populate prompt_sites from evidence for this agent's components
     if agent_id in evidence.get('component_by_agent', {}):
@@ -818,14 +942,65 @@ If you need more information to provide complete answers, set need_more to true 
                 llm_knowledge.prompt_sites.extend(PromptSiteRef(**asdict(s)) for s in sites)
 
     # 7. Verify citations — mutates knowledge.needs_human for unverified/phantom claims
-    vreport = verify_citations(llm_knowledge, _resolve_repo_root(ctx.repo_root))
-    if vreport.claims:
-        logger.debug(
-            "Citation verification for %s: %d claims, %d phantom, %d unverified",
+    verify_root = _resolve_repo_root(ctx.repo_root)
+    if verify_root is None:
+        logger.warning(
+            "No target repo root — citation verification skipped for %s; the LLM's file:line "
+            "claims are recorded UNCHECKED. Pass repo_root= or set AEH_REPO_ROOT.",
             agent_id,
-            len(vreport.claims),
-            sum(1 for c in vreport.claims if c.status == "phantom"),
-            sum(1 for c in vreport.claims if c.status == "unverified"),
         )
+    else:
+        # Fetch symbols for any cited file not already pulled during the fill, so span-based
+        # citation resolution covers cross-file citations too — not just the agent's own file.
+        if ctx.snapshot_id:
+            cited_files = {
+                c.file for src in (
+                    llm_knowledge.functionality_citations, llm_knowledge.context_builders,
+                    llm_knowledge.upstream_consumers, llm_knowledge.downstream_consumers,
+                    llm_knowledge.failure_modes,
+                )
+                for c in src if getattr(c, 'file', None)
+            }
+            for cf in cited_files - symbols_by_file.keys():
+                try:
+                    resp = await ctx.client.search_repo_map(ctx.snapshot_id, q=Path(cf).name)
+                    symbols_by_file[cf] = resp.get('symbols', [])
+                except Exception as e:
+                    logger.debug("Could not fetch symbols for cited file %s: %s", cf, e)
+        vreport = verify_citations(llm_knowledge, verify_root, symbols_by_file=symbols_by_file)
+        if vreport.claims:
+            logger.debug(
+                "Citation verification for %s: %d claims, %d phantom, %d unverified",
+                agent_id,
+                len(vreport.claims),
+                sum(1 for c in vreport.claims if c.status == "phantom"),
+                sum(1 for c in vreport.claims if c.status == "unverified"),
+            )
+
+    # 8. Confidence from field-fullness + needs_human + query_count
+    if llm_knowledge.degraded:
+        llm_knowledge.confidence = 'low'
+    elif llm_knowledge.needs_human:
+        # Hard invariant: needs_human non-empty => never 'high'
+        llm_knowledge.confidence = 'medium'
+    else:
+        # Score field-fullness: count populated among {functionality, functionality_citations,
+        # location, components, input_contract, prompt_sites, context_builders, failure_modes}
+        field_count = sum([
+            bool(llm_knowledge.functionality),
+            bool(llm_knowledge.functionality_citations),
+            llm_knowledge.location is not None,
+            bool(llm_knowledge.components),
+            bool(llm_knowledge.input_contract),
+            bool(llm_knowledge.prompt_sites),
+            bool(llm_knowledge.context_builders),
+            bool(llm_knowledge.failure_modes),
+        ])
+        if field_count >= 5:
+            llm_knowledge.confidence = 'high'
+        elif field_count >= 2:
+            llm_knowledge.confidence = 'medium'
+        else:
+            llm_knowledge.confidence = 'low'
 
     return llm_knowledge

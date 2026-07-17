@@ -49,6 +49,46 @@ async def test_verify_citations_all_five_sources(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
+async def test_verify_citations_union_resolves_offline_and_promptsite(tmp_path: Path) -> None:
+    """A citation is valid if it resolves to readable context by ANY of three routes; only a
+    citation that resolves to nothing is flagged. Guards the CS-301 follow-up union rule."""
+    from agent_eval_harness.discovery.agent_knowledge import PromptSiteRef
+
+    src = tmp_path / "agent.py"
+    src.write_text(
+        "import os\n"                       # 1
+        "from .prompts import SYS_PROMPT\n"  # 2  (prompt-site line)
+        "\n"                                  # 3
+        "@component\n"                        # 4  (decorator, one above the class)
+        "class MyAgent:\n"                    # 5  (class def)
+        "    def run(self):\n"                # 6
+        "        return SYS_PROMPT\n",        # 7  (mid-class, class name NOT on this line)
+        encoding="utf-8",
+    )
+    symbols = {"agent.py": [{"name": "MyAgent", "kind": "class", "line_start": 5, "line_end": 7}]}
+
+    knowledge = AgentKnowledge(
+        functionality="x",
+        prompt_sites=[PromptSiteRef(file="agent.py", line=2, kind="prompt_import", snippet="")],
+        functionality_citations=[
+            Citation(file="agent.py", line=4, symbol="MyAgent"),   # near-above span -> resolves
+            Citation(file="agent.py", line=7, symbol="MyAgent"),   # mid-class span  -> resolves
+            Citation(file="agent.py", line=2, symbol="prompt_import"),  # prompt-site -> resolves
+            Citation(file="agent.py", line=1, symbol="ghost"),     # nothing there   -> flagged
+        ],
+    )
+
+    report = verify_citations(knowledge, tmp_path, symbols_by_file=symbols)
+
+    by_line = {c.citation.line: c.status for c in report.claims}
+    assert by_line[4] == "verified"
+    assert by_line[7] == "verified"
+    assert by_line[2] == "verified"
+    assert by_line[1] == "unverified"
+    assert knowledge.needs_human == ["Unverified citation: agent.py:1:ghost"]
+
+
+@pytest.mark.anyio
 async def test_static_wins_llm_cannot_override() -> None:
     """AC4: Static-wins cross-check — LLM cannot override structural fields."""
     from agent_eval_harness.discovery.enrichment import _enrich_single_agent

@@ -647,8 +647,15 @@ async def _enrich_command(args: argparse.Namespace) -> int:
 
             snapshot = await client.get_snapshot(sess["snapshot_id"])
             local_path_str = snapshot.get("local_path")
+            if not local_path_str:
+                # Matches the server route's 400 — without the target's root, enrichment silently
+                # loses every prompt site and leaves all citations unchecked.
+                raise SystemExit(
+                    f"Snapshot {sess['snapshot_id']} is missing local_path — cannot resolve the "
+                    "target repo root. Set AEH_REPO_ROOT to override."
+                )
 
-            force_ids = [args.session_id] if args.force else []
+            force_ids = [a.id for a in agent_flow_map.agents] if args.force else []
 
             knowledge_list = await enrich_agents(
                 session_id=args.session_id,
@@ -664,7 +671,7 @@ async def _enrich_command(args: argparse.Namespace) -> int:
                 force_agent_ids=force_ids,
                 map_path=sess["map_path"],
                 agent_flows_path=sess["agent_flows_path"],
-                repo_root=Path(local_path_str) if local_path_str else None,
+                repo_root=Path(local_path_str),
             )
 
             enriched_count = sum(1 for k in knowledge_list if not k.degraded)

@@ -246,6 +246,9 @@ async def _derive_config(
             reports = await codespectra_client.list_reports(repo_id=repo_id, limit=min_cases)
             reports_config = []
             suffix = group_key.split("/", 1)[1].lower()
+            # CS-303 §2.6: CodeSpectra section letters + the `synthesizer` agent-id, hardcoded.
+            # CS-297 §2 claims every shim lives in synthetic_agent_io.py — it misses this one, so a
+            # fully-executed CS-297 would leave it behind. Letters must come from harvested contract.
             letters = "ABCDEFGHIJK" if suffix == "synthesizer" else "ABCDEFGHIJ"
 
             for r in reports:
