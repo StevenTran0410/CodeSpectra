@@ -790,10 +790,10 @@ def _resolve_synthesis_config(
     )
 
 
-@app.post("/api/discovery/sessions")
-@_log_and_500("Failed to start discovery session")
-async def start_discovery(body: StartDiscoveryRequest):
-    config = AEHConfig.load()
+def _build_synthesis_clients(
+    body: _LLMConfigRequest, config: AEHConfig
+) -> tuple[CodeSpectraProxyClient, CodeSpectraClient]:
+    """Resolve synthesis config and build the paired LLM proxy + CodeSpectra API clients most routes need."""
     provider_id, backend_url, backend_token, model_id, reasoning_effort, thinking_budget = (
         _resolve_synthesis_config(body, config)
     )
@@ -801,8 +801,15 @@ async def start_discovery(body: StartDiscoveryRequest):
         backend_url, backend_token, provider_id, model_id,
         reasoning_effort=reasoning_effort, thinking_budget=thinking_budget,
     )
-
     client = CodeSpectraClient(backend_url, backend_token)
+    return llm_client, client
+
+
+@app.post("/api/discovery/sessions")
+@_log_and_500("Failed to start discovery session")
+async def start_discovery(body: StartDiscoveryRequest):
+    config = AEHConfig.load()
+    llm_client, client = _build_synthesis_clients(body, config)
 
     session_id = await repository.insert_discovery_session(body.repo_ref, body.snapshot_id)
 
@@ -1205,14 +1212,7 @@ async def generate_plan_route(session_id: str, body: GeneratePlanRequest):
         )
 
     config = AEHConfig.load()
-    provider_id, backend_url, backend_token, model_id, reasoning_effort, thinking_budget = (
-        _resolve_synthesis_config(body, config)
-    )
-    llm_client = CodeSpectraProxyClient(
-        backend_url, backend_token, provider_id, model_id,
-        reasoning_effort=reasoning_effort, thinking_budget=thinking_budget,
-    )
-    client = CodeSpectraClient(backend_url, backend_token)
+    llm_client, client = _build_synthesis_clients(body, config)
 
     try:
         import yaml
@@ -1234,8 +1234,7 @@ async def generate_plan_route(session_id: str, body: GeneratePlanRequest):
         map_path = Path(sess["map_path"])
         plan_path = map_path.with_name(map_path.stem + "_plan.yaml")
         plan_report_path = map_path.with_name(map_path.stem + "_plan_report.yaml")
-        # Regenerating the plan DELETES the previous plan's datasets — never carried forward: they go
-        # stale the moment the plan/harvest changes, so a regen always starts from a clean slate.
+        # Regenerating the plan deletes the previous plan's datasets — they'd go stale otherwise.
         if plan_path.exists():
             try:
                 old_suite = load_suite(plan_path)
@@ -1260,9 +1259,9 @@ async def generate_plan_route(session_id: str, body: GeneratePlanRequest):
         suite, plan_report = await generate_plan_agentic(
             system_map, agent_flow_map, source_by_component, sess["accepted_edges"], llm_client,
             files=harvest_files, files_root=local_path,
-            previous_suite=None, previous_report=previous_report,
+            previous_report=previous_report,
             project_context=_plan_project_ctx,
-            conventions=config.contract_conventions,  # CS-303 Slice 6: config seam, previously dead
+            conventions=config.contract_conventions,
         )
 
         plan_path.write_text(
@@ -1294,8 +1293,8 @@ async def generate_plan_route(session_id: str, body: GeneratePlanRequest):
                 await repository.update_discovery_session_pipeline_stage(
                     candidate["session_id"], "awaiting_map_review"
                 )
-        except Exception:
-            logger.warning("could not reset discovery pipeline_stage after plan failure")
+        except Exception as reset_err:
+            logger.warning(f"could not reset discovery pipeline_stage after plan failure: {reset_err}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         await client.aclose()
@@ -1638,15 +1637,7 @@ async def generate_agent_flows_route(session_id: str, body: AgentFlowRequest):
         raise HTTPException(status_code=400, detail="No system map for this session.")
 
     config = AEHConfig.load()
-    provider_id, backend_url, backend_token, model_id, reasoning_effort, thinking_budget = (
-        _resolve_synthesis_config(body, config)
-    )
-
-    llm_client = CodeSpectraProxyClient(
-        backend_url, backend_token, provider_id, model_id,
-        reasoning_effort=reasoning_effort, thinking_budget=thinking_budget,
-    )
-    client = CodeSpectraClient(backend_url, backend_token)
+    llm_client, client = _build_synthesis_clients(body, config)
 
     try:
         system_map = load_system_map(sess["map_path"])
@@ -1719,14 +1710,7 @@ async def enrich_agents_route(session_id: str, body: EnrichAgentsRequest):
         )
 
     config = AEHConfig.load()
-    provider_id, backend_url, backend_token, model_id, reasoning_effort, thinking_budget = (
-        _resolve_synthesis_config(body, config)
-    )
-    llm_client = CodeSpectraProxyClient(
-        backend_url, backend_token, provider_id, model_id,
-        reasoning_effort=reasoning_effort, thinking_budget=thinking_budget,
-    )
-    client = CodeSpectraClient(backend_url, backend_token)
+    llm_client, client = _build_synthesis_clients(body, config)
 
     try:
         system_map = load_system_map(sess["map_path"])
@@ -1737,7 +1721,7 @@ async def enrich_agents_route(session_id: str, body: EnrichAgentsRequest):
         if not local_path_str:
             raise HTTPException(status_code=400, detail="Snapshot is missing local_path context.")
 
-        from agent_eval_harness.discovery.enrichment import enrich_agents, agent_knowledge_dir
+        from agent_eval_harness.discovery.enrichment import enrich_agents
 
         knowledge_list = await enrich_agents(
             session_id=session_id,

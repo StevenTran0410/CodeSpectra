@@ -30,6 +30,11 @@ _GENERATION_MAX_TOKENS = 20000
 _CONFIDENCE_ENUM = ("low", "medium", "high")
 _CONFIDENCE_FIELD_RULE = f"Any field literally named 'confidence' must be one of: {', '.join(_CONFIDENCE_ENUM)}."
 _AVOID_LIMIT_CHARS = 2000
+_MAX_FAILURE_MODES_IN_PROMPT = 5
+# D6 embedding dedup: >= this cosine-sim auto-drops a candidate as a near-exact repeat.
+_DEDUP_AUTO_DROP_THRESHOLD = 0.93
+# D6 embedding dedup: >= this cosine-sim (but below the drop threshold) flags near_duplicate=True.
+_DEDUP_NEAR_DUPLICATE_THRESHOLD = 0.80
 
 _GENERIC_PURPOSE_BY_ARCHETYPE: dict[str, str] = {
     "fan_in_judge": "Synthesizes and evaluates outputs from multiple upstream agents.",
@@ -85,9 +90,9 @@ class SyntheticAgentIOConfig(BaseModel):
     archetype: str
     contract: dict[str, Any]
     profile: dict[str, Any] = {}
-    failure_modes: list[str] = []  # from AgentKnowledge; drives edge-case generation
-    input_contract: list[dict[str, Any]] = []  # D9: AgentKnowledge sidecar ContractArg list (per-kwarg example)
-    context_builders: list[dict[str, Any]] = []  # D9: AgentKnowledge sidecar ContextBuilderRef list
+    failure_modes: list[str] = []
+    input_contract: list[dict[str, Any]] = []
+    context_builders: list[dict[str, Any]] = []
     count: int = 20
     painpoint: str | None = None
 
@@ -136,12 +141,12 @@ def _parse_json_array(content: str) -> list[Any]:
     try:
         parsed = json.loads(content)
     except json.JSONDecodeError:
-        # Truncated/malformed completions (e.g. cut off mid-object) are still salvageable —
-        # json_repair recovers whichever leading array elements are structurally complete;
-        # incomplete ones simply fail _validate_gold downstream like any other bad candidate.
+        # Truncated/malformed completions are still salvageable: json_repair recovers whichever
+        # leading array elements are structurally complete (incomplete ones fail _validate_gold downstream).
         try:
             parsed = json_repair.loads(content)
-        except Exception:
+        except Exception as e:
+            logger.debug("synthetic_agent_io: json_repair also failed to parse content (%d chars): %s", len(content), e)
             return []
     if isinstance(parsed, dict):
         # Some models wrap the array in {"cases": [...]}; unwrap the first list value found.
@@ -172,7 +177,7 @@ def _failure_modes_addendum(failure_modes: list[str], *, detailed: bool) -> str:
         if detailed
         else ":\n"
     )
-    return header + "\n".join(f"- {fm}" for fm in failure_modes[:5])
+    return header + "\n".join(f"- {fm}" for fm in failure_modes[:_MAX_FAILURE_MODES_IN_PROMPT])
 
 
 def _avoid_addendum(avoid: list[dict[str, Any]], *, detailed: bool) -> str:
@@ -249,9 +254,7 @@ async def _generate_fan_in_judge(
 
 
 def _upstream_specs_for(parsed: SyntheticAgentIOConfig) -> list[tuple[str, str]]:
-    """Harvested upstream_context_specs only (D3). The CodeSpectra-agent-id legacy override
-    dict was removed once a green multi_agent/linear_rag Stage 1→3 run proved the generic/
-    harvested path (CS-303 Slice 1/3b) — no agent-id fallback remains."""
+    """Harvested upstream_context_specs only — no hardcoded agent-id fallback remains."""
     contract_specs = parsed.contract.get("upstream_context_specs") or []
     return [(s["name"], s["description"]) for s in contract_specs if s.get("name")]
 
@@ -394,12 +397,12 @@ async def _generate_validated_cases(
                     if accepted_embeddings:
                         max_sim = max(_cosine_sim(emb, acc) for acc in accepted_embeddings)
                         extra_labels["max_sim"] = round(max_sim, 4)
-                        if max_sim >= 0.93:
+                        if max_sim >= _DEDUP_AUTO_DROP_THRESHOLD:
                             # Auto-drop: regenerate instead of shrinking the dataset.
                             dedup_stash.append((max_sim, candidate))
                             rejected_last_round.append(candidate)
                             continue
-                        if max_sim >= 0.80:
+                        if max_sim >= _DEDUP_NEAR_DUPLICATE_THRESHOLD:
                             extra_labels["near_duplicate"] = True
                     accepted_embeddings.append(emb)
                 except Exception as e:
@@ -586,15 +589,7 @@ async def _generate_rag_query_planning_mem_ctx(
     )
 
 
-# CS-303 Slice 3c PAUSE: parity checked (tests/test_stage3_codespectra_parity.py) — for all 10
-# shapes below, the generic path's field-descriptor key-set (raw kwarg names minus config)
-# does NOT equal what these builders render (e.g. "mem_ctx" -> bundle+folder_tree+doc_ctx+
-# manifest_ctx+repo_name is a semantic expansion, not a literal field). Removing this table
-# would regress CodeSpectra dataset quality, so it is RETAINED. What generalizes foreign agents
-# is the route-hole fix below (`not kwarg_names` -> generic) — a foreign kwarg set essentially
-# never equals one of these 10 CodeSpectra-specific shapes, so it already falls through to
-# _generate_generic regardless of whether this table exists. Revisit only if
-# test_stage3_codespectra_parity.py ever starts asserting equality.
+# RETAINED: these builders semantically expand a kwarg set the generic path can't reproduce, so removing this table regresses dataset quality; a foreign kwarg set never matches these 10 shapes and falls through to _generate_generic anyway.
 _KNOWN_SHAPE_KWARG_SETS: dict[str, frozenset[str]] = {
     "rag_single_shot:glossary": frozenset({"provider_id", "model_id", "snapshot_id", "profile"}),
     "rag_single_shot:important_files": frozenset({"provider_id", "model_id", "snapshot_id", "graph_summary", "profile"}),
@@ -610,7 +605,6 @@ _KNOWN_SHAPE_KWARG_SETS: dict[str, frozenset[str]] = {
 
 _KNOWN_KWARG_SET_VALUES: frozenset[frozenset[str]] = frozenset(_KNOWN_SHAPE_KWARG_SETS.values())
 
-# Retained with the known-kwarg-set fast-path (see PAUSE note above _KNOWN_SHAPE_KWARG_SETS).
 _ARCHETYPE_BUILDERS: dict[
     str,
     Callable[[SyntheticAgentIOConfig, LLMClient, EmbeddingClient | None], Awaitable[list[DatasetCase]]],
@@ -628,9 +622,7 @@ async def _generate_generic(
     parsed: SyntheticAgentIOConfig, llm_client: LLMClient,
     embedding_client: EmbeddingClient | None = None,
 ) -> list[DatasetCase]:
-    """Generic builder: derives the case-input field list mechanically from the harvested
-    contract — never from a CodeSpectra-shaped template. Archetype only picks the purpose
-    blurb below (D9); it never adds/removes a field."""
+    """Generic builder: derives the case-input field list mechanically from the harvested contract; archetype only picks the purpose blurb, never adds/removes a field."""
     contract = parsed.contract
     output = contract.get("output") or {}
     json_schema: dict | None = output.get("json_schema")
@@ -703,9 +695,7 @@ async def _generate_generic(
 
 
 def _flag_schema_unvalidated(cases: list[DatasetCase], contract: dict[str, Any]) -> None:
-    """Stamp needs_human on every case when the agent's output schema wasn't statically
-    harvestable — gold was never schema-validated. Applied centrally so all archetype paths
-    (fan_in_judge early return, known-kwarg fast-path, generic) are covered, not just generic."""
+    """Stamp needs_human on every case when the agent's output schema wasn't statically harvestable — applied centrally so all archetype paths (fan_in_judge, known-kwarg fast-path, generic) are covered, not just generic."""
     note = next(
         (n for n in (contract.get("needs_human") or []) if "no output schema statically harvestable" in n),
         "output schema unavailable — gold was not schema-validated",
@@ -720,14 +710,9 @@ async def _dispatch_builder(
     parsed: SyntheticAgentIOConfig, llm_client: LLMClient,
     embedding_client: EmbeddingClient | None,
 ) -> list[DatasetCase]:
-    # fan_in_judge is a genuine structural special case (all-sections dict keyed by
-    # field_downstream_consumers, not a flat kwarg list) — gated on contract shape via
-    # _archetype_for, never on agent-id. See test_dispatch_fan_in_judge_routes_by_shape_not_agent_id.
     if parsed.archetype == "fan_in_judge":
         return await _generate_fan_in_judge(parsed, llm_client, embedding_client)
-    # Fast-path for CodeSpectra's known kwarg shapes (CS-303 Slice 3c PAUSE — retained, see note
-    # above _KNOWN_SHAPE_KWARG_SETS). An EMPTY kwarg set is NOT a known shape — an agent whose
-    # harvest yielded nothing must degrade to the generic path, never a CodeSpectra builder.
+    # An EMPTY kwarg set is NOT a known shape — it must degrade to the generic path, never the fast-path.
     kwarg_names = frozenset(
         k["name"] for k in ((parsed.contract.get("invocation") or {}).get("kwargs") or []) if k.get("name")
     )

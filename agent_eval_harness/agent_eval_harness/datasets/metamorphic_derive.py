@@ -1,10 +1,8 @@
-"""Post-review metamorphic derivation pass — an explicit route, not a fulfill_plan phase
-(fulfill_plan's min_cases floor runs PRE-review over freshly-synthesized cases in the same
-pass; this pass runs AFTER a human has finished reviewing the source cohort, so it cannot
-share fulfill_plan's loop). Enforces the double precondition at runtime: (1) the source
-cohort is fully reviewed (repository.list_dataset_ids()'s review_complete), and (2) the relation
-itself has been preview-approved for THIS source cohort. Either unmet -> MetamorphicPreconditionError
-with an explicit reason, zero derived+reviewed rows minted."""
+"""Post-review metamorphic derivation pass: unlike fulfill_plan's min_cases floor (which runs
+PRE-review over freshly-synthesized cases), this runs AFTER a human has finished reviewing the
+source cohort. Enforces a double precondition at runtime — (1) source cohort fully reviewed,
+(2) relation preview-approved for THIS cohort — raising MetamorphicPreconditionError with an
+explicit reason and minting zero rows if either is unmet."""
 from __future__ import annotations
 
 import json
@@ -13,7 +11,10 @@ import math
 import random
 from typing import Any
 
-from agent_eval_harness.datasets.metamorphic_ops import apply_transform
+from agent_eval_harness.datasets.generators.metamorphic_relation import (
+    apply_relation_transform,
+    load_case_input,
+)
 from agent_eval_harness.datasets.metamorphic_relations import RelationSpec, get_relation
 from agent_eval_harness.datasets.registry import get_generator
 from agent_eval_harness.store import repository
@@ -21,6 +22,7 @@ from agent_eval_harness.store import repository
 logger = logging.getLogger("agent_eval_harness.datasets.metamorphic_derive")
 
 _FIELD_PARAM_SUFFIXES = ("_field", "_fields")
+_FIELD_SAMPLE_SIZE = 20  # cases sampled to infer the source cohort's known field names
 
 
 class MetamorphicPreconditionError(ValueError):
@@ -65,7 +67,8 @@ def _source_cohort_archetype(source_cases: list[dict]) -> str | None:
             continue
         try:
             labels = json.loads(raw)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"_source_cohort_archetype: skipping unparseable labels_json: {e}")
             continue
         if isinstance(labels, dict) and isinstance(labels.get("archetype"), str):
             archetypes.add(labels["archetype"])
@@ -76,7 +79,7 @@ def _known_field_names(source_cases: list[dict]) -> set[str]:
     """Union of top-level keys across a sample of source cases' input/expected/labels —
     a lightweight, generic stand-in for the target's harvested output.json_schema."""
     names: set[str] = set()
-    for db_case in source_cases[:20]:
+    for db_case in source_cases[:_FIELD_SAMPLE_SIZE]:
         for col in ("input_json", "expected_json", "labels_json"):
             raw = db_case.get(col)
             if not raw:
@@ -130,11 +133,8 @@ async def preview_relation(
 
     samples = []
     for db_case in source_cases[:sample_size]:
-        input_data = json.loads(db_case["input_json"])
-        input_data.pop("kind", None)
-        transformed = input_data
-        if relation.transform is not None:
-            transformed = apply_transform(relation.transform.op, input_data, relation.transform.params)
+        input_data = load_case_input(db_case)
+        transformed = apply_relation_transform(input_data, relation)
         samples.append(
             {
                 "source_case_id": db_case["id"],

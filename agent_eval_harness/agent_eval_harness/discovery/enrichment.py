@@ -40,8 +40,8 @@ logger = logging.getLogger("agent_eval_harness.discovery.enrichment")
 
 _STRUCTURAL_PRODUCER_VERSION = 2  # Manual bump on output-schema shape change; hash won't self-invalidate
 
-_PROMPT_SITE_CHAR_BUDGET = 2000  # per-site, keeping the HEAD — the role-defining opening survives
-_PROMPT_SITE_BLOCK_BUDGET = 20000  # total across all sites for one agent
+_PROMPT_SITE_CHAR_BUDGET = 2000
+_PROMPT_SITE_BLOCK_BUDGET = 20000
 _MAX_PROMPT_SITES_SHOWN = 15
 _MAX_EDGES_SHOWN = 15
 _MAX_NEXT_QUERIES = 2
@@ -54,6 +54,10 @@ _MAX_RELATED_FILES = 6
 _MAX_SYMBOL_EDGES_FOLLOWED = 8
 _ENRICH_MAX_TOKENS = 16000
 _ENRICH_REASONING_EFFORT = "medium"
+_FILE_CHUNK_CONTENT_CHAR_LIMIT = 1500
+_COVERAGE_SUFFICIENT_THRESHOLD = 0.8
+_CONFIDENCE_HIGH_MIN_FIELDS = 5
+_CONFIDENCE_MEDIUM_MIN_FIELDS = 2
 
 
 def agent_knowledge_dir(session_id: str) -> Path:
@@ -303,7 +307,7 @@ async def _fetch_file_chunks(ctx: _EnrichmentContext, rel_path: str, limit: int)
     lines = []
     for c in (res.get("chunks") or [])[:limit]:
         lines.append(f"{rel_path}:{c.get('start_line', 0)}-{c.get('end_line', 0)} [{c.get('chunk_type', '?')}]")
-        lines.append((c.get("content") or "").strip()[:1500])
+        lines.append((c.get("content") or "").strip()[:_FILE_CHUNK_CONTENT_CHAR_LIMIT])
     return lines
 
 
@@ -669,7 +673,7 @@ async def _enrich_single_agent(
     coverage_sufficient = (
         len(components) > 0 and
         len(prompt_site_files) > 0 and
-        evidence['source_coverage'].get(agent_id, 0) >= 0.8
+        evidence['source_coverage'].get(agent_id, 0) >= _COVERAGE_SUFFICIENT_THRESHOLD
     )
 
     # 4. LLM enrichment with round-1 and optional round-2
@@ -897,10 +901,8 @@ If you need more information to provide complete answers, set need_more to true 
         components_list = evidence['component_by_agent'][agent_id]
         if components_list:
             try:
-                # Get all unique files for this agent's components
                 comp_files = {c['file'] for c in components_list if c.get('file')}
                 if comp_files:
-                    # Query for each file to get symbol info
                     for comp_file in comp_files:
                         try:
                             file_basename = Path(comp_file).name
@@ -937,7 +939,7 @@ If you need more information to provide complete answers, set need_more to true 
                                     # Fill input_contract from method signature
                                     sig = method_row.get('signature', '')
                                     kwargs_with_hints = _parse_signature_kwargs(sig)
-                                    if kwargs_with_hints is not None and len(kwargs_with_hints) > 0:
+                                    if kwargs_with_hints:
                                         llm_knowledge.input_contract = [
                                             ContractArg(kwarg=name, source_kind='signature', type_hint=hint, example='')
                                             for name, hint in kwargs_with_hints
@@ -1049,9 +1051,9 @@ If you need more information to provide complete answers, set need_more to true 
             bool(llm_knowledge.context_builders),
             bool(llm_knowledge.failure_modes),
         ])
-        if field_count >= 5:
+        if field_count >= _CONFIDENCE_HIGH_MIN_FIELDS:
             llm_knowledge.confidence = 'high'
-        elif field_count >= 2:
+        elif field_count >= _CONFIDENCE_MEDIUM_MIN_FIELDS:
             llm_knowledge.confidence = 'medium'
         else:
             llm_knowledge.confidence = 'low'

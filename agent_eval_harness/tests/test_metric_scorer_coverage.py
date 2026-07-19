@@ -4,7 +4,7 @@ list_field_prf1 failure shape: registry says yes, run-path says no). RED the mom
 metric is added."""
 from __future__ import annotations
 
-from agent_eval_harness.metrics.assertions.registry import ASSERTIONS, _import_all
+from agent_eval_harness.metrics.assertions.registry import ASSERTIONS, ensure_assertions_imported
 from agent_eval_harness.metrics.registry import METRIC_REGISTRY, MetricSpec
 
 # The judge handlers sweep._dispatch_judge actually knows how to run.
@@ -14,8 +14,7 @@ _KNOWN_JUDGE_HANDLERS = {"geval", "ragas_faithfulness", "ragas_answer_relevancy"
 def _unresolvable_metrics(registry: dict[str, MetricSpec]) -> list[str]:
     """Metrics with no runnable scorer, by metric_class: assertions must be in the ASSERTIONS
     dict; llm_judges must carry a dispatch handler sweep recognizes."""
-    if not ASSERTIONS:
-        _import_all()
+    ensure_assertions_imported()
     unresolvable: list[str] = []
     for name, spec in registry.items():
         if spec.metric_class == "assertion":

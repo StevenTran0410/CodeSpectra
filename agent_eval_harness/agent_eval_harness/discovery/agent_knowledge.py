@@ -12,6 +12,8 @@ from agent_eval_harness.planning.contract import OutputContract
 
 logger = logging.getLogger("agent_eval_harness.discovery.agent_knowledge")
 
+_MD_TITLE_TRUNCATE_LEN = 50
+
 
 class Citation(BaseModel):
     """A reference to a location in source code. file/line optional — the LLM doesn't
@@ -147,7 +149,7 @@ class AgentKnowledge(BaseModel):
     def to_md(self) -> str:
         """Human-readable markdown dossier."""
         lines = []
-        lines.append(f"# Agent Knowledge: {self.functionality[:50]}")
+        lines.append(f"# Agent Knowledge: {self.functionality[:_MD_TITLE_TRUNCATE_LEN]}")
 
         if self.degraded:
             lines.append(f"⚠️ **Degraded**: {self.degraded_reason}")

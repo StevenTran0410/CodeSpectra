@@ -648,8 +648,7 @@ async def _enrich_command(args: argparse.Namespace) -> int:
             snapshot = await client.get_snapshot(sess["snapshot_id"])
             local_path_str = snapshot.get("local_path")
             if not local_path_str:
-                # Matches the server route's 400 — without the target's root, enrichment silently
-                # loses every prompt site and leaves all citations unchecked.
+                # Matches the server route's 400 — without the target's root, enrichment can't resolve citations.
                 raise SystemExit(
                     f"Snapshot {sess['snapshot_id']} is missing local_path — cannot resolve the "
                     "target repo root. Set AEH_REPO_ROOT to override."
@@ -721,9 +720,7 @@ def _ui_command(args) -> int:
     if args.data_dir:
         os.environ["AEH_DATA_DIR"] = str(Path(args.data_dir).absolute())
     elif "AEH_DATA_DIR" not in os.environ:
-        # Only default to cwd for standalone CLI usage — a parent process (the
-        # Electron AEHProcessManager) already sets this to a proper per-user data
-        # directory before spawning us, and must never be silently overridden here.
+        # Only default to cwd for standalone CLI usage — Electron's AEHProcessManager sets this itself.
         os.environ["AEH_DATA_DIR"] = str(Path(os.getcwd()).absolute())
 
     print(f"Starting AEH Dashboard server on http://{args.host}:{args.port}")

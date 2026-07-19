@@ -24,6 +24,9 @@ logger = logging.getLogger("agent_eval_harness.sweep")
 # assertion/judge entry runnable even without a wired dataset.
 _DEFAULT_SWEEP_QUERY = "Test query for evaluation sweep."
 
+# Candidate keys checked, in priority order, when extracting a span's final text output.
+_OUTPUT_TEXT_KEYS = ("answer", "text", "content", "result", "output")
+
 
 @dataclass
 class SweepResult:
@@ -45,11 +48,9 @@ async def run_sweep(
     embedding_client: EmbeddingClient | None = None,
     source: Literal["live", "ingested"] = "live",
 ) -> SweepResult:
-    """Run the full evaluation sweep for a given target + suite. `source="ingested"` scores
-    an already-ingested Stage 4 run's persisted traces/spans instead of live-executing the
-    target — `run_id` must already exist (ingest creates it); assertion gates are scored
-    directly against the stored spans, judge/classifier gates aren't supported against
-    ingested data yet and come back as an explicit not-yet-supported result."""
+    """Runs the full evaluation sweep for a target + suite. `source="ingested"` scores an
+    already-ingested run's persisted spans instead of live-executing (`run_id` must pre-exist);
+    judge/classifier gates aren't supported against ingested data and return not-yet-supported."""
     system_map = load_system_map(map_path)
     suite = load_suite(suite_path)
 
@@ -212,9 +213,8 @@ async def _score_assertion_entry(
 async def _score_assertion_entry_ingested(
     entry: SuiteEntry, system_map: SystemMap, run_id: str
 ) -> list[MetricResult]:
-    """Scores an assertion gate directly against an already-ingested run's persisted traces —
-    one result per trace (one trace = one dataset case = one full injected pipeline run),
-    mirroring the live path's one-result-per-outcome convention exactly."""
+    """Scores an assertion gate against an already-ingested run's persisted traces — one result
+    per trace, mirroring the live path's one-result-per-outcome convention."""
     assertion_fn = get_assertion(entry.metric)
     params = _derive_assertion_params(entry, system_map)
 
@@ -234,10 +234,9 @@ async def _score_assertion_entry_ingested(
 async def _score_dataset_scored_entry(
     entry: SuiteEntry, run_id: str, source: Literal["live", "ingested"]
 ) -> list[MetricResult]:
-    """Scores a metric that consumes its linked dataset's per-case gold (metamorphic_relation):
-    each derived case carries its own invariant config in `expected`. Self-consistency cases
-    (transform=null) carry `source_expected_output` and score directly with no run; perturbation
-    cases score against the matching ingested result span, or degrade loudly (no_result) if absent."""
+    """Scores a metric whose gold lives per-case in its dataset (e.g. metamorphic_relation):
+    self-consistency cases score directly off `expected`; others score against the matching
+    ingested span, or degrade loudly (no_result) if none exists."""
     assertion_fn = get_assertion(entry.metric)
     dataset_ref = _resolve_dataset_ref(entry)
     if not dataset_ref:
@@ -429,7 +428,7 @@ def _extract_span_output(spans: list[dict], component_id: str) -> str:
     raw = last.get("output_json") or "{}"
     try:
         data = json.loads(raw)
-        for key in ("answer", "text", "content", "result", "output"):
+        for key in _OUTPUT_TEXT_KEYS:
             val = data.get(key)
             if isinstance(val, str) and val:
                 return val

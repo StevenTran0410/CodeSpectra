@@ -159,7 +159,8 @@ async def _list_sessions(repository) -> None:
         try:
             from agent_eval_harness.mapping.agent_flow import load_agent_flow_map
             n_agents = len(load_agent_flow_map(sess["agent_flows_path"]).agents)
-        except Exception:
+        except Exception as e:
+            print(f"[warn] could not load agent_flow_map for session {sid}: {e}")
             n_agents = "?"
         n_know = len(await repository.list_agent_knowledge(sid))
         ready = "READY" if n_know else "no-knowledge"
@@ -179,7 +180,8 @@ def _write_plan_files(suite, report, scratch: Path, map_src: str):
     try:
         from agent_eval_harness.planning.report import save_plan_report
         save_plan_report(report, report_path)
-    except Exception:
+    except Exception as e:
+        print(f"[warn] save_plan_report failed ({e}); falling back to raw yaml dump")
         report_path.write_text(yaml.safe_dump(report.model_dump(mode="json"), sort_keys=False, allow_unicode=True), "utf-8")
     return plan_path, map_scratch
 
@@ -280,8 +282,8 @@ async def run(args) -> None:
         try:
             from agent_eval_harness.config import AEHConfig
             conventions = AEHConfig.load().contract_conventions
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[warn] could not load contract conventions from config: {e}")
 
         # --- STAGE 3a: plan generation (in-memory, no writes) ---
         from agent_eval_harness.planning.agentic_planner import generate_plan_agentic

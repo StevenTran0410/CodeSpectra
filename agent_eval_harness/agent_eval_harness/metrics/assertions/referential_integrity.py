@@ -1,9 +1,7 @@
 """Assertion: referential_integrity — evidence/file-path fields are subset of snapshot manifest + retrieved chunks."""
 from __future__ import annotations
 
-import json
-
-from agent_eval_harness.metrics.assertions.registry import register
+from agent_eval_harness.metrics.assertions.registry import find_component_output_json, register
 from agent_eval_harness.metrics.types import MetricResult
 
 
@@ -31,13 +29,12 @@ def _extract_field_paths(obj: dict, field_name: str, paths: set[str]) -> None:
                     elif isinstance(item, dict) and field_name in item:
                         _extract_field_paths(item, field_name, paths)
         for v in obj.values():
-            if isinstance(v, (dict, list)):
-                if isinstance(v, dict):
-                    _extract_field_paths(v, field_name, paths)
-                elif isinstance(v, list):
-                    for item in v:
-                        if isinstance(item, dict):
-                            _extract_field_paths(item, field_name, paths)
+            if isinstance(v, dict):
+                _extract_field_paths(v, field_name, paths)
+            elif isinstance(v, list):
+                for item in v:
+                    if isinstance(item, dict):
+                        _extract_field_paths(item, field_name, paths)
 
 
 @register("referential_integrity")
@@ -54,25 +51,11 @@ def referential_integrity(spans: list[dict], component_id: str, params: dict) ->
             component_id=component_id,
         )
 
-    output_data = None
-    for span in spans:
-        if span.get("component_id") != component_id:
-            continue
-        if span.get("span_type") not in ("agent", "llm_call"):
-            continue
-        raw = span.get("output_json") or "{}"
-        try:
-            output_data = json.loads(raw)
-        except json.JSONDecodeError:
-            return MetricResult(
-                metric_name="assertion.referential_integrity",
-                metric_class="assertion",
-                score=None,
-                passed=False,
-                details={"reason": "invalid_json_output"},
-                component_id=component_id,
-            )
-        break
+    output_data, early_result = find_component_output_json(
+        spans, component_id, "assertion.referential_integrity"
+    )
+    if early_result is not None:
+        return early_result
 
     if output_data is None:
         return MetricResult(

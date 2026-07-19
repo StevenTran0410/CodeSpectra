@@ -10,8 +10,20 @@ from agent_eval_harness.discovery.expansion import expand_candidate
 from agent_eval_harness.mapping.agent_flow import AgentFlow, AgentFlowMap
 from agent_eval_harness.mapping.system_map import SystemMap, Component
 from agent_eval_harness.store import repository
-from agent_eval_harness.store.database import init_db
+from agent_eval_harness.store.database import get_db, init_db
 from tests._stubs import FakeCodeSpectraClient as _StubClient
+
+_DEPTH_CAP = {"queries": 3, "llm_calls": 2, "read_file": 2}
+
+
+@pytest.fixture(autouse=True)
+async def _ensure_db() -> None:
+    """Defensive re-init: an earlier test file in the same session may have closed the DB
+    explicitly (e.g. a migration test), with nothing else re-opening it before this file's turn."""
+    try:
+        get_db()
+    except RuntimeError:
+        await init_db()
 
 
 class _StubLLMClient:
@@ -91,13 +103,6 @@ async def test_c0_expansion_annotation_regression() -> None:
 async def test_persist_md_and_json_to_appdata(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """AC2: File persistence — .md and .json sidecar written to correct AppData path."""
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-
-    try:
-        from agent_eval_harness.store.database import get_db
-        get_db()
-    except RuntimeError:
-        from agent_eval_harness.store.database import init_db
-        await init_db()
 
     agent = AgentFlow(id="test_agent", label="Test Agent", component_ids=["comp1"])
     flow_map = AgentFlowMap(target_system_id="test_system", agents=[agent])
@@ -204,7 +209,6 @@ async def test_single_agent_failure_does_not_block_others() -> None:
 async def test_zero_query_fast_path_when_coverage_sufficient() -> None:
     """AC5: Zero-query fast-path — sufficient coverage skips queries."""
     from agent_eval_harness.discovery.enrichment import _enrich_single_agent
-    from agent_eval_harness.mapping.agent_flow import AgentFlow, AgentFlowMap
     from dataclasses import dataclass
 
     agent = AgentFlow(id="test_agent", label="Test", component_ids=["comp1"])
@@ -260,7 +264,7 @@ async def test_zero_query_fast_path_when_coverage_sufficient() -> None:
                     async def __aexit__(self, *args): pass
                 self.semaphore = _Semaphore()
 
-    depth_cap = {"queries": 3, "llm_calls": 2, "read_file": 2}
+    depth_cap = _DEPTH_CAP
 
     knowledge = await _enrich_single_agent(
         "test_agent",
@@ -279,8 +283,6 @@ async def test_zero_query_fast_path_when_coverage_sufficient() -> None:
 async def test_rerun_cache_hit_reads_actual_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """AC5: Re-run cache-hit — reads actual persisted JSON, not mock."""
     from agent_eval_harness.discovery.enrichment import _enrich_single_agent
-    from agent_eval_harness.mapping.agent_flow import AgentFlow, AgentFlowMap
-    from agent_eval_harness.store.database import init_db, get_db
     from dataclasses import dataclass
 
     monkeypatch.setenv("AEH_DATA_DIR", str(tmp_path))
@@ -384,7 +386,7 @@ async def test_rerun_cache_hit_reads_actual_json(tmp_path: Path, monkeypatch: py
                     async def __aexit__(self, *args): pass
                 self.semaphore = _Semaphore()
 
-    depth_cap = {"queries": 3, "llm_calls": 2, "read_file": 2}
+    depth_cap = _DEPTH_CAP
 
     knowledge = await _enrich_single_agent(
         "test_agent",
@@ -441,13 +443,6 @@ async def test_functional_run_multi_agent_target() -> None:
     )
 
     llm_client = _StubLLMClient()
-
-    try:
-        from agent_eval_harness.store.database import get_db
-        get_db()
-    except RuntimeError:
-        from agent_eval_harness.store.database import init_db
-        await init_db()
 
     result = await enrich_agents(
         session_id="multi_agent_test",
@@ -919,7 +914,7 @@ async def test_cache_hit_coerces_pre_cs300_empty_role_to_unknown_never_crashes(t
             self.accepted_edges = self.accepted_edges or []
             self.force_agent_ids = self.force_agent_ids or []
 
-    depth_cap = {"queries": 3, "llm_calls": 2, "read_file": 2}
+    depth_cap = _DEPTH_CAP
     knowledge = await _enrich_single_agent("test_agent", evidence, _EnrichCtx(), depth_cap, accepted_files)
 
     assert knowledge.functionality == "Cached content"
@@ -931,12 +926,6 @@ async def test_cache_hit_coerces_pre_cs300_empty_role_to_unknown_never_crashes(t
 async def test_cs301_slice1_cache_hash_comparison(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """AC1: Cache re-enriches when evidence_hash differs from stored."""
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-
-    try:
-        from agent_eval_harness.store.database import get_db
-        get_db()
-    except RuntimeError:
-        await init_db()
 
     # Store a cached record with old hash
     json_dir = tmp_path / "AppData" / "Local" / "codespectra" / "agents" / "test-session"
@@ -987,7 +976,7 @@ async def test_cs301_slice1_cache_hash_comparison(tmp_path: Path, monkeypatch: p
             self.accepted_edges = self.accepted_edges or []
             self.force_agent_ids = self.force_agent_ids or []
 
-    depth_cap = {"queries": 3, "llm_calls": 2, "read_file": 2}
+    depth_cap = _DEPTH_CAP
     knowledge = await _enrich_single_agent("test_agent", evidence, _EnrichCtx(client=_StubClient({}, {}), llm_client=llm_client), depth_cap, [])
 
     # Hash is different, so LLM was called and we get fresh response
@@ -999,12 +988,6 @@ async def test_cs301_slice1_cache_hash_comparison(tmp_path: Path, monkeypatch: p
 async def test_cs301_slice4_confidence_needs_human_cap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """AC5: needs_human non-empty => confidence != 'high'."""
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-
-    try:
-        from agent_eval_harness.store.database import get_db
-        get_db()
-    except RuntimeError:
-        await init_db()
 
     from dataclasses import dataclass
     from agent_eval_harness.discovery.enrichment import _enrich_single_agent
@@ -1047,7 +1030,7 @@ async def test_cs301_slice4_confidence_needs_human_cap(tmp_path: Path, monkeypat
             self.accepted_edges = self.accepted_edges or []
             self.force_agent_ids = self.force_agent_ids or []
 
-    depth_cap = {"queries": 3, "llm_calls": 2, "read_file": 2}
+    depth_cap = _DEPTH_CAP
     knowledge = await _enrich_single_agent(
         "test_agent", evidence,
         _EnrichCtx(client=_StubClient({}, {}), llm_client=llm_client),
@@ -1067,8 +1050,6 @@ async def test_cs301_slice4_confidence_degraded_is_low() -> None:
     """AC5: degraded => confidence 'low'."""
     from dataclasses import dataclass
     from agent_eval_harness.discovery.enrichment import _enrich_single_agent
-    from agent_eval_harness.mapping.agent_flow import AgentFlow, AgentFlowMap
-    from agent_eval_harness.mapping.system_map import SystemMap
 
     agent = AgentFlow(id="test_agent", label="Test", component_ids=[])
     flow_map = AgentFlowMap(target_system_id="test", agents=[agent])
@@ -1105,7 +1086,7 @@ async def test_cs301_slice4_confidence_degraded_is_low() -> None:
             self.accepted_edges = self.accepted_edges or []
             self.force_agent_ids = self.force_agent_ids or []
 
-    depth_cap = {"queries": 3, "llm_calls": 2, "read_file": 2}
+    depth_cap = _DEPTH_CAP
     knowledge = await _enrich_single_agent(
         "test_agent", evidence,
         _EnrichCtx(client=_StubClient({}, {}), llm_client=_ErrorLLM()),

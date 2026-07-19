@@ -90,7 +90,6 @@ async def test_field_match_gold_derives_tech_stack_from_disk(tmp_path):
     assert report[key]["status"] == "fulfilled"
     cases = await repository.get_dataset_cases(report[key]["dataset_id"])
     assert len(cases) == 1
-    import json
     expected = json.loads(cases[0]["expected_json"])
     assert expected["field_paths"]["repo_name"] == tmp_path.name
     assert "python" in expected["field_paths"]["tech_stack"]

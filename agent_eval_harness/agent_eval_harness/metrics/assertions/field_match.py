@@ -1,10 +1,12 @@
 """Assertion: field_match — per-field exact|set|tolerance comparison vs gold."""
 from __future__ import annotations
 
-import json
-
-from agent_eval_harness.metrics.assertions.registry import register
+from agent_eval_harness.metrics.assertions.registry import find_component_output_json, register
 from agent_eval_harness.metrics.types import MetricResult
+
+_COMPARE_EXACT = "exact"
+_COMPARE_SET = "set"
+_COMPARE_TOLERANCE = "tolerance"
 
 
 def _compare_exact(actual: object, expected: object) -> bool:
@@ -67,25 +69,11 @@ def field_match(spans: list[dict], component_id: str, params: dict) -> MetricRes
             component_id=component_id,
         )
 
-    output_data = None
-    for span in spans:
-        if span.get("component_id") != component_id:
-            continue
-        if span.get("span_type") not in ("agent", "llm_call"):
-            continue
-        raw = span.get("output_json") or "{}"
-        try:
-            output_data = json.loads(raw)
-        except json.JSONDecodeError:
-            return MetricResult(
-                metric_name="assertion.field_match",
-                metric_class="assertion",
-                score=None,
-                passed=False,
-                details={"reason": "invalid_json_output"},
-                component_id=component_id,
-            )
-        break
+    output_data, early_result = find_component_output_json(
+        spans, component_id, "assertion.field_match"
+    )
+    if early_result is not None:
+        return early_result
 
     if output_data is None:
         return MetricResult(
@@ -101,16 +89,16 @@ def field_match(spans: list[dict], component_id: str, params: dict) -> MetricRes
     for field_path, spec in fields.items():
         if not isinstance(spec, dict):
             continue
-        comparison_type = spec.get("type", "exact")
+        comparison_type = spec.get("type", _COMPARE_EXACT)
         expected_val = _get_field_value(expected_gold, field_path)
         actual_val = _get_field_value(output_data, field_path)
 
         passed = False
-        if comparison_type == "exact":
+        if comparison_type == _COMPARE_EXACT:
             passed = _compare_exact(actual_val, expected_val)
-        elif comparison_type == "set":
+        elif comparison_type == _COMPARE_SET:
             passed = _compare_set(actual_val, expected_val)
-        elif comparison_type == "tolerance":
+        elif comparison_type == _COMPARE_TOLERANCE:
             tolerance = spec.get("tolerance", 0.0)
             passed = _compare_tolerance(actual_val, expected_val, tolerance)
 

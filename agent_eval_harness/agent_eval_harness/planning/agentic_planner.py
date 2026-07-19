@@ -21,7 +21,7 @@ from agent_eval_harness.metrics.suite import DatasetRef, Suite, SuiteEntry
 from agent_eval_harness.planning.planner import (
     DEFAULT_MIN_CASES,
     baseline_gates_for_agent,
-    get_tool_name_from_component,
+    derive_expected_tool_names,
     role_skip_note,
 )
 from agent_eval_harness.planning.contract import EvaluationContract
@@ -34,8 +34,6 @@ from agent_eval_harness.planning.report import (
 
 logger = logging.getLogger("agent_eval_harness.planning.agentic_planner")
 
-# ragas.context_precision removed — no dispatch handler.
-_KNOWN_RAGAS_METRICS = {"ragas.faithfulness", "ragas.answer_relevancy"}
 _BASELINE_HANDOFF_METRICS = {
     "allowed_downstream", "max_items_per_call", "max_retries", "retry_on_reject_required",
 }
@@ -521,8 +519,7 @@ async def _run_handoff_gates(
     )
     user_prompt = "\n".join(lines)
 
-    # Scales with agent count — this node fans in ALL agents' evidence, so a fixed
-    # small budget truncates on larger systems (observed: 2048 truncating at ~12 agents).
+    # Scales with agent count — a fixed small budget truncates on larger systems (observed: 2048 truncating at ~12 agents).
     token_budget = max(
         _effort_token_floor(REASONING_EFFORT_HANDOFF_GATES),
         6144, 500 * len(evidence_by_agent),
@@ -640,19 +637,6 @@ def _merge_observability(
 # Params completion pass
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _derive_expected_tools(component: Component, system_map: SystemMap) -> list[str]:
-    """Downstream tool component names for tool_correctness / no_unnecessary_calls."""
-    components_by_id = {c.id: c for c in system_map.components}
-    tool_comps = []
-    for d in component.downstream:
-        if d in components_by_id and components_by_id[d].role == "tool":
-            tool_comps.append(components_by_id[d])
-    for c in system_map.components:
-        if c.role == "tool" and component.id in c.upstream and c not in tool_comps:
-            tool_comps.append(c)
-    return [get_tool_name_from_component(tc) for tc in tool_comps]
-
-
 def _complete_params(
     gate: EvaluationGate,
     system_map: SystemMap | None,
@@ -686,8 +670,10 @@ def _complete_params(
     # tool_correctness.expected_tools ← downstream tool components
     if gate.metric == "tool_correctness" and "expected_tools" not in params:
         if component_obj and system_map:
-            tools = _derive_expected_tools(component_obj, system_map)
-            params["expected_tools"] = tools
+            components_by_id = {c.id: c for c in system_map.components}
+            params["expected_tools"] = derive_expected_tool_names(
+                component_obj, components_by_id, system_map
+            )
 
     # arg_schema → replace with schema_valid seeded from contract output schema
     if gate.metric == "arg_schema" and contract is not None:
@@ -725,7 +711,6 @@ def _complete_params(
 def _apply_feasibility(
     gates: list[EvaluationGate],
     contract: EvaluationContract | None,
-    agent_id: str,
     report_notes: list[str],
 ) -> list[EvaluationGate]:
     """Evaluate meaningless_when against the contract, replacing/dropping/demoting gates; baseline gates are immune except metrics gated on the "input_kind_is_query" precondition, and LLM-only observability flags demote to needs_human while static flags execute the drop/replace."""
@@ -850,12 +835,9 @@ def _apply_feasibility(
 
 def _rebalance_gates(
     gates: list[EvaluationGate],
-    agent_id: str,
     report_notes: list[str],
 ) -> list[EvaluationGate]:
-    """1) Prefer assertions over llm_judge for trace-decidable properties.
-    2) Merge near-duplicate geval rubrics (SequenceMatcher ≥ GEVAL_RUBRIC_MERGE_THRESHOLD).
-    3) Cap llm_suggested judges at MAX_LLM_JUDGE_GATES_PER_AGENT (baseline exempt)."""
+    """Prefer assertions over llm_judge, merge near-duplicate geval rubrics, then cap llm_suggested judges per agent (baseline exempt)."""
     _import_all_assertions()
 
     # 1. Prefer assertions
@@ -1022,10 +1004,10 @@ def reconcile(
         ]
 
         # Feasibility pass
-        agent_gates = _apply_feasibility(agent_gates, contract, agent.id, post_notes)
+        agent_gates = _apply_feasibility(agent_gates, contract, post_notes)
 
         # Rebalance
-        agent_gates = _rebalance_gates(agent_gates, agent.id, post_notes)
+        agent_gates = _rebalance_gates(agent_gates, post_notes)
 
         all_suite_entries.extend(_gate_to_suite_entry(g) for g in agent_gates)
 
@@ -1080,20 +1062,6 @@ async def run_critic(
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-def _carry_forward_fulfilled_datasets(new_suite: Suite, previous_suite: Suite) -> None:
-    """Regenerating the plan rebuilds every gate from scratch with an unfulfilled dataset ref; re-links any gate whose id+agent_id match a previously fulfilled entry so already-generated data isn't forgotten and needlessly regenerated."""
-    old_refs = {
-        (e.id, e.agent_id): e.dataset.ref
-        for e in previous_suite.entries
-        if e.dataset and e.dataset.ref
-    }
-    for entry in new_suite.entries:
-        ref = old_refs.get((entry.id, entry.agent_id))
-        if ref and entry.dataset and not entry.dataset.ref:
-            entry.dataset.ref = ref
-            entry.dataset.required = None
-
-
 async def generate_plan_agentic(
     system_map: SystemMap,
     agent_flow_map: AgentFlowMap,
@@ -1104,7 +1072,6 @@ async def generate_plan_agentic(
     run_critic_pass: bool = True,
     files: list[Path] | None = None,
     files_root: Path | None = None,
-    previous_suite: Suite | None = None,
     previous_report: EvaluationPlanReport | None = None,
     project_context: Any | None = None,
     conventions: ContractConventions | None = None,
@@ -1119,11 +1086,7 @@ async def generate_plan_agentic(
     async def _gather(_: dict[str, Any]) -> tuple[dict[str, AgentEvidence], dict[str, list[SuiteEntry]]]:
         return await gather_evidence(system_map, agent_flow_map, source_by_component, accepted_edges, llm_client, project_context)
 
-    # Contract harvest is pure AST over already-fetched files — no LLM, runs inline and always fresh.
-    # CS-303 Slice 6: `conventions` threads AEHConfig.contract_conventions end-to-end (the one
-    # production call site previously passed nothing, so config always lost — see PAUSE note in
-    # the final report). Harvest itself stays harvest-primary: contract_harvest only consults a
-    # convention as a last-resort pattern when the structural/class-based extraction found nothing.
+    # Contract harvest is pure AST, no LLM — runs inline and always fresh (gold-gen reads this fresh value, never a cached sidecar).
     contracts: dict[str, EvaluationContract] = {}
     if files:
         from agent_eval_harness.mapping.builder.contract_harvest import harvest_contracts
@@ -1208,8 +1171,6 @@ async def generate_plan_agentic(
 
     results = await run_dag(nodes)
     suite, report = results["reconcile"]
-    if previous_suite is not None:
-        _carry_forward_fulfilled_datasets(suite, previous_suite)
     critic_notes = results["critic"] if run_critic_pass else []
     report = report.model_copy(update={"advisory_notes": dag_notes + critic_notes})
     return suite, report

@@ -1,8 +1,4 @@
-"""Perturbation module: deterministic, shared degradation transforms on report sections.
-
-Every function is field-name-parameterized (target_field/target_fields come from the caller,
-e.g. a harvested contract or a metamorphic_relations.yaml entry) — no target-specific literal
-field names are special-cased here."""
+"""Perturbation module: deterministic, shared degradation transforms on report sections — every function is field-name-parameterized (caller-supplied target_field/target_fields, e.g. a harvested contract or a metamorphic_relations.yaml entry), never special-cased by literal field name."""
 from __future__ import annotations
 
 import copy
@@ -18,10 +14,7 @@ def drop_section(all_sections: dict, target_field: str) -> dict:
 
 
 def degrade_section(all_sections: dict, target_field: str) -> dict:
-    """Returns a copy of all_sections with target_field replaced by its own shape-valid,
-    typed-empty stub. This isinstance fallback is the entire degrade mechanism — no field-name
-    special-casing. A non-dict field degrades to its own typed empty (list->[], str->"",
-    dict->{}, else None), never to a stub {} regardless of its real shape."""
+    """Returns a copy of all_sections with target_field replaced by its own shape-valid, typed-empty stub (list->[], str->"", dict->{}, else None) — never a blind {} stub regardless of real shape, and never field-name special-cased."""
     copied = copy.deepcopy(all_sections)
     if target_field not in copied:
         return copied
@@ -52,8 +45,7 @@ def degrade_section(all_sections: dict, target_field: str) -> dict:
 
 
 def inject_conflict(all_sections: dict, target_fields: list[str], token: str) -> dict:
-    """Returns a copy of all_sections with `token` appended into each of target_fields
-    (fields are caller-supplied data, never guessed by name)."""
+    """Returns a copy of all_sections with `token` appended into each of target_fields (caller-supplied, never guessed by name)."""
     copied = copy.deepcopy(all_sections)
     for field in target_fields:
         current = copied.get(field)
@@ -68,8 +60,7 @@ def oversize_section(
     all_sections: dict, target_field: str, target_len: int = 5000,
     skip_fields: tuple[str, ...] | None = None,
 ) -> dict:
-    """Returns a copy of all_sections with a text field in target_field padded to exceed limits.
-    skip_fields (caller/config-supplied, never a target literal) names fields not to pad."""
+    """Returns a copy of all_sections with a text field in target_field padded to exceed limits; skip_fields (caller/config-supplied, never a target literal) names fields not to pad."""
     copied = copy.deepcopy(all_sections)
     if target_field not in copied or not isinstance(copied[target_field], dict):
         return copied

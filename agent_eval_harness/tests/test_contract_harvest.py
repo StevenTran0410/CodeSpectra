@@ -8,8 +8,9 @@ import pytest
 from agent_eval_harness.config import ContractConventions
 from agent_eval_harness.mapping.agent_flow import AgentFlow, AgentFlowMap
 from agent_eval_harness.mapping.builder.contract_harvest import (
-    _find_typeddict,
+    _SchemaResolveCtx,
     _parse_files,
+    _resolve_class_schema,
     harvest_component_contract,
     harvest_contracts,
 )
@@ -487,7 +488,8 @@ def test_typeddict_required_field_in_total_false(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     asts = _parse_files([tmp_path / "td.py"])
-    found = _find_typeddict(asts, "PartialSection", tmp_path)
+    ctx = _SchemaResolveCtx(asts=asts, files_root=tmp_path, visited=set(), depth=0, conventions=None)
+    found = _resolve_class_schema("PartialSection", ctx)
     assert found is not None
     schema, _ = found
     assert schema["required"] == ["must_have"]

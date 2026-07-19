@@ -1054,9 +1054,7 @@ declare global {
     passed: number
   }
 
-  // CS-300: the 9 roles roles.py owns (VALID_ROLES) — the wire types below keep `role: string`
-  // (backend data is not narrowed at the boundary); this union exists so ROLE_COLORS is
-  // exhaustive and a missing key is a compile error, not a silent grey "unknown" render.
+  // Backend `role` stays `string` (not narrowed at the boundary); this union exists so ROLE_COLORS is exhaustive and a missing key is a compile error, not a silent grey "unknown" render.
   export type AEHRole =
     | 'orchestrator'
     | 'retrieval_agent'

@@ -503,7 +503,7 @@ async def test_apply_feasibility_drops_baseline_decomposition_coverage_on_struct
     contract = _contract_with_input_kind("structured")
     notes: list[str] = []
 
-    result = ap._apply_feasibility([gate], contract, "a1", notes)
+    result = ap._apply_feasibility([gate], contract, notes)
 
     assert result == []
     assert any("geval.decomposition_coverage" in n and "dropped" in n for n in notes)
@@ -514,7 +514,7 @@ async def test_apply_feasibility_drops_baseline_answer_relevancy_on_structured_i
     contract = _contract_with_input_kind("structured")
     notes: list[str] = []
 
-    result = ap._apply_feasibility([gate], contract, "a1", notes)
+    result = ap._apply_feasibility([gate], contract, notes)
 
     assert result == []
     assert any("ragas.answer_relevancy" in n and "dropped" in n for n in notes)
@@ -526,7 +526,7 @@ async def test_apply_feasibility_demotes_llm_only_input_kind_to_needs_human() ->
     contract = _contract_with_input_kind("structured", llm_only=True)
     notes: list[str] = []
 
-    result = ap._apply_feasibility([dc_gate, ar_gate], contract, "a1", notes)
+    result = ap._apply_feasibility([dc_gate, ar_gate], contract, notes)
 
     assert len(result) == 2
     assert all(g.status == "needs_human" for g in result)
@@ -538,7 +538,7 @@ async def test_apply_feasibility_keeps_baseline_gate_when_input_kind_unknown() -
     contract = _contract_with_input_kind("unknown")
     notes: list[str] = []
 
-    result = ap._apply_feasibility([gate], contract, "a1", notes)
+    result = ap._apply_feasibility([gate], contract, notes)
 
     assert result == [gate]
     assert notes == []
@@ -559,7 +559,7 @@ async def test_apply_feasibility_preserves_precondition_free_baseline_gates() ->
     contract = _contract_with_input_kind("structured")
     notes: list[str] = []
 
-    result = ap._apply_feasibility(gates, contract, "a1", notes)
+    result = ap._apply_feasibility(gates, contract, notes)
 
     assert result == gates
     assert notes == []

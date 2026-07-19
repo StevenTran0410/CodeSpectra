@@ -16,6 +16,8 @@ logger = logging.getLogger("agent_eval_harness.planning.planner")
 
 DEFAULT_MIN_CASES = DEFAULT_CASES_PER_AGENT  # single global knob (config.py / AEH_CASES_PER_AGENT env)
 GUARD_CLASSIFICATION_MIN_CASES = 40
+_SAMPLE_QUERY_LIMIT = 2  # how many dataset-case queries to surface as example params
+_SOURCE_SNIPPET_MAX_LINES = 50
 
 # System prompts for LLM assistant
 TAILOR_RUBRIC_SYSTEM = (
@@ -75,7 +77,7 @@ def get_component_info(entry_point: str, search_roots: list[Path] | None = None)
                 from agent_eval_harness.discovery.expansion import extract_symbol_snippet
 
                 snippet = extract_symbol_snippet(content, class_name)
-                info["source_snippet"] = "\n".join(snippet.splitlines()[:50])
+                info["source_snippet"] = "\n".join(snippet.splitlines()[:_SOURCE_SNIPPET_MAX_LINES])
                 return info
     return info
 
@@ -85,11 +87,21 @@ def get_tool_name_from_component(tc: Component) -> str:
     for sm in tc.span_match:
         if sm.tags and "aeh.tool.name" in sm.tags:
             return sm.tags["aeh.tool.name"]
-    # Fallback to class name or stripped ID
-    base = tc.id
-    if base.endswith("_tool"):
-        base = base[:-5]
-    return base
+    return tc.id.removesuffix("_tool")
+
+
+def derive_expected_tool_names(
+    component: Component, components_by_id: dict[str, Component], system_map: SystemMap
+) -> list[str]:
+    """Downstream tool component names for tool_correctness / no_unnecessary_calls."""
+    tool_comps: list[Component] = []
+    for d in component.downstream:
+        if d in components_by_id and components_by_id[d].role == "tool":
+            tool_comps.append(components_by_id[d])
+    for tc in system_map.components:
+        if tc.role == "tool" and component.id in tc.upstream and tc not in tool_comps:
+            tool_comps.append(tc)
+    return [get_tool_name_from_component(tc) for tc in tool_comps]
 
 
 def _resolve_dataset_ref(dataset_kind: str) -> DatasetRef | None:
@@ -245,7 +257,7 @@ async def _hydrate_rule_to_entry(
             cases = await repository.get_dataset_cases(dataset_ref.ref)
             if cases:
                 sample_queries = []
-                for case in cases[:2]:
+                for case in cases[:_SAMPLE_QUERY_LIMIT]:
                     inp = json.loads(case.get("input_json") or "{}")
                     q = inp.get("query", inp.get("text"))
                     if q:
@@ -263,21 +275,9 @@ async def _hydrate_rule_to_entry(
     if rule["metric"] == "allowed_downstream":
         params["allowed"] = component.downstream
     elif rule["metric"] == "tool_correctness":
-        # Find all downstream tools or tools having this component
-        expected_tool_comps = []
-        for d in component.downstream:
-            if d in components_by_id and components_by_id[d].role == "tool":
-                expected_tool_comps.append(components_by_id[d])
-        for tc in system_map.components:
-            if tc.role == "tool" and component.id in tc.upstream:
-                if tc not in expected_tool_comps:
-                    expected_tool_comps.append(tc)
-        params["expected_tools"] = [
-            get_tool_name_from_component(tc) for tc in expected_tool_comps
-        ]
+        params["expected_tools"] = derive_expected_tool_names(component, components_by_id, system_map)
 
     if rule["metric"] == "geval.decomposition_coverage":
-        # Tailor rubric wording via LLM
         info = get_component_info(component.entry_point)
         params["rubric_text"] = await _tailor_geval_rubric(
             component, info, llm_client
@@ -317,11 +317,11 @@ def _constraint_entries(
     """Constraints → assertion SuiteEntry list. Pure/deterministic — no I/O."""
     entries: list[SuiteEntry] = []
     for constraint in component.constraints:
-        # Check if this constraint name is a registered assertion
         try:
             from agent_eval_harness.metrics.assertions.registry import get_assertion
             get_assertion(constraint.name)
         except KeyError:
+            logger.debug(f"{component.id}: constraint '{constraint.name}' has no registered assertion — skipped")
             continue
 
         # Handle max_items_per_call gotcha: observable in downstream retrieval_agent (worker)
@@ -424,14 +424,12 @@ async def generate_plan(
     system_map = load_system_map(system_map_path)
     entries: list[SuiteEntry] = []
 
-    # Map for quick component lookup
     components_by_id = {c.id: c for c in system_map.components}
     validator_comp = _find_validator(system_map)
 
     for component in system_map.components:
         role = component.role
 
-        # Handle unknown components via LLM Suggestion
         if role == "unknown":
             info = get_component_info(component.entry_point)
             suggested_entries = await _suggest_unknown_component_suite(

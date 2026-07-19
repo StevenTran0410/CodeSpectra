@@ -1,4 +1,4 @@
-"""Tests for all 6 assertion types — synthetic span fixtures, no DB, no pipeline runs."""
+"""Tests for the assertion types — synthetic span fixtures, no DB, no pipeline runs."""
 from __future__ import annotations
 
 import json
@@ -454,3 +454,175 @@ def test_metamorphic_relation_bad_invariant_params_degrades_not_crash() -> None:
     )
     assert result.passed is None
     assert "not_a_real_op" in result.details["reason"]
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# field_match
+# ────────────────────────────────────────────────────────────────────────────
+
+def test_field_match_pass_exact_set_and_tolerance() -> None:
+    from agent_eval_harness.metrics.assertions.field_match import field_match
+
+    spans = [
+        _span(span_id="s1", component_id="worker", span_type="agent",
+              output_json=json.dumps({"domain": "billing", "tags": ["a", "b"], "score": 1.0})),
+    ]
+    params = {
+        "expected_gold": {"domain": "billing", "tags": ["b", "a"], "score": 1.02},
+        "fields": {
+            "domain": {"type": "exact"},
+            "tags": {"type": "set"},
+            "score": {"type": "tolerance", "tolerance": 0.05},
+        },
+    }
+    result = field_match(spans, "worker", params)
+    assert result.passed is True
+    assert result.details["violations"] == []
+
+
+def test_field_match_fail_reports_violations() -> None:
+    from agent_eval_harness.metrics.assertions.field_match import field_match
+
+    spans = [
+        _span(span_id="s1", component_id="worker", span_type="agent",
+              output_json=json.dumps({"domain": "legal"})),
+    ]
+    params = {
+        "expected_gold": {"domain": "billing"},
+        "fields": {"domain": {"type": "exact"}},
+    }
+    result = field_match(spans, "worker", params)
+    assert result.passed is False
+    assert result.details["violations"][0]["field"] == "domain"
+
+
+def test_field_match_no_fields_and_no_gold_degrade_to_none() -> None:
+    from agent_eval_harness.metrics.assertions.field_match import field_match
+
+    spans = [_span(span_id="s1", component_id="worker", span_type="agent", output_json="{}")]
+    no_fields = field_match(spans, "worker", {"expected_gold": {"x": 1}})
+    assert no_fields.passed is None
+    assert no_fields.details["reason"] == "no_fields_specified"
+
+    no_gold = field_match(spans, "worker", {"fields": {"x": {"type": "exact"}}})
+    assert no_gold.passed is None
+    assert no_gold.details["reason"] == "no_expected_gold"
+
+
+def test_field_match_no_matching_span_degrades_to_none() -> None:
+    """No agent/llm_call span for the component -> passed=None, not a crash."""
+    from agent_eval_harness.metrics.assertions.field_match import field_match
+
+    params = {"expected_gold": {"x": 1}, "fields": {"x": {"type": "exact"}}}
+    result = field_match([], "worker", params)
+    assert result.passed is None
+    assert result.details["reason"] == "no_result"
+
+
+def test_field_match_invalid_json_output_fails() -> None:
+    from agent_eval_harness.metrics.assertions.field_match import field_match
+
+    spans = [_span(span_id="s1", component_id="worker", span_type="agent", output_json="{not json")]
+    params = {"expected_gold": {"x": 1}, "fields": {"x": {"type": "exact"}}}
+    result = field_match(spans, "worker", params)
+    assert result.passed is False
+    assert result.details["reason"] == "invalid_json_output"
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# llm_call_budget
+# ────────────────────────────────────────────────────────────────────────────
+
+def test_llm_call_budget_pass() -> None:
+    from agent_eval_harness.metrics.assertions.llm_call_budget import llm_call_budget
+
+    spans = [
+        _span(span_id="s1", component_id="worker", span_type="llm_call"),
+        _span(span_id="s2", component_id="worker", span_type="llm_call"),
+    ]
+    result = llm_call_budget(spans, "worker", {"llm_call_budget": 2})
+    assert result.passed is True
+    assert result.details == {"llm_call_count": 2, "budget": 2, "exceeded_by": 0}
+
+
+def test_llm_call_budget_fail_exceeded() -> None:
+    from agent_eval_harness.metrics.assertions.llm_call_budget import llm_call_budget
+
+    spans = [
+        _span(span_id="s1", component_id="worker", span_type="llm_call"),
+        _span(span_id="s2", component_id="worker", span_type="llm_call"),
+        _span(span_id="s3", component_id="worker", span_type="llm_call"),
+        _span(span_id="s4", component_id="other", span_type="llm_call"),  # other component, not counted
+    ]
+    result = llm_call_budget(spans, "worker", {"llm_call_budget": 2})
+    assert result.passed is False
+    assert result.details["exceeded_by"] == 1
+
+
+def test_llm_call_budget_no_budget_specified_degrades_to_none() -> None:
+    from agent_eval_harness.metrics.assertions.llm_call_budget import llm_call_budget
+
+    result = llm_call_budget([], "worker", {})
+    assert result.passed is None
+    assert result.details["reason"] == "no_budget_specified"
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# referential_integrity
+# ────────────────────────────────────────────────────────────────────────────
+
+def test_referential_integrity_pass_subset_of_allowed() -> None:
+    from agent_eval_harness.metrics.assertions.referential_integrity import referential_integrity
+
+    spans = [
+        _span(span_id="s1", component_id="writer", span_type="agent",
+              output_json=json.dumps({"citations": ["docs/a.md", "docs/b.md"]})),
+    ]
+    params = {
+        "path_fields": ["citations"],
+        "snapshot_manifest_paths": ["docs/a.md", "docs/b.md", "docs/c.md"],
+    }
+    result = referential_integrity(spans, "writer", params)
+    assert result.passed is True
+    assert result.details["violations"] == []
+
+
+def test_referential_integrity_fail_path_outside_allowed() -> None:
+    from agent_eval_harness.metrics.assertions.referential_integrity import referential_integrity
+
+    spans = [
+        _span(span_id="s1", component_id="writer", span_type="agent",
+              output_json=json.dumps({"citations": ["docs/a.md", "docs/hallucinated.md"]})),
+    ]
+    params = {
+        "path_fields": ["citations"],
+        "retrieved_chunk_rel_paths": ["docs/a.md"],
+    }
+    result = referential_integrity(spans, "writer", params)
+    assert result.passed is False
+    assert "docs/hallucinated.md" in result.details["violations"]
+
+
+def test_referential_integrity_no_path_fields_and_no_allowed_paths_degrade_to_none() -> None:
+    from agent_eval_harness.metrics.assertions.referential_integrity import referential_integrity
+
+    spans = [
+        _span(span_id="s1", component_id="writer", span_type="agent",
+              output_json=json.dumps({"citations": ["docs/a.md"]})),
+    ]
+    no_fields = referential_integrity(spans, "writer", {})
+    assert no_fields.passed is None
+    assert no_fields.details["reason"] == "no_path_fields_specified"
+
+    no_allowed = referential_integrity(spans, "writer", {"path_fields": ["citations"]})
+    assert no_allowed.passed is None
+    assert no_allowed.details["reason"] == "no_allowed_paths_available"
+
+
+def test_referential_integrity_no_matching_span_degrades_to_none() -> None:
+    from agent_eval_harness.metrics.assertions.referential_integrity import referential_integrity
+
+    params = {"path_fields": ["citations"], "snapshot_manifest_paths": ["docs/a.md"]}
+    result = referential_integrity([], "writer", params)
+    assert result.passed is None
+    assert result.details["reason"] == "no_result"

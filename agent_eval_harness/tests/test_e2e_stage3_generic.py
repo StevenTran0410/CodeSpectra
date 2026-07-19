@@ -26,8 +26,6 @@ from agent_eval_harness.mapping.system_map import load_system_map
 from agent_eval_harness.metrics.suite import SuiteEntry
 from agent_eval_harness.planning.contract import EvaluationContract
 
-pytestmark = pytest.mark.asyncio
-
 _ROOT = Path(__file__).parent.parent  # agent_eval_harness/ repo root (contains test_targets/)
 _TARGETS_DIR = _ROOT / "test_targets"
 

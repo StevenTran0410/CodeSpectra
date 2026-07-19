@@ -78,13 +78,38 @@ def _find_class(tree: ast.Module, class_name: str) -> ast.ClassDef | None:
     return None
 
 
+def _resolve_component_class(
+    component: Component, asts: dict[Path, ast.Module]
+) -> tuple[Path | None, str, ast.ClassDef | None]:
+    """Resolve a component's entry_point to (file, class name, class def); path/cls None on failure."""
+    path = _resolve_component_file(component, asts)
+    if path is None:
+        return None, "", None
+    _, _, class_name = component.entry_point.partition(":")
+    class_name = class_name.split(".")[0]
+    cls = _find_class(asts[path], class_name) if class_name else None
+    return path, class_name, cls
+
+
 def _unparse(node: ast.AST | None) -> str | None:
     if node is None:
         return None
     try:
         return ast.unparse(node)
-    except Exception:
+    except Exception as exc:  # ast.unparse's failure modes aren't enumerated; degrade, don't crash
+        logger.debug("ast.unparse failed for %r: %s", node, exc)
         return None
+
+
+def _positional_params_with_defaults(
+    args: ast.arguments,
+) -> tuple[list[ast.arg], list[ast.expr | None]]:
+    """Positional params (self/cls stripped) paired with aligned defaults (None where required)."""
+    positional = list(args.posonlyargs) + list(args.args)
+    if positional and positional[0].arg in ("self", "cls"):
+        positional = positional[1:]
+    defaults: list[ast.expr | None] = [None] * (len(positional) - len(args.defaults)) + list(args.defaults)
+    return positional, defaults
 
 
 def _harvest_kwargs(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[list[KwargSpec], list[str]]:
@@ -92,10 +117,7 @@ def _harvest_kwargs(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[list[Kw
     notes: list[str] = []
     specs: list[KwargSpec] = []
     args = fn.args
-    positional = list(args.posonlyargs) + list(args.args)
-    if positional and positional[0].arg in ("self", "cls"):
-        positional = positional[1:]
-    defaults: list[ast.expr | None] = [None] * (len(positional) - len(args.defaults)) + list(args.defaults)
+    positional, defaults = _positional_params_with_defaults(args)
     for arg, default in zip(positional, defaults):
         specs.append(
             KwargSpec(
@@ -283,8 +305,7 @@ def _annotation_to_schema(node: ast.expr, ctx: _SchemaResolveCtx | None = None) 
                 return resolved[0]
         return base_schema
     if isinstance(node, ast.Subscript):
-        base = node.value
-        base_name = base.id if isinstance(base, ast.Name) else base.attr if isinstance(base, ast.Attribute) else ""
+        base_name = _subscript_base_name(node)
         if base_name in ("list", "List"):
             item = _annotation_to_schema(node.slice, ctx) if not isinstance(node.slice, ast.Tuple) else {}
             schema: dict = {"type": "array"}
@@ -396,37 +417,6 @@ def _resolve_class_schema(name: str, ctx: _SchemaResolveCtx) -> tuple[dict, str]
                     required.append(key)
         schema = {"type": "object", "properties": properties, "required": required}
         return schema, _rel_cite(path, cls.lineno, ctx.files_root) + f" {name}"
-    return None
-
-
-def _find_typeddict(
-    asts: dict[Path, ast.Module], name: str, files_root: Path | None
-) -> tuple[dict, str] | None:
-    for path, tree in asts.items():
-        cls = _find_class(tree, name)
-        if cls is None:
-            continue
-        base_names = {b.id if isinstance(b, ast.Name) else getattr(b, "attr", "") for b in cls.bases}
-        if "TypedDict" not in base_names:
-            continue
-        total = True
-        for kw in cls.keywords:
-            if kw.arg == "total" and isinstance(kw.value, ast.Constant):
-                total = bool(kw.value.value)
-        properties: dict = {}
-        required: list[str] = []
-        for item in cls.body:
-            if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name):
-                key = item.target.id
-                properties[key] = _annotation_to_schema(item.annotation)
-                # PEP 655: total=True required unless NotRequired[]; total=False optional unless Required[].
-                is_required = (
-                    not _is_notrequired(item.annotation) if total else _is_required(item.annotation)
-                )
-                if is_required:
-                    required.append(key)
-        schema = {"type": "object", "properties": properties, "required": required}
-        return schema, _rel_cite(path, cls.lineno, files_root) + f" {name}"
     return None
 
 
@@ -553,13 +543,10 @@ def harvest_component_contract(
     ctx = _SchemaResolveCtx(
         asts=asts, files_root=files_root, visited=set(), depth=0, conventions=conventions
     )
-    path = _resolve_component_file(component, asts)
+    path, class_name, cls = _resolve_component_class(component, asts)
     if path is None:
         return None, None, {}, [f"{component.id}: source file not found for static harvest"], "unknown"
     tree = asts[path]
-    _, _, class_name = component.entry_point.partition(":")
-    class_name = class_name.split(".")[0]
-    cls = _find_class(tree, class_name) if class_name else None
     if cls is None:
         return None, None, {}, [f"{component.id}: class {class_name!r} not found in {path.name}"], "unknown"
 
@@ -633,15 +620,13 @@ def harvest_component_contract(
             except json.JSONDecodeError:
                 schema_source = schema_source or (cite + f" {name} (non-JSON template)")
 
-    if json_schema is None:
-        entry_method = _find_entry_method(cls)
-        if entry_method is not None:
-            dict_literal = _extract_dict_return_literal(entry_method)
-            if dict_literal is not None:
-                inferred = _infer_schema_from_literal(dict_literal, ctx)
-                if inferred:
-                    json_schema = inferred
-                    schema_source = _rel_cite(path, entry_method.lineno, files_root) + " (inferred from return dict)"
+    if json_schema is None and entry is not None:
+        dict_literal = _extract_dict_return_literal(entry)
+        if dict_literal is not None:
+            inferred = _infer_schema_from_literal(dict_literal, ctx)
+            if inferred:
+                json_schema = inferred
+                schema_source = _rel_cite(path, entry.lineno, files_root) + " (inferred from return dict)"
 
     fallback_literal, fallback_source, fallback_ambiguous = _harvest_fallback(
         cls, path, files_root, letter=letter, asts=asts, conventions=conventions
@@ -679,7 +664,6 @@ def harvest_contracts(
         agent_flow_map, system_map, asts
     )
 
-    # Load keyword signals from discovery/contract_signals.yaml
     _signals_path = Path(__file__).parent.parent.parent / "discovery" / "contract_signals.yaml"
     _kw_signals: list[str] = []
     if _signals_path.exists():
@@ -777,13 +761,7 @@ def _detect_query_planning_subcall(
     conventions: ContractConventions | None = None,
 ) -> bool:
     """True if the entry method calls a module-level plan_queries-style helper (D/J/F's query-planning archetype)."""
-    path = _resolve_component_file(component, asts)
-    if path is None:
-        return False
-    tree = asts[path]
-    _, _, class_name = component.entry_point.partition(":")
-    class_name = class_name.split(".")[0]
-    cls = _find_class(tree, class_name) if class_name else None
+    _, _, cls = _resolve_component_class(component, asts)
     if cls is None:
         return False
     entry = _find_entry_method(cls)
@@ -1002,11 +980,7 @@ def _trace_stmts(
 
 def _seed_fan_in_param(entry: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None:
     """The entry method's sole required, non-config kwarg — the candidate fan-in input. None if there isn't exactly one."""
-    args = entry.args
-    positional = list(args.posonlyargs) + list(args.args)
-    if positional and positional[0].arg in ("self", "cls"):
-        positional = positional[1:]
-    defaults: list[ast.expr | None] = [None] * (len(positional) - len(args.defaults)) + list(args.defaults)
+    positional, defaults = _positional_params_with_defaults(entry.args)
     candidates = [
         arg.arg for arg, default in zip(positional, defaults)
         if default is None and arg.arg not in _CONFIG_PARAMS
@@ -1029,15 +1003,10 @@ def harvest_field_downstream_consumers(
         component = components_by_id.get(head_id)
         if component is None:
             continue
-        path = _resolve_component_file(component, asts)
-        if path is None:
+        path, _, cls = _resolve_component_class(component, asts)
+        if path is None or cls is None:
             continue
         tree = asts[path]
-        _, _, class_name = component.entry_point.partition(":")
-        class_name = class_name.split(".")[0]
-        cls = _find_class(tree, class_name) if class_name else None
-        if cls is None:
-            continue
         entry = _find_entry_method(cls)
         if entry is None:
             continue

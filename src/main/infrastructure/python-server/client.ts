@@ -1,5 +1,15 @@
 import http from 'http'
 
+/** FastAPI returns `{ "detail": "..." }` for 4xx errors — prefer that over a `message` field or raw text. */
+function pickErrorMessage(json: unknown): string | undefined {
+  if (json && typeof json === 'object') {
+    const obj = json as { detail?: unknown; message?: unknown }
+    if (typeof obj.detail === 'string') return obj.detail
+    if (typeof obj.message === 'string') return obj.message
+  }
+  return undefined
+}
+
 /** Thrown by BackendClient on a non-2xx response; `status` lets callers branch on 404 without parsing message text. */
 export class BackendHttpError extends Error {
   constructor(message: string, public readonly status: number) {
@@ -15,18 +25,11 @@ export class BackendClient {
     this.base = `http://127.0.0.1:${port}`
   }
 
-  /** Extract a human-readable message from a failed response.
-   *  FastAPI returns `{ "detail": "..." }` for 4xx errors — prefer that over raw text. */
+  /** Extract a human-readable message from a failed response. */
   private async _errorMessage(res: Response): Promise<string> {
     try {
       const json: unknown = await res.json()
-      if (json && typeof json === 'object' && 'detail' in json && typeof (json as { detail: unknown }).detail === 'string') {
-        return (json as { detail: string }).detail
-      }
-      if (json && typeof json === 'object' && 'message' in json && typeof (json as { message: unknown }).message === 'string') {
-        return (json as { message: string }).message
-      }
-      return JSON.stringify(json)
+      return pickErrorMessage(json) ?? JSON.stringify(json)
     } catch {
       return res.text().catch(() => res.statusText)
     }
@@ -42,11 +45,7 @@ export class BackendClient {
     return res.json() as Promise<T>
   }
 
-  /** POST. Short routes go over `fetch`. Long routes MUST pass `timeoutMs`: undici enforces its
-   *  own ~5-minute `headersTimeout` that an AbortSignal does NOT override, so a fulfill/eval that
-   *  runs many sequential LLM calls server-side would be aborted client-side at 5 min while the
-   *  Python backend keeps working (spinner stops, generation continues). When a timeout is given
-   *  we go over Node's built-in `http`, which imposes no such headers timeout. */
+  /** Short routes go over `fetch`; long routes MUST pass `timeoutMs` and go over Node's `http` instead, since undici's ~5-min `headersTimeout` isn't overridden by an AbortSignal and would abort a long server-side run client-side while the backend keeps working. */
   async post<T>(path: string, body: unknown, timeoutMs?: number): Promise<T> {
     if (timeoutMs) return this._postViaHttp<T>(path, body, timeoutMs)
     const res = await fetch(`${this.base}${path}`, {
@@ -58,8 +57,7 @@ export class BackendClient {
     return res.json() as Promise<T>
   }
 
-  /** http.request-based POST for long server-side runs. `timeoutMs` is a socket-inactivity guard
-   *  (the buffered response arrives well before it), NOT undici's 5-min headers cap. */
+  /** http.request-based POST for long server-side runs. `timeoutMs` is a socket-inactivity guard, NOT undici's 5-min headers cap. */
   private _postViaHttp<T>(path: string, body: unknown, timeoutMs: number): Promise<T> {
     const url = new URL(`${this.base}${path}`)
     const payload = JSON.stringify(body ?? {})
@@ -89,12 +87,9 @@ export class BackendClient {
               }
               return
             }
-            // Mirror _errorMessage: prefer FastAPI's { detail } over raw body text.
             let message = text || res.statusMessage || `HTTP ${status}`
             try {
-              const json = JSON.parse(text) as { detail?: unknown; message?: unknown }
-              if (typeof json.detail === 'string') message = json.detail
-              else if (typeof json.message === 'string') message = json.message
+              message = pickErrorMessage(JSON.parse(text)) ?? message
             } catch {
               /* non-JSON body — keep raw text */
             }
@@ -102,8 +97,7 @@ export class BackendClient {
           })
         }
       )
-      // http.request has no default response timeout; this only trips if the socket goes fully
-      // silent for the whole duration — never at 5 min mid-run the way undici's headersTimeout does.
+      // http.request has no default response timeout; this only trips on full socket silence, never on a mid-run 5-min headers cap like undici's.
       req.setTimeout(timeoutMs, () => {
         req.destroy(new Error(`Request to ${path} timed out after ${timeoutMs}ms of inactivity`))
       })
@@ -132,8 +126,7 @@ export class BackendClient {
     return (text ? JSON.parse(text) : undefined) as T
   }
 
-  /** Consume a Server-Sent Events stream. Calls `onEvent` for every parsed data frame.
-   *  Resolves when the stream ends or an error/done event is received. */
+  /** Consume a Server-Sent Events stream, calling `onEvent` for every parsed data frame until the stream ends. */
   async postStream(
     path: string,
     body: unknown,

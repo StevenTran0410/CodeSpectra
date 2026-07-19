@@ -8,9 +8,7 @@ import EmbeddingConfigModal, { EmbeddingModelButton } from './EmbeddingConfigMod
 
 type EditStrings = { input: string; expected: string; labels: string }
 
-// Deterministic, zero-LLM dataset kinds (snapshot fixtures, field-match gold, replay/baseline):
-// they back Stage 4/5 execution & field-match gates and stay in the DB, but there's nothing for a
-// human to accept/reject — so they don't belong in this review list. Fail-open: unknown kinds show.
+// Deterministic, zero-LLM dataset kinds have nothing for a human to accept/reject, so they're excluded from this review list; fail-open, unknown kinds show.
 const NON_REVIEWABLE_KINDS = new Set([
   'snapshot_fixture',
   'field_match_gold',
@@ -34,7 +32,6 @@ export default function DatasetReviewScreen(): React.ReactElement {
   const [selectedThinkingBudget, setSelectedThinkingBudget] = useState<number | null>(null)
   const [llmConfigOpen, setLlmConfigOpen] = useState(false)
 
-  // Embedding configuration states
   const [selectedEmbedProviderId, setSelectedEmbedProviderId] = useState('')
   const [selectedEmbedModelId, setSelectedEmbedModelId] = useState('')
   const [selectedUseLocalEmbedding, setSelectedUseLocalEmbedding] = useState(false)
@@ -63,7 +60,6 @@ export default function DatasetReviewScreen(): React.ReactElement {
           setSelectedEmbedProviderId(gemini.id)
           setSelectedEmbedModelId('gemini-embedding-001')
         } else {
-          // Check if local GPU is available, if so default to local embedder
           window.api.localEmbedding
             .status()
             .then((status) => {
@@ -186,24 +182,24 @@ export default function DatasetReviewScreen(): React.ReactElement {
       labels_json?: Record<string, any>
     } = { verdict }
     if (verdict === 'edit' && strings) {
-      try {
-        body.input_json = JSON.parse(strings.input)
-      } catch {
-        toast.error('Input JSON is invalid — fix it before saving.')
-        return
+      const parseField = (raw: string, label: string, required: boolean): [boolean, any] => {
+        if (!required && !raw) return [true, undefined]
+        try {
+          return [true, JSON.parse(raw)]
+        } catch {
+          toast.error(`${label} JSON is invalid — fix it before saving.`)
+          return [false, undefined]
+        }
       }
-      try {
-        body.expected_json = strings.expected ? JSON.parse(strings.expected) : undefined
-      } catch {
-        toast.error('Expected JSON is invalid — fix it before saving.')
-        return
-      }
-      try {
-        body.labels_json = strings.labels ? JSON.parse(strings.labels) : undefined
-      } catch {
-        toast.error('Labels JSON is invalid — fix it before saving.')
-        return
-      }
+      const [inputOk, inputVal] = parseField(strings.input, 'Input', true)
+      if (!inputOk) return
+      body.input_json = inputVal
+      const [expectedOk, expectedVal] = parseField(strings.expected, 'Expected', false)
+      if (!expectedOk) return
+      body.expected_json = expectedVal
+      const [labelsOk, labelsVal] = parseField(strings.labels, 'Labels', false)
+      if (!labelsOk) return
+      body.labels_json = labelsVal
     }
 
     try {
@@ -245,8 +241,7 @@ export default function DatasetReviewScreen(): React.ReactElement {
     }
     setRegenerateModalOpen(false)
     setFulfilling(true)
-    // Poll the dataset list while the long fulfill runs — each agent's dataset shows up live the
-    // moment its row lands in the DB, instead of all at once when the whole run returns.
+    // Poll the dataset list while the long fulfill runs so each agent's dataset shows up live as it lands.
     const pollId = setInterval(() => {
       window.api.aeh.listDatasets().then(setDatasets).catch(() => {})
     }, 2000)

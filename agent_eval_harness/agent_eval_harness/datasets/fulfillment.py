@@ -112,8 +112,7 @@ def _archetype_for(contract: EvaluationContract) -> str:
         return "fan_in_judge"
     kwarg_names = {k.name for k in contract.invocation.kwargs} if contract.invocation else set()
     if not contract.has_retrieval_signal:
-        # D9/CS-303: a non-retrieval agent with a real harvested input contract still gets a
-        # genuine archetype/dataset — "unimplemented" only when there is truly no usable input.
+        # A non-retrieval agent with a real input contract still gets a dataset — "unimplemented" only when there's truly no usable input.
         case_binding = contract.invocation.case_binding if contract.invocation else {}
         config_names = config_kwarg_names_from_case_binding(case_binding)
         if not (kwarg_names - config_names):
@@ -176,8 +175,6 @@ async def _derive_config(
             "contract": contract.model_dump(),
             "profile": base_profile,
             "failure_modes": knowledge.get("failure_modes") or [],
-            # D9: mechanical kwarg classification in the generator reads these off the
-            # AgentKnowledge sidecar (context_builders.builds_kwarg; input_contract.example).
             "input_contract": knowledge.get("input_contract") or [],
             "context_builders": knowledge.get("context_builders") or [],
             "count": min_cases, "painpoint": painpoint,
@@ -260,10 +257,7 @@ async def _derive_config(
             reports = await codespectra_client.list_reports(repo_id=repo_id, limit=min_cases)
             reports_config = []
             agent_id = group_entries[0].agent_id or group_entries[0].component
-            # D9/CS-303: the fan-in agent's own upstream sections, from its harvested contract
-            # (field_downstream_consumers) — never a fixed CodeSpectra letter-range/agent-id
-            # literal. No contract on record -> degrade to every section the report actually has,
-            # rather than guessing a convention.
+            # Sections come from the fan-in agent's own harvested field_downstream_consumers, never a fixed literal; no contract on record -> use every section the report has.
             contract = (contract_by_agent or {}).get(agent_id)
             harvested_letters = sorted((contract.field_downstream_consumers or {}).keys()) if contract else []
 
@@ -295,8 +289,7 @@ def _save_suite(suite: Suite, plan_path: str | Path) -> None:
 
 
 async def _prune_prior_versions(base_name: str, keep: str) -> int:
-    """Delete older versions of the same (kind, agent) dataset so re-fulfilling doesn't pile up
-    v1/v2/v3 — a regen keeps exactly one dataset per agent (the just-written `keep`)."""
+    """Delete older versions of the same (kind, agent) dataset so re-fulfilling doesn't pile up v1/v2/v3 — a regen keeps exactly one dataset per agent (the just-written `keep`)."""
     pattern = re.compile(rf"^{re.escape(base_name)}_v\d+$")
     deleted = 0
     for d in await repository.list_dataset_ids():

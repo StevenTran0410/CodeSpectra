@@ -11,8 +11,7 @@ logger = logging.getLogger("agent_eval_harness.datasets.generator_utils")
 
 
 def config_kwarg_names_from_case_binding(case_binding: dict[str, str] | None) -> frozenset[str]:
-    """Kwarg names bound to a `config:` source in the harvested case_binding (D9) — the
-    mechanical, harvest-derived replacement for hardcoded CodeSpectra kwarg-name literals."""
+    """Kwarg names bound to a `config:` source in the harvested case_binding — the harvest-derived replacement for hardcoded kwarg-name literals."""
     if not case_binding:
         return frozenset()
     return frozenset(
@@ -22,8 +21,7 @@ def config_kwarg_names_from_case_binding(case_binding: dict[str, str] | None) ->
 
 
 def apply_painpoint(prompt: str, painpoint: str | None) -> str:
-    """Append a targeted-adversarial section steering generation toward a user-reported
-    painpoint. No painpoint -> byte-identical prompt."""
+    """Append a targeted-adversarial section steering generation toward a user-reported painpoint. No painpoint -> byte-identical prompt."""
     if not painpoint:
         return prompt
     return (
@@ -37,8 +35,7 @@ def apply_painpoint(prompt: str, painpoint: str | None) -> str:
 def seed_cases_to_dataset_cases(
     dataset_name: str, kind: str, seed_cases: list[dict]
 ) -> list[DatasetCase]:
-    """User-supplied concrete examples land verbatim as `handwritten` (skip review —
-    a human already wrote them)."""
+    """User-supplied concrete examples land verbatim as `handwritten` (skip review — a human already wrote them)."""
     return [
         DatasetCase(
             id=new_id(),
