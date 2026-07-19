@@ -8,6 +8,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from agent_eval_harness.planning.contract import OutputContract
+
 logger = logging.getLogger("agent_eval_harness.discovery.agent_knowledge")
 
 
@@ -114,6 +116,7 @@ class AgentKnowledge(BaseModel):
     location: LocationInfo | None = None
     components: list[ComponentRef] = Field(default_factory=list)
     input_contract: list[ContractArg] = Field(default_factory=list)
+    output_contract: OutputContract | None = None
     prompt_sites: list[PromptSiteRef] = Field(default_factory=list)
 
     # Role verdicts — first conclusion of the LLM round, post hard-gate. NEVER authoritative;
@@ -127,6 +130,10 @@ class AgentKnowledge(BaseModel):
     upstream_consumers: list[ConsumerRef] = Field(default_factory=list)
     downstream_consumers: list[ConsumerRef] = Field(default_factory=list)
     failure_modes: list[FailureModeRef] = Field(default_factory=list)
+    output_described_in_prompt: str = ''
+    special_traits: list = Field(default_factory=list)
+    constraints: list = Field(default_factory=list)  # hard rules the prompt imposes → Stage 3 gate fuel
+    method_steps: list = Field(default_factory=list)  # ordered procedure the prompt tells the agent to follow
 
     # Flags and metadata
     degraded: bool = False
@@ -157,6 +164,14 @@ class AgentKnowledge(BaseModel):
             lines.append("## Components")
             for c in self.components:
                 lines.append(f"- {c.id} ({c.role}): {c.file}:{c.line}")
+
+        if self.output_contract and self.output_contract.json_schema:
+            lines.append("## Output Contract")
+            if self.output_contract.schema_source:
+                lines.append(f"*Source: {self.output_contract.schema_source}*")
+            lines.append("```")
+            lines.append(json.dumps(self.output_contract.json_schema, indent=2))
+            lines.append("```")
 
         if self.component_roles:
             lines.append("## Role (non-authoritative — see system_map for the persisted value)")
@@ -190,6 +205,25 @@ class AgentKnowledge(BaseModel):
             for mode in self.failure_modes:
                 loc = f" ({mode.file}:{mode.line})" if mode.file and mode.line else ""
                 lines.append(f"- {mode.description}{loc}")
+
+        if self.output_described_in_prompt:
+            lines.append("## Output (described in prompt)")
+            lines.append(self.output_described_in_prompt)
+
+        if self.method_steps:
+            lines.append("## Method Steps")
+            for i, step in enumerate(self.method_steps, 1):
+                lines.append(f"{i}. {step}")
+
+        if self.constraints:
+            lines.append("## Constraints (from prompt)")
+            for c in self.constraints:
+                lines.append(f"- {c}")
+
+        if self.special_traits:
+            lines.append("## Special Traits")
+            for t in self.special_traits:
+                lines.append(f"- {t}")
 
         if self.functionality_citations:
             lines.append("## Functionality Citations")

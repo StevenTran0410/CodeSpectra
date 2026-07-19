@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from agent_eval_harness.config import ContractConventions
 from agent_eval_harness.llm.client import LLMResponse
 from agent_eval_harness.llm.fake_client import FakeLLMClient
 from agent_eval_harness.mapping.agent_flow import AgentFlow, AgentFlowMap
@@ -627,6 +628,38 @@ async def test_generate_plan_agentic_end_to_end_smoke() -> None:
     assert {a.agent_id for a in report.agents} == {"guard_agent", "core_agent"}
     assert all(e.agent_id in ("guard_agent", "core_agent") for e in suite.entries)
     assert report.advisory_notes == []  # critic degraded on "{}" -> no notes key
+
+
+async def test_generate_plan_agentic_threads_conventions_to_harvest_contracts(tmp_path, monkeypatch) -> None:
+    """CS-303 Slice 6 / AC3: the `conventions` param actually reaches harvest_contracts — the
+    real bug was that the one production call site (ui/server.py) never passed anything, so
+    config always lost to the CodeSpectra-literal defaults."""
+    import agent_eval_harness.mapping.builder.contract_harvest as ch_module
+
+    system_map = load_system_map(_MULTI_AGENT_MAP)
+    agent_flow_map = _multi_agent_flow_map()
+    llm_client = FakeLLMClient(LLMResponse(content="{}", model="fake"))
+    custom = ContractConventions(rerun_section_route="/api/custom/rerun")
+
+    captured: dict = {}
+    real_harvest = ch_module.harvest_contracts
+
+    def _spy(system_map_, agent_flow_map_, files_, files_root_, conventions_=None):
+        captured["conventions"] = conventions_
+        return real_harvest(system_map_, agent_flow_map_, files_, files_root_, conventions_)
+
+    monkeypatch.setattr(ch_module, "harvest_contracts", _spy)
+
+    fake_file = tmp_path / "dummy.py"
+    fake_file.write_text("x = 1\n", encoding="utf-8")
+
+    await ap.generate_plan_agentic(
+        system_map, agent_flow_map, _fake_source_by_component(system_map), [], llm_client,
+        run_critic_pass=False, files=[fake_file], files_root=tmp_path,
+        conventions=custom,
+    )
+
+    assert captured["conventions"] is custom
 
 
 async def test_generate_plan_agentic_matches_flat_baseline_metric_set() -> None:

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from agent_eval_harness.config import ContractConventions
 from agent_eval_harness.mapping.agent_flow import AgentFlow, AgentFlowMap
 from agent_eval_harness.mapping.builder.contract_harvest import (
     _find_typeddict,
@@ -190,6 +191,36 @@ def test_fallback_literal_with_dynamic_marker(tmp_path: Path) -> None:
     assert output.fallback_source is not None
 
 
+# CS-302 AC3 / Slice 3: an agent that returns a dict LITERAL (no validator letter, no SCHEMA
+# constant — the multi_agent JudgeComponent shape) must still yield a harvested output schema,
+# inferred from the return dict on the MAIN path, so its gold can be validated instead of
+# rubber-stamped.
+_DICT_LITERAL_AGENT_SRC = '''
+class JudgeAgent:
+    def __init__(self, llm_client):
+        self._llm = llm_client
+
+    async def run_async(self, query: str, worker_output: dict) -> dict:
+        sufficient = bool(worker_output)
+        return {"sufficient": sufficient, "context": worker_output.get("context", [])}
+'''
+
+
+def test_dict_literal_return_infers_output_schema_on_main_path(tmp_path: Path) -> None:
+    src = tmp_path / "judge_agent.py"
+    src.write_text(_DICT_LITERAL_AGENT_SRC, encoding="utf-8")
+    asts = _parse_files([src])
+    comp = Component(id="judge", role="validator", entry_point="judge_agent:JudgeAgent", file="judge_agent.py")
+
+    _, output, _, _, _ = harvest_component_contract(comp, asts, tmp_path)
+
+    assert output is not None
+    assert output.json_schema is not None, "dict-literal return must yield an inferred schema, not None"
+    assert set(output.json_schema["required"]) == {"sufficient", "context"}
+    assert output.json_schema["properties"].keys() == {"sufficient", "context"}
+    assert output.schema_source is not None and "inferred from return dict" in output.schema_source
+
+
 def test_constants_harvested(tmp_path: Path) -> None:
     asts = _parse_files(_write_fixture(tmp_path))
     _, _, constants, _, _ = harvest_component_contract(_foo_component(), asts, tmp_path)
@@ -358,6 +389,91 @@ def test_harvest_fallback_no_fallthrough_without_a_validator_letter(tmp_path: Pa
     comp = Component(id="x", role="unknown", entry_point="agent_x:XAgent", file="agent_x.py")
     _, output, _, _, _ = harvest_component_contract(comp, asts, tmp_path)
     assert output is not None and output.fallback_literal is None
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# CS-303 Slice 6 / AC3 — contract_conventions config seam
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def test_contract_conventions_rerun_section_route_overridable(tmp_path: Path) -> None:
+    """rerun_section_route has no harvestable equivalent at all (statics can't discover a
+    target's REST route) — config is the only source, so it must actually reach the output."""
+    asts = _parse_files(_write_fixture(tmp_path))
+    default_invocation, _, _, _, _ = harvest_component_contract(_foo_component(), asts, tmp_path)
+    assert default_invocation is not None
+    assert default_invocation.route == "/api/analysis/rerun_section"
+
+    custom = ContractConventions(rerun_section_route="/api/custom/rerun")
+    custom_invocation, _, _, _, _ = harvest_component_contract(
+        _foo_component(), asts, tmp_path, conventions=custom
+    )
+    assert custom_invocation is not None
+    assert custom_invocation.route == "/api/custom/rerun"
+
+
+def test_contract_conventions_pipeline_fallback_pattern_fills_what_default_could_not_supply(
+    tmp_path: Path,
+) -> None:
+    """AC3 (config fills a convention harvest could NOT obtain): KAgent has no own fallback
+    method, so the module-level pipeline-fallback lookup is the only source — under the
+    DEFAULT pattern the real function's custom name isn't found (None); a config matching its
+    actual name resolves it."""
+    (tmp_path / "agent_k.py").write_text(
+        "from schemas import validate_section\n\n"
+        "class KAgent:\n"
+        "    async def run(self, all_sections: dict):\n"
+        "        result = {}\n"
+        "        validate_section('K', result)\n"
+        "        return result\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "agent_pipeline.py").write_text(
+        "def _k_fallback_custom() -> dict:\n"
+        "    return {'overall_confidence': 'low', 'notes': 'custom-pattern fallback'}\n",
+        encoding="utf-8",
+    )
+    asts = _parse_files([tmp_path / "agent_k.py", tmp_path / "agent_pipeline.py"])
+    comp = Component(id="k", role="auditor", entry_point="agent_k:KAgent", file="agent_k.py")
+
+    _, default_output, _, _, _ = harvest_component_contract(comp, asts, tmp_path)
+    assert default_output is not None and default_output.fallback_literal is None
+
+    custom = ContractConventions(pipeline_fallback_name_pattern="_{letter}_fallback_custom")
+    _, custom_output, _, _, _ = harvest_component_contract(comp, asts, tmp_path, conventions=custom)
+    assert custom_output is not None and custom_output.fallback_literal == {
+        "overall_confidence": "low", "notes": "custom-pattern fallback",
+    }
+
+
+def test_contract_conventions_harvest_wins_over_config_when_class_fallback_present(
+    tmp_path: Path,
+) -> None:
+    """AC3 (harvest wins when it already supplies a value): an agent with its OWN class-level
+    fallback method must keep that literal regardless of what pipeline_fallback_name_pattern
+    is configured — the module-level pattern search is never even reached."""
+    (tmp_path / "agent_b.py").write_text(
+        "from schemas import validate_section\n\n"
+        "class BAgent:\n"
+        "    def fallback(self) -> dict:\n"
+        "        return {'result': 'from_class_method'}\n\n"
+        "    async def run(self, snapshot_id: str) -> dict:\n"
+        "        result = {}\n"
+        "        validate_section('B', result)\n"
+        "        return result\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "agent_pipeline.py").write_text(
+        "def _b_totally_different_name() -> dict:\n"
+        "    return {'result': 'should_never_be_used'}\n",
+        encoding="utf-8",
+    )
+    asts = _parse_files([tmp_path / "agent_b.py", tmp_path / "agent_pipeline.py"])
+    comp = Component(id="b", role="auditor", entry_point="agent_b:BAgent", file="agent_b.py")
+
+    custom = ContractConventions(pipeline_fallback_name_pattern="_b_totally_different_name")
+    _, output, _, _, _ = harvest_component_contract(comp, asts, tmp_path, conventions=custom)
+    assert output is not None and output.fallback_literal == {"result": "from_class_method"}
 
 
 def test_typeddict_required_field_in_total_false(tmp_path: Path) -> None:

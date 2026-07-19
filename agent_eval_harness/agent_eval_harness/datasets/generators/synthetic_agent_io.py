@@ -10,7 +10,11 @@ from typing import Any
 import json_repair
 from pydantic import BaseModel
 
-from agent_eval_harness.datasets.generator_utils import apply_painpoint, strip_markdown_code_block
+from agent_eval_harness.datasets.generator_utils import (
+    apply_painpoint,
+    config_kwarg_names_from_case_binding,
+    strip_markdown_code_block,
+)
 from agent_eval_harness.datasets.types import DatasetCase
 from agent_eval_harness.llm.client import LLMClient, LLMMessage
 from agent_eval_harness.llm.embedding_client import EmbeddingClient
@@ -82,6 +86,8 @@ class SyntheticAgentIOConfig(BaseModel):
     contract: dict[str, Any]
     profile: dict[str, Any] = {}
     failure_modes: list[str] = []  # from AgentKnowledge; drives edge-case generation
+    input_contract: list[dict[str, Any]] = []  # D9: AgentKnowledge sidecar ContractArg list (per-kwarg example)
+    context_builders: list[dict[str, Any]] = []  # D9: AgentKnowledge sidecar ContextBuilderRef list
     count: int = 20
     painpoint: str | None = None
 
@@ -109,8 +115,10 @@ def is_dataset_stale(dataset_cases: list[dict[str, Any]], current_json_schema: d
 
 
 def _validate_gold(gold: Any, json_schema: dict[str, Any] | None) -> list[str]:
-    """jsonschema.validate against the harvested output schema; empty schema -> treated as valid."""
-    if not json_schema:
+    """jsonschema.validate against the harvested output schema; empty schema -> treated as valid (no constraints)."""
+    if json_schema is None:
+        return []
+    if isinstance(json_schema, dict) and not json_schema:
         return []
     if not isinstance(gold, dict):
         return ["gold is not a JSON object"]
@@ -187,7 +195,9 @@ def _fan_in_judge_prompt(
 ) -> str:
     contract = parsed.contract
     output = contract.get("output") or {}
-    json_schema = output.get("json_schema") or {}
+    json_schema = output.get("json_schema")
+    if json_schema is None:
+        json_schema = {}
     fields_by_letter = contract.get("field_downstream_consumers") or {}
     purpose = (parsed.profile or {}).get("purpose") or _generic_purpose_for_archetype(parsed.archetype)
 
@@ -238,40 +248,12 @@ async def _generate_fan_in_judge(
     )
 
 
-# CS-297/CS-303: remove after (1) 240-case diff-run proves no CodeSpectra activation AND
-#         (2) >= 1 green multi_agent/linear_rag Stage 1→3 exercises the generic/harvested path.
-# Both conditions are the removal criterion — do not compress them away.
-_LEGACY_OVERRIDE: dict[str, list[tuple[str, str]]] = {
-    "violations": [(
-        "conventions_output",
-        "the D (coding-conventions) agent's own real output shape — must include a "
-        "'signals' list of {category, description or pattern} objects",
-    )],
-    "onboarding": [(
-        "important_files_output",
-        "the G (important-files) agent's own real output shape — key file slots like "
-        "entrypoint/backbone/read_first, each an object with {file, reason}",
-    )],
-    "conventions": [(
-        "structure_output",
-        "the C (structure) agent's own real output shape — a 'folders' list of "
-        "{path, role, description} objects",
-    )],
-    "feature_map": [
-        ("identity_output", "the A (project-identity) agent's own real output shape — domain/tech_stack/runtime_type"),
-        ("architecture_output", "the B (architecture) agent's own real output shape — main_layers/main_services"),
-    ],
-    "architecture": [("identity_output", "the A (project-identity) agent's own real output shape — domain/tech_stack/runtime_type")],
-    "structure": [("identity_output", "the A (project-identity) agent's own real output shape — domain/tech_stack/runtime_type")],
-}
-
-
 def _upstream_specs_for(parsed: SyntheticAgentIOConfig) -> list[tuple[str, str]]:
-    """Prefer harvested upstream_context_specs; fall back to _LEGACY_OVERRIDE for CodeSpectra agents."""
-    contract_specs = (parsed.contract.get("upstream_context_specs") or [])
-    if contract_specs:
-        return [(s["name"], s["description"]) for s in contract_specs if s.get("name")]
-    return _LEGACY_OVERRIDE.get(parsed.agent_id, [])  # CS-297/CS-303
+    """Harvested upstream_context_specs only (D3). The CodeSpectra-agent-id legacy override
+    dict was removed once a green multi_agent/linear_rag Stage 1→3 run proved the generic/
+    harvested path (CS-303 Slice 1/3b) — no agent-id fallback remains."""
+    contract_specs = parsed.contract.get("upstream_context_specs") or []
+    return [(s["name"], s["description"]) for s in contract_specs if s.get("name")]
 
 _FOLDER_TREE_SPEC = (
     "folder_tree",
@@ -604,9 +586,15 @@ async def _generate_rag_query_planning_mem_ctx(
     )
 
 
-# CS-297/CS-303: remove fast-path table after (1) 240-case diff-run proves no CodeSpectra
-#         activation AND (2) >= 1 green multi_agent/linear_rag Stage 1→3 exercises the generic path.
-# Introduced by CS-292 itself — a new CodeSpectra-agent-id hardcode added while removing the old ones.
+# CS-303 Slice 3c PAUSE: parity checked (tests/test_stage3_codespectra_parity.py) — for all 10
+# shapes below, the generic path's field-descriptor key-set (raw kwarg names minus config)
+# does NOT equal what these builders render (e.g. "mem_ctx" -> bundle+folder_tree+doc_ctx+
+# manifest_ctx+repo_name is a semantic expansion, not a literal field). Removing this table
+# would regress CodeSpectra dataset quality, so it is RETAINED. What generalizes foreign agents
+# is the route-hole fix below (`not kwarg_names` -> generic) — a foreign kwarg set essentially
+# never equals one of these 10 CodeSpectra-specific shapes, so it already falls through to
+# _generate_generic regardless of whether this table exists. Revisit only if
+# test_stage3_codespectra_parity.py ever starts asserting equality.
 _KNOWN_SHAPE_KWARG_SETS: dict[str, frozenset[str]] = {
     "rag_single_shot:glossary": frozenset({"provider_id", "model_id", "snapshot_id", "profile"}),
     "rag_single_shot:important_files": frozenset({"provider_id", "model_id", "snapshot_id", "graph_summary", "profile"}),
@@ -622,7 +610,7 @@ _KNOWN_SHAPE_KWARG_SETS: dict[str, frozenset[str]] = {
 
 _KNOWN_KWARG_SET_VALUES: frozenset[frozenset[str]] = frozenset(_KNOWN_SHAPE_KWARG_SETS.values())
 
-# CS-297/CS-303: retained with the known-kwarg-set fast-path
+# Retained with the known-kwarg-set fast-path (see PAUSE note above _KNOWN_SHAPE_KWARG_SETS).
 _ARCHETYPE_BUILDERS: dict[
     str,
     Callable[[SyntheticAgentIOConfig, LLMClient, EmbeddingClient | None], Awaitable[list[DatasetCase]]],
@@ -636,14 +624,13 @@ _ARCHETYPE_BUILDERS: dict[
     "rag_query_planning_mem_ctx": _generate_rag_query_planning_mem_ctx,
 }
 
-_NON_INPUT_KWARG_NAMES = frozenset({"provider_id", "model_id"})
-
-
 async def _generate_generic(
     parsed: SyntheticAgentIOConfig, llm_client: LLMClient,
     embedding_client: EmbeddingClient | None = None,
 ) -> list[DatasetCase]:
-    """Generic builder: derives the case-input field list from contract.invocation.kwargs."""
+    """Generic builder: derives the case-input field list mechanically from the harvested
+    contract — never from a CodeSpectra-shaped template. Archetype only picks the purpose
+    blurb below (D9); it never adds/removes a field."""
     contract = parsed.contract
     output = contract.get("output") or {}
     json_schema: dict | None = output.get("json_schema")
@@ -655,19 +642,39 @@ async def _generate_generic(
 
     invocation = contract.get("invocation") or {}
     kwargs = invocation.get("kwargs") or []
+    config_kwarg_names = config_kwarg_names_from_case_binding(invocation.get("case_binding"))
     upstream_context_specs = contract.get("upstream_context_specs") or []
     upstream_by_name = {s["name"]: s for s in upstream_context_specs if s.get("name")}
+    builds_kwarg_by_name = {
+        cb["builds_kwarg"]: cb for cb in (parsed.context_builders or []) if cb.get("builds_kwarg")
+    }
+    example_by_kwarg = {
+        c["kwarg"]: c["example"] for c in (parsed.input_contract or [])
+        if c.get("kwarg") and c.get("example")
+    }
 
     field_descs: dict[str, str] = {}
     for kwarg in kwargs:
         name = kwarg.get("name") or ""
-        if not name or name in _NON_INPUT_KWARG_NAMES:
-            continue
+        if not name or name in config_kwarg_names:
+            continue  # config-kind kwarg (harvested case_binding) — never part of the case input shape
         if name in upstream_by_name:
             field_descs[name] = upstream_by_name[name].get("description", "upstream agent output")
+        elif name in builds_kwarg_by_name:
+            cb = builds_kwarg_by_name[name]
+            annotation = kwarg.get("annotation") or ""
+            type_hint = f" ({annotation})" if annotation else ""
+            field_descs[name] = (
+                f"a simulated context block built by '{cb.get('name') or 'a context builder'}'"
+                f"{type_hint} — plausible content consistent with the rest of this case"
+            )
         else:
             annotation = kwarg.get("annotation") or ""
-            field_descs[name] = f"({annotation})" if annotation else "any value"
+            desc = f"({annotation})" if annotation else "any value"
+            example = example_by_kwarg.get(name)
+            if example:
+                desc += f", e.g. {example}"
+            field_descs[name] = desc
 
     purpose = (parsed.profile or {}).get("purpose") or _generic_purpose_for_archetype(parsed.archetype)
     fields_block = json.dumps(field_descs, indent=2, ensure_ascii=False) if field_descs else "{}"
@@ -689,17 +696,46 @@ async def _generate_generic(
             prompt += _avoid_addendum(avoid, detailed=False)
         return apply_painpoint(prompt, parsed.painpoint)
 
-    cases = await _generate_validated_cases(
+    return await _generate_validated_cases(
         parsed, llm_client, build_prompt, build_case_input=_shape_case_input("generic"),
         embedding_client=embedding_client,
     )
-    # Rubber-stamp visibility: tag cases when output schema was unavailable
-    if json_schema is None:
-        for case in cases:
-            if isinstance(case.labels, dict):
-                case.labels["schema_source"] = "none"
-                case.labels["needs_human"] = "output schema unavailable — gold was not schema-validated"
-    return cases
+
+
+def _flag_schema_unvalidated(cases: list[DatasetCase], contract: dict[str, Any]) -> None:
+    """Stamp needs_human on every case when the agent's output schema wasn't statically
+    harvestable — gold was never schema-validated. Applied centrally so all archetype paths
+    (fan_in_judge early return, known-kwarg fast-path, generic) are covered, not just generic."""
+    note = next(
+        (n for n in (contract.get("needs_human") or []) if "no output schema statically harvestable" in n),
+        "output schema unavailable — gold was not schema-validated",
+    )
+    for case in cases:
+        if isinstance(case.labels, dict):
+            case.labels["schema_source"] = "none"
+            case.labels["needs_human"] = note
+
+
+async def _dispatch_builder(
+    parsed: SyntheticAgentIOConfig, llm_client: LLMClient,
+    embedding_client: EmbeddingClient | None,
+) -> list[DatasetCase]:
+    # fan_in_judge is a genuine structural special case (all-sections dict keyed by
+    # field_downstream_consumers, not a flat kwarg list) — gated on contract shape via
+    # _archetype_for, never on agent-id. See test_dispatch_fan_in_judge_routes_by_shape_not_agent_id.
+    if parsed.archetype == "fan_in_judge":
+        return await _generate_fan_in_judge(parsed, llm_client, embedding_client)
+    # Fast-path for CodeSpectra's known kwarg shapes (CS-303 Slice 3c PAUSE — retained, see note
+    # above _KNOWN_SHAPE_KWARG_SETS). An EMPTY kwarg set is NOT a known shape — an agent whose
+    # harvest yielded nothing must degrade to the generic path, never a CodeSpectra builder.
+    kwarg_names = frozenset(
+        k["name"] for k in ((parsed.contract.get("invocation") or {}).get("kwargs") or []) if k.get("name")
+    )
+    if kwarg_names and kwarg_names in _KNOWN_KWARG_SET_VALUES:
+        builder = _ARCHETYPE_BUILDERS.get(parsed.archetype)
+        if builder is not None:
+            return await builder(parsed, llm_client, embedding_client)
+    return await _generate_generic(parsed, llm_client, embedding_client)
 
 
 async def generate(
@@ -714,17 +750,7 @@ async def generate(
             "synthetic_agent_io archetype 'unimplemented' cannot generate cases — "
             "agent has no retrieval signal (check has_retrieval_signal in contract harvest)"
         )
-    if parsed.archetype == "fan_in_judge":
-        return await _generate_fan_in_judge(parsed, llm_client, embedding_client)
-    # CS-297/CS-303: fast-path for known CodeSpectra kwarg shapes; remove once generic path is validated.
-    # `not kwarg_names` routes an unknown agent whose harvest yielded nothing INTO the CodeSpectra
-    # builders rather than the generic path — CS-303 §2.3 tracks that hole.
-    kwarg_names = frozenset(
-        k["name"] for k in ((parsed.contract.get("invocation") or {}).get("kwargs") or []) if k.get("name")
-    )
-    # No kwarg info OR kwarg set matches a known pattern → use the specific archetype builder
-    if not kwarg_names or kwarg_names in _KNOWN_KWARG_SET_VALUES:
-        builder = _ARCHETYPE_BUILDERS.get(parsed.archetype)
-        if builder is not None:
-            return await builder(parsed, llm_client, embedding_client)
-    return await _generate_generic(parsed, llm_client, embedding_client)
+    cases = await _dispatch_builder(parsed, llm_client, embedding_client)
+    if not (parsed.contract.get("output") or {}).get("json_schema"):
+        _flag_schema_unvalidated(cases, parsed.contract)
+    return cases

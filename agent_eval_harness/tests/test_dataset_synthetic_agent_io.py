@@ -4,6 +4,7 @@ import json
 import pytest
 
 from agent_eval_harness.datasets.generators.synthetic_agent_io import (
+    _KNOWN_SHAPE_KWARG_SETS,
     _extract_text_values,
     generate,
     is_dataset_stale,
@@ -104,6 +105,37 @@ async def test_generate_retries_and_fills_remaining_count():
     assert len(llm_client.calls) == 2
 
 
+async def test_fan_in_judge_with_no_output_schema_flags_needs_human():
+    """CS-302 AC3 / Slice 3 item 8: the fan_in_judge early-return path (the previously-missed
+    :712 path) must flag needs_human when no output schema was harvestable — cases are flagged,
+    never silently stamped valid ([])."""
+    config = _config(count=2)
+    config["contract"]["output"] = {}  # no json_schema harvestable
+    payload = json.dumps([_valid_case(1), _valid_case(2)])
+    llm_client = FakeLLMClient(LLMResponse(content=payload, model="fake"))
+
+    cases = await generate(config, llm_client)
+
+    assert len(cases) == 2  # not dropped — flagged, not silently kept as validated
+    for case in cases:
+        assert case.labels.get("schema_source") == "none"
+        assert "needs_human" in case.labels
+
+
+async def test_schema_missing_flag_carries_contract_harvest_note():
+    """CS-302 Slice 3 item 9: the 'no output schema statically harvestable' harvest note flows
+    to the case label rather than a generic placeholder."""
+    config = _config(count=1)
+    config["contract"]["output"] = {}
+    config["contract"]["needs_human"] = ["auditor: no output schema statically harvestable"]
+    payload = json.dumps([_valid_case(1)])
+    llm_client = FakeLLMClient(LLMResponse(content=payload, model="fake"))
+
+    cases = await generate(config, llm_client)
+
+    assert cases[0].labels["needs_human"] == "auditor: no output schema statically harvestable"
+
+
 async def test_generate_unimplemented_archetype_raises():
     config = _config()
     config["archetype"] = "unimplemented"
@@ -128,11 +160,19 @@ _G_SCHEMA = {
 
 
 def _rag_config(agent_id: str, archetype: str, count: int = 1) -> dict:
+    """CS-303 Slice 3a fixed the `not kwarg_names` route hole (empty kwargs now go to the
+    generic path, never a CodeSpectra builder) — these RAG-writer-archetype tests exist to
+    exercise the archetype builders themselves, so give them the real CodeSpectra kwarg shape
+    (still routing through the fast-path per Slice 3c's PAUSE) whenever one is known."""
+    contract: dict = {"output": {"json_schema": _G_SCHEMA}}
+    shape = _KNOWN_SHAPE_KWARG_SETS.get(f"{archetype}:{agent_id}")
+    if shape:
+        contract["invocation"] = {"kwargs": [{"name": n} for n in sorted(shape)]}
     return {
         "dataset_name": f"test_synth_{agent_id}",
         "agent_id": agent_id,
         "archetype": archetype,
-        "contract": {"output": {"json_schema": _G_SCHEMA}},
+        "contract": contract,
         "count": count,
     }
 
@@ -400,6 +440,50 @@ async def test_d9_known_kwarg_set_still_uses_fast_path():
 
     assert len(cases) == 1
     assert cases[0].input["shape"] == "retrieval_only"  # fast-path builder shape, not "generic"
+
+
+async def test_dispatch_fan_in_judge_routes_by_shape_not_agent_id():
+    """CS-303 Slice 3a: a NON-CodeSpectra agent_id with field_downstream_consumers still
+    dispatches to the fan_in_judge builder — the gate is contract shape, never an agent-id table."""
+    config = {
+        "dataset_name": "test_synth_foreign_fan_in",
+        "agent_id": "some_foreign_reviewer",
+        "archetype": "fan_in_judge",
+        "contract": {
+            "output": {"json_schema": _SCHEMA},
+            "field_downstream_consumers": {"X": ["confidence"], "Y": ["confidence"]},
+        },
+        "count": 1,
+    }
+    candidate = {
+        "input": {
+            "X": {"confidence": "high"},
+            "Y": {"confidence": "low"},
+        },
+        "gold": {"overall_confidence": "medium", "notes": "mixed"},
+    }
+    llm_client = FakeLLMClient(LLMResponse(content=json.dumps([candidate]), model="fake"))
+
+    cases = await generate(config, llm_client)
+
+    assert len(cases) == 1
+    assert cases[0].input["shape"] == "all_sections"
+    assert set(cases[0].input["all_sections"]) == {"X", "Y"}
+
+
+async def test_dispatch_empty_kwargs_routes_to_generic_not_a_codespectra_builder():
+    """CS-303 Slice 3a: an agent whose harvest yields NO kwargs at all (the :729 route hole)
+    must degrade to the generic path, never fall into a CodeSpectra archetype builder that
+    would render a fixed 'bundle.evidences' shape unrelated to the real (empty) contract."""
+    config = _generic_config(agent_id="bare_tool_agent", archetype="rag_single_shot")
+    config["contract"]["invocation"] = {"kwargs": []}
+    candidate = {"input": {}, "gold": {"entrypoint": {"file": "main.py", "reason": "entry"}, "confidence": "high"}}
+    llm_client = FakeLLMClient(LLMResponse(content=json.dumps([candidate]), model="fake"))
+
+    cases = await generate(config, llm_client)
+
+    assert len(cases) == 1
+    assert cases[0].input["shape"] == "generic"  # not "retrieval_only" (the builder's shape)
 
 
 # --- D6: embedding dedup ---

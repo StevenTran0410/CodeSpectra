@@ -199,6 +199,35 @@ async def test_export_dataset_excludes_synthetic_never_leaves_aeh():
     assert all("kind" not in c.input for c in exported)
 
 
+async def test_prune_prior_versions_removes_old_keeps_latest_and_other_bases():
+    """Re-fulfilling must not accumulate v1/v2/v3: _prune_prior_versions drops older versions of
+    the same base_name (keeping the just-written one) and never touches a different base_name."""
+    from agent_eval_harness.datasets.fulfillment import _prune_prior_versions
+
+    base = "synthetic_agent_io_agentX"
+    for v in ("v1", "v2", "v3"):
+        did = f"{base}_{v}"
+        await repository.insert_dataset_cases_bulk(did, [
+            DatasetCase(id=f"{did}_c1", dataset=did, kind="synthetic_agent_io",
+                        input={"x": 1}, expected={}, labels={"agent_id": "agentX"}, provenance="synthetic"),
+        ])
+        await repository.insert_dataset_metadata(did, "synthetic_agent_io", min_cases=1)
+    other = "synthetic_agent_io_other_v1"
+    await repository.insert_dataset_cases_bulk(other, [
+        DatasetCase(id="other_c1", dataset=other, kind="synthetic_agent_io",
+                    input={"x": 1}, expected={}, labels={"agent_id": "other"}, provenance="synthetic"),
+    ])
+    await repository.insert_dataset_metadata(other, "synthetic_agent_io", min_cases=1)
+
+    deleted = await _prune_prior_versions(base, keep=f"{base}_v3")
+
+    assert deleted == 2
+    ids = {d["dataset_id"] for d in await repository.list_dataset_ids()}
+    assert f"{base}_v3" in ids
+    assert f"{base}_v1" not in ids and f"{base}_v2" not in ids
+    assert other in ids  # different base_name untouched
+
+
 async def test_export_dataset_fail_closed_on_unknown_provenance():
     # A case with an unrecognised provenance must never reach export_dataset's output.
     dataset_id = "t_export_bogus_v1"
@@ -633,9 +662,9 @@ async def test_fulfill_plan_force_agent_ids_regenerates_already_fulfilled_datase
     )
     assert "synthetic_agent_io/auditor" not in rerun_report
 
-    # force_agent_ids resets required.min_cases to the real gate's 20 (it can't recover the
-    # stale entry's original 2 — that's gone once fulfilled) — 3 items/round covers it in 7
-    # rounds, comfortably under the 8-round ceiling, with no top-up needed.
+    # force_agent_ids resets required.min_cases to the global knob (DEFAULT_CASES_PER_AGENT, 5 by
+    # default) — it can't recover the stale entry's original 2, that's gone once fulfilled. 3
+    # items/round covers 5 in 2 rounds, well under the round ceiling, with no top-up needed.
     fresh_payload = json.dumps([
         {"input": {"A": {"confidence": "high"}}, "gold": {"overall_confidence": "high", "notes": "fresh1"}},
         {"input": {"A": {"confidence": "low"}}, "gold": {"overall_confidence": "low", "notes": "fresh2"}},
@@ -652,8 +681,9 @@ async def test_fulfill_plan_force_agent_ids_regenerates_already_fulfilled_datase
 
     # next_version() reclaims the freed "v1" slot once the stale row is gone — same id is fine,
     # what matters is the OLD cases are gone and the NEW ones (from the forced round) are there.
+    from agent_eval_harness.config import DEFAULT_CASES_PER_AGENT
     new_cases = await repository.get_dataset_cases(new_dataset_id)
-    assert len(new_cases) == 20
+    assert len(new_cases) == DEFAULT_CASES_PER_AGENT
     notes = {json.loads(c["expected_json"])["notes"] for c in new_cases}
     assert notes == {"fresh1", "fresh2", "fresh3"}  # only fresh content, "bad" is gone
 

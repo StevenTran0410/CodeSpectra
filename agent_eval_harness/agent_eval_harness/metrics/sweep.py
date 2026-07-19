@@ -12,7 +12,7 @@ from agent_eval_harness.llm.client import LLMClient
 from agent_eval_harness.llm.embedding_client import EmbeddingClient
 from agent_eval_harness.mapping.system_map import SystemMap, load_system_map
 from agent_eval_harness.metrics.assertions.registry import get_assertion
-from agent_eval_harness.metrics.registry import get_dispatch
+from agent_eval_harness.metrics.registry import get_dispatch, get_spec
 from agent_eval_harness.metrics.suite import SuiteEntry, load_suite
 from agent_eval_harness.metrics.types import MetricResult
 from agent_eval_harness.runner import execute_run
@@ -136,6 +136,9 @@ async def _run_entry(
 ) -> list[MetricResult]:
     """Dispatch one SuiteEntry to the appropriate scorer."""
     async with semaphore:
+        spec = get_spec(entry.metric)
+        if spec is not None and spec.dataset_scored:
+            return await _score_dataset_scored_entry(entry, run_id, source)
         if source == "ingested":
             if entry.metric_class == "assertion":
                 return await _score_assertion_entry_ingested(entry, system_map, run_id)
@@ -224,6 +227,39 @@ async def _score_assertion_entry_ingested(
         spans = await repository.get_spans_for_trace(trace["id"])
         result = assertion_fn(spans, entry.component, params)
         result.trace_id = trace["id"]
+        results.append(result)
+    return results
+
+
+async def _score_dataset_scored_entry(
+    entry: SuiteEntry, run_id: str, source: Literal["live", "ingested"]
+) -> list[MetricResult]:
+    """Scores a metric that consumes its linked dataset's per-case gold (metamorphic_relation):
+    each derived case carries its own invariant config in `expected`. Self-consistency cases
+    (transform=null) carry `source_expected_output` and score directly with no run; perturbation
+    cases score against the matching ingested result span, or degrade loudly (no_result) if absent."""
+    assertion_fn = get_assertion(entry.metric)
+    dataset_ref = _resolve_dataset_ref(entry)
+    if not dataset_ref:
+        return [_empty_assertion_result(entry)]
+    cases = await repository.get_dataset_cases(dataset_ref)
+    if not cases:
+        return [_empty_assertion_result(entry)]
+
+    # Only build the case->spans map when a perturbation case actually needs an ingested result.
+    spans_by_case: dict[str, list[dict]] = {}
+    if source == "ingested" and run_id:
+        for trace in await repository.get_traces_for_run(run_id):
+            case_id = trace.get("dataset_case_id")
+            if case_id:
+                spans_by_case[case_id] = await repository.get_spans_for_trace(trace["id"])
+
+    results: list[MetricResult] = []
+    for case in cases:
+        expected = json.loads(case["expected_json"]) if case.get("expected_json") else {}
+        params = {**entry.params, **(expected if isinstance(expected, dict) else {})}
+        result = assertion_fn(spans_by_case.get(case["id"], []), entry.component, params)
+        result.trace_id = case["id"]  # the derived case is the unit scored — keep it traceable
         results.append(result)
     return results
 

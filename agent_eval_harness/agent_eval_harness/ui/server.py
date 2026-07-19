@@ -1234,12 +1234,15 @@ async def generate_plan_route(session_id: str, body: GeneratePlanRequest):
         map_path = Path(sess["map_path"])
         plan_path = map_path.with_name(map_path.stem + "_plan.yaml")
         plan_report_path = map_path.with_name(map_path.stem + "_plan_report.yaml")
-        previous_suite = None
+        # Regenerating the plan DELETES the previous plan's datasets — never carried forward: they go
+        # stale the moment the plan/harvest changes, so a regen always starts from a clean slate.
         if plan_path.exists():
             try:
-                previous_suite = load_suite(plan_path)
+                old_suite = load_suite(plan_path)
+                for ref in {e.dataset.ref for e in old_suite.entries if e.dataset and e.dataset.ref}:
+                    await repository.delete_dataset(ref)
             except Exception as e:
-                logger.warning(f"generate_plan: could not load previous plan for dataset carry-forward: {e}")
+                logger.warning(f"generate_plan: could not delete previous plan's datasets: {e}")
         previous_report = None
         if plan_report_path.exists():
             try:
@@ -1257,8 +1260,9 @@ async def generate_plan_route(session_id: str, body: GeneratePlanRequest):
         suite, plan_report = await generate_plan_agentic(
             system_map, agent_flow_map, source_by_component, sess["accepted_edges"], llm_client,
             files=harvest_files, files_root=local_path,
-            previous_suite=previous_suite, previous_report=previous_report,
+            previous_suite=None, previous_report=previous_report,
             project_context=_plan_project_ctx,
+            conventions=config.contract_conventions,  # CS-303 Slice 6: config seam, previously dead
         )
 
         plan_path.write_text(

@@ -384,3 +384,73 @@ def test_fallback_sentinel_dynamic_marker_ignored_in_comparison() -> None:
     ]
     result = fallback_sentinel(spans, "project_identity", {"fallback": fallback})
     assert result.passed is False  # confidence="low" still matches -> this IS a fallback hit
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# metamorphic_relation  (CS-302 Slice 1)
+# ────────────────────────────────────────────────────────────────────────────
+
+def test_metamorphic_relation_self_consistency_pass_and_fail() -> None:
+    """Self-consistency (transform=null): scored directly off the reviewed source gold carried
+    in source_expected_output — a real pass/fail, no spans, no agent run."""
+    from agent_eval_harness.metrics.assertions.metamorphic_relation import metamorphic_relation
+
+    params = {
+        "invariant_op": "argmin_k",
+        "invariant_params": {"scores_field": "s", "report_field": "w", "k": 2, "allow_ties": True},
+    }
+    ok = metamorphic_relation(
+        [], "judge",
+        {**params, "source_expected_output": {"s": {"a": 1, "b": 2, "c": 3}, "w": ["a", "b"]}},
+    )
+    assert ok.passed is True
+    assert ok.details["checked_against"] == "source_expected_output"
+
+    bad = metamorphic_relation(
+        [], "judge",
+        {**params, "source_expected_output": {"s": {"a": 1, "b": 2, "c": 3}, "w": ["a", "c"]}},
+    )
+    assert bad.passed is False
+
+
+def test_metamorphic_relation_perturbation_no_result_degrades_loudly() -> None:
+    """Perturbation (transform≠null, no source gold): with no ingested result span it must
+    degrade LOUDLY — passed=None + an explicit reason, never a silent pass/fail."""
+    from agent_eval_harness.metrics.assertions.metamorphic_relation import metamorphic_relation
+
+    result = metamorphic_relation(
+        [], "judge",
+        {"invariant_op": "contains_injected_token",
+         "invariant_params": {"output_field": "flags", "token": "__x__"}},
+    )
+    assert result.passed is None
+    assert result.details["reason"] == "no_result"
+
+
+def test_metamorphic_relation_perturbation_scores_matching_result_span() -> None:
+    """Perturbation with a real ingested result span present → a genuine verdict off the span."""
+    from agent_eval_harness.metrics.assertions.metamorphic_relation import metamorphic_relation
+
+    spans = [
+        _span(span_id="s1", component_id="judge", span_type="agent",
+              output_json=json.dumps({"flags": ["contradiction: __x__ present"]})),
+    ]
+    result = metamorphic_relation(
+        spans, "judge",
+        {"invariant_op": "contains_injected_token",
+         "invariant_params": {"output_field": "flags", "token": "__x__", "min_count": 1}},
+    )
+    assert result.passed is True
+
+
+def test_metamorphic_relation_bad_invariant_params_degrades_not_crash() -> None:
+    """An invariant op raising on bad params degrades to passed=None with the reason, not a crash."""
+    from agent_eval_harness.metrics.assertions.metamorphic_relation import metamorphic_relation
+
+    result = metamorphic_relation(
+        [], "judge",
+        {"invariant_op": "not_a_real_op", "invariant_params": {},
+         "source_expected_output": {"x": 1}},
+    )
+    assert result.passed is None
+    assert "not_a_real_op" in result.details["reason"]

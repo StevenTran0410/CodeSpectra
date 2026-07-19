@@ -39,7 +39,7 @@ async def test_resolve_dataset_ref_always_returns_fresh_required_block() -> None
     ref = _resolve_dataset_ref("qa_testset")
     assert ref is not None
     assert ref.ref is None
-    assert ref.required == {"kind": "qa_testset", "min_cases": 20}
+    assert ref.required == {"kind": "qa_testset", "min_cases": 5}
 
 
 async def test_resolve_dataset_ref_guard_classification_min_cases() -> None:

@@ -29,9 +29,13 @@ def _import_all() -> None:
         allowed_downstream,
         arg_schema,
         fallback_sentinel,
+        field_match,
+        llm_call_budget,
         max_items_per_call,
         max_retries,
+        metamorphic_relation,
         no_unnecessary_calls,
+        referential_integrity,
         retry_on_reject_required,
         schema_valid,
     )

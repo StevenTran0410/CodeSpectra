@@ -6,6 +6,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from agent_eval_harness.config import DEFAULT_CASES_PER_AGENT
 from agent_eval_harness.llm.client import LLMClient, LLMMessage
 from agent_eval_harness.mapping.system_map import Component, SystemMap, load_system_map
 from agent_eval_harness.metrics.suite import DatasetRef, Suite, SuiteEntry
@@ -13,7 +14,7 @@ from agent_eval_harness.store import repository
 
 logger = logging.getLogger("agent_eval_harness.planning.planner")
 
-DEFAULT_MIN_CASES = 20
+DEFAULT_MIN_CASES = DEFAULT_CASES_PER_AGENT  # single global knob (config.py / AEH_CASES_PER_AGENT env)
 GUARD_CLASSIFICATION_MIN_CASES = 40
 
 # System prompts for LLM assistant

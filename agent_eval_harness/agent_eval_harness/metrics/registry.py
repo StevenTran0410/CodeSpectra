@@ -27,6 +27,8 @@ class MetricSpec:
     required_slots: list[str] = field(default_factory=list)
     # "free" = deterministic/no LLM call; "llm_per_case" = one LLM call per case.
     cost_class: Literal["free", "llm_per_case"] = "free"
+    # True = scored by iterating the linked dataset's per-case gold (metamorphic_relation), not spans.
+    dataset_scored: bool = False
     # Human-readable description for GATE_DESIGNER_SYSTEM prompt injection.
     description: str = ""
 
@@ -87,6 +89,13 @@ METRIC_REGISTRY: dict[str, MetricSpec] = {
         description="Output is not equal to the contract's fallback literal (fallbacks always pass schema — this gate catches them).",
         cost_class="free",
     ),
+    "metamorphic_relation": MetricSpec(
+        metric_class="assertion",
+        required_params=["invariant_op", "invariant_params"],
+        description="Transformed input preserves the declared invariant (pass/fail depends on source case's gold or ingested result).",
+        cost_class="free",
+        dataset_scored=True,
+    ),
     "referential_integrity": MetricSpec(
         metric_class="assertion",
         description="Evidence/file-path fields in output are a subset of snapshot manifest ∪ retrieved-chunk rel_paths.",
@@ -96,12 +105,6 @@ METRIC_REGISTRY: dict[str, MetricSpec] = {
         metric_class="assertion",
         required_params=["fields"],
         description="Per-field exact|set|tolerance comparison vs gold.",
-        cost_class="free",
-    ),
-    "list_field_prf1": MetricSpec(
-        metric_class="assertion",
-        required_params=["field"],
-        description="Precision/recall/F1 on a list-valued output field vs gold.",
         cost_class="free",
     ),
     "llm_call_budget": MetricSpec(

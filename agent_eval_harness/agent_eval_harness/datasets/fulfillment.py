@@ -3,12 +3,17 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from agent_eval_harness.datasets.generator_utils import seed_cases_to_dataset_cases
+from agent_eval_harness.config import DEFAULT_CASES_PER_AGENT
+from agent_eval_harness.datasets.generator_utils import (
+    config_kwarg_names_from_case_binding,
+    seed_cases_to_dataset_cases,
+)
 from agent_eval_harness.datasets.registry import get_generator
 from agent_eval_harness.datasets.types import TRUSTED_PROVENANCE
 from agent_eval_harness.datasets.versioning import next_version
@@ -64,7 +69,7 @@ def _effective_min_cases(kind: str, group_entries: list[SuiteEntry]) -> int:
         for e in group_entries
         if e.dataset and e.dataset.required and isinstance(e.dataset.required.get("min_cases"), int)
     ]
-    return max(declared) if declared else _DEFAULT_MIN_CASES.get(kind, 20)
+    return max(declared) if declared else _DEFAULT_MIN_CASES.get(kind, DEFAULT_CASES_PER_AGENT)
 
 
 def _qa_corpus_paths(local_path: str) -> list[str]:
@@ -105,9 +110,14 @@ def _archetype_for(contract: EvaluationContract) -> str:
     """Deterministic archetype classifier from harvested contract signals only — never a guess."""
     if contract.field_downstream_consumers:
         return "fan_in_judge"
-    if not contract.has_retrieval_signal:
-        return "unimplemented"
     kwarg_names = {k.name for k in contract.invocation.kwargs} if contract.invocation else set()
+    if not contract.has_retrieval_signal:
+        # D9/CS-303: a non-retrieval agent with a real harvested input contract still gets a
+        # genuine archetype/dataset — "unimplemented" only when there is truly no usable input.
+        case_binding = contract.invocation.case_binding if contract.invocation else {}
+        config_names = config_kwarg_names_from_case_binding(case_binding)
+        if not (kwarg_names - config_names):
+            return "unimplemented"
     has_query_planning = contract.query_planning_subcall
     has_folder_tree = "folder_tree" in kwarg_names
     if "mem_ctx" in kwarg_names:
@@ -166,6 +176,10 @@ async def _derive_config(
             "contract": contract.model_dump(),
             "profile": base_profile,
             "failure_modes": knowledge.get("failure_modes") or [],
+            # D9: mechanical kwarg classification in the generator reads these off the
+            # AgentKnowledge sidecar (context_builders.builds_kwarg; input_contract.example).
+            "input_contract": knowledge.get("input_contract") or [],
+            "context_builders": knowledge.get("context_builders") or [],
             "count": min_cases, "painpoint": painpoint,
         }
 
@@ -245,17 +259,20 @@ async def _derive_config(
                 return None
             reports = await codespectra_client.list_reports(repo_id=repo_id, limit=min_cases)
             reports_config = []
-            suffix = group_key.split("/", 1)[1].lower()
-            # CS-303 §2.6: CodeSpectra section letters + the `synthesizer` agent-id, hardcoded.
-            # CS-297 §2 claims every shim lives in synthetic_agent_io.py — it misses this one, so a
-            # fully-executed CS-297 would leave it behind. Letters must come from harvested contract.
-            letters = "ABCDEFGHIJK" if suffix == "synthesizer" else "ABCDEFGHIJ"
+            agent_id = group_entries[0].agent_id or group_entries[0].component
+            # D9/CS-303: the fan-in agent's own upstream sections, from its harvested contract
+            # (field_downstream_consumers) — never a fixed CodeSpectra letter-range/agent-id
+            # literal. No contract on record -> degrade to every section the report actually has,
+            # rather than guessing a convention.
+            contract = (contract_by_agent or {}).get(agent_id)
+            harvested_letters = sorted((contract.field_downstream_consumers or {}).keys()) if contract else []
 
             for r in reports:
                 r_id = r["id"]
                 report_data = await codespectra_client.get_report(r_id)
                 full_report_dict = report_data.get("report") or {}
                 sections = full_report_dict.get("sections") or {}
+                letters = harvested_letters or sorted(sections.keys())
                 sliced_sections = {let: sections[let] for let in letters if let in sections}
                 reports_config.append({
                     "report_id": r_id,
@@ -275,6 +292,19 @@ async def _derive_config(
 
 def _save_suite(suite: Suite, plan_path: str | Path) -> None:
     Path(plan_path).write_text(yaml.dump(suite.model_dump(), allow_unicode=True), encoding="utf-8")
+
+
+async def _prune_prior_versions(base_name: str, keep: str) -> int:
+    """Delete older versions of the same (kind, agent) dataset so re-fulfilling doesn't pile up
+    v1/v2/v3 — a regen keeps exactly one dataset per agent (the just-written `keep`)."""
+    pattern = re.compile(rf"^{re.escape(base_name)}_v\d+$")
+    deleted = 0
+    for d in await repository.list_dataset_ids():
+        did = d["dataset_id"]
+        if did != keep and pattern.match(did):
+            await repository.delete_dataset(did)
+            deleted += 1
+    return deleted
 
 
 async def fulfill_plan(
@@ -307,7 +337,7 @@ async def fulfill_plan(
             if not entry.dataset or not entry.dataset.ref:
                 continue
             await repository.delete_dataset(entry.dataset.ref)
-            entry.dataset = DatasetRef(required={"kind": "synthetic_agent_io", "min_cases": 20})
+            entry.dataset = DatasetRef(required={"kind": "synthetic_agent_io", "min_cases": DEFAULT_CASES_PER_AGENT})
             forced_any = True
         if forced_any:
             _save_suite(suite, plan_path)
@@ -362,6 +392,8 @@ async def fulfill_plan(
                 knowledge_by_agent[agent_report.agent_id] = {
                     "functionality": functionality,
                     "failure_modes": failure_modes,
+                    "input_contract": raw.get("input_contract") or [],
+                    "context_builders": raw.get("context_builders") or [],
                 }
             except Exception as e:
                 logger.warning(f"fulfillment: could not load knowledge for {agent_report.agent_id}: {e}")
@@ -475,6 +507,9 @@ async def fulfill_plan(
         ]
         dataset_metrics = {"diversity": round(1.0 - sum(max_sims) / len(max_sims), 4)} if max_sims else None
 
+        pruned = await _prune_prior_versions(base_name, keep=dataset_id)
+        if pruned:
+            logger.info(f"fulfillment: pruned {pruned} old version(s) of {base_name}")
         await repository.insert_dataset_cases_bulk(dataset_id, all_cases)
         await repository.insert_dataset_metadata(
             dataset_id, kind,

@@ -43,16 +43,26 @@ async def generate(
         if relation.transform is not None:
             input_data = apply_transform(relation.transform.op, input_data, relation.transform.params)
 
+        expected: dict = {
+            "invariant_op": relation.invariant.op,
+            "invariant_params": relation.invariant.params,
+            "source_case_id": db_case["id"],
+        }
+        if relation.transform is None:
+            source_expected_raw = db_case.get("expected_json")
+            if source_expected_raw:
+                try:
+                    expected["source_expected_output"] = json.loads(source_expected_raw)
+                except json.JSONDecodeError:
+                    pass
+
         cases.append(
             DatasetCase(
                 id=new_id(),
                 dataset=parsed.dataset_name,
                 kind="metamorphic_relation",
                 input=input_data,
-                expected={
-                    "invariant_op": relation.invariant.op,
-                    "invariant_params": relation.invariant.params,
-                },
+                expected=expected,
                 labels={"relation_id": relation.id, "source_case_id": db_case["id"]},
                 provenance="derived+reviewed",
             )

@@ -55,6 +55,23 @@ def _relation_field_names(relation: RelationSpec) -> set[str]:
     return names
 
 
+def _source_cohort_archetype(source_cases: list[dict]) -> str | None:
+    """The archetype label shared by the source cohort's cases (synthetic_agent_io stamps
+    labels.archetype), or None when it is absent or mixed — can't gate on what isn't there."""
+    archetypes: set[str] = set()
+    for db_case in source_cases:
+        raw = db_case.get("labels_json")
+        if not raw:
+            continue
+        try:
+            labels = json.loads(raw)
+        except Exception:
+            continue
+        if isinstance(labels, dict) and isinstance(labels.get("archetype"), str):
+            archetypes.add(labels["archetype"])
+    return next(iter(archetypes)) if len(archetypes) == 1 else None
+
+
 def _known_field_names(source_cases: list[dict]) -> set[str]:
     """Union of top-level keys across a sample of source cases' input/expected/labels —
     a lightweight, generic stand-in for the target's harvested output.json_schema."""
@@ -92,6 +109,13 @@ async def _load_relation_and_source(
             f"Relation {relation_id!r} references field(s) {sorted(unknown_fields)} not found "
             f"in any case of source dataset {source_dataset_id!r} — needs_human: verify field "
             "names before deriving; refusing a vacuous pass."
+        )
+    cohort_archetype = _source_cohort_archetype(source_cases)
+    if cohort_archetype is not None and cohort_archetype != relation.applies_to:
+        raise MetamorphicPreconditionError(
+            f"Relation {relation_id!r} applies_to {relation.applies_to!r} but source dataset "
+            f"{source_dataset_id!r} has archetype {cohort_archetype!r} — refusing to derive a "
+            "relation onto a cohort of a different archetype."
         )
     return relation, source_cases
 

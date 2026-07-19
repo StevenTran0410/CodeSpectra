@@ -5,6 +5,7 @@ import ast
 import json
 import logging
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
@@ -29,7 +30,18 @@ _CONFIG_PARAMS = frozenset({"provider_id", "model_id"})
 _SCHEMA_NAME_RE = re.compile(r"SCHEMA", re.IGNORECASE)
 _DYNAMIC = "<dynamic>"
 _MAX_TRACE_DEPTH = 6  # recursion cap for field-consumer call tracing (_trace_stmts)
+_MAX_SCHEMA_DEPTH = 6  # recursion cap for nested class schema resolution
 _SCHEMA_SNIPPET_MAX_CHARS = 200  # upstream_context_specs preview length
+
+
+@dataclass
+class _SchemaResolveCtx:
+    """Shared context for recursive class schema resolution."""
+    asts: dict[Path, ast.Module]
+    files_root: Path | None
+    visited: set[str]
+    depth: int
+    conventions: ContractConventions | None
 
 
 def _parse_files(files: list[Path]) -> dict[Path, ast.Module]:
@@ -262,14 +274,19 @@ _TYPE_MAP = {
 }
 
 
-def _annotation_to_schema(node: ast.expr) -> dict:
+def _annotation_to_schema(node: ast.expr, ctx: _SchemaResolveCtx | None = None) -> dict:
     if isinstance(node, ast.Name):
-        return dict(_TYPE_MAP.get(node.id, {}))
+        base_schema = dict(_TYPE_MAP.get(node.id, {}))
+        if not base_schema and ctx is not None and node.id not in ctx.visited:
+            resolved = _resolve_class_schema(node.id, ctx)
+            if resolved:
+                return resolved[0]
+        return base_schema
     if isinstance(node, ast.Subscript):
         base = node.value
         base_name = base.id if isinstance(base, ast.Name) else base.attr if isinstance(base, ast.Attribute) else ""
         if base_name in ("list", "List"):
-            item = _annotation_to_schema(node.slice) if not isinstance(node.slice, ast.Tuple) else {}
+            item = _annotation_to_schema(node.slice, ctx) if not isinstance(node.slice, ast.Tuple) else {}
             schema: dict = {"type": "array"}
             if item:
                 schema["items"] = item
@@ -282,8 +299,43 @@ def _annotation_to_schema(node: ast.expr) -> dict:
             if values and all(isinstance(v, str) for v in values):
                 return {"type": "string", "enum": values}
         if base_name in ("NotRequired", "Required"):
-            return _annotation_to_schema(node.slice)
+            return _annotation_to_schema(node.slice, ctx)
     return {}
+
+
+def _infer_schema_from_literal(literal: dict, ctx: _SchemaResolveCtx | None = None) -> dict | None:
+    """Infer a JSON schema from a dict literal by examining value types."""
+    if not literal:
+        return None
+    properties: dict = {}
+    for key, val in literal.items():
+        if val == _DYNAMIC:
+            properties[key] = {}
+        elif isinstance(val, bool):
+            properties[key] = {"type": "boolean"}
+        elif isinstance(val, int):
+            properties[key] = {"type": "integer"}
+        elif isinstance(val, float):
+            properties[key] = {"type": "number"}
+        elif isinstance(val, str):
+            properties[key] = {"type": "string"}
+        elif isinstance(val, list):
+            inner = {"type": "array"}
+            if val and isinstance(val[0], dict) and ctx:
+                inner_schema = _infer_schema_from_literal(val[0], ctx)
+                if inner_schema:
+                    inner["items"] = inner_schema
+            properties[key] = inner
+        elif isinstance(val, dict):
+            inner_schema = {"type": "object"}
+            if val and ctx:
+                nested = _infer_schema_from_literal(val, ctx)
+                if nested:
+                    inner_schema = nested
+            properties[key] = inner_schema
+        else:
+            properties[key] = {}
+    return {"type": "object", "properties": properties, "required": list(literal.keys())}
 
 
 def _subscript_base_name(node: ast.expr) -> str:
@@ -299,6 +351,52 @@ def _is_notrequired(node: ast.expr) -> bool:
 
 def _is_required(node: ast.expr) -> bool:
     return _subscript_base_name(node) == "Required"
+
+
+def _resolve_class_schema(name: str, ctx: _SchemaResolveCtx) -> tuple[dict, str] | None:
+    """Resolve a class schema by name, dispatching by kind (TypedDict, Pydantic, dataclass).
+    Returns (schema, source) or None if unresolvable. Cycle-guarded by visited set, depth-capped."""
+    if ctx.depth >= _MAX_SCHEMA_DEPTH or name in ctx.visited:
+        return None
+    ctx.visited.add(name)
+    new_ctx = _SchemaResolveCtx(
+        asts=ctx.asts, files_root=ctx.files_root, visited=ctx.visited, depth=ctx.depth + 1, conventions=ctx.conventions
+    )
+    for path, tree in ctx.asts.items():
+        cls = _find_class(tree, name)
+        if cls is None:
+            continue
+        base_names = {b.id if isinstance(b, ast.Name) else getattr(b, "attr", "") for b in cls.bases}
+        properties: dict = {}
+        required: list[str] = []
+        is_typeddict = "TypedDict" in base_names
+        is_pydantic = "BaseModel" in base_names
+        is_dataclass = any(
+            isinstance(d, ast.Name) and d.id == "dataclass"
+            or isinstance(d, ast.Call) and (isinstance(d.func, ast.Name) and d.func.id == "dataclass")
+            for d in cls.decorator_list
+        )
+        if not (is_typeddict or is_pydantic or is_dataclass):
+            continue
+        total = True
+        for kw in cls.keywords:
+            if kw.arg == "total" and isinstance(kw.value, ast.Constant):
+                total = bool(kw.value.value)
+        for item in cls.body:
+            if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name):
+                key = item.target.id
+                properties[key] = _annotation_to_schema(item.annotation, new_ctx)
+                if is_typeddict:
+                    is_req = not _is_notrequired(item.annotation) if total else _is_required(item.annotation)
+                elif is_pydantic or is_dataclass:
+                    is_req = item.value is None
+                else:
+                    is_req = False
+                if is_req:
+                    required.append(key)
+        schema = {"type": "object", "properties": properties, "required": required}
+        return schema, _rel_cite(path, cls.lineno, ctx.files_root) + f" {name}"
+    return None
 
 
 def _find_typeddict(
@@ -452,6 +550,9 @@ def harvest_component_contract(
 ) -> tuple[InvocationContract | None, OutputContract | None, dict[str, int], list[str], str]:
     """Returns (invocation, output, constants, needs_human_notes, input_kind) for one component."""
     notes: list[str] = []
+    ctx = _SchemaResolveCtx(
+        asts=asts, files_root=files_root, visited=set(), depth=0, conventions=conventions
+    )
     path = _resolve_component_file(component, asts)
     if path is None:
         return None, None, {}, [f"{component.id}: source file not found for static harvest"], "unknown"
@@ -514,7 +615,7 @@ def harvest_component_contract(
     json_schema: dict | None = None
     schema_source: str | None = None
     if letter:
-        found = _find_typeddict(asts, f"Section{letter}", files_root)
+        found = _resolve_class_schema(f"Section{letter}", ctx)
         if found:
             json_schema, schema_source = found
     if json_schema is None:
@@ -531,6 +632,16 @@ def harvest_component_contract(
                     break
             except json.JSONDecodeError:
                 schema_source = schema_source or (cite + f" {name} (non-JSON template)")
+
+    if json_schema is None:
+        entry_method = _find_entry_method(cls)
+        if entry_method is not None:
+            dict_literal = _extract_dict_return_literal(entry_method)
+            if dict_literal is not None:
+                inferred = _infer_schema_from_literal(dict_literal, ctx)
+                if inferred:
+                    json_schema = inferred
+                    schema_source = _rel_cite(path, entry_method.lineno, files_root) + " (inferred from return dict)"
 
     fallback_literal, fallback_source, fallback_ambiguous = _harvest_fallback(
         cls, path, files_root, letter=letter, asts=asts, conventions=conventions

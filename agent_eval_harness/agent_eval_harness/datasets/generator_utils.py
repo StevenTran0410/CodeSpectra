@@ -10,6 +10,17 @@ from agent_eval_harness.store.repository import new_id
 logger = logging.getLogger("agent_eval_harness.datasets.generator_utils")
 
 
+def config_kwarg_names_from_case_binding(case_binding: dict[str, str] | None) -> frozenset[str]:
+    """Kwarg names bound to a `config:` source in the harvested case_binding (D9) — the
+    mechanical, harvest-derived replacement for hardcoded CodeSpectra kwarg-name literals."""
+    if not case_binding:
+        return frozenset()
+    return frozenset(
+        name for name, binding in case_binding.items()
+        if isinstance(binding, str) and binding.startswith("config:")
+    )
+
+
 def apply_painpoint(prompt: str, painpoint: str | None) -> str:
     """Append a targeted-adversarial section steering generation toward a user-reported
     painpoint. No painpoint -> byte-identical prompt."""

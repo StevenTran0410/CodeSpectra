@@ -23,6 +23,7 @@ from agent_eval_harness.discovery.prompt_site_scan import scan_for_prompt_sites
 from agent_eval_harness.instrumentation._extract import utc_now_iso
 from agent_eval_harness.llm.client import LLMClient
 from agent_eval_harness.mapping.agent_flow import AgentFlow, AgentFlowMap, save_agent_flow_map
+from agent_eval_harness.mapping.builder.contract_harvest import harvest_component_contract
 from agent_eval_harness.mapping.builder.prompts import ROLE_TAXONOMY
 from agent_eval_harness.mapping.builder.roles import (
     ROLE_CONFIDENCE_THRESHOLD,
@@ -30,13 +31,14 @@ from agent_eval_harness.mapping.builder.roles import (
     admissible_roles,
     structural_facts,
 )
-from agent_eval_harness.mapping.system_map import SystemMap, save_system_map
+from agent_eval_harness.mapping.builder.types import parse_python_source
+from agent_eval_harness.mapping.system_map import Component, SystemMap, save_system_map
 from agent_eval_harness.planning.agentic_planner import DagNode, complete_json, run_dag
 from agent_eval_harness.store import repository
 
 logger = logging.getLogger("agent_eval_harness.discovery.enrichment")
 
-_STRUCTURAL_PRODUCER_VERSION = 1  # Bump to invalidate all caches when shipping structural-field fill
+_STRUCTURAL_PRODUCER_VERSION = 2  # Manual bump on output-schema shape change; hash won't self-invalidate
 
 _PROMPT_SITE_CHAR_BUDGET = 2000  # per-site, keeping the HEAD — the role-defining opening survives
 _PROMPT_SITE_BLOCK_BUDGET = 20000  # total across all sites for one agent
@@ -62,8 +64,8 @@ def agent_knowledge_dir(session_id: str) -> Path:
 _ENTRY_METHOD_NAMES = ("run", "run_async", "__call__")
 
 
-def _parse_signature_kwargs(signature: str) -> list[str]:
-    """Extract kwarg names from a method signature, skipping self/cls.
+def _parse_signature_kwargs(signature: str) -> list[tuple[str, str]]:
+    """Extract kwarg (name, type_hint) tuples from a method signature, skipping self/cls.
 
     On any parse ambiguity (e.g., nested generics with commas), return empty
     so the caller can defensively drop input_contract for this agent.
@@ -78,17 +80,37 @@ def _parse_signature_kwargs(signature: str) -> list[str]:
         if not params_str:
             return []
 
-        # Split by comma, but only at the top level (no nesting check for simplicity)
-        parts = params_str.split(',')
+        # Split by comma at top level (balanced brackets)
+        parts = []
+        current = ""
+        depth = 0
+        for ch in params_str:
+            if ch in '[{':
+                depth += 1
+            elif ch in ']}':
+                depth -= 1
+            elif ch == ',' and depth == 0:
+                parts.append(current.strip())
+                current = ""
+                continue
+            current += ch
+        if current.strip():
+            parts.append(current.strip())
+
         kwargs = []
         for part in parts:
-            part = part.strip()
             if not part:
                 continue
-            # Extract just the name (before : or = or space)
-            kwarg_name = part.split(':')[0].split('=')[0].split()[0]
+            # Extract name (before :) and type_hint (after :)
+            if ':' in part:
+                name_part, type_part = part.split(':', 1)
+                kwarg_name = name_part.strip().split('=')[0].split()[0]
+                type_hint = type_part.split('=')[0].strip()
+            else:
+                kwarg_name = part.split('=')[0].split()[0]
+                type_hint = ''
             if kwarg_name and kwarg_name not in ('self', 'cls'):
-                kwargs.append(kwarg_name)
+                kwargs.append((kwarg_name, type_hint))
         return kwargs
     except (ValueError, IndexError):
         # Parse ambiguity — return empty so we drop the field
@@ -129,7 +151,7 @@ _ENRICH_SYSTEM = (
     "rather than returning null or an empty string.\n"
     "3. \"component_roles\" is REQUIRED — one entry per component listed in the evidence, "
     "each role taken from THAT component's own admissible set. Do NOT add fields like "
-    "\"degraded\", \"location\", \"components\", or \"input_contract\" "
+    "\"degraded\", \"location\", \"components\", \"input_contract\", or \"output_contract\" "
     "— those are computed separately from static analysis, not from you, and including "
     "them will be ignored or cause an error."
 )
@@ -181,7 +203,7 @@ def _richness(k: AgentKnowledge) -> int:
 
 
 def _sanitize_llm_knowledge_dict(raw: Any) -> dict:
-    """Allowlist the 6 fields the prompt asks for, coercing bad types — a hallucinated extra key or null would otherwise crash validation."""
+    """Allowlist fields the prompt asks for, coercing bad types — a hallucinated extra key or null would otherwise crash validation."""
     if not isinstance(raw, dict):
         return {}
     return {
@@ -220,6 +242,10 @@ def _sanitize_llm_knowledge_dict(raw: Any) -> dict:
             for c in _clean_items(raw.get('failure_modes'))
             if _s(c.get('description'))
         ],
+        'output_described_in_prompt': _s(raw.get('output_described_in_prompt')),
+        'special_traits': [t for t in (raw.get('special_traits') or []) if isinstance(t, str)],
+        'constraints': [t for t in (raw.get('constraints') or []) if isinstance(t, str)],
+        'method_steps': [t for t in (raw.get('method_steps') or []) if isinstance(t, str)],
     }
 
 
@@ -753,6 +779,10 @@ Return JSON with this exact shape (all fields required, empty arrays/null if unk
   "failure_modes": [
     {{"description": "<prose description>", "file": "<path/to/file.py>", "line": 40}}
   ],
+  "output_described_in_prompt": "<how the prompt says this agent's output should look — format/shape/fields, 1-2 sentences; empty string if the prompt is silent>",
+  "method_steps": ["<one step, in order, of the procedure the prompt tells the agent to follow, e.g. 'retrieve evidence' then 'reason' then 'emit JSON'>"],
+  "constraints": ["<one HARD RULE the prompt imposes, e.g. 'return only JSON', 'must cite evidence_files', 'never invent file paths'>"],
+  "special_traits": ["<one notable/distinctive behavior the prompt calls out>"],
   "need_more": false,
   "next_queries": []
 }}
@@ -804,7 +834,8 @@ If you need more information to provide complete answers, set need_more to true 
                 f"Re-analyze and provide an updated semantic profile using this new evidence. "
                 f"Return the SAME JSON shape as before — component_roles, functionality, "
                 f"functionality_citations, context_builders, upstream_consumers, "
-                f"downstream_consumers, failure_modes, need_more, next_queries — with no other "
+                f"downstream_consumers, failure_modes, output_described_in_prompt, method_steps, "
+                f"constraints, special_traits, need_more, next_queries — with no other "
                 f"fields. functionality must still be a non-empty string, never null. If the "
                 f"query results above don't actually add anything useful, keep your previous, "
                 f"more specific answer rather than replacing it with a vaguer one."
@@ -905,12 +936,34 @@ If you need more information to provide complete answers, set need_more to true 
                                     )
                                     # Fill input_contract from method signature
                                     sig = method_row.get('signature', '')
-                                    kwargs = _parse_signature_kwargs(sig)
-                                    if kwargs is not None and len(kwargs) > 0:
+                                    kwargs_with_hints = _parse_signature_kwargs(sig)
+                                    if kwargs_with_hints is not None and len(kwargs_with_hints) > 0:
                                         llm_knowledge.input_contract = [
-                                            ContractArg(kwarg=kw, source_kind='signature', type_hint='', example='')
-                                            for kw in kwargs
+                                            ContractArg(kwarg=name, source_kind='signature', type_hint=hint, example='')
+                                            for name, hint in kwargs_with_hints
                                         ]
+
+                                    # Fill output_contract from AST harvest
+                                    try:
+                                        comp_for_harvest = None
+                                        for comp in components_list:
+                                            if comp.get('file') == comp_file:
+                                                comp_for_harvest = comp
+                                                break
+                                        if comp_for_harvest:
+                                            comp_id = comp_for_harvest.get('id', agent_id)
+                                            entry_pt = comp_for_harvest.get('entry_point', '')
+                                            temp_component = Component(id=comp_id, role='unknown', entry_point=entry_pt, file=comp_file)
+                                            comp_path = Path(comp_file)
+                                            if comp_path.exists():
+                                                parsed = parse_python_source(comp_path)
+                                                if parsed:
+                                                    asts = {comp_path: parsed[1]}
+                                                    _, output, _, _, _ = harvest_component_contract(temp_component, asts, files_root=ctx.repo_root)
+                                                    if output:
+                                                        llm_knowledge.output_contract = output
+                                    except Exception as e:
+                                        logger.debug(f"Failed to harvest output_contract for {agent_id}: {e}")
 
                                 # Fill components
                                 for comp in components_list:

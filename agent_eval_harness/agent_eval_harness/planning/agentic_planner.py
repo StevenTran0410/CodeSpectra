@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from agent_eval_harness.config import ContractConventions
 from agent_eval_harness.llm.client import LLMClient, LLMMessage
 from agent_eval_harness.mapping.agent_flow import AgentFlow, AgentFlowMap
 from agent_eval_harness.mapping.system_map import Component, SystemMap
@@ -1106,6 +1107,7 @@ async def generate_plan_agentic(
     previous_suite: Suite | None = None,
     previous_report: EvaluationPlanReport | None = None,
     project_context: Any | None = None,
+    conventions: ContractConventions | None = None,
 ) -> tuple[Suite, EvaluationPlanReport]:
     """Builds and executes the Stage-3 DAG per agent; when `previous_report` is given, an agent whose prior run already produced a data profile and gates reuses them and skips the analyst/gate_designer LLM calls, while contracts, baseline gates, handoff_gates, reconcile, and critic always run fresh."""
     agents = agent_flow_map.agents
@@ -1118,11 +1120,15 @@ async def generate_plan_agentic(
         return await gather_evidence(system_map, agent_flow_map, source_by_component, accepted_edges, llm_client, project_context)
 
     # Contract harvest is pure AST over already-fetched files — no LLM, runs inline and always fresh.
+    # CS-303 Slice 6: `conventions` threads AEHConfig.contract_conventions end-to-end (the one
+    # production call site previously passed nothing, so config always lost — see PAUSE note in
+    # the final report). Harvest itself stays harvest-primary: contract_harvest only consults a
+    # convention as a last-resort pattern when the structural/class-based extraction found nothing.
     contracts: dict[str, EvaluationContract] = {}
     if files:
         from agent_eval_harness.mapping.builder.contract_harvest import harvest_contracts
 
-        contracts = harvest_contracts(system_map, agent_flow_map, files, files_root)
+        contracts = harvest_contracts(system_map, agent_flow_map, files, files_root, conventions)
 
     nodes: list[DagNode] = [DagNode("gather", [], _gather)]
 

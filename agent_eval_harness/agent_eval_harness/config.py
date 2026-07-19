@@ -1,10 +1,14 @@
 """AEH config — data dir + optional .aeh/config.yaml for live-run backend/provider settings."""
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
+
+# eval cases generated per agent (small MVP default; override via AEH_CASES_PER_AGENT env for full runs).
+DEFAULT_CASES_PER_AGENT: int = max(1, int(os.getenv("AEH_CASES_PER_AGENT", "5")))
 
 
 @dataclass

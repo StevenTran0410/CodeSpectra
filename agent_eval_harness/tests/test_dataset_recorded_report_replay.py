@@ -8,6 +8,8 @@ from agent_eval_harness.datasets.fulfillment import fulfill_plan
 from agent_eval_harness.datasets.types import DatasetCase
 from agent_eval_harness.llm.client import LLMResponse
 from agent_eval_harness.llm.fake_client import FakeLLMClient
+from agent_eval_harness.planning.contract import EvaluationContract
+from agent_eval_harness.planning.report import AgentPlanReport, EvaluationPlanReport, save_plan_report
 from agent_eval_harness.store import repository
 from tests._stubs import FakeCodeSpectraClient
 
@@ -56,6 +58,29 @@ async def test_generator_empty_reports():
 
 
 async def test_fulfill_plan_integration_recorded_report_replay(tmp_path):
+    map_path = tmp_path / "map.yaml"
+    # D9/CS-303: letters now come from each agent's own harvested field_downstream_consumers,
+    # not an "agent_id == synthesizer" literal — auditor reads A/J (no K), synthesizer reads A/B/K.
+    plan_report = EvaluationPlanReport(
+        target_system_id="t",
+        agents=[
+            AgentPlanReport(
+                agent_id="auditor",
+                contract=EvaluationContract(
+                    agent_id="auditor", field_downstream_consumers={"A": ["x"], "J": ["y"]},
+                ),
+            ),
+            AgentPlanReport(
+                agent_id="synthesizer",
+                contract=EvaluationContract(
+                    agent_id="synthesizer",
+                    field_downstream_consumers={"A": ["x"], "B": ["y"], "K": ["z"]},
+                ),
+            ),
+        ],
+    )
+    save_plan_report(plan_report, map_path.with_name(map_path.stem + "_plan_report.yaml"))
+
     plan_path = tmp_path / "plan.yaml"
     _write_plan(plan_path, textwrap.dedent("""\
           - id: auditor.recorded

@@ -94,15 +94,18 @@ def test_oversize_section():
 
 
 def test_grep_gate_no_codespectra_literals_in_perturbation() -> None:
-    """Nguyen tac so 0 grep gate: zero CodeSpectra report literals remain in perturbation.py —
-    the generic isinstance fallback is the whole degrade mechanism."""
+    """CS-302 AC4 / Nguyen tac so 0 grep gate: zero CodeSpectra report literals remain in
+    perturbation.py — the generic isinstance fallback is the whole degrade mechanism, and the
+    oversize skip-list is caller/config-supplied. Ban the LITERAL, not just the `if k ==` form:
+    re-adding `confidence`/`repo_name` anywhere must turn this red."""
     forbidden = [
         "blind_spots",
         "domain",
         "runtime_type",
         "section_scores",
         "weakest_sections",
-        "empty_confidence",
+        "confidence",
+        "repo_name",
     ]
     source_path = (
         pathlib.Path(__file__).parent.parent
@@ -115,14 +118,22 @@ def test_grep_gate_no_codespectra_literals_in_perturbation() -> None:
     found = [literal for literal in forbidden if literal in content]
     assert not found, f"Forbidden CodeSpectra-report literal(s) found in perturbation.py: {found}"
 
-    # No dedicated "confidence" special-case branch — the residual "confidence"/"repo_name"
-    # strings that DO remain (inject_conflict's old A/B skip-list is gone; oversize_section's
-    # generic skip-list is allowed) must not appear as an `if k == "confidence"` branch.
-    assert 'k == "confidence"' not in content
-    assert "elif k ==" not in content
-
     # No single-letter section keys (A-L) used as dict literals/params anywhere.
     import re
 
     single_letter_keys = re.findall(r'["\']([A-L])["\']\s*[:,)]', content)
     assert not single_letter_keys, f"Single-letter section keys found: {single_letter_keys}"
+
+
+def test_oversize_section_skip_fields_from_caller_not_code_literal() -> None:
+    """CS-302 Slice 4: the fields NOT to pad come from the caller (config/contract), never a
+    code constant. A caller-supplied skip-list must protect exactly those fields."""
+    all_sections = {"a": {"tag": "keep-me", "body": "short"}}
+    # Without a skip-list, the first string field ('tag') is the fallback padding target.
+    res_default = oversize_section(all_sections, "a", target_len=1000)
+    assert len(res_default["a"]["tag"]) == 1000
+
+    # With 'tag' skipped, padding moves to the next string field ('body') instead.
+    res_skip = oversize_section(all_sections, "a", target_len=1000, skip_fields=("tag",))
+    assert res_skip["a"]["tag"] == "keep-me"
+    assert len(res_skip["a"]["body"]) == 1000

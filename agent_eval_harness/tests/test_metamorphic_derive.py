@@ -209,6 +209,51 @@ async def test_derive_spot_audit_pct_routes_sample_to_review_queue():
     assert row["synthetic_count"] == 1
 
 
+# ---------------------------------------------------------------------------
+# CS-302 Slice 1.3 — applies_to is a HARD gate, not decoration
+# ---------------------------------------------------------------------------
+
+async def _seed_reviewed_source_with_archetype(dataset_id: str, archetype: str, n: int = 2) -> None:
+    cases = [
+        DatasetCase(
+            id=repository.new_id(), dataset=dataset_id, kind="synthetic_agent_io",
+            input={"query": f"q{i}", "context": [f"doc {i}"]},
+            expected={"sufficient": True, "context": [f"doc {i}"]},
+            labels={"archetype": archetype}, provenance="generated+reviewed",
+        )
+        for i in range(n)
+    ]
+    await repository.insert_dataset_cases_bulk(dataset_id, cases)
+    await repository.insert_dataset_metadata(dataset_id, "synthetic_agent_io", min_cases=1)
+
+
+async def test_preview_refuses_when_cohort_archetype_mismatches_applies_to():
+    """empty_context_is_insufficient applies_to fan_in_judge; a rag_single_shot cohort (fields
+    present, so the field check passes) must still be refused on the archetype gate."""
+    source_id = "mderive_archetype_mismatch_v1"
+    await _seed_reviewed_source_with_archetype(source_id, "rag_single_shot")
+
+    try:
+        await preview_relation("empty_context_is_insufficient", source_id)
+        assert False, "expected MetamorphicPreconditionError on archetype mismatch"
+    except MetamorphicPreconditionError as e:
+        assert "different archetype" in str(e)
+
+
+async def test_derive_succeeds_when_cohort_archetype_matches_applies_to():
+    """The positive path: a fan_in_judge cohort matches the relation's applies_to and derives."""
+    source_id = "mderive_archetype_match_v1"
+    await _seed_reviewed_source_with_archetype(source_id, "fan_in_judge")
+
+    preview = await preview_relation("empty_context_is_insufficient", source_id)
+    await approve_relation("empty_context_is_insufficient", source_id, samples=preview["samples"])
+    result = await derive_dataset(
+        "empty_context_is_insufficient", source_id,
+        dataset_name="mderive_archetype_match_target_v1", spot_audit_pct=0.0,
+    )
+    assert result["minted_count"] == 2
+
+
 async def test_derive_unknown_field_name_is_rejected_loudly():
     """A relation referencing a field absent from the source's real shape must fail loud
     (needs_human), never a vacuous pass."""

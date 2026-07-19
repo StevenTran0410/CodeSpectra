@@ -64,13 +64,18 @@ def inject_conflict(all_sections: dict, target_fields: list[str], token: str) ->
     return copied
 
 
-def oversize_section(all_sections: dict, target_field: str, target_len: int = 5000) -> dict:
-    """Returns a copy of all_sections with a text field in target_field padded to exceed limits."""
+def oversize_section(
+    all_sections: dict, target_field: str, target_len: int = 5000,
+    skip_fields: tuple[str, ...] | None = None,
+) -> dict:
+    """Returns a copy of all_sections with a text field in target_field padded to exceed limits.
+    skip_fields (caller/config-supplied, never a target literal) names fields not to pad."""
     copied = copy.deepcopy(all_sections)
     if target_field not in copied or not isinstance(copied[target_field], dict):
         return copied
 
     sec = copied[target_field]
+    skip = set(skip_fields or ())
     # Generic English field-name heuristics for "the best text field to pad" — not target literals.
     preferred_keys = ["purpose", "description", "summary", "business_context", "rationale", "content"]
 
@@ -85,7 +90,7 @@ def oversize_section(all_sections: dict, target_field: str, target_len: int = 50
 
     if not padded:
         for k, v in sec.items():
-            if isinstance(v, str) and k not in ("confidence", "repo_name"):
+            if isinstance(v, str) and k not in skip:
                 curr_len = len(v)
                 if curr_len < target_len:
                     sec[k] = v + " " + ("X" * (target_len - curr_len - 1))
