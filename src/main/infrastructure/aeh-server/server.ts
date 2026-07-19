@@ -91,6 +91,7 @@ class AEHProcessManager {
         env: {
           ...process.env,
           AEH_DATA_DIR: dataDir,
+          AEH_CASES_PER_AGENT: '5', // Stage-3 cases generated per agent — edit this to change (5 = cheap MVP default)
           PYTHONIOENCODING: 'utf-8'
         },
         stdio: ['ignore', 'pipe', 'pipe']

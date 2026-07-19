@@ -1,3 +1,5 @@
+import http from 'http'
+
 /** Thrown by BackendClient on a non-2xx response; `status` lets callers branch on 404 without parsing message text. */
 export class BackendHttpError extends Error {
   constructor(message: string, public readonly status: number) {
@@ -40,16 +42,75 @@ export class BackendClient {
     return res.json() as Promise<T>
   }
 
-  /** timeoutMs overrides undici's default 5-minute headers timeout — pass a larger value for routes that run many sequential LLM calls server-side (e.g. dataset fulfillment). */
+  /** POST. Short routes go over `fetch`. Long routes MUST pass `timeoutMs`: undici enforces its
+   *  own ~5-minute `headersTimeout` that an AbortSignal does NOT override, so a fulfill/eval that
+   *  runs many sequential LLM calls server-side would be aborted client-side at 5 min while the
+   *  Python backend keeps working (spinner stops, generation continues). When a timeout is given
+   *  we go over Node's built-in `http`, which imposes no such headers timeout. */
   async post<T>(path: string, body: unknown, timeoutMs?: number): Promise<T> {
+    if (timeoutMs) return this._postViaHttp<T>(path, body, timeoutMs)
     const res = await fetch(`${this.base}${path}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined
+      body: JSON.stringify(body)
     })
     if (!res.ok) await this._throwHttpError(res)
     return res.json() as Promise<T>
+  }
+
+  /** http.request-based POST for long server-side runs. `timeoutMs` is a socket-inactivity guard
+   *  (the buffered response arrives well before it), NOT undici's 5-min headers cap. */
+  private _postViaHttp<T>(path: string, body: unknown, timeoutMs: number): Promise<T> {
+    const url = new URL(`${this.base}${path}`)
+    const payload = JSON.stringify(body ?? {})
+    return new Promise<T>((resolve, reject) => {
+      const req = http.request(
+        {
+          hostname: url.hostname,
+          port: url.port,
+          path: url.pathname + url.search,
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Content-Length': Buffer.byteLength(payload)
+          }
+        },
+        (res) => {
+          const chunks: Buffer[] = []
+          res.on('data', (c: Buffer) => chunks.push(c))
+          res.on('end', () => {
+            const text = Buffer.concat(chunks).toString('utf-8')
+            const status = res.statusCode ?? 0
+            if (status >= 200 && status < 300) {
+              try {
+                resolve((text ? JSON.parse(text) : undefined) as T)
+              } catch (e) {
+                reject(new Error(`Failed to parse response from ${path}: ${(e as Error).message}`))
+              }
+              return
+            }
+            // Mirror _errorMessage: prefer FastAPI's { detail } over raw body text.
+            let message = text || res.statusMessage || `HTTP ${status}`
+            try {
+              const json = JSON.parse(text) as { detail?: unknown; message?: unknown }
+              if (typeof json.detail === 'string') message = json.detail
+              else if (typeof json.message === 'string') message = json.message
+            } catch {
+              /* non-JSON body — keep raw text */
+            }
+            reject(new BackendHttpError(message, status))
+          })
+        }
+      )
+      // http.request has no default response timeout; this only trips if the socket goes fully
+      // silent for the whole duration — never at 5 min mid-run the way undici's headersTimeout does.
+      req.setTimeout(timeoutMs, () => {
+        req.destroy(new Error(`Request to ${path} timed out after ${timeoutMs}ms of inactivity`))
+      })
+      req.on('error', reject)
+      req.write(payload)
+      req.end()
+    })
   }
 
   async put<T>(path: string, body: unknown): Promise<T> {

@@ -8,6 +8,16 @@ import EmbeddingConfigModal, { EmbeddingModelButton } from './EmbeddingConfigMod
 
 type EditStrings = { input: string; expected: string; labels: string }
 
+// Deterministic, zero-LLM dataset kinds (snapshot fixtures, field-match gold, replay/baseline):
+// they back Stage 4/5 execution & field-match gates and stay in the DB, but there's nothing for a
+// human to accept/reject — so they don't belong in this review list. Fail-open: unknown kinds show.
+const NON_REVIEWABLE_KINDS = new Set([
+  'snapshot_fixture',
+  'field_match_gold',
+  'snapshot_regression_baseline',
+  'recorded_report_replay'
+])
+
 export default function DatasetReviewScreen(): React.ReactElement {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
@@ -235,6 +245,11 @@ export default function DatasetReviewScreen(): React.ReactElement {
     }
     setRegenerateModalOpen(false)
     setFulfilling(true)
+    // Poll the dataset list while the long fulfill runs — each agent's dataset shows up live the
+    // moment its row lands in the DB, instead of all at once when the whole run returns.
+    const pollId = setInterval(() => {
+      window.api.aeh.listDatasets().then(setDatasets).catch(() => {})
+    }, 2000)
     try {
       const report = await window.api.aeh.fulfillDatasets(sessionId, {
         provider_id: selectedProviderId,
@@ -268,6 +283,7 @@ export default function DatasetReviewScreen(): React.ReactElement {
     } catch (err: any) {
       toast.error(err?.message ?? 'Fulfillment failed.')
     } finally {
+      clearInterval(pollId)
       setFulfilling(false)
     }
   }
@@ -281,6 +297,8 @@ export default function DatasetReviewScreen(): React.ReactElement {
   }
 
   const selectedDataset = datasets.find((d) => d.dataset_id === selectedDatasetId) ?? null
+  // Sidebar shows only human-reviewable datasets; deterministic fixtures/gold stay in the DB.
+  const reviewableDatasets = datasets.filter((d) => !NON_REVIEWABLE_KINDS.has(d.kind ?? ''))
 
   return (
     <div className="flex flex-col h-full bg-[#090d16] text-slate-100">
@@ -417,10 +435,10 @@ export default function DatasetReviewScreen(): React.ReactElement {
           <div className="w-72 shrink-0 border-r border-slate-850 overflow-y-auto p-3 space-y-2">
             {loadingDatasets ? (
               <Loader2 className="animate-spin text-indigo-500 mx-auto mt-4" size={20} />
-            ) : datasets.length === 0 ? (
+            ) : reviewableDatasets.length === 0 ? (
               <p className="text-[11px] text-slate-600 italic p-2">No datasets yet.</p>
             ) : (
-              datasets.map((ds) => (
+              reviewableDatasets.map((ds) => (
                 <button
                   key={ds.dataset_id}
                   onClick={() => setSelectedDatasetId(ds.dataset_id)}
