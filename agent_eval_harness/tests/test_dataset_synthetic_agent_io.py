@@ -1,4 +1,4 @@
-"""Tests for the synthetic_agent_io generator's fan_in_judge archetype (CS-289 Phase 0)."""
+"""Tests for the synthetic_agent_io generator's fan_in_judge archetype."""
 import json
 
 import pytest
@@ -12,8 +12,6 @@ from agent_eval_harness.datasets.generators.synthetic_agent_io import (
 )
 from agent_eval_harness.llm.client import LLMResponse
 from agent_eval_harness.llm.fake_client import FakeLLMClient
-
-pytestmark = pytest.mark.asyncio
 
 _SCHEMA = {
     "type": "object",
@@ -106,9 +104,7 @@ async def test_generate_retries_and_fills_remaining_count():
 
 
 async def test_fan_in_judge_with_no_output_schema_flags_needs_human():
-    """CS-302 AC3 / Slice 3 item 8: the fan_in_judge early-return path (the previously-missed
-    :712 path) must flag needs_human when no output schema was harvestable — cases are flagged,
-    never silently stamped valid ([])."""
+    """The fan_in_judge early-return path must flag needs_human when no output schema was harvestable — cases are flagged, never silently stamped valid ([])."""
     config = _config(count=2)
     config["contract"]["output"] = {}  # no json_schema harvestable
     payload = json.dumps([_valid_case(1), _valid_case(2)])
@@ -123,8 +119,7 @@ async def test_fan_in_judge_with_no_output_schema_flags_needs_human():
 
 
 async def test_schema_missing_flag_carries_contract_harvest_note():
-    """CS-302 Slice 3 item 9: the 'no output schema statically harvestable' harvest note flows
-    to the case label rather than a generic placeholder."""
+    """The 'no output schema statically harvestable' harvest note flows to the case label rather than a generic placeholder."""
     config = _config(count=1)
     config["contract"]["output"] = {}
     config["contract"]["needs_human"] = ["auditor: no output schema statically harvestable"]
@@ -150,8 +145,6 @@ async def test_generate_requires_llm_client():
         await generate(_config(), None)
 
 
-# --- RAG-writer archetypes (Phases 1-5) ---
-
 _G_SCHEMA = {
     "type": "object",
     "properties": {"entrypoint": {"type": "object"}, "confidence": {"type": "string"}},
@@ -160,10 +153,7 @@ _G_SCHEMA = {
 
 
 def _rag_config(agent_id: str, archetype: str, count: int = 1) -> dict:
-    """CS-303 Slice 3a fixed the `not kwarg_names` route hole (empty kwargs now go to the
-    generic path, never a CodeSpectra builder) — these RAG-writer-archetype tests exist to
-    exercise the archetype builders themselves, so give them the real CodeSpectra kwarg shape
-    (still routing through the fast-path per Slice 3c's PAUSE) whenever one is known."""
+    """These RAG-writer-archetype tests exist to exercise the archetype builders themselves, so give them the real CodeSpectra kwarg shape (routing through the fast-path) whenever one is known."""
     contract: dict = {"output": {"json_schema": _G_SCHEMA}}
     shape = _KNOWN_SHAPE_KWARG_SETS.get(f"{archetype}:{agent_id}")
     if shape:
@@ -247,10 +237,7 @@ async def test_generate_rag_mem_ctx_participant_shape():
 
 
 async def test_generate_folder_tree_archetypes_all_get_faithfulness_guard():
-    """Regression test for a real bug: only rag_mem_ctx (project_identity) carried the
-    CRITICAL faithfulness instruction, so rag_mem_ctx_participant (architecture/structure)
-    and rag_query_planning_mem_ctx (feature_map) generated evidence paths absent from their
-    own folder_tree. The instruction must fire for every archetype that includes folder_tree."""
+    """Regression test: only rag_mem_ctx used to carry the CRITICAL faithfulness instruction, so other folder_tree archetypes generated evidence paths absent from their own folder_tree. The instruction must fire for every archetype that includes folder_tree."""
     candidate = {"input": {"bundle": _bundle_evidence(), "folder_tree": "src/\n"}, "gold": _gold()}
     llm_client = FakeLLMClient(LLMResponse(content=json.dumps([candidate]), model="fake"))
 
@@ -302,8 +289,7 @@ async def test_generate_rag_query_planning_mem_ctx_shape():
 
 
 async def test_generate_rag_archetype_rejects_invalid_gold_after_retry_ceiling():
-    """Proves the shared _generate_validated_cases retry/reject discipline applies to the
-    RAG-writer archetypes too, not just fan_in_judge."""
+    """Proves the shared _generate_validated_cases retry/reject discipline applies to the RAG-writer archetypes too, not just fan_in_judge."""
     bad_candidate = {"input": {"bundle": _bundle_evidence()}, "gold": {"confidence": "high"}}  # missing entrypoint
     llm_client = FakeLLMClient([LLMResponse(content=json.dumps([bad_candidate]), model="fake")] * 3)
 
@@ -314,9 +300,7 @@ async def test_generate_rag_archetype_rejects_invalid_gold_after_retry_ceiling()
 
 
 async def test_generate_recovers_cases_from_truncated_response_via_json_repair():
-    """Regression test for a real bug: a completion cut off mid-object (e.g. hit an internal
-    stop condition before finishing the array) used to parse as [] and waste the whole round.
-    json_repair should recover whichever leading array elements are structurally complete."""
+    """Regression test: a completion cut off mid-object used to parse as [] and waste the whole round — json_repair should recover whichever leading array elements are structurally complete."""
     complete = json.dumps({"input": {"bundle": _bundle_evidence()}, "gold": _gold()})
     truncated = f'[{complete}, {{"input": {{"bundle": {{"evidences": [{{"rel_path": "x.py"'
     llm_client = FakeLLMClient(LLMResponse(content=truncated, model="fake"))
@@ -326,8 +310,6 @@ async def test_generate_recovers_cases_from_truncated_response_via_json_repair()
     assert len(cases) == 1
     assert cases[0].expected == _gold()
 
-
-# --- Phase 6: staleness / schema-hash versioning ---
 
 def test_is_dataset_stale_false_when_hash_matches_current_schema():
     current = {"type": "object", "properties": {"a": {"type": "string"}}}
@@ -350,9 +332,7 @@ def test_is_dataset_stale_false_when_no_cases_or_no_labels():
 
 
 async def test_generate_requests_in_small_batches_for_large_counts():
-    """Regression test for a real bug: asking for the full count (default 20) in ONE
-    completion risked truncation for rich archetypes (e.g. rag_mem_ctx's 4-artifact cases),
-    silently surfacing as "generated 0 cases". Batches must be capped, never all-at-once."""
+    """Regression test: asking for the full count (default 20) in ONE completion risked truncation for rich archetypes, silently surfacing as "generated 0 cases". Batches must be capped, never all-at-once."""
 
     def _batch(n: int) -> str:
         return json.dumps([{"input": {"bundle": _bundle_evidence()}, "gold": _gold()} for _ in range(n)])
@@ -365,9 +345,6 @@ async def test_generate_requests_in_small_batches_for_large_counts():
 
     assert len(cases) == 20
     assert len(llm_client.calls) == 7
-
-
-# --- D9: generic builder equivalence (AC4) ---
 
 
 def _generic_config(agent_id: str = "retriever", archetype: str = "rag_upstream") -> dict:
@@ -390,7 +367,7 @@ def _generic_config(agent_id: str = "retriever", archetype: str = "rag_upstream"
 
 
 async def test_d9_generic_builder_fires_for_unknown_kwarg_set():
-    """AC4: an agent with a non-CodeSpectra kwarg set bypasses fast-path and uses _generate_generic."""
+    """An agent with a non-CodeSpectra kwarg set bypasses fast-path and uses _generate_generic."""
     candidate = {
         "input": {"query": "what is X?", "documents": ["doc1"]},
         "gold": {"entrypoint": {"file": "main.py", "reason": "entry"}, "confidence": "high"},
@@ -407,7 +384,7 @@ async def test_d9_generic_builder_fires_for_unknown_kwarg_set():
 
 
 async def test_d9_generic_builder_tags_schema_source_none_when_no_output_schema():
-    """AC4: when contract.output.json_schema is None, cases are tagged schema_source=none."""
+    """When contract.output.json_schema is None, cases are tagged schema_source=none."""
     config = _generic_config()
     config["contract"]["output"] = {}  # no json_schema
     candidate = {
@@ -424,7 +401,7 @@ async def test_d9_generic_builder_tags_schema_source_none_when_no_output_schema(
 
 
 async def test_d9_known_kwarg_set_still_uses_fast_path():
-    """AC4 inverse: a CodeSpectra-shaped kwarg set still routes through the archetype builder."""
+    """Inverse case: a CodeSpectra-shaped kwarg set still routes through the archetype builder."""
     config = _rag_config("glossary", "rag_single_shot")
     # glossary's exact kwarg set is in _KNOWN_SHAPE_KWARG_SETS
     config["contract"]["invocation"] = {
@@ -443,8 +420,7 @@ async def test_d9_known_kwarg_set_still_uses_fast_path():
 
 
 async def test_dispatch_fan_in_judge_routes_by_shape_not_agent_id():
-    """CS-303 Slice 3a: a NON-CodeSpectra agent_id with field_downstream_consumers still
-    dispatches to the fan_in_judge builder — the gate is contract shape, never an agent-id table."""
+    """A NON-CodeSpectra agent_id with field_downstream_consumers still dispatches to the fan_in_judge builder — the gate is contract shape, never an agent-id table."""
     config = {
         "dataset_name": "test_synth_foreign_fan_in",
         "agent_id": "some_foreign_reviewer",
@@ -472,9 +448,7 @@ async def test_dispatch_fan_in_judge_routes_by_shape_not_agent_id():
 
 
 async def test_dispatch_empty_kwargs_routes_to_generic_not_a_codespectra_builder():
-    """CS-303 Slice 3a: an agent whose harvest yields NO kwargs at all (the :729 route hole)
-    must degrade to the generic path, never fall into a CodeSpectra archetype builder that
-    would render a fixed 'bundle.evidences' shape unrelated to the real (empty) contract."""
+    """An agent whose harvest yields NO kwargs at all must degrade to the generic path, never fall into a CodeSpectra archetype builder that would render a fixed 'bundle.evidences' shape unrelated to the real (empty) contract."""
     config = _generic_config(agent_id="bare_tool_agent", archetype="rag_single_shot")
     config["contract"]["invocation"] = {"kwargs": []}
     candidate = {"input": {}, "gold": {"entrypoint": {"file": "main.py", "reason": "entry"}, "confidence": "high"}}
@@ -486,7 +460,6 @@ async def test_dispatch_empty_kwargs_routes_to_generic_not_a_codespectra_builder
     assert cases[0].input["shape"] == "generic"  # not "retrieval_only" (the builder's shape)
 
 
-# --- D6: embedding dedup ---
 # target-specific: uses fan_in_judge inputs (letter-keyed dicts) which have no top-level string
 # values, so the dedup degrades to a no-op — which is the correct behavior per the spec.
 
@@ -519,11 +492,7 @@ class _IdenticalEmbeddingClient:
 
 
 async def test_d6_no_false_positive_identical_field_names_different_values():
-    """AC D6: two cases with identical field names but different string values must NOT be
-    treated as near-duplicates.  This is the false-positive trap the spec calls out at
-    synthetic_agent_io.py:560-562 — embedding whole JSON would inflate cosine-sim via shared
-    keys; text-values-only embedding must score them as distinct."""
-    # Two candidates with same field structure but different values
+    """Two cases with identical field names but different string values must NOT be treated as near-duplicates — embedding whole JSON would inflate cosine-sim via shared keys, so text-values-only embedding must score them as distinct."""
     candidate_a = {
         "input": {"query": "Python packaging conventions", "repo_name": "my-python-lib"},
         "gold": {"entrypoint": {"file": "setup.py", "reason": "entry"}, "confidence": "high"},
@@ -549,8 +518,7 @@ async def test_d6_no_false_positive_identical_field_names_different_values():
 
 
 def test_d6_extracts_text_from_nested_inputs():
-    """Regression: real generated inputs are nested (letter-keyed objects, bundle.evidences),
-    so a top-level-only walk returned '' for every case and collapsed them all to sim 1.0."""
+    """Regression: real generated inputs are nested (letter-keyed objects, bundle.evidences), so a top-level-only walk returned '' for every case and collapsed them all to sim 1.0."""
     letter_keyed_a = {
         "A": {"summary": "auth module is well tested", "confidence": "high"},
         "B": {"summary": "db layer has no tests", "confidence": "low"},
@@ -575,10 +543,8 @@ def test_d6_extracts_text_from_nested_inputs():
 
 async def test_d6_near_duplicate_flagged_not_dropped():
     """Cases scoring 0.80–0.93 are accepted with near_duplicate=True, not auto-dropped."""
-    # Both candidates return the same embedding — cosine_sim = 1.0 ≥ 0.93 → auto-drop first
-    # one gets accepted (no prior), second is identical → dropped and reinstatement fires.
-    # For flag-only (0.80–0.93) we'd need a partial-match client; use _FakeEmbeddingClient
-    # which gives orthogonal vectors, so we test that distinct-enough cases have no flag.
+    # Uses _FakeEmbeddingClient (orthogonal vectors), so this only verifies distinct-enough
+    # cases carry no near_duplicate flag — true near-duplicate flagging needs a partial-match client.
     candidate_a = {
         "input": {"query": "topic A", "repo_name": "repo-a"},
         "gold": {"entrypoint": {"file": "a.py", "reason": "r"}, "confidence": "high"},
@@ -601,7 +567,7 @@ async def test_d6_near_duplicate_flagged_not_dropped():
 
 
 async def test_d6_no_embedding_client_behavior_unchanged():
-    """With embedding_client=None the generation is byte-identical to before D6."""
+    """With embedding_client=None, generation behavior is unchanged."""
     payload = json.dumps([_valid_case(1), _valid_case(2)])
     llm_client = FakeLLMClient(LLMResponse(content=payload, model="fake"))
 

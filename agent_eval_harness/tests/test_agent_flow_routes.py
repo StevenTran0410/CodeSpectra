@@ -16,8 +16,6 @@ from agent_eval_harness.store import repository
 from agent_eval_harness.store.database import close_db, init_db
 from agent_eval_harness.ui.server import app
 
-pytestmark = pytest.mark.asyncio
-
 CANNED_GROUPING = json.dumps({
     "agents": [
         {
@@ -46,8 +44,7 @@ async def _setup_db(tmp_path, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _patch_external_calls(monkeypatch, tmp_path):
-    """Both external boundaries (snapshot lookup + LLM-2 call) are faked; everything else
-    (route guards, scanning, storage) runs for real."""
+    """Both external boundaries (snapshot lookup + LLM-2 call) are faked; everything else runs for real."""
 
     async def fake_get_snapshot(self, snapshot_id: str) -> dict:
         return {"local_path": str(tmp_path)}

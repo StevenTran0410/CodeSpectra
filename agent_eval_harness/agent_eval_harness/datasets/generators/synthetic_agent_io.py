@@ -10,6 +10,7 @@ from typing import Any
 import json_repair
 from pydantic import BaseModel
 
+from agent_eval_harness.datasets.archetype_vocabulary import SYNTHETIC_ID_PLACEHOLDER
 from agent_eval_harness.datasets.generator_utils import (
     apply_painpoint,
     config_kwarg_names_from_case_binding,
@@ -141,8 +142,7 @@ def _parse_json_array(content: str) -> list[Any]:
     try:
         parsed = json.loads(content)
     except json.JSONDecodeError:
-        # Truncated/malformed completions are still salvageable: json_repair recovers whichever
-        # leading array elements are structurally complete (incomplete ones fail _validate_gold downstream).
+        # Truncated/malformed completions are salvageable: json_repair recovers whichever leading array elements are structurally complete.
         try:
             parsed = json_repair.loads(content)
         except Exception as e:
@@ -452,6 +452,25 @@ async def _generate_validated_cases(
             parsed.agent_id, parsed.archetype, len(accepted), parsed.count,
         )
 
+    def _with_required_ids(case_input: dict[str, Any]) -> dict[str, Any]:
+        """Fill required string kwargs an archetype shape drops, so the call still type-checks.
+        Omitting them made the agent reject its own request before any stub could answer."""
+        invocation = parsed.contract.get("invocation") or {}
+        config_names = config_kwarg_names_from_case_binding(invocation.get("case_binding"))
+        for kwarg in invocation.get("kwargs") or []:
+            name = kwarg.get("name") or ""
+            annotation = (kwarg.get("annotation") or "str").replace(" ", "")
+            if (
+                not name
+                or name in case_input
+                or name in config_names
+                or not kwarg.get("required")
+                or annotation not in ("str", "str|None")
+            ):
+                continue
+            case_input[name] = SYNTHETIC_ID_PLACEHOLDER
+        return case_input
+
     cases: list[DatasetCase] = []
     for i, candidate in enumerate(accepted[: parsed.count]):
         extra = accepted_extra_labels[i] if i < len(accepted_extra_labels) else {}
@@ -460,7 +479,7 @@ async def _generate_validated_cases(
                 id=new_id(),
                 dataset=parsed.dataset_name,
                 kind="synthetic_agent_io",
-                input=build_case_input(candidate["input"]),
+                input=_with_required_ids(build_case_input(candidate["input"])),
                 expected=candidate["gold"],
                 labels={
                     "agent_id": parsed.agent_id,

@@ -1,10 +1,5 @@
-"""Lightweight, ad-hoc case-level scoring for Stage 5's results view — compares an
-ingested case's real output against its dataset gold `expected` value. Not the formal
-gate/RunSource="ingested" scoring pipeline (that needs span-level component matching this
-doesn't); this is a cheaper, always-applicable pass: one LLM call per case does both the
-overall semantic-match judgment and (for list-valued fields) synonym-aware item matching —
-the LLM only classifies which items mean the same thing, every count/division is plain
-Python, and fields it doesn't confidently answer fall back to exact-string matching."""
+"""Lightweight, ad-hoc case-level scoring for Stage 5's results view — not the formal gate/RunSource="ingested" pipeline (which needs span-level matching this doesn't).
+One LLM call per case does semantic-match judgment plus synonym-aware list-item matching; the LLM only classifies which items match, every count/division is plain Python, and unconfident fields fall back to exact-string matching."""
 from __future__ import annotations
 
 import json
@@ -45,11 +40,17 @@ SEMANTIC_MATCH_SYSTEM = (
     "  0.0-0.09 — no meaningful overlap, or actual is about a different subject entirely\n\n"
     "If a 'List fields to match' section is given below, also decide, for each such field, "
     "which actual-list item refers to the same real-world thing as which expected-list item — "
-    "same rule as above: match on meaning, not wording, and a pair must refer to the same "
-    "concept, not merely a related, broader, or narrower one. Only report index pairs; do not "
-    "count, total, or compute precision/recall yourself — that is done afterward from your "
-    "pairs, deterministically. Omit a field from field_matches if you are unsure, and never "
-    "let one index appear in more than one pair for the same field.\n\n"
+    "same rule as above: match on meaning, not wording. Two items match when they make the "
+    "same real-world claim, even if one states it more specifically: an actual item that names "
+    "the concrete files or symbols an expected item describes in general terms is a match, not "
+    "a miss. Do not require the same level of detail on both sides.\n"
+    "The two sides may also group things differently. When one expected item covers several "
+    "actual items (e.g. expected says 'the route handlers' where actual lists each route "
+    "separately), pair that same expected index with EACH of those actual indices. An expected "
+    "index may therefore appear in several pairs; an actual index must appear in at most one.\n"
+    "Only report index pairs; do not count, total, or compute precision/recall yourself — that "
+    "is done afterward from your pairs, deterministically. Omit a field from field_matches if "
+    "you are unsure.\n\n"
     "Output ONLY a single JSON object — no markdown code fences, no text before or after it: "
     '{"score": <0.0-1.0>, "notes": "<one or two sentences: what matches, what genuinely '
     'differs>", "field_matches": {"<field_name>": [[<expected_index>, <result_index>], ...], '
@@ -75,6 +76,37 @@ def _collect_list_fields(result: Any, expected: Any) -> dict[str, tuple[list, li
     return fields
 
 
+_SCALAR_MAX_LEN = 64
+
+
+def compute_scalar_field_matches(result: Any, expected: Any) -> dict[str, dict[str, Any]]:
+    """Exact (case-insensitive) agreement on short scalar fields — the enum-ish verdicts like
+    `confidence` that no list metric can see. Long free text is skipped: only a short scalar
+    has a single right answer that exact comparison can honestly judge."""
+    if not isinstance(result, dict) or not isinstance(expected, dict):
+        return {}
+    def _is_short_scalar(value: Any) -> bool:
+        if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+            return False
+        if not isinstance(value, str):
+            return True
+        # Either side being long or multi-line marks the field as free text — an enum-ish verdict is never a paragraph.
+        return bool(value.strip()) and len(value) <= _SCALAR_MAX_LEN and "\n" not in value
+
+    matches: dict[str, dict[str, Any]] = {}
+    for key, expected_val in expected.items():
+        result_val = result.get(key)
+        if not _is_short_scalar(expected_val) or not _is_short_scalar(result_val):
+            continue
+        agreed = str(expected_val).strip().lower() == str(result_val).strip().lower()
+        matches[key] = {
+            "score": 1.0 if agreed else 0.0,
+            "expected": expected_val,
+            "actual": result_val,
+        }
+    return matches
+
+
 def _format_list_fields_section(fields: dict[str, tuple[list, list]]) -> str:
     if not fields:
         return ""
@@ -94,23 +126,42 @@ def _judge_user_prompt(result: Any, expected: Any, fields: dict[str, tuple[list,
     )
 
 
+def _score_field(
+    matched_expected: int, total_expected: int,
+    matched_result: int, total_result: int,
+    matched_via: str,
+) -> dict[str, Any]:
+    """F1 over the two coverage ratios. A ratio whose denominator is zero is `None`, never 0.0:
+    with an empty gold list there is nothing to recall, so the field is left unscored rather
+    than charged a zero that would drag every average down."""
+    precision = matched_result / total_result if total_result else None
+    recall = matched_expected / total_expected if total_expected else None
+    if recall is None:
+        f1 = None  # gold asserts nothing here — over-generation is unscorable, not a failure
+    elif precision is None or precision + recall == 0:
+        f1 = 0.0
+    else:
+        f1 = 2 * precision * recall / (precision + recall)
+    scored = {"precision": precision, "recall": recall, "f1": f1, "matched_via": matched_via}
+    if f1 is None:
+        scored["unscorable"] = "gold_empty"
+    return scored
+
+
 def _exact_match_precision_recall(expected_list: list, result_list: list) -> dict[str, Any]:
     expected_set = {str(v).strip().lower() for v in expected_list}
     result_set = {str(v).strip().lower() for v in result_list}
     intersection = expected_set & result_set
-    precision = len(intersection) / len(result_set) if result_set else 0.0
-    recall = len(intersection) / len(expected_set) if expected_set else 0.0
-    return {"precision": precision, "recall": recall, "matched_via": "exact"}
+    return _score_field(
+        len(intersection), len(expected_set), len(intersection), len(result_set), "exact"
+    )
 
 
 def _validate_field_matches(
     raw_matches: Any, fields: dict[str, tuple[list, list]]
 ) -> dict[str, dict[str, Any]]:
-    """Turns the judge's raw index pairs into precision/recall. The LLM only classifies which
-    pairs mean the same thing; every count and division below is plain Python, never trusted
-    from the model. Pairs are dropped (not trusted) if out-of-range or if either index was
-    already used elsewhere in the same field, enforcing a one-to-one match. A field the judge
-    didn't return valid pairs for falls back to exact-string matching rather than scoring 0."""
+    """Turns the judge's raw index pairs into precision/recall — the LLM only classifies which pairs match, every count/division here is plain Python, never trusted from the model.
+    Result indices are kept unique (so one actual item can't satisfy several gold items) while expected indices may repeat (one coarse gold item may cover several finer actual ones); a field with no valid pairs falls back to exact-string matching."""
     raw_matches = raw_matches if isinstance(raw_matches, dict) else {}
     out: dict[str, dict[str, Any]] = {}
     for field_name, (expected_list, result_list) in fields.items():
@@ -128,16 +179,15 @@ def _validate_field_matches(
                 continue
             if not (0 <= e_idx < len(expected_list) and 0 <= r_idx < len(result_list)):
                 continue
-            if e_idx in used_expected or r_idx in used_result:
+            if r_idx in used_result:
                 continue
             used_expected.add(e_idx)
             used_result.add(r_idx)
-        match_count = len(used_expected)
-        out[field_name] = {
-            "precision": match_count / len(result_list) if result_list else 0.0,
-            "recall": match_count / len(expected_list) if expected_list else 0.0,
-            "matched_via": "llm",
-        }
+        out[field_name] = _score_field(
+            len(used_expected), len(expected_list),
+            len(used_result), len(result_list),
+            "llm",
+        )
     return out
 
 
@@ -171,6 +221,7 @@ async def judge_case_semantic_match(
         "model": response.model,
         "tokens": tokens,
         "field_matches": field_matches,
+        "scalar_matches": compute_scalar_field_matches(result, expected),
     }
 
 

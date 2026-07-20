@@ -6,6 +6,7 @@ import pytest
 
 from agent_eval_harness.judging.case_judge import (
     compute_field_precision_recall,
+    compute_scalar_field_matches,
     judge_case_semantic_match,
     summarize_agent_judgments,
 )
@@ -95,8 +96,7 @@ def test_precision_recall_perfect_match() -> None:
 
 @pytest.mark.asyncio
 async def test_judge_uses_llm_index_pairs_to_catch_synonyms() -> None:
-    # "Postgres" vs "PostgreSQL" would NOT match on exact string overlap — the judge's
-    # index-pair matching is the whole point of this path.
+    # "Postgres" vs "PostgreSQL" would NOT match on exact string overlap — index-pair matching is the whole point of this path.
     client = FakeLLMClient(LLMResponse(content=json.dumps({
         "score": 0.9,
         "notes": "tech stack matches modulo naming",
@@ -116,8 +116,7 @@ async def test_judge_uses_llm_index_pairs_to_catch_synonyms() -> None:
 
 @pytest.mark.asyncio
 async def test_judge_drops_out_of_range_and_duplicate_index_pairs() -> None:
-    # index 5 is out of range, and result-index 0 is reused for two pairs — only the first
-    # legitimate, non-reused pair should ever be counted. Never trust the model's own count.
+    # index 5 is out of range, and result-index 0 is reused for two pairs — only the first legitimate, non-reused pair should ever be counted.
     client = FakeLLMClient(LLMResponse(content=json.dumps({
         "score": 0.5,
         "notes": "partial",
@@ -168,6 +167,90 @@ async def test_judge_falls_back_to_exact_match_on_malformed_json() -> None:
     assert pr["matched_via"] == "exact"
     assert pr["precision"] == 1.0
     assert pr["recall"] == 1.0
+
+
+def test_f1_balances_precision_and_recall() -> None:
+    # 2 of 3 actual items are gold, covering 2 of 4 gold items — precision alone would hide the half-missing gold, so F1 must sit below both.
+    result = {"tech_stack": ["TypeScript", "Expo", "Vite"]}
+    expected = {"tech_stack": ["TypeScript", "Expo", "Jest", "Webpack"]}
+
+    pr = compute_field_precision_recall(result, expected)["tech_stack"]
+
+    assert pr["precision"] == pytest.approx(2 / 3)
+    assert pr["recall"] == pytest.approx(2 / 4)
+    assert pr["f1"] == pytest.approx(2 * (2 / 3) * 0.5 / ((2 / 3) + 0.5))
+
+
+def test_empty_gold_list_is_unscorable_not_zero() -> None:
+    # Gold asserts nothing exists; there is no recall to compute, so the field must come back unscored rather than a 0.0 that drags averages down.
+    result = {"frameworks": ["Node.js", "CommonJS"]}
+    expected = {"frameworks": []}
+
+    pr = compute_field_precision_recall(result, expected)["frameworks"]
+
+    assert pr["f1"] is None
+    assert pr["recall"] is None
+    assert pr["unscorable"] == "gold_empty"
+
+
+def test_empty_result_against_real_gold_still_scores_zero() -> None:
+    # The mirror case is a genuine miss and must NOT be excused as unscorable.
+    result = {"external_integrations": []}
+    expected = {"external_integrations": ["LDAP", "SMTP"]}
+
+    pr = compute_field_precision_recall(result, expected)["external_integrations"]
+
+    assert pr["recall"] == 0.0
+    assert pr["f1"] == 0.0
+    assert "unscorable" not in pr
+
+
+@pytest.mark.asyncio
+async def test_one_coarse_gold_item_may_cover_several_actual_items() -> None:
+    # Gold groups the three routers into one entry; the agent lists each separately — a granularity difference, not three wrong answers.
+    client = FakeLLMClient(LLMResponse(content=json.dumps({
+        "score": 0.9,
+        "notes": "same routers, listed individually",
+        "field_matches": {"main_services": [[0, 0], [0, 1], [0, 2]]},
+    }), model="m"))
+
+    result = await judge_case_semantic_match(
+        client,
+        {"main_services": ["health route", "auth route", "students route"]},
+        {"main_services": ["the health/auth/students routers"]},
+    )
+
+    pr = result["field_matches"]["main_services"]
+    assert pr["recall"] == pytest.approx(1 / 1)
+    assert pr["precision"] == pytest.approx(3 / 3)
+    assert pr["f1"] == pytest.approx(1.0)
+
+
+@pytest.mark.asyncio
+async def test_scalar_field_disagreement_is_scored() -> None:
+    # `confidence` is scalar, so no precision/recall metric can see it — yet claiming "high" where gold says "low" is exactly the overconfidence worth catching.
+    client = FakeLLMClient(LLMResponse(content=json.dumps({
+        "score": 0.8, "notes": "ok", "field_matches": {},
+    }), model="m"))
+
+    result = await judge_case_semantic_match(
+        client, {"confidence": "medium"}, {"confidence": "low"}
+    )
+
+    assert result["scalar_matches"]["confidence"]["score"] == 0.0
+    assert result["scalar_matches"]["confidence"]["actual"] == "medium"
+
+
+def test_scalar_matching_skips_long_free_text() -> None:
+    # A mermaid diagram is scalar but has no single right answer — exact comparison would report a meaningless 0 on every case.
+    long_text = "graph TD\n" + "  A --> B\n" * 20
+    matches = compute_scalar_field_matches(
+        {"confidence": "high", "mermaid_diagram": long_text},
+        {"confidence": "high", "mermaid_diagram": "graph TD\n  X --> Y"},
+    )
+
+    assert "mermaid_diagram" not in matches
+    assert matches["confidence"]["score"] == 1.0
 
 
 @pytest.mark.asyncio

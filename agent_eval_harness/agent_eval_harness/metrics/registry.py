@@ -33,9 +33,7 @@ class MetricSpec:
     description: str = ""
 
 
-# ---------------------------------------------------------------------------
 # Registry
-# ---------------------------------------------------------------------------
 
 # Prefix sentinel: entries whose key ends with ".*" are prefix families.
 # validate_metric() and get_dispatch() handle prefix matching.
@@ -182,9 +180,7 @@ DATASET_KINDS: frozenset[str] = frozenset(
     }
 )
 
-# ---------------------------------------------------------------------------
 # Public API
-# ---------------------------------------------------------------------------
 
 _GEVAL_PREFIX = "geval."
 _CLASSIFIER_PREFIX = "classifier."

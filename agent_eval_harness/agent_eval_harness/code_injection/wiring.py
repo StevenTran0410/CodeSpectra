@@ -1,4 +1,4 @@
-"""Deterministic (never LLM-guessed) wiring.json builder for CodeSpectra's own backend, the v1 target — component ids come straight from Stage 1's already-harvested SystemMap. Isolated here so a future generic "any target" wiring-locator can drop in as a swap for this function."""
+"""Build wiring.json: deterministic mapping of component ids and per-agent invocation data, derived entirely from SystemMap and EvaluationContracts — no guessing, no target-specific code."""
 from __future__ import annotations
 
 from typing import Any
@@ -6,13 +6,21 @@ from typing import Any
 from agent_eval_harness.mapping.system_map import SystemMap
 
 
-def build_wiring_for_codespectra(system_map: SystemMap, plan_id: str) -> dict[str, Any]:
-    return {
+def build_wiring(system_map: SystemMap, plan_id: str, dataset_kinds: list[str] | None = None, agent_invocations: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
+    """Build deterministic wiring dict from SystemMap and contract data."""
+    wiring: dict[str, Any] = {
         "plan_id": plan_id,
-        "entrypoint": {
-            "module": "domain.analysis.orchestrator",
-            "class": "RunDirectorAgent",
-            "method": "run",
-        },
         "component_ids": sorted(c.id for c in system_map.components),
+        # Files the coding agent implements rather than copies; a reinstall must carry these forward from backup.
+        "agent_owned_files": ["target_init.py", "retrieval_stub.py", "run_config.json"],
     }
+
+    if dataset_kinds:
+        wiring["dataset_kinds"] = dataset_kinds
+
+    if agent_invocations:
+        wiring["agent_invocation"] = agent_invocations
+
+    return wiring
+
+

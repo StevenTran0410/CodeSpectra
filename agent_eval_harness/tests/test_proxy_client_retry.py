@@ -7,8 +7,6 @@ import pytest
 from agent_eval_harness.llm.client import LLMMessage, RateLimitExceeded
 from agent_eval_harness.llm.proxy_client import CodeSpectraProxyClient
 
-pytestmark = pytest.mark.asyncio
-
 
 def _response(status_code: int, json_body: dict) -> httpx.Response:
     return httpx.Response(
@@ -49,7 +47,7 @@ async def test_retries_429_then_succeeds(monkeypatch) -> None:
 
     assert result.content == "ok"
     assert transport.call_count == 3
-    assert len(sleeps) == 2  # backed off twice before the third (successful) attempt
+    assert len(sleeps) == 2
     await client.aclose()
 
 

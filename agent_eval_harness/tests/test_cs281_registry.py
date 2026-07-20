@@ -116,7 +116,6 @@ def test_reconcile_params_completion_and_feasibility() -> None:
     """Params completion (allowed_downstream, expected tools, arg_schema conversion) and
     feasibility replacement rules (faithfulness needs separable context, relevancy needs
     query input, tool_correctness needs tools)."""
-    # 1. Setup system map
     system_map = SystemMap(
         target_system_id="test_sys",
         components=[
@@ -147,7 +146,6 @@ def test_reconcile_params_completion_and_feasibility() -> None:
         ]
     )
 
-    # 2. Setup contracts
     contract = EvaluationContract(agent_id="agent1")
     contract.observability.has_separable_context = False  # static fact
     contract.observability.input_kind = "structured"       # static fact
@@ -202,23 +200,18 @@ def test_reconcile_params_completion_and_feasibility() -> None:
     rep = report.agents[0]
     rep_gates = {g.metric: g for g in rep.gates}
 
-    # verify allowed derived
     assert "allowed_downstream" in rep_gates
     assert rep_gates["allowed_downstream"].params["allowed"] == ["tool_comp"]
 
-    # verify arg_schema replaced by schema_valid with contract schema
     assert "schema_valid" in rep_gates
     assert rep_gates["schema_valid"].params["schema"] == contract.output.json_schema
 
-    # verify ragas.faithfulness replaced by referential_integrity + grounding_judge_span_prompt
     assert "ragas.faithfulness" not in rep_gates
     assert "referential_integrity" in rep_gates
     assert "grounding_judge_span_prompt" in rep_gates
 
-    # verify ragas.answer_relevancy dropped
     assert "ragas.answer_relevancy" not in rep_gates
 
-    # verify tool_correctness replaced by llm_call_budget
     assert "tool_correctness" not in rep_gates
     assert "llm_call_budget" in rep_gates
 
@@ -234,7 +227,6 @@ def test_reconcile_rebalance_rules() -> None:
     )
 
     # An assertion + duplicate llm_judge on 'output_schema', 2 near-dup geval gates (should
-    # merge), plus 3 more suggested geval gates (exceeding the cap of 3 suggested).
     gates = [
         EvaluationGate(
             id="g.assert", agent_id="agent1", component="agent_comp",
@@ -291,10 +283,8 @@ def test_reconcile_rebalance_rules() -> None:
     assert "g.judge_dup" not in final_gate_ids
     assert "g.assert" in final_gate_ids
 
-    # 2. g.geval_sim2 should be merged into g.geval_sim1 (0.90+ similarity)
     assert "g.geval_sim2" not in final_gate_ids
     assert "g.geval_sim1" in final_gate_ids
 
-    # 3. Cap: at most 3 suggested LLM judges per agent (MAX_LLM_JUDGE_GATES_PER_AGENT).
     suggested_llm_judges = [g for g in rep.gates if g.metric_class == "llm_judge" and g.provenance != "rule"]
     assert len(suggested_llm_judges) <= 3

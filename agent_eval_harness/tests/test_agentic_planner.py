@@ -21,14 +21,11 @@ from agent_eval_harness.planning.report import (
     save_plan_report,
 )
 
-pytestmark = pytest.mark.asyncio
-
 _MULTI_AGENT_MAP = Path(__file__).parent.parent / "test_targets" / "multi_agent" / "system_map.yaml"
 
 
 def _multi_agent_flow_map() -> AgentFlowMap:
-    """Groups every T2 component into 2 agents — full coverage, mirrors what Stage 2's
-    separate_agent_flows would plausibly produce for this target."""
+    """Groups every T2 component into 2 agents — full coverage, mirrors what Stage 2's separate_agent_flows would plausibly produce for this target."""
     return AgentFlowMap(
         target_system_id="multi_agent",
         agents=[
@@ -55,11 +52,6 @@ def _fake_source_by_component(system_map: SystemMap) -> dict[str, str]:
     return {c.id: f"class {c.id}: ..." for c in system_map.components}
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# report.py
-# ──────────────────────────────────────────────────────────────────────────────
-
-
 async def test_plan_report_yaml_roundtrip(tmp_path) -> None:
     report = EvaluationPlanReport(
         target_system_id="t2",
@@ -71,11 +63,6 @@ async def test_plan_report_yaml_roundtrip(tmp_path) -> None:
     loaded = load_plan_report(path)
     assert loaded.target_system_id == "t2"
     assert loaded.advisory_notes == ["agent X has zero gates"]
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# DAG runner wiring
-# ──────────────────────────────────────────────────────────────────────────────
 
 
 async def test_run_dag_respects_fanout_fanin_order() -> None:
@@ -116,11 +103,6 @@ async def test_run_dag_raises_on_unresolvable_graph() -> None:
     nodes = [ap.DagNode("x", ["missing"], noop)]
     with pytest.raises(RuntimeError):
         await ap.run_dag(nodes)
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# gather_evidence / supporting files join
-# ──────────────────────────────────────────────────────────────────────────────
 
 
 async def test_supporting_files_attach_to_owning_agent_not_boundary() -> None:
@@ -168,11 +150,6 @@ async def test_gather_evidence_computes_baseline_per_agent() -> None:
     assert "allowed_downstream" in baseline_metrics
     assert "max_items_per_call" in baseline_metrics
     assert all(e.agent_id == "core_agent" for e in baseline_by_agent["core_agent"])
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# per-node defensive parsing
-# ──────────────────────────────────────────────────────────────────────────────
 
 
 async def test_run_analyst_defensive_parse_on_malformed_json() -> None:
@@ -277,8 +254,7 @@ async def test_run_handoff_gates_validates_agent_and_component_ownership() -> No
 
 
 async def test_run_handoff_gates_prompt_includes_known_metric_vocabulary() -> None:
-    """The LLM must be given the registered handoff metric names so it reuses them
-    instead of inventing new dead (metric_not_dispatchable) ones."""
+    """The LLM must be given the registered handoff metric names so it reuses them instead of inventing new dead (metric_not_dispatchable) ones."""
     evidence_by_agent = {
         "a1": ap.AgentEvidence(
             agent=AgentFlow(id="a1", component_ids=["c1"], downstream_agents=["a2"]),
@@ -303,11 +279,6 @@ async def test_run_critic_defensive_parse() -> None:
     llm_client = FakeLLMClient(LLMResponse(content="{garbled", model="fake"))
     notes = await ap.run_critic(report, llm_client)
     assert notes == []
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# complete_json — truncation retry
-# ──────────────────────────────────────────────────────────────────────────────
 
 
 async def test_complete_json_recovers_on_retry_after_truncated_first_response() -> None:
@@ -339,8 +310,7 @@ async def test_complete_json_surfaces_dag_note_when_both_attempts_fail() -> None
 
 
 async def test_run_critic_recovers_via_retry_and_generate_plan_surfaces_dag_notes() -> None:
-    """run_critic recovers a truncated-then-fixed response; a node that still fails
-    after retry surfaces in advisory_notes instead of vanishing silently."""
+    """run_critic recovers a truncated-then-fixed response; a node that still fails after retry surfaces in advisory_notes instead of vanishing silently."""
     report = EvaluationPlanReport(target_system_id="t", agents=[])
     llm_client = FakeLLMClient([
         LLMResponse(content='{"notes": ["truncat', model="fake"),
@@ -348,11 +318,6 @@ async def test_run_critic_recovers_via_retry_and_generate_plan_surfaces_dag_note
     ])
     notes = await ap.run_critic(report, llm_client)
     assert notes == ["looks fine"]
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# _validate_metric
-# ──────────────────────────────────────────────────────────────────────────────
 
 
 async def test_validate_metric_matrix() -> None:
@@ -364,11 +329,6 @@ async def test_validate_metric_matrix() -> None:
     assert ap._validate_metric("ragas.context_recall", "llm_judge") is False  # not yet implemented (plan §11-C)
     assert ap._validate_metric("geval.anything_at_all", "llm_judge") is True
     assert ap._validate_metric("tool_correctness", "llm_judge") is True
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# reconcile
-# ──────────────────────────────────────────────────────────────────────────────
 
 
 async def test_reconcile_baseline_never_dropped_llm_dedup_and_needs_human() -> None:
@@ -421,15 +381,12 @@ async def test_reconcile_baseline_never_dropped_llm_dedup_and_needs_human() -> N
     baseline_pairs = {(e.component, e.metric) for e in baseline_by_agent["core_agent"]}
     suite_pairs = {(e.component, e.metric) for e in suite.entries if e.agent_id == "core_agent"}
     assert baseline_pairs <= suite_pairs
-    # contracts=None here -> _apply_feasibility no-ops; see CS-288 tests below for the
-    # real-contract case where a baseline gate CAN be dropped.
+    # contracts=None here -> _apply_feasibility no-ops; see the real-contract tests below for
+    # the case where a baseline gate CAN be dropped.
 
 
 async def test_reconcile_crowding_out_role_orchestrator_vs_worker() -> None:
-    """CS-299 B2's real thesis: a role=orchestrator rule gate claims (component, metric) at
-    dedup (agentic_planner.py:988-993) BEFORE the llm_suggested handoff gate can, silently
-    deleting a correctly-parameterised gate the system already generated. role=worker has no
-    role rule, so the handoff gate survives instead."""
+    """A role=orchestrator rule gate claims (component, metric) at dedup before the llm_suggested handoff gate can, silently deleting an already-generated gate; role=worker has no such rule so the handoff gate survives instead."""
     agent_flow_map = AgentFlowMap(
         target_system_id="t",
         agents=[AgentFlow(id="a1", role="orchestrator", label="A1", component_ids=["comp1"])],
@@ -462,8 +419,7 @@ async def test_reconcile_crowding_out_role_orchestrator_vs_worker() -> None:
     assert orch_gates[0].provenance == "rule"
     assert orch_gates[0].id == "comp1.allowed_downstream"  # NOT handoff0 -> the good gate is gone
 
-    # Fixed role (worker has no role rule): no rule gate is emitted, so the llm_suggested
-    # handoff gate is never shadowed and survives dedup untouched.
+    # Fixed role (worker has no role rule): no rule gate is emitted, so the handoff gate survives dedup untouched.
     suite_worker, report_worker = ap.reconcile(
         agent_flow_map, evidence_by_agent, profiles_by_agent,
         baseline_by_agent={"a1": []},
@@ -474,11 +430,6 @@ async def test_reconcile_crowding_out_role_orchestrator_vs_worker() -> None:
     assert worker_gates[0].provenance == "llm_suggested"
     assert worker_gates[0].id == "comp1.allowed_downstream.handoff0"
     assert worker_gates[0].params == {"allowed": ["comp2"]}
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# _apply_feasibility on baseline (rule) gates — CS-288
-# ──────────────────────────────────────────────────────────────────────────────
 
 
 def _rule_gate(component: str, metric: str, metric_class: str = "llm_judge") -> ap.EvaluationGate:
@@ -609,14 +560,8 @@ async def test_gate_designer_prompt_documents_dataset_kind_archetype_rule() -> N
     assert "input_kind=query" in ap.GATE_DESIGNER_SYSTEM
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# end-to-end DAG smoke test
-# ──────────────────────────────────────────────────────────────────────────────
-
-
 async def test_generate_plan_agentic_end_to_end_smoke() -> None:
-    """Full DAG run, LLM contributes nothing (degrades every node) — must still produce a
-    well-formed Suite covering every agent, with the baseline fully intact."""
+    """Full DAG run, LLM contributes nothing (degrades every node) — must still produce a well-formed Suite covering every agent, with the baseline fully intact."""
     system_map = load_system_map(_MULTI_AGENT_MAP)
     agent_flow_map = _multi_agent_flow_map()
     llm_client = FakeLLMClient(LLMResponse(content="{}", model="fake"))
@@ -631,9 +576,7 @@ async def test_generate_plan_agentic_end_to_end_smoke() -> None:
 
 
 async def test_generate_plan_agentic_threads_conventions_to_harvest_contracts(tmp_path, monkeypatch) -> None:
-    """CS-303 Slice 6 / AC3: the `conventions` param actually reaches harvest_contracts — the
-    real bug was that the one production call site (ui/server.py) never passed anything, so
-    config always lost to the CodeSpectra-literal defaults."""
+    """The `conventions` param must actually reach harvest_contracts — the real bug was that the one production call site (ui/server.py) never passed anything, so config always lost to the CodeSpectra-literal defaults."""
     import agent_eval_harness.mapping.builder.contract_harvest as ch_module
 
     system_map = load_system_map(_MULTI_AGENT_MAP)
@@ -663,9 +606,7 @@ async def test_generate_plan_agentic_threads_conventions_to_harvest_contracts(tm
 
 
 async def test_generate_plan_agentic_matches_flat_baseline_metric_set() -> None:
-    """Regression parity: every (component, metric) pair the flat rule-based
-    generate_plan() produces must also appear in the agentic plan, when the
-    AgentFlowMap fully covers the map's components."""
+    """Regression parity: every (component, metric) pair the flat rule-based generate_plan() produces must also appear in the agentic plan, when the AgentFlowMap fully covers the map's components."""
     system_map_path = _MULTI_AGENT_MAP
     system_map = load_system_map(system_map_path)
     agent_flow_map = _multi_agent_flow_map()
@@ -701,10 +642,7 @@ async def test_generate_plan_agentic_can_skip_critic_pass() -> None:
 
 
 async def test_generate_plan_agentic_reuses_previous_analysis_for_unchanged_agents() -> None:
-    """Regression test for a real cost bug: regenerating the plan to pick up a fix for ONE
-    agent (e.g. a static-harvest fix) used to re-run analyst+gate_designer LLM calls for
-    EVERY agent. An agent with a complete prior data_profile + gates must be reused as-is;
-    only an agent missing from the previous report gets freshly analyzed."""
+    """Regression test for a real cost bug: regenerating the plan to pick up a fix for ONE agent used to re-run analyst+gate_designer LLM calls for EVERY agent; only an agent missing from the previous report should get freshly analyzed."""
     system_map = load_system_map(_MULTI_AGENT_MAP)
     agent_flow_map = _multi_agent_flow_map()
 
@@ -725,8 +663,7 @@ async def test_generate_plan_agentic_reuses_previous_analysis_for_unchanged_agen
         run_critic_pass=False, previous_report=previous_report,
     )
 
-    # core_agent (not in previous_report) still gets analyzed fresh: 1 gather + 1 analyst +
-    # 2 gate_designer/handoff = 4, vs 6 when nothing is reusable (see test above).
+    # core_agent (not in previous_report) still gets analyzed fresh: 4 calls, vs 6 when nothing is reusable.
     assert len(llm_client.calls) == 4
 
     by_agent = {a.agent_id: a for a in report.agents}

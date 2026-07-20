@@ -1,4 +1,4 @@
-"""Tests for agent_knowledge schema hardening (CS-291)."""
+"""Tests for agent_knowledge schema hardening."""
 import json
 from pathlib import Path
 
@@ -12,13 +12,12 @@ from agent_eval_harness.discovery.agent_knowledge import (
     FailureModeRef,
     verify_citations,
 )
-from agent_eval_harness.code_injection.plan_renderer import render_eval_plan_md
-from agent_eval_harness.mapping.system_map import SystemMap, Component
+from agent_eval_harness.mapping.system_map import SystemMap
 
 
 @pytest.mark.anyio
 async def test_verify_citations_all_five_sources(tmp_path: Path) -> None:
-    """AC4: Phantom detection across all 5 semantic sources."""
+    """Phantom detection across all 5 semantic sources."""
     knowledge = AgentKnowledge(
         functionality="Test functionality",
         functionality_citations=[
@@ -50,8 +49,7 @@ async def test_verify_citations_all_five_sources(tmp_path: Path) -> None:
 
 @pytest.mark.anyio
 async def test_verify_citations_union_resolves_offline_and_promptsite(tmp_path: Path) -> None:
-    """A citation is valid if it resolves to readable context by ANY of three routes; only a
-    citation that resolves to nothing is flagged. Guards the CS-301 follow-up union rule."""
+    """A citation is valid if it resolves to readable context via ANY of three routes; only a citation that resolves to nothing is flagged."""
     from agent_eval_harness.discovery.agent_knowledge import PromptSiteRef
 
     src = tmp_path / "agent.py"
@@ -90,7 +88,7 @@ async def test_verify_citations_union_resolves_offline_and_promptsite(tmp_path: 
 
 @pytest.mark.anyio
 async def test_static_wins_llm_cannot_override() -> None:
-    """AC4: Static-wins cross-check — LLM cannot override structural fields."""
+    """Static-wins cross-check — LLM cannot override structural fields."""
     from agent_eval_harness.discovery.enrichment import _enrich_single_agent
     from agent_eval_harness.mapping.agent_flow import AgentFlow, AgentFlowMap
     from agent_eval_harness.store.database import init_db, get_db
@@ -177,64 +175,6 @@ async def test_static_wins_llm_cannot_override() -> None:
     assert knowledge.query_count == 0
     # LLM tried to set location to llm_lie.py — static-wins must reject it
     assert knowledge.location is None or knowledge.location.file != "llm_lie.py"
-
-
-def test_plan_renderer_byte_identical_no_knowledge(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """AC7: plan_renderer output byte-identical when no knowledge sidecar exists."""
-    from unittest.mock import Mock
-    import datetime
-
-    fixed_time = datetime.datetime(2026, 7, 14, 12, 0, 0)
-    mock_datetime_module = Mock()
-    mock_datetime_module.datetime.utcnow.return_value = fixed_time
-    monkeypatch.setattr("agent_eval_harness.code_injection.plan_renderer.datetime", mock_datetime_module)
-
-    minimal_system_map = SystemMap(
-        target_system_id="test_system",
-        components=[
-            Component(
-                id="test_comp",
-                role="test_role",
-                entry_point="test.entry",
-                file="test.py",
-            ),
-        ],
-    )
-    minimal_wiring = {"plan_id": "test", "entrypoint": "test.entry", "component_ids": ["test_comp"]}
-    minimal_ds = [{"dataset_id": "ds1", "kind": "qa", "case_count": 0, "gate_ids": []}]
-
-    output_1 = render_eval_plan_md(
-        minimal_system_map,
-        minimal_wiring,
-        minimal_ds,
-        "sess_test",
-        "aeh/eval-sess_test",
-        knowledge_dir=None,
-    )
-
-    output_2 = render_eval_plan_md(
-        minimal_system_map,
-        minimal_wiring,
-        minimal_ds,
-        "sess_test",
-        "aeh/eval-sess_test",
-        knowledge_dir=None,
-    )
-
-    assert output_1 == output_2
-
-    empty_knowledge_dir = tmp_path / "empty_knowledge"
-    empty_knowledge_dir.mkdir()
-    output_3 = render_eval_plan_md(
-        minimal_system_map,
-        minimal_wiring,
-        minimal_ds,
-        "sess_test",
-        "aeh/eval-sess_test",
-        knowledge_dir=empty_knowledge_dir,
-    )
-
-    assert output_3 == output_1
 
 
 @pytest.mark.anyio

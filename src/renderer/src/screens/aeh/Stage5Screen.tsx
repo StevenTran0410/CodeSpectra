@@ -56,12 +56,13 @@ function _computeAgentSummaries(agentCases: Record<string, CaseRow[]>): AgentSum
       ? scored.reduce((sum, x) => sum + (x.sm.score ?? 0), 0) / scored.length
       : null
     const prAll = rows.flatMap((row) => row.evaluations.filter((e) => e.metric_name.startsWith('precision_recall.')))
-    const avgPrecision = prAll.length > 0
-      ? prAll.reduce((sum, e) => sum + ((e.details.precision as number) ?? 0), 0) / prAll.length
-      : null
-    const avgRecall = prAll.length > 0
-      ? prAll.reduce((sum, e) => sum + ((e.details.recall as number) ?? 0), 0) / prAll.length
-      : null
+    // A null ratio means the field was unscorable (empty gold), not a zero — averaging it in as 0 is what made a correct agent look wrong.
+    const avgOf = (key: 'precision' | 'recall'): number | null => {
+      const vals = prAll.map((e) => e.details[key]).filter((v): v is number => typeof v === 'number')
+      return vals.length > 0 ? vals.reduce((sum, v) => sum + v, 0) / vals.length : null
+    }
+    const avgPrecision = avgOf('precision')
+    const avgRecall = avgOf('recall')
     const sorted = [...scored].sort((a, b) => (a.sm.score ?? 0) - (b.sm.score ?? 0))
     const toEntry = (x: typeof sorted[number]) => ({
       row: x.row, score: x.sm.score ?? 0, notes: String(x.sm.details?.notes ?? ''),
@@ -114,6 +115,8 @@ export default function Stage5Screen(): React.ReactElement {
   const [thinkingBudget, setThinkingBudget] = useState<number | null>(null)
   const [llmConfigOpen, setLlmConfigOpen] = useState(false)
   const [judgeConfirmOpen, setJudgeConfirmOpen] = useState(false)
+  // Re-scoring replaces existing evaluations, so the confirm dialog has to know which it is.
+  const [judgeForce, setJudgeForce] = useState(false)
   const [judging, setJudging] = useState(false)
   const [judgeAllConfirmOpen, setJudgeAllConfirmOpen] = useState(false)
   const [judgingAll, setJudgingAll] = useState(false)
@@ -152,8 +155,7 @@ export default function Stage5Screen(): React.ReactElement {
         setAgentCases(data.agents)
         setAgentSummaries(data.agent_summaries ?? {})
       } catch {
-        // No existing run, or it's no longer resolvable — fall through to the normal
-        // "Load Results" button, same as a session that's never been loaded before.
+        // No existing run, or it's no longer resolvable — fall through to the normal "Load Results" button.
       } finally {
         if (!cancelled) setCheckingExisting(false)
       }
@@ -199,7 +201,7 @@ export default function Stage5Screen(): React.ReactElement {
     }
   }
 
-  async function handleJudgeAgent() {
+  async function handleJudgeAgent(force = false) {
     if (!result || !viewingAgentId) return
     setJudgeConfirmOpen(false)
     setJudging(true)
@@ -207,6 +209,7 @@ export default function Stage5Screen(): React.ReactElement {
     try {
       const outcome = await window.api.aeh.judgeEvalRunCases(result.run_id, {
         agent_id: viewingAgentId,
+        force,
         provider_id: providerId || null,
         model_id: modelId || null,
         reasoning_effort: reasoningEffort,
@@ -223,7 +226,7 @@ export default function Stage5Screen(): React.ReactElement {
     }
   }
 
-  async function handleJudgeAll() {
+  async function handleJudgeAll(force = false) {
     if (!result || !agentCases) return
     setJudgeAllConfirmOpen(false)
     setJudgingAll(true)
@@ -237,6 +240,7 @@ export default function Stage5Screen(): React.ReactElement {
         setJudgeAllProgress({ done: i, total: agentIds.length, agentId })
         const outcome = await window.api.aeh.judgeEvalRunCases(result.run_id, {
           agent_id: agentId,
+          force,
           provider_id: providerId || null,
           model_id: modelId || null,
           reasoning_effort: reasoningEffort,
@@ -348,13 +352,13 @@ export default function Stage5Screen(): React.ReactElement {
             />
             <Button
               variant="primary"
-              onClick={() => setJudgeConfirmOpen(true)}
+              onClick={() => { setJudgeForce(unscoredCount === 0); setJudgeConfirmOpen(true) }}
               loading={judging}
-              disabled={judging || !providerId || unscoredCount === 0}
+              disabled={judging || !providerId || rows.length === 0}
               className="text-xs h-8 px-3 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-medium flex items-center gap-1.5"
             >
               <Sparkles size={13} />
-              {judging ? 'Scoring...' : unscoredCount === 0 ? 'All Scored' : `Score with LLM (${unscoredCount})`}
+              {judging ? 'Scoring...' : unscoredCount === 0 ? `Re-score (${rows.length})` : `Score with LLM (${unscoredCount})`}
             </Button>
           </div>
         </div>
@@ -362,9 +366,10 @@ export default function Stage5Screen(): React.ReactElement {
           {rows.map((row) => {
             const semanticMatch = row.evaluations.find((e) => e.metric_name === 'semantic_match')
             const precisionRecall = row.evaluations.filter((e) => e.metric_name.startsWith('precision_recall.'))
+            const exactFields = row.evaluations.filter((e) => e.metric_name.startsWith('field_exact.'))
             return (
             <div key={row.trace_id} className="border border-slate-850 rounded-xl bg-slate-950/40 overflow-hidden">
-              {(semanticMatch || precisionRecall.length > 0) && (
+              {(semanticMatch || precisionRecall.length > 0 || exactFields.length > 0) && (
                 <div className="px-3 pt-3 flex flex-wrap items-center gap-2 text-[10px]">
                   {semanticMatch && (
                     <span className={`font-mono font-semibold ${_scoreColor(semanticMatch.score)}`}>
@@ -376,7 +381,21 @@ export default function Stage5Screen(): React.ReactElement {
                   ) : null}
                   {precisionRecall.map((pr) => (
                     <span key={pr.metric_name} className="font-mono text-slate-500">
-                      {pr.metric_name.replace('precision_recall.', '')}: P={(pr.details.precision as number)?.toFixed(2)} R={(pr.details.recall as number)?.toFixed(2)}
+                      {pr.metric_name.replace('precision_recall.', '')}:{' '}
+                      {pr.score === null
+                        ? <span className="text-slate-600" title="gold list was empty — nothing to score against">n/a</span>
+                        : <>
+                            {/* Rows judged before F1 scoring stored precision as the score — don't relabel them. */}
+                            {'f1' in pr.details ? `F1=${pr.score.toFixed(2)} ` : ''}
+                            <span className="text-slate-600">
+                              (P={(pr.details.precision as number)?.toFixed(2) ?? '—'} R={(pr.details.recall as number)?.toFixed(2) ?? '—'})
+                            </span>
+                          </>}
+                    </span>
+                  ))}
+                  {exactFields.map((ef) => (
+                    <span key={ef.metric_name} className={`font-mono ${ef.score === 1 ? 'text-slate-500' : 'text-rose-400/80'}`}>
+                      {ef.metric_name.replace('field_exact.', '')}: {ef.score === 1 ? '✓' : `${String(ef.details.actual)}≠${String(ef.details.expected)}`}
                     </span>
                   ))}
                 </div>
@@ -411,18 +430,24 @@ export default function Stage5Screen(): React.ReactElement {
             <div className="glass rounded-2xl w-full max-w-sm border-slate-850 shadow-2xl p-5 space-y-4 text-slate-100">
               <div className="flex items-center gap-3 text-amber-400">
                 <AlertCircle className="shrink-0 w-6 h-6" />
-                <h3 className="text-sm font-semibold text-slate-200">Score with LLM?</h3>
+                <h3 className="text-sm font-semibold text-slate-200">{judgeForce ? 'Re-score every case?' : 'Score with LLM?'}</h3>
               </div>
               <p className="text-[11px] text-slate-450 leading-relaxed">
-                This will call {providerId}:{modelId || '(no model)'} once per unscored case —
-                {' '}{unscoredCount} case{unscoredCount === 1 ? '' : 's'}, {unscoredCount} LLM call{unscoredCount === 1 ? '' : 's'}.
-                Already-scored cases are skipped automatically.
+                {judgeForce ? (
+                  <>This will call {providerId}:{modelId || '(no model)'} once per case — {rows.length} case
+                  {rows.length === 1 ? '' : 's'}, {rows.length} LLM call{rows.length === 1 ? '' : 's'}.
+                  {' '}<span className="text-amber-400">Existing scores for this agent are deleted and replaced.</span></>
+                ) : (
+                  <>This will call {providerId}:{modelId || '(no model)'} once per unscored case —
+                  {' '}{unscoredCount} case{unscoredCount === 1 ? '' : 's'}, {unscoredCount} LLM call{unscoredCount === 1 ? '' : 's'}.
+                  Already-scored cases are skipped automatically.</>
+                )}
               </p>
               <div className="flex justify-end gap-2.5 pt-2">
                 <Button variant="ghost" onClick={() => setJudgeConfirmOpen(false)} className="text-xs px-4 py-2">
                   Cancel
                 </Button>
-                <Button variant="primary" onClick={handleJudgeAgent} className="text-xs px-4 py-2 bg-indigo-600 hover:bg-indigo-500">
+                <Button variant="primary" onClick={() => handleJudgeAgent(judgeForce)} className="text-xs px-4 py-2 bg-indigo-600 hover:bg-indigo-500">
                   Continue
                 </Button>
               </div>
@@ -449,8 +474,7 @@ export default function Stage5Screen(): React.ReactElement {
     )
   }
 
-  // Summary view — aggregates avg score + best/worst case per agent, computed client-side
-  // from data already loaded in agentCases (no extra backend call).
+  // Summary view — aggregates avg score + best/worst case per agent, computed client-side from data already loaded in agentCases (no extra backend call).
   if (agentCases && showSummary) {
     const summaries = _computeAgentSummaries(agentCases)
     const overallScored = summaries.reduce((sum, s) => sum + s.scoredCount, 0)
@@ -591,7 +615,6 @@ export default function Stage5Screen(): React.ReactElement {
     )
   }
 
-  // Agent grid view — after results have been fetched.
   if (agentCases) {
     const agentIds = Object.keys(agentCases).sort()
     const unscoredByAgent = agentIds.map((id) => ({
@@ -599,6 +622,7 @@ export default function Stage5Screen(): React.ReactElement {
       count: agentCases[id].filter((r) => !r.evaluations.some((e) => e.metric_name === 'semantic_match')).length,
     }))
     const totalUnscored = unscoredByAgent.reduce((sum, a) => sum + a.count, 0)
+    const totalCases = agentIds.reduce((sum, id) => sum + agentCases[id].length, 0)
     return (
       <div className="flex flex-col h-full bg-[#090d16] text-slate-100">
         <div className="screen-header shrink-0 flex items-center justify-between px-6 py-4 border-b border-slate-850">
@@ -637,13 +661,13 @@ export default function Stage5Screen(): React.ReactElement {
             />
             <Button
               variant="primary"
-              onClick={() => setJudgeAllConfirmOpen(true)}
+              onClick={() => { setJudgeForce(totalUnscored === 0); setJudgeAllConfirmOpen(true) }}
               loading={judgingAll}
-              disabled={judgingAll || !providerId || totalUnscored === 0}
+              disabled={judgingAll || !providerId || totalCases === 0}
               className="text-xs h-8 px-3 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-medium flex items-center gap-1.5"
             >
               <Sparkles size={13} />
-              {judgingAll ? 'Judging All...' : totalUnscored === 0 ? 'All Scored' : `Judge All (${totalUnscored})`}
+              {judgingAll ? 'Judging All...' : totalUnscored === 0 ? `Re-score All (${totalCases})` : `Judge All (${totalUnscored})`}
             </Button>
           </div>
         </div>
@@ -669,18 +693,24 @@ export default function Stage5Screen(): React.ReactElement {
             <div className="glass rounded-2xl w-full max-w-sm border-slate-850 shadow-2xl p-5 space-y-4 text-slate-100">
               <div className="flex items-center gap-3 text-amber-400">
                 <AlertCircle className="shrink-0 w-6 h-6" />
-                <h3 className="text-sm font-semibold text-slate-200">Judge all agents?</h3>
+                <h3 className="text-sm font-semibold text-slate-200">{judgeForce ? 'Re-score all agents?' : 'Judge all agents?'}</h3>
               </div>
               <p className="text-[11px] text-slate-450 leading-relaxed">
-                This will call {providerId}:{modelId || '(no model)'} once per unscored case across all
-                {' '}{agentIds.length} agents — {totalUnscored} case{totalUnscored === 1 ? '' : 's'}, {totalUnscored} LLM call{totalUnscored === 1 ? '' : 's'} total.
-                Agents run one at a time; already-scored cases are skipped automatically.
+                {judgeForce ? (
+                  <>This will call {providerId}:{modelId || '(no model)'} once per case across all
+                  {' '}{agentIds.length} agents — {totalCases} case{totalCases === 1 ? '' : 's'}, {totalCases} LLM call{totalCases === 1 ? '' : 's'} total.
+                  {' '}<span className="text-amber-400">All existing scores are deleted and replaced.</span></>
+                ) : (
+                  <>This will call {providerId}:{modelId || '(no model)'} once per unscored case across all
+                  {' '}{agentIds.length} agents — {totalUnscored} case{totalUnscored === 1 ? '' : 's'}, {totalUnscored} LLM call{totalUnscored === 1 ? '' : 's'} total.
+                  Agents run one at a time; already-scored cases are skipped automatically.</>
+                )}
               </p>
               <div className="flex justify-end gap-2.5 pt-2">
                 <Button variant="ghost" onClick={() => setJudgeAllConfirmOpen(false)} className="text-xs px-4 py-2">
                   Cancel
                 </Button>
-                <Button variant="primary" onClick={handleJudgeAll} className="text-xs px-4 py-2 bg-indigo-600 hover:bg-indigo-500">
+                <Button variant="primary" onClick={() => handleJudgeAll(judgeForce)} className="text-xs px-4 py-2 bg-indigo-600 hover:bg-indigo-500">
                   Continue
                 </Button>
               </div>

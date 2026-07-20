@@ -1,4 +1,4 @@
-"""Tests for enrichment hardening (CS-291)."""
+"""Tests for enrichment hardening."""
 import json
 from pathlib import Path
 
@@ -18,8 +18,7 @@ _DEPTH_CAP = {"queries": 3, "llm_calls": 2, "read_file": 2}
 
 @pytest.fixture(autouse=True)
 async def _ensure_db() -> None:
-    """Defensive re-init: an earlier test file in the same session may have closed the DB
-    explicitly (e.g. a migration test), with nothing else re-opening it before this file's turn."""
+    """Defensive re-init: an earlier test file may have closed the DB without reopening it."""
     try:
         get_db()
     except RuntimeError:
@@ -51,8 +50,6 @@ class _StubLLMClient:
 
 @pytest.mark.anyio
 async def test_c0_expansion_annotation_regression() -> None:
-    """AC1: C0 expansion annotation regression — verify no regressions in expansion output format."""
-    # Simple validation that expansion still produces expected output format
     files = {
         "file_a.py": "class Agent: pass",
         "file_b.py": "class Utility: pass"
@@ -101,8 +98,8 @@ async def test_c0_expansion_annotation_regression() -> None:
 
 @pytest.mark.anyio
 async def test_persist_md_and_json_to_appdata(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """AC2: File persistence — .md and .json sidecar written to correct AppData path."""
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    """File persistence: .md/.json sidecars are written under AEH_DATA_DIR (Roaming), not AppData/Local."""
+    monkeypatch.setenv("AEH_DATA_DIR", str(tmp_path))
 
     agent = AgentFlow(id="test_agent", label="Test Agent", component_ids=["comp1"])
     flow_map = AgentFlowMap(target_system_id="test_system", agents=[agent])
@@ -124,7 +121,7 @@ async def test_persist_md_and_json_to_appdata(tmp_path: Path, monkeypatch: pytes
         depth="normal",
     )
 
-    appdata_dir = tmp_path / "AppData" / "Local" / "codespectra" / "agents" / "test_session"
+    appdata_dir = tmp_path / "agents" / "test_session"
     md_path = appdata_dir / "test_agent.md"
     json_path = appdata_dir / "test_agent.json"
 
@@ -138,7 +135,7 @@ async def test_persist_md_and_json_to_appdata(tmp_path: Path, monkeypatch: pytes
 
 @pytest.mark.anyio
 async def test_no_hidden_fallback_purpose(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """AC3 (updated D2): _FALLBACK_PURPOSE was deleted; enrichment LLM output is returned verbatim."""
+    """_FALLBACK_PURPOSE was deleted; enrichment LLM output is returned verbatim."""
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
     agent = AgentFlow(id="test_agent_ac3", label="Test Agent AC3", component_ids=[])
@@ -167,7 +164,7 @@ async def test_no_hidden_fallback_purpose(tmp_path: Path, monkeypatch: pytest.Mo
 
 @pytest.mark.anyio
 async def test_single_agent_failure_does_not_block_others() -> None:
-    """AC5: Agent isolation — one failing agent does not block others."""
+    """Agent isolation: one failing agent does not block others."""
     agents = [
         AgentFlow(id="agent_a", label="Agent A", component_ids=[]),
         AgentFlow(id="agent_b", label="Agent B", component_ids=[]),
@@ -207,7 +204,7 @@ async def test_single_agent_failure_does_not_block_others() -> None:
 
 @pytest.mark.anyio
 async def test_zero_query_fast_path_when_coverage_sufficient() -> None:
-    """AC5: Zero-query fast-path — sufficient coverage skips queries."""
+    """Zero-query fast-path: sufficient coverage skips queries."""
     from agent_eval_harness.discovery.enrichment import _enrich_single_agent
     from dataclasses import dataclass
 
@@ -281,7 +278,7 @@ async def test_zero_query_fast_path_when_coverage_sufficient() -> None:
 
 @pytest.mark.anyio
 async def test_rerun_cache_hit_reads_actual_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """AC5: Re-run cache-hit — reads actual persisted JSON, not mock."""
+    """Re-run cache-hit: reads actual persisted JSON, not mock."""
     from agent_eval_harness.discovery.enrichment import _enrich_single_agent
     from dataclasses import dataclass
 
@@ -323,7 +320,6 @@ async def test_rerun_cache_hit_reads_actual_json(tmp_path: Path, monkeypatch: py
         'source_coverage': {"test_agent": 0.0},
     }
 
-    # Compute the correct hash based on evidence and accepted_files (empty in this case)
     import hashlib
     from agent_eval_harness.discovery.enrichment import _STRUCTURAL_PRODUCER_VERSION
     component_ids = sorted([c['id'] for c in evidence['component_by_agent'].get("test_agent", [])])
@@ -337,7 +333,6 @@ async def test_rerun_cache_hit_reads_actual_json(tmp_path: Path, monkeypatch: py
     ])
     correct_hash = hashlib.sha256(hash_input.encode('utf-8')).hexdigest()
 
-    # Update the stored hash to match the computed hash
     await repository.upsert_agent_knowledge(
         session_id="test_session",
         agent_id="test_agent",
@@ -403,7 +398,7 @@ async def test_rerun_cache_hit_reads_actual_json(tmp_path: Path, monkeypatch: py
 
 
 def test_grep_gate_no_codespectra_literals() -> None:
-    """AC6: Grep gate — 0 CodeSpectra-specific literals in enrichment code."""
+    """Grep gate: zero CodeSpectra-specific literals in enrichment code."""
     forbidden_literals = [
         'ProjectIdentityAgent',
         'extract_a_identity_context',
@@ -428,7 +423,7 @@ def test_grep_gate_no_codespectra_literals() -> None:
 
 @pytest.mark.anyio
 async def test_functional_run_multi_agent_target() -> None:
-    """AC6: Functional run against test_targets/multi_agent — degradation is explicit."""
+    """Functional run against test_targets/multi_agent: degradation is explicit."""
     agents = [
         AgentFlow(id="agent_1", label="Agent 1", component_ids=["comp_1"]),
         AgentFlow(id="agent_2", label="Agent 2", component_ids=["comp_2"]),
@@ -486,13 +481,10 @@ class _CapturingLLMClient:
 async def test_prompt_text_reaches_the_llm_on_a_foreign_repo_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """CS-300 §6: AC6 alone goes green whether or not the prompt-resolver plumbing works,
-    because test_targets/multi_agent has zero prompt constants. This drives the REAL call path
-    (enrich_agents -> _gather_evidence -> scan_for_prompt_sites) against a root that is NOT
-    AEH's own repo and NOT test_targets/, with a module deliberately NOT named prompts.py — it
-    fails today for the PLUMBING reason (_resolve_repo_root() would resolve AEH's own root, not
-    the target's), not merely for a resolver bug. A resolver unit test alone would pass while
-    this feature stayed dead on every target except this one repo."""
+    """Drives the real enrich_agents -> _gather_evidence -> scan_for_prompt_sites path against a
+    foreign, non-AEH repo root with a module deliberately not named prompts.py, so repo-root
+    resolution plumbing is exercised, not just a resolver unit test that would pass while the
+    feature stayed dead on every target but this repo."""
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "_appdata")
     pkg = tmp_path / "pkg"
     pkg.mkdir()
@@ -544,8 +536,7 @@ async def test_prompt_text_reaches_the_llm_on_a_foreign_repo_root(
 
 
 def test_resolve_repo_root_never_falls_back_to_aeh_own_root_when_supplied(tmp_path: Path) -> None:
-    """Regression guard (CS-300 §6): with repo_root supplied, _resolve_repo_root()'s value is
-    never the AEH-own-repo default."""
+    """Regression guard: with repo_root supplied, _resolve_repo_root() never falls back to the AEH-own-repo default."""
     from agent_eval_harness.discovery.enrichment import _resolve_repo_root
 
     assert _resolve_repo_root(tmp_path) == tmp_path
@@ -645,9 +636,8 @@ async def test_write_back_map_path_set_lands_role_on_right_component_id(
 async def test_partial_run_agent_ids_subset_merges_not_rewrites(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """PARTIAL-RUN HAZARD (CS-300 §8): a subset run via agent_ids must MERGE into the freshly
-    loaded map, never rewrite the components list from the subset — agent_b's component here
-    is untouched by this run and must keep its prior role."""
+    """PARTIAL-RUN HAZARD: a subset run via agent_ids must MERGE into the freshly loaded map,
+    never rewrite the components list from the subset — untouched agents must keep their prior role."""
     from agent_eval_harness.mapping.system_map import load_system_map
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -750,11 +740,9 @@ async def test_degraded_agent_never_blanks_siblings_nor_aborts_map_write(
 async def test_ac1_unit_proxy_validator_survives_for_high_fan_in_auditor_shaped_agent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """AC1 unit proxy (§9 — the empirical run itself needs a live LLM, this proxies it): a
-    scripted fake LLM returns 'validator' for a high-fan-in component whose evidence carries
-    auditor-shaped prompt text ('critical auditor reviewing the outputs of 10 code analysis
-    agents') — assert the verdict survives the hard gate (validator has no structural
-    subtraction) and lands on the component in the saved map."""
+    """Proxies an empirical live-LLM run: a scripted fake LLM returns 'validator' for a
+    high-fan-in, auditor-shaped component; assert the verdict survives the hard gate and lands
+    on the component in the saved map."""
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
     pkg = tmp_path / "pkg"
@@ -816,7 +804,7 @@ async def test_ac1_unit_proxy_validator_survives_for_high_fan_in_auditor_shaped_
 
 
 def test_agent_flow_role_derivation_is_deterministic_never_llm() -> None:
-    """CS-300 §5: AgentFlow.role is derived in code, never asked of the LLM."""
+    """AgentFlow.role is derived in code, never asked of the LLM."""
     from agent_eval_harness.discovery.enrichment import _derive_agent_role
 
     all_unknown_map = SystemMap(
@@ -851,8 +839,7 @@ def test_agent_flow_role_derivation_is_deterministic_never_llm() -> None:
 
 @pytest.mark.anyio
 async def test_cache_hit_coerces_pre_cs300_empty_role_to_unknown_never_crashes(tmp_path: Path) -> None:
-    """Cache path: a pre-CS-300 sidecar (component_roles entries with role='') must coerce to
-    'unknown', not crash."""
+    """Cache path: an old-format sidecar (component_roles entries with role='') must coerce to 'unknown', not crash."""
     from agent_eval_harness.discovery.enrichment import _enrich_single_agent, _STRUCTURAL_PRODUCER_VERSION
     from dataclasses import dataclass
     import hashlib
@@ -874,7 +861,6 @@ async def test_cache_hit_coerces_pre_cs300_empty_role_to_unknown_never_crashes(t
         "edges_by_agent": {"test_agent": []}, "source_coverage": {"test_agent": 0.0},
     }
 
-    # Compute the correct hash
     component_ids = sorted([c['id'] for c in evidence['component_by_agent'].get("test_agent", [])])
     edges = sorted([(e['src'], e['dst']) for e in evidence['edges_by_agent'].get("test_agent", [])])
     accepted_files = []
@@ -921,14 +907,12 @@ async def test_cache_hit_coerces_pre_cs300_empty_role_to_unknown_never_crashes(t
     assert knowledge.component_roles[0].role == "unknown"
 
 
-# CS-301 Tests (Slice 1: Cache hash comparison and force flag)
 @pytest.mark.anyio
 async def test_cs301_slice1_cache_hash_comparison(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """AC1: Cache re-enriches when evidence_hash differs from stored."""
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    """Cache re-enriches when evidence_hash differs from stored; uses AEH_DATA_DIR (Roaming), not AppData/Local."""
+    monkeypatch.setenv("AEH_DATA_DIR", str(tmp_path))
 
-    # Store a cached record with old hash
-    json_dir = tmp_path / "AppData" / "Local" / "codespectra" / "agents" / "test-session"
+    json_dir = tmp_path / "agents" / "test-session"
     json_dir.mkdir(parents=True, exist_ok=True)
     json_path = json_dir / "test_agent.json"
     old_cached = {"functionality": "Old cached", "component_roles": []}
@@ -979,14 +963,14 @@ async def test_cs301_slice1_cache_hash_comparison(tmp_path: Path, monkeypatch: p
     depth_cap = _DEPTH_CAP
     knowledge = await _enrich_single_agent("test_agent", evidence, _EnrichCtx(client=_StubClient({}, {}), llm_client=llm_client), depth_cap, [])
 
-    # Hash is different, so LLM was called and we get fresh response
+    # Hash differs from stored, so the LLM was called and we get a fresh response
     assert knowledge.functionality == "Fresh LLM response"
     assert llm_client.call_count == 1
 
 
 @pytest.mark.anyio
 async def test_cs301_slice4_confidence_needs_human_cap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """AC5: needs_human non-empty => confidence != 'high'."""
+    """needs_human non-empty => confidence != 'high'."""
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
     from dataclasses import dataclass
@@ -1040,14 +1024,13 @@ async def test_cs301_slice4_confidence_needs_human_cap(tmp_path: Path, monkeypat
     # Manually add needs_human to simulate citation verification finding issues
     knowledge.needs_human.append("Unverified citation")
 
-    # Even with all fields filled, confidence must not be 'high' if needs_human is non-empty
     assert knowledge.needs_human
     assert knowledge.confidence != 'high'
 
 
 @pytest.mark.anyio
 async def test_cs301_slice4_confidence_degraded_is_low() -> None:
-    """AC5: degraded => confidence 'low'."""
+    """degraded => confidence 'low'."""
     from dataclasses import dataclass
     from agent_eval_harness.discovery.enrichment import _enrich_single_agent
 
@@ -1093,6 +1076,5 @@ async def test_cs301_slice4_confidence_degraded_is_low() -> None:
         depth_cap, []
     )
 
-    # When degraded is True, confidence must be 'low'
     assert knowledge.degraded
     assert knowledge.confidence == 'low'

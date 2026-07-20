@@ -10,8 +10,6 @@ from agent_eval_harness.llm.ragas_adapter import stub_missing_langchain_communit
 # Must run before any pytest.importorskip("ragas")/import ragas below, to patch the missing optional dependency.
 stub_missing_langchain_community_vertexai()
 
-pytestmark = pytest.mark.asyncio
-
 
 def _make_fake_client(response: str = "Good response."):
     from agent_eval_harness.llm.client import LLMResponse
@@ -44,10 +42,9 @@ async def test_geval_runs_end_to_end() -> None:
     from agent_eval_harness.llm.fake_client import FakeLLMClient
     from agent_eval_harness.metrics.judges.deepeval_geval import run_geval
 
-    # GEval.a_measure() makes exactly 2 schema-constrained calls in this order:
-    # first it auto-generates evaluation steps (schema=Steps), then it scores the
-    # test case against those steps (schema=ReasonScore, since our adapter has no
-    # native a_generate_raw_response and falls into the schema-based fallback path).
+    # GEval.a_measure() makes 2 schema-constrained calls in order: generate steps (schema=Steps),
+    # then score against them (schema=ReasonScore) — our adapter has no native
+    # a_generate_raw_response, so it falls into the schema-based fallback path.
     steps_response = LLMResponse(
         content=json.dumps({
             "steps": [
@@ -57,8 +54,7 @@ async def test_geval_runs_end_to_end() -> None:
         }),
         model="fake-test",
     )
-    # GEval's default score_range is 0-10 (no custom rubric) — it normalizes the
-    # raw LLM score by dividing by the range span, so "8" here becomes 0.8 below.
+    # GEval's default score_range is 0-10 (no custom rubric); it normalizes by dividing by the range span, so "8" here becomes 0.8 below.
     score_response = LLMResponse(
         content=json.dumps({
             "score": 8,
@@ -175,11 +171,8 @@ async def test_ragas_answer_relevancy_runs_end_to_end_with_embedding_client() ->
 
     from agent_eval_harness.metrics.judges.ragas_judge import run_ragas_answer_relevancy
 
-    # Ragas AnswerRelevancy has an internal evaluation call:
-    # 1. generate 3 questions (LLM) -> parse them
-    # 2. embed original question + 3 generated questions (Embeddings)
-    # 3. calculate cosine similarity between original and generated questions.
-    # So we need to mock both LLM client and embedding client.
+    # Ragas AnswerRelevancy generates 3 questions (LLM), embeds them + the original (Embeddings),
+    # then cosine-similarity scores them — both clients need mocking.
     llm_client = _make_fake_client(
         response=json.dumps({
             "question": "What is the vacation policy?",

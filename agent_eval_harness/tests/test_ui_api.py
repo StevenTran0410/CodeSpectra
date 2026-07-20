@@ -8,8 +8,6 @@ from agent_eval_harness.store import repository
 from agent_eval_harness.store.database import close_db, init_db
 from agent_eval_harness.ui.server import app
 
-pytestmark = pytest.mark.asyncio
-
 
 @pytest.fixture(autouse=True)
 async def _setup_db(tmp_path, monkeypatch):
@@ -20,7 +18,6 @@ async def _setup_db(tmp_path, monkeypatch):
 
 
 async def test_ui_api_endpoints() -> None:
-    # 1. Populate dummy data
     run_id = await repository.insert_run(
         "test_target", map_path="test_targets/t3_reranker/system_map.yaml"
     )
@@ -64,7 +61,6 @@ async def test_ui_api_endpoints() -> None:
 
     await repository.finish_run(run_id, "completed")
 
-    # 2. Test API client
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
         res = await client.get("/api/runs")
@@ -102,22 +98,19 @@ async def test_ui_api_endpoints() -> None:
 async def test_ui_api_rerun_and_providers() -> None:
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-        # Test 1: GET /api/providers
         res = await client.get("/api/providers")
         assert res.status_code == 200
         assert isinstance(res.json(), list)
 
-        # Test 2: Rerun 404
         res = await client.post("/api/runs/nonexistent-run/rerun", json={"model_overrides": {}})
         assert res.status_code == 404
 
-        # Test 3: Rerun 409 for legacy run (missing target/suite_path)
+        # Legacy run missing target/suite_path must 409, not crash.
         legacy_run_id = await repository.insert_run("test_target")
         res = await client.post(f"/api/runs/{legacy_run_id}/rerun", json={"model_overrides": {}})
         assert res.status_code == 409
         assert "predates rerun support" in res.json()["detail"]
 
-        # Test 4: Successful rerun trigger
         valid_run_id = await repository.insert_run(
             target_system_id="test_target",
             map_path="test_targets/t3_reranker/system_map.yaml",
@@ -135,7 +128,6 @@ async def test_ui_api_rerun_and_providers() -> None:
         new_run_id = res.json()["run_id"]
         assert new_run_id != valid_run_id
 
-        # Verify the database contains the correct rerun fields
         new_run = await repository.get_run(new_run_id)
         assert new_run is not None
         assert new_run["parent_run_id"] == valid_run_id

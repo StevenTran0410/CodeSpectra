@@ -7,7 +7,6 @@ from agent_eval_harness.llm.fake_client import FakeLLMClient
 
 @pytest.mark.asyncio
 async def test_decomposition_gold_splits(tmp_path):
-    # Create two temporary system maps with different constraints
     map_path_2 = tmp_path / "system_map_2.yaml"
     map_path_2.write_text("""
 target_system_id: test_system
@@ -50,7 +49,6 @@ components:
         "count": 3
     }
 
-    # count=3 splits into 3 categories (clean, rambling, over_limit), 1 case each via 3 prompts.
     # over_limit's intent count (5) must exceed both maps' max_items_per_call limit to test the split.
     mock_clean = '[{"query": "Do X and Y", "intents": ["I1", "I2"]}]'
     mock_rambling = '[{"query": "Please do X", "intents": ["I1"]}]'
@@ -68,22 +66,18 @@ components:
         LLMResponse(content=mock_over_limit, model="fake")
     ])
 
-    # Run for map with limit = 2
     cases_2 = await generate(config_2, llm_client=fake_client_2)
     assert len(cases_2) == 3
     
     # Over limit cases are tagged with category="over_limit" or similar
     over_limit_case_2 = [c for c in cases_2 if c.labels.get("category") == "over_limit"][0]
     assert len(over_limit_case_2.expected["intents"]) == 5
-    # split size for limit 2 should be: [[I1, I2], [I3, I4], [I5]]
     assert over_limit_case_2.expected["call_split"] == [["I1", "I2"], ["I3", "I4"], ["I5"]]
 
-    # Run for map with limit = 3
     cases_3 = await generate(config_3, llm_client=fake_client_3)
     assert len(cases_3) == 3
     over_limit_case_3 = [c for c in cases_3 if c.labels.get("category") == "over_limit"][0]
     assert len(over_limit_case_3.expected["intents"]) == 5
-    # split size for limit 3 should be: [[I1, I2, I3], [I4, I5]]
     assert over_limit_case_3.expected["call_split"] == [["I1", "I2", "I3"], ["I4", "I5"]]
 
 

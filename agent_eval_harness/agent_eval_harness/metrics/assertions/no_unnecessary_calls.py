@@ -44,7 +44,6 @@ def no_unnecessary_calls(spans: list[dict], component_id: str, params: dict) -> 
             # Can't check empty/missing result
             continue
 
-        # Check if result string appears in any LATER span's input_json
         later_spans = spans[i + 1:]
         result_used = any(
             result in (s.get("input_json") or "") for s in later_spans

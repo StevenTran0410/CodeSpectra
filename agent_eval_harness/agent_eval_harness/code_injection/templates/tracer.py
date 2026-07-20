@@ -5,6 +5,7 @@ import contextlib
 import contextvars
 import json
 import os
+import re
 import time
 import uuid
 from collections.abc import Iterator
@@ -15,9 +16,13 @@ from typing import Any
 from haystack.tracing import Span as HaystackSpan
 from haystack.tracing import Tracer as HaystackTracer
 
-_OUT_DIR = Path(__file__).resolve().parent / "out"
-_LOG_PATH = _OUT_DIR / f"eval_log.{os.getpid()}.jsonl"
 _PIPELINE_ROOT_OPS = {"haystack.pipeline.run", "haystack.async_pipeline.run"}
+
+
+def _out_dir() -> Path:
+    """Run output belongs in the harness data dir, never in the target's source tree."""
+    env = os.getenv("AEH_OUT_DIR")
+    return Path(env) if env else Path(__file__).resolve().parent / "out"
 
 _current_trace_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "aeh_current_trace_id", default=None
@@ -28,15 +33,57 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
+_REDACT_PATTERNS = [
+    re.compile(r"sk-[A-Za-z0-9]{8,}"),
+    re.compile(r"AKIA[0-9A-Z]{16}"),
+    re.compile(r"Bearer\s+[A-Za-z0-9\-._~+/]+=*", re.IGNORECASE),
+    re.compile(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"),  # JWT
+]
+
+_SPANS_WRITTEN = 0
+# Lightweight per-span facts the driver's gate reads back. Kept to scalars so a long run
+# cannot grow this without bound the way holding the span payloads would.
+_SPAN_FACTS: list[dict[str, Any]] = []
+
+
+def _redact(text: str) -> str:
+    for pattern in _REDACT_PATTERNS:
+        text = pattern.sub("[REDACTED]", text)
+    return text
+
+
+def spans_written() -> int:
+    """Span records emitted so far; the driver samples this to prove a case did work."""
+    return _SPANS_WRITTEN
+
+
+def span_facts_since(marker: int) -> list[dict[str, Any]]:
+    """Facts for spans emitted after `marker` (a prior `spans_written()`). The driver's gate
+    reads these to tell a case that did real work from one that returned without doing any."""
+    return _SPAN_FACTS[marker:]
+
+
 def write_log_line(record: dict[str, Any]) -> None:
-    _OUT_DIR.mkdir(parents=True, exist_ok=True)
-    with _LOG_PATH.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(record, ensure_ascii=False, default=str))
+    global _SPANS_WRITTEN
+    if record.get("record") == "span":
+        _SPANS_WRITTEN += 1
+        _SPAN_FACTS.append({
+            "latency_ms": record.get("latency_ms"),
+            "error": record.get("error"),
+            "output_len": len(record.get("output_json") or ""),
+        })
+    path = log_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Redact on the way to disk: an upstream error body can echo a credential, and a log
+    # file that already holds one cannot be un-written by redacting at ingest time.
+    line = _redact(json.dumps(record, ensure_ascii=False, default=str))
+    with path.open("a", encoding="utf-8") as f:
+        f.write(line)
         f.write("\n")
 
 
 def log_path() -> Path:
-    return _LOG_PATH
+    return _out_dir() / f"eval_log.{os.getpid()}.jsonl"
 
 
 @contextlib.contextmanager

@@ -284,6 +284,10 @@ const api = {
     getLogsPath: (): Promise<string> => ipcRenderer.invoke('app:get-logs-path'),
     getDiagnostics: () => ipcRenderer.invoke('app:get-diagnostics'),
     retryBackend: (): Promise<void> => ipcRenderer.invoke('app:retry-backend'),
+    copyToClipboard: (text: string): Promise<void> =>
+      ipcRenderer.invoke('app:copy-to-clipboard', text),
+    showInFolder: (targetPath: string): Promise<void> =>
+      ipcRenderer.invoke('app:show-in-folder', targetPath),
   },
   aeh: {
     start: (): Promise<number> => ipcRenderer.invoke('aeh:start'),
@@ -341,6 +345,8 @@ const api = {
       ipcRenderer.invoke('aeh:restoreEvalBranch', sessionId),
     createEvalPlan: (sessionId: string, baseRef: string) =>
       ipcRenderer.invoke('aeh:createEvalPlan', sessionId, baseRef),
+    getEvalPlan: (sessionId: string) => ipcRenderer.invoke('aeh:getEvalPlan', sessionId),
+    deleteEvalPlan: (sessionId: string) => ipcRenderer.invoke('aeh:deleteEvalPlan', sessionId),
     loadEvalResults: (sessionId: string) =>
       ipcRenderer.invoke('aeh:loadEvalResults', sessionId),
     getEvalRunCases: (runId: string) =>

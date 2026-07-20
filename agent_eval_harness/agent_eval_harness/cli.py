@@ -111,7 +111,6 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     plan_parser = subparsers.add_parser("plan", help="Evaluation plan commands")
     plan_subparsers = plan_parser.add_subparsers(dest="plan_command", required=False)
 
-    # validate subcommand: aeh plan validate --plan <path>
     validate_parser = plan_subparsers.add_parser("validate", help="Validate an evaluation plan")
     validate_parser.add_argument("--plan", required=True, help="path to eval_plan.yaml")
     _add_data_dir_arg(validate_parser)
@@ -128,7 +127,6 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     _add_data_dir_arg(report_parser)
     report_parser.add_argument("--json", action="store_true")
 
-    # map subcommand group
     map_parser = subparsers.add_parser("map", help="Build a system_map.yaml from target source")
     map_parser.add_argument("--target", required=True, help="directory of Python source to scan")
     map_parser.add_argument("--docs", dest="docs_path", default=None)
@@ -637,7 +635,6 @@ async def _enrich_command(args: argparse.Namespace) -> int:
         client = CodeSpectraClient(backend_url, backend_token)
 
         try:
-            # Load session and related data
             sess = await repository.get_expansion_session(args.session_id)
             if not sess:
                 raise SystemExit(f"Session {args.session_id} not found")

@@ -8,13 +8,16 @@ def run_async_blocking(coro_fn, *args, **kwargs):
     """Run an async function from a blocking context."""
     import asyncio
 
+    # Probe for a running loop BEFORE building the coroutine — asyncio.run() first would leave an orphaned, un-awaited coroutine on RuntimeError.
     try:
-        return asyncio.run(coro_fn(*args, **kwargs))
+        loop = asyncio.get_running_loop()
     except RuntimeError:
-        import nest_asyncio
+        return asyncio.run(coro_fn(*args, **kwargs))
 
-        nest_asyncio.apply()
-        return asyncio.get_event_loop().run_until_complete(coro_fn(*args, **kwargs))
+    import nest_asyncio
+
+    nest_asyncio.apply()
+    return loop.run_until_complete(coro_fn(*args, **kwargs))
 
 
 def stub_missing_langchain_community_vertexai() -> None:
@@ -89,10 +92,7 @@ def make_ragas_llm_adapter(llm_client: LLMClient):
 
 
 def make_ragas_embeddings(embedding_client):
-    """Returns a Langchain Embeddings implementation that delegates to the given EmbeddingClient.
-
-    No dummy vectors — callers must supply a real client.
-    """
+    """Returns a Langchain Embeddings implementation that delegates to the given EmbeddingClient — no dummy vectors, callers must supply a real client."""
     try:
         from langchain_core.embeddings import Embeddings
     except ImportError as exc:

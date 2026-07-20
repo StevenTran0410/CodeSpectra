@@ -42,7 +42,6 @@ def mine_constraints(
 
                 for item in node.body:
                     if isinstance(item, ast.Assign):
-                        # Check if target is a simple Name with UPPER_CASE pattern
                         if len(item.targets) == 1:
                             target = item.targets[0]
                             if isinstance(target, ast.Name):
@@ -95,7 +94,6 @@ async def mine_constraints_llm_phase(
         if candidate.is_tool:
             continue
 
-        # Collect string literals from methods
         literals = []
         for hint in candidate.manual_span_hints:
             # Get or parse the candidate's file, using cache to avoid re-parsing
@@ -129,7 +127,6 @@ async def mine_constraints_llm_phase(
         if not filtered_literals:
             continue
 
-        # Call LLM
         user_prompt = "Extract constraints from these literals:\n\n" + "\n---\n".join(
             filtered_literals
         )

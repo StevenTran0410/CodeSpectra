@@ -1,5 +1,4 @@
-"""Explicit test for the load-bearing correctness property: faithfulness must be
-judged against what the writer actually received, not the gold/corpus context."""
+"""Explicit test for the load-bearing correctness property: faithfulness must be judged against what the writer actually received, not the gold/corpus context."""
 from __future__ import annotations
 
 import json
@@ -11,8 +10,6 @@ from agent_eval_harness.llm.ragas_adapter import stub_missing_langchain_communit
 
 # Must run before any pytest.importorskip("ragas")/import ragas below, to patch the missing optional dependency.
 stub_missing_langchain_community_vertexai()
-
-pytestmark = pytest.mark.asyncio
 
 
 def _writer_span(context: list[str]) -> dict:
@@ -43,7 +40,6 @@ async def test_faithfulness_uses_writer_span_input_not_gold() -> None:
 
     spans = [_writer_span(WRITER_RECEIVED_CONTEXT)]
 
-    # Verify the extraction function returns writer's context, not gold or corpus
     extracted = _extract_writer_contexts(spans, "writer")
     assert extracted == WRITER_RECEIVED_CONTEXT, (
         f"expected writer's received context {WRITER_RECEIVED_CONTEXT!r}, "

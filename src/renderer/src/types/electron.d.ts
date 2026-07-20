@@ -1,5 +1,3 @@
-// ── Job / Analysis pipeline ───────────────────────────────────────────────────
-
 export interface SectionDoneEvent {
   type?: string
   section: string
@@ -29,8 +27,6 @@ export interface Job {
   started_at: string
   finished_at: string | null
 }
-
-// ── Workspace ─────────────────────────────────────────────────────────────────
 
 export interface Workspace {
   id: string
@@ -266,8 +262,6 @@ export interface CyclesResponse {
   cycles: string[][]
 }
 
-// ── Function-level symbol edge drill-down (graph viewer) ─────────────────────
-
 export interface SymbolEdgeInfo {
   src_symbol: string
   dst_symbol: string
@@ -491,8 +485,6 @@ export interface ValidateFolderResponse {
   has_size_warning: boolean
   size_warning_reason: string | null
 }
-
-// ── Providers ─────────────────────────────────────────────────────────────────
 
 export type ProviderKind = 'ollama' | 'lmstudio' | 'openai' | 'anthropic' | 'gemini' | 'deepseek'
 
@@ -833,6 +825,9 @@ declare global {
             module: string
           }>
         }>
+        retryBackend: () => Promise<void>
+        copyToClipboard: (text: string) => Promise<void>
+        showInFolder: (targetPath: string) => Promise<void>
       }
       aeh: {
         start: () => Promise<number>
@@ -930,7 +925,14 @@ declare global {
           baseRef: string
         ) => Promise<{ branch_name: string; current_branch: string }>
         restoreEvalBranch: (sessionId: string) => Promise<{ restored_branch: string }>
-        createEvalPlan: (sessionId: string, baseRef: string) => Promise<{ plan_path: string }>
+        createEvalPlan: (
+          sessionId: string,
+          baseRef: string
+        ) => Promise<{ plan_path: string; plan_dir: string; files: string[] }>
+        getEvalPlan: (
+          sessionId: string
+        ) => Promise<{ plan_path: string | null; plan_dir: string | null; files: string[] }>
+        deleteEvalPlan: (sessionId: string) => Promise<{ deleted: number }>
         loadEvalResults: (sessionId: string) => Promise<{ run_id: string; status: string }>
         getEvalRunCases: (runId: string) => Promise<{
           run_id: string
@@ -954,6 +956,8 @@ declare global {
           runId: string,
           body: {
             agent_id: string
+            /** Re-scores cases that already have evaluations, replacing them. */
+            force?: boolean
             provider_id?: string | null
             model_id?: string | null
             reasoning_effort?: string | null

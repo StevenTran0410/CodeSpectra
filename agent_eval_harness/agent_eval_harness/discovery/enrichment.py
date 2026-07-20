@@ -61,30 +61,42 @@ _CONFIDENCE_MEDIUM_MIN_FIELDS = 2
 
 
 def agent_knowledge_dir(session_id: str) -> Path:
-    """Directory for enriched AgentKnowledge JSON sidecars."""
+    """Write target for enriched AgentKnowledge JSON sidecars; routes through AEH_DATA_DIR (Roaming) for alignment with aeh.db and plan artifacts."""
+    return aeh_data_root() / "agents" / session_id
+
+
+def _legacy_agent_knowledge_dir(session_id: str) -> Path:
+    """Pre-Roaming sidecar location — read-only fallback for sessions enriched before the move."""
     return Path.home() / "AppData" / "Local" / "codespectra" / "agents" / session_id
+
+
+def resolve_agent_knowledge_dir(session_id: str) -> Path | None:
+    """First sidecar dir that actually holds JSON; None so callers degrade to markers."""
+    for candidate in (agent_knowledge_dir(session_id), _legacy_agent_knowledge_dir(session_id)):
+        if candidate.exists() and any(candidate.glob("*.json")):
+            return candidate
+    return None
+
+
+def aeh_data_root() -> Path:
+    """Root directory for all AEH artifacts (db, plans, agent sidecars); uses AEH_DATA_DIR env var (set by Electron to userData/Roaming), falling back to cwd for CLI/testing."""
+    return Path(os.getenv("AEH_DATA_DIR", "."))
 
 
 _ENTRY_METHOD_NAMES = ("run", "run_async", "__call__")
 
 
 def _parse_signature_kwargs(signature: str) -> list[tuple[str, str]]:
-    """Extract kwarg (name, type_hint) tuples from a method signature, skipping self/cls.
-
-    On any parse ambiguity (e.g., nested generics with commas), return empty
-    so the caller can defensively drop input_contract for this agent.
-    """
+    """Extract kwarg (name, type_hint) tuples from a method signature, skipping self/cls; returns empty on parse ambiguity (e.g. nested generics) so the caller can drop input_contract."""
     if not signature or '(' not in signature:
         return []
     try:
-        # Extract the parameter list between ( and )
         start = signature.index('(')
         end = signature.rindex(')')
         params_str = signature[start + 1:end]
         if not params_str:
             return []
 
-        # Split by comma at top level (balanced brackets)
         parts = []
         current = ""
         depth = 0
@@ -105,7 +117,6 @@ def _parse_signature_kwargs(signature: str) -> list[tuple[str, str]]:
         for part in parts:
             if not part:
                 continue
-            # Extract name (before :) and type_hint (after :)
             if ':' in part:
                 name_part, type_part = part.split(':', 1)
                 kwarg_name = name_part.strip().split('=')[0].split()[0]
@@ -377,30 +388,10 @@ async def enrich_agents(
     agent_flows_path: str | Path | None = None,
     repo_root: str | Path | None = None,
 ) -> list[AgentKnowledge]:
-    """Orchestrate concurrent enrichment of discovered agents.
+    """Orchestrate concurrent enrichment of discovered agents; returns one AgentKnowledge per agent.
 
-    Args:
-        session_id: Expansion session ID for artifact storage
-        agent_flow_map: Discovered agent flows
-        system_map: System component map
-        accepted_with_annotations: Files with role hints and annotations
-        accepted_edges: Discovered file-to-file edges
-        client: retrieval client for search queries
-        llm_client: LLM client for analysis
-        snapshot_id: Snapshot to run retrieval queries against. Omit only in tests that
-            never fire a query — a real caller must pass this or queries no-op.
-        depth: 'normal' (≤3 queries, ≤2 LLM calls) or 'deep' (≤6 queries, ≤3 rounds)
-        agent_ids: If provided, enrich only these agents (subset)
-        force_agent_ids: If provided, re-enrich these agents even if cached
-        map_path: If provided, gated component roles are written back onto
-            `system_map` and persisted here — system_map YAML is the sole authority for role.
-        agent_flows_path: If provided, `AgentFlow.role` (derived in code from gated component
-            roles, never asked of the LLM) is persisted here.
-        repo_root: Root to resolve prompt-site file paths and citations against. None keeps
-            the default `_resolve_repo_root()` behaviour byte-identical.
-
-    Returns:
-        List of AgentKnowledge objects, one per agent
+    snapshot_id must be passed by real callers (queries no-op without it); map_path is where
+    gated component roles are persisted back — system_map YAML is the sole authority for role.
     """
     resolved_repo_root = Path(repo_root) if repo_root is not None else None
     force_ids = set(force_agent_ids or [])
@@ -412,14 +403,12 @@ async def enrich_agents(
     if not target_agents:
         return []
 
-    # Per-depth caps
     caps = {
         'normal': {'queries': 3, 'llm_calls': 2},
         'deep': {'queries': 6, 'llm_calls': 3},
     }
     depth_cap = caps.get(depth, caps['normal'])
 
-    # Shared semaphore for retrieval throttling (wraps search_retrieval/query only)
     semaphore = asyncio.Semaphore(_RETRIEVAL_CONCURRENCY)
 
     ctx = _EnrichmentContext(
@@ -437,11 +426,9 @@ async def enrich_agents(
         repo_root=resolved_repo_root,
     )
 
-    # Stage 1: Gather shared evidence (prompt sites, component metadata, edges)
     async def _gather(_: dict[str, Any]) -> dict[str, Any]:
         return await _gather_evidence(ctx)
 
-    # Stage 2: Enrich each agent (fan-out, all depend on gather)
     nodes: list[DagNode] = [DagNode("gather", [], _gather)]
 
     accepted_files = [
@@ -476,7 +463,6 @@ async def enrich_agents(
 
         nodes.append(DagNode(enrich_name, ["gather"], _enrich))
 
-    # Stage 3: Persist all enriched knowledge
     enrich_names = [f"enrich:{a.id}" for a in target_agents]
 
     async def _persist(results: dict[str, Any]) -> None:
@@ -502,8 +488,7 @@ async def enrich_agents(
                 query_count=knowledge.query_count,
             )
 
-            # A degraded agent's verdicts are never applied — one agent failing must never
-            # blank another agent's good role.
+            # A degraded agent's verdicts are never applied — one agent failing must never blank another's good role.
             if knowledge.degraded:
                 continue
             for verdict in knowledge.component_roles:
@@ -519,21 +504,18 @@ async def enrich_agents(
                 component.role_confidence = confidence
                 component.role_source = 'llm_constrained'
 
-        # AgentFlow.role is DERIVED in code from the just-applied gated component roles,
-        # never asked of the LLM.
+        # AgentFlow.role is derived here from the just-applied gated component roles, never asked of the LLM.
         if agent_flows_path:
             for flow in ctx.agent_flow_map.agents:
                 flow.role = _derive_agent_role(flow, ctx.system_map)
             save_agent_flow_map(ctx.agent_flow_map, agent_flows_path)
 
-        # system_map YAML is the sole authority for role — write it LAST, only after every
-        # agent's md/json/DB row (and agent_flows) above has already succeeded.
+        # system_map YAML is the sole authority for role — write it LAST, after every agent's md/json/DB row (and agent_flows) succeeded.
         if map_path:
             save_system_map(ctx.system_map, map_path)
 
     nodes.append(DagNode("persist", enrich_names, _persist))
 
-    # DAG validation before run
     dep_names = {n.name for n in nodes}
     for n in nodes:
         missing = [d for d in n.deps if d not in dep_names]
@@ -549,14 +531,8 @@ async def enrich_agents(
 
 
 async def _gather_evidence(ctx: _EnrichmentContext) -> dict[str, Any]:
-    """Gather shared evidence: prompt sites, component info, edges.
-
-    Returns dict with:
-    - prompt_sites_by_file: dict[file, list[PromptSite]]
-    - component_by_agent: dict[agent_id, list[dict]]
-    - edges_by_agent: dict[agent_id, list[dict]]
-    - source_coverage: dict[agent_id, float] (0-1 estimated coverage)
-    """
+    """Gather shared evidence: prompt sites, component info, edges. Returns a dict with
+    prompt_sites_by_file, component_by_agent, edges_by_agent, and source_coverage (0-1 per agent)."""
     accepted_files = [
         item["file"] if isinstance(item, dict) else item
         for item in ctx.accepted_with_annotations
@@ -572,7 +548,6 @@ async def _gather_evidence(ctx: _EnrichmentContext) -> dict[str, Any]:
         scan_for_prompt_sites(scan_root, accepted_files) if scan_root is not None else {}
     )
 
-    # Build per-agent component info
     component_by_agent: dict[str, list[dict]] = {}
     for agent in ctx.agent_flow_map.agents:
         agent_components = []
@@ -591,7 +566,6 @@ async def _gather_evidence(ctx: _EnrichmentContext) -> dict[str, Any]:
                 })
         component_by_agent[agent.id] = agent_components
 
-    # Build per-agent edges
     edges_by_agent: dict[str, list[dict]] = {}
     for agent in ctx.agent_flow_map.agents:
         agent_edges = []
@@ -605,7 +579,6 @@ async def _gather_evidence(ctx: _EnrichmentContext) -> dict[str, Any]:
                 agent_edges.append(edge)
         edges_by_agent[agent.id] = agent_edges
 
-    # Estimate source coverage per agent
     source_coverage: dict[str, float] = {}
     for agent in ctx.agent_flow_map.agents:
         covered_files = len([
@@ -632,7 +605,6 @@ async def _enrich_single_agent(
 ) -> AgentKnowledge:
     """Enrich a single agent: check cache, verify coverage, run queries/LLM, persist."""
 
-    # 1. Compute evidence hash (hoisted before cache check)
     component_ids = sorted([
         c['id'] for c in evidence['component_by_agent'].get(agent_id, [])
     ])
@@ -648,14 +620,12 @@ async def _enrich_single_agent(
     ])
     evidence_hash = hashlib.sha256(hash_input.encode('utf-8')).hexdigest()
 
-    # 2. Check cache — short-circuit only when hash matches and agent not forced
     cached = await repository.get_agent_knowledge(ctx.session_id, agent_id)
     if (
         cached and
         cached.get('evidence_hash') == evidence_hash and
         agent_id not in ctx.force_agent_ids
     ):
-        # Return cached knowledge without LLM calls — read from json_path on disk
         try:
             cached_json_path = Path(cached.get('json_path', ''))
             if cached_json_path.exists():
@@ -664,7 +634,7 @@ async def _enrich_single_agent(
         except Exception as e:
             logger.warning(f"Failed to deserialize cached knowledge for {agent_id}: {e}")
 
-    # 3. Coverage check — gates the SUPPLEMENTARY pre-query only; the LLM call always runs.
+    # Gates the SUPPLEMENTARY pre-query only; the LLM call always runs.
     prompt_sites = evidence['prompt_sites_by_file']
     components = evidence['component_by_agent'].get(agent_id, [])
     component_files = {c['file'] for c in components if c.get('file')}
@@ -676,7 +646,6 @@ async def _enrich_single_agent(
         evidence['source_coverage'].get(agent_id, 0) >= _COVERAGE_SUFFICIENT_THRESHOLD
     )
 
-    # 4. LLM enrichment with round-1 and optional round-2
     query_count = 0
     llm_calls = 0
 
@@ -694,8 +663,6 @@ async def _enrich_single_agent(
             generated_at=utc_now_iso(),
         )
 
-    # Evidence the LLM cites from: components (+ admissible-role facts the hard gate below
-    # enforces), prompt sites, edges.
     context_lines = [f"Agent: {agent.label}", ""]
     if components:
         context_lines.append(f"Components ({len(components)}):")
@@ -747,7 +714,6 @@ async def _enrich_single_agent(
             context_lines.append("=== GROUND TRUTH — direct from DB, related files (known edges + symbol calls) ===")
             context_lines.extend(related_lines)
 
-    # Deterministic pre-query: supplementary bare-keyword RRF search, skipped when coverage is already sufficient.
     if not coverage_sufficient and ctx.snapshot_id and query_count < depth_cap['queries']:
         pre_query_block = await _execute_queries(ctx, [agent.label])
         query_count += 1
@@ -757,7 +723,6 @@ async def _enrich_single_agent(
 
     context_str = "\n".join(context_lines)
 
-    # Full-schema round-1 prompt with JSON shape examples
     full_schema_prompt = f"""Analyze this agent and return detailed semantic profile in JSON format.
 
 {context_str}
@@ -831,7 +796,6 @@ If you need more information to provide complete answers, set need_more to true 
             query_count += executed_queries
             llm_calls += 1
 
-            # Build round-2 prompt with real query results
             round2_prompt = (
                 f"Given your previous analysis, here are the follow-up query results you asked for:\n\n"
                 f"{query_results}\n\n"
@@ -871,8 +835,7 @@ If you need more information to provide complete answers, set need_more to true 
         logger.exception(f"Enrichment failed for {agent_id}: {e}")
         llm_knowledge = AgentKnowledge(degraded=True, degraded_reason=f"Enrichment exception: {str(e)}")
 
-    # 5. Hard gate — mirrors roles.py's structural subtraction: the prompt lists the
-    # admissible set, the code enforces it.
+    # Mirrors roles.py's structural subtraction: the prompt lists the admissible set, the code enforces it.
     structural_by_id = {c['id']: c for c in components}
     gated_roles: list[ComponentRoleVerdict] = []
     for verdict in llm_knowledge.component_roles:
@@ -888,7 +851,7 @@ If you need more information to provide complete answers, set need_more to true 
         ))
     llm_knowledge.component_roles = gated_roles
 
-    # 6. Static-wins merge — structural fields never come from the LLM
+    # Structural fields never come from the LLM.
     llm_knowledge.evidence_hash = evidence_hash
     llm_knowledge.query_count = query_count
     llm_knowledge.generated_at = utc_now_iso()
@@ -896,7 +859,6 @@ If you need more information to provide complete answers, set need_more to true 
     # code_symbols rows keyed by file, reused for both the structural fill and citation verification.
     symbols_by_file: dict[str, list[dict]] = {}
 
-    # Fill location/components/input_contract from code_symbols if snapshot_id is available
     if ctx.snapshot_id and agent_id in evidence.get('component_by_agent', {}):
         components_list = evidence['component_by_agent'][agent_id]
         if components_list:
@@ -910,12 +872,10 @@ If you need more information to provide complete answers, set need_more to true 
                             symbols = symbols_response.get('symbols', [])
                             symbols_by_file[comp_file] = symbols
 
-                            # Extract class name from the first component's entry_point
                             if components_list[0].get('entry_point'):
                                 _, _, class_name = components_list[0]['entry_point'].partition(':')
                                 class_name = class_name.split('.')[0]
 
-                                # Find class row for location
                                 class_row = None
                                 method_row = None
                                 for sym in symbols:
@@ -927,7 +887,6 @@ If you need more information to provide complete answers, set need_more to true 
                                         if method_row is None or _ENTRY_METHOD_NAMES.index(sym.get('name')) < _ENTRY_METHOD_NAMES.index(method_row.get('name')):
                                             method_row = sym
 
-                                # Fill location from class and method rows
                                 if class_row and method_row:
                                     llm_knowledge.location = LocationInfo(
                                         file=comp_file,
@@ -936,7 +895,6 @@ If you need more information to provide complete answers, set need_more to true 
                                         entry_method=method_row.get('name', ''),
                                         entry_line=method_row.get('line_start', 0),
                                     )
-                                    # Fill input_contract from method signature
                                     sig = method_row.get('signature', '')
                                     kwargs_with_hints = _parse_signature_kwargs(sig)
                                     if kwargs_with_hints:
@@ -945,7 +903,6 @@ If you need more information to provide complete answers, set need_more to true 
                                             for name, hint in kwargs_with_hints
                                         ]
 
-                                    # Fill output_contract from AST harvest
                                     try:
                                         comp_for_harvest = None
                                         for comp in components_list:
@@ -967,7 +924,6 @@ If you need more information to provide complete answers, set need_more to true 
                                     except Exception as e:
                                         logger.debug(f"Failed to harvest output_contract for {agent_id}: {e}")
 
-                                # Fill components
                                 for comp in components_list:
                                     if class_row and comp.get('file') == comp_file:
                                         llm_knowledge.components.append(ComponentRef(
@@ -981,11 +937,9 @@ If you need more information to provide complete answers, set need_more to true 
             except Exception as e:
                 logger.warning(f"Failed to fill structural fields for {agent_id}: {e}")
     else:
-        # No snapshot or no components — degrade silently
         if not ctx.snapshot_id:
             logger.warning(f"No snapshot_id for {agent_id} — cannot fill structural fields")
 
-    # Populate prompt_sites from evidence for this agent's components
     if agent_id in evidence.get('component_by_agent', {}):
         comp_files = {
             c['file'] for c in evidence['component_by_agent'][agent_id]
@@ -996,7 +950,7 @@ If you need more information to provide complete answers, set need_more to true 
             if file in comp_files:
                 llm_knowledge.prompt_sites.extend(PromptSiteRef(**asdict(s)) for s in sites)
 
-    # 7. Verify citations — mutates knowledge.needs_human for unverified/phantom claims
+    # Mutates knowledge.needs_human for unverified/phantom claims.
     verify_root = _resolve_repo_root(ctx.repo_root)
     if verify_root is None:
         logger.warning(
@@ -1005,8 +959,7 @@ If you need more information to provide complete answers, set need_more to true 
             agent_id,
         )
     else:
-        # Fetch symbols for any cited file not already pulled during the fill, so span-based
-        # citation resolution covers cross-file citations too — not just the agent's own file.
+        # Fetch symbols for any cited file not already pulled, so span-based citation resolution covers cross-file citations too.
         if ctx.snapshot_id:
             cited_files = {
                 c.file for src in (
@@ -1032,15 +985,12 @@ If you need more information to provide complete answers, set need_more to true 
                 sum(1 for c in vreport.claims if c.status == "unverified"),
             )
 
-    # 8. Confidence from field-fullness + needs_human + query_count
     if llm_knowledge.degraded:
         llm_knowledge.confidence = 'low'
     elif llm_knowledge.needs_human:
         # Hard invariant: needs_human non-empty => never 'high'
         llm_knowledge.confidence = 'medium'
     else:
-        # Score field-fullness: count populated among {functionality, functionality_citations,
-        # location, components, input_contract, prompt_sites, context_builders, failure_modes}
         field_count = sum([
             bool(llm_knowledge.functionality),
             bool(llm_knowledge.functionality_citations),

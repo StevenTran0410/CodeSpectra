@@ -28,9 +28,7 @@ def _span(
     }
 
 
-# ────────────────────────────────────────────────────────────────────────────
 # max_items_per_call
-# ────────────────────────────────────────────────────────────────────────────
 
 def test_max_items_per_call_pass() -> None:
     from agent_eval_harness.metrics.assertions.max_items_per_call import max_items_per_call
@@ -63,9 +61,7 @@ def test_max_items_per_call_fail() -> None:
     assert "s1" in result.details["offending_span_ids"]
 
 
-# ────────────────────────────────────────────────────────────────────────────
 # max_retries
-# ────────────────────────────────────────────────────────────────────────────
 
 def test_max_retries_pass() -> None:
     from agent_eval_harness.metrics.assertions.max_retries import max_retries
@@ -92,9 +88,7 @@ def test_max_retries_fail() -> None:
     assert result.details["span_count"] == 3
 
 
-# ────────────────────────────────────────────────────────────────────────────
 # allowed_downstream
-# ────────────────────────────────────────────────────────────────────────────
 
 def test_allowed_downstream_pass() -> None:
     from agent_eval_harness.metrics.assertions.allowed_downstream import allowed_downstream
@@ -131,9 +125,7 @@ def test_allowed_downstream_skips_unmatched() -> None:
     assert result.passed is True
 
 
-# ────────────────────────────────────────────────────────────────────────────
 # retry_on_reject_required
-# ────────────────────────────────────────────────────────────────────────────
 
 def test_retry_on_reject_required_pass() -> None:
     """Judge rejects, then a second worker span follows → pass."""
@@ -198,9 +190,7 @@ def test_retry_on_reject_required_vacuous_pass_no_rejections() -> None:
     assert result.details["rejections"] == 0
 
 
-# ────────────────────────────────────────────────────────────────────────────
 # arg_schema
-# ────────────────────────────────────────────────────────────────────────────
 
 def test_arg_schema_pass() -> None:
     from agent_eval_harness.metrics.assertions.arg_schema import arg_schema
@@ -252,9 +242,7 @@ def test_arg_schema_only_checks_tool_call_spans() -> None:
     assert result.passed is True
 
 
-# ────────────────────────────────────────────────────────────────────────────
 # no_unnecessary_calls
-# ────────────────────────────────────────────────────────────────────────────
 
 def test_no_unnecessary_calls_pass() -> None:
     from agent_eval_harness.metrics.assertions.no_unnecessary_calls import no_unnecessary_calls
@@ -303,9 +291,7 @@ def test_no_unnecessary_calls_fail_unused_result() -> None:
     assert any(f["span_id"] == "tool1" for f in result.details["flagged_tool_calls"])
 
 
-# ────────────────────────────────────────────────────────────────────────────
 # schema_valid
-# ────────────────────────────────────────────────────────────────────────────
 
 def test_schema_valid_pass() -> None:
     from agent_eval_harness.metrics.assertions.schema_valid import schema_valid
@@ -343,9 +329,7 @@ def test_schema_valid_ignores_tool_call_spans() -> None:
     assert result.details["checked_spans"] == 0
 
 
-# ────────────────────────────────────────────────────────────────────────────
 # fallback_sentinel
-# ────────────────────────────────────────────────────────────────────────────
 
 def test_fallback_sentinel_pass_real_output() -> None:
     from agent_eval_harness.metrics.assertions.fallback_sentinel import fallback_sentinel
@@ -386,9 +370,7 @@ def test_fallback_sentinel_dynamic_marker_ignored_in_comparison() -> None:
     assert result.passed is False  # confidence="low" still matches -> this IS a fallback hit
 
 
-# ────────────────────────────────────────────────────────────────────────────
 # metamorphic_relation  (CS-302 Slice 1)
-# ────────────────────────────────────────────────────────────────────────────
 
 def test_metamorphic_relation_self_consistency_pass_and_fail() -> None:
     """Self-consistency (transform=null): scored directly off the reviewed source gold carried
@@ -456,9 +438,7 @@ def test_metamorphic_relation_bad_invariant_params_degrades_not_crash() -> None:
     assert "not_a_real_op" in result.details["reason"]
 
 
-# ────────────────────────────────────────────────────────────────────────────
 # field_match
-# ────────────────────────────────────────────────────────────────────────────
 
 def test_field_match_pass_exact_set_and_tolerance() -> None:
     from agent_eval_harness.metrics.assertions.field_match import field_match
@@ -529,9 +509,7 @@ def test_field_match_invalid_json_output_fails() -> None:
     assert result.details["reason"] == "invalid_json_output"
 
 
-# ────────────────────────────────────────────────────────────────────────────
 # llm_call_budget
-# ────────────────────────────────────────────────────────────────────────────
 
 def test_llm_call_budget_pass() -> None:
     from agent_eval_harness.metrics.assertions.llm_call_budget import llm_call_budget
@@ -567,9 +545,7 @@ def test_llm_call_budget_no_budget_specified_degrades_to_none() -> None:
     assert result.details["reason"] == "no_budget_specified"
 
 
-# ────────────────────────────────────────────────────────────────────────────
 # referential_integrity
-# ────────────────────────────────────────────────────────────────────────────
 
 def test_referential_integrity_pass_subset_of_allowed() -> None:
     from agent_eval_harness.metrics.assertions.referential_integrity import referential_integrity

@@ -274,7 +274,6 @@ async def test_expansion_batch_classification_fewer_calls() -> None:
     res = await expand_candidate("snap-123", candidate, client, llm_client, node_budget=5, hop_cap=3)
     accepted_files = sorted([item["file"] for item in res["accepted"]])
     assert accepted_files == ["file_a.py", "file_b.py", "file_c.py"]
-    # Verify that exactly 1 LLM call was made for this first batch level
     assert llm_client.call_count == 1
 
 

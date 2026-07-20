@@ -329,6 +329,17 @@ async def delete_dataset(dataset_id: str) -> None:
     await db.commit()
 
 
+async def delete_evaluations_for_component(run_id: str, component_id: str) -> int:
+    """Clears one component's evaluations so a re-judge replaces them instead of stacking a
+    second set of rows on top. Returns how many were removed. Idempotent."""
+    db = get_db()
+    cursor = await db.execute(
+        "DELETE FROM evaluations WHERE run_id = ? AND component_id = ?", (run_id, component_id)
+    )
+    await db.commit()
+    return cursor.rowcount or 0
+
+
 async def insert_evaluation(
     run_id: str,
     metric_name: str,

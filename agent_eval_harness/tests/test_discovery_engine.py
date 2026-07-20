@@ -314,7 +314,6 @@ async def test_risk_flag_forces_needs_human_on_hub_overlap() -> None:
         ),
     ])
 
-    # Create ProjectContext with risk findings that overlap hub_paths
     project_context = ProjectContext(
         risk_findings=[
             {
@@ -401,7 +400,6 @@ async def test_pass_c_prompt_includes_identity_context() -> None:
             # Capture the user prompt for inspection
             user_msg = [m for m in messages if m.role == "user"][0]
             captured_prompts.append(user_msg.content)
-            # Return a valid response
             return LLMResponse(
                 content='{"is_agentic_system": true, "name": "Test Agent", '
                 '"frameworks": ["haystack"], "entry_points": [], "confidence": "high"}',
@@ -410,7 +408,6 @@ async def test_pass_c_prompt_includes_identity_context() -> None:
 
     llm_client = _PromptCapturingLLMClient()
 
-    # Create ProjectContext with identity section
     project_context = ProjectContext(
         identity=ReportSection(
             content={

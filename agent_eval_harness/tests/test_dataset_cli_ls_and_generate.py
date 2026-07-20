@@ -12,7 +12,6 @@ def _restore_shared_db_after_cli_closes_it():
     asyncio.run(init_db())
 
 def test_cli_dataset_commands(tmp_path, capsys):
-    # 1. Create a config file for mechanical guard classification
     config_file = tmp_path / "guard_config.yaml"
     config_file.write_text("""
 dataset_name: t2_cli_guard
@@ -28,7 +27,6 @@ categories:
     count: 35
 """, encoding="utf-8")
 
-    # 2. Run generate CLI command
     exit_code_gen = cli.main([
         "dataset", "generate",
         "--kind", "guard_classification",
@@ -41,7 +39,6 @@ categories:
     assert "Generated 85 cases" in out_gen
     assert "t2_cli_guard_v1" in out_gen
 
-    # 3. Run ls CLI command
     exit_code_ls = cli.main([
         "dataset", "ls"
     ])

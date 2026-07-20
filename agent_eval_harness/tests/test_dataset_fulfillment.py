@@ -24,8 +24,6 @@ from agent_eval_harness.planning.contract import (
 from agent_eval_harness.planning.report import AgentPlanReport, EvaluationPlanReport, save_plan_report
 from agent_eval_harness.store import repository
 
-pytestmark = pytest.mark.asyncio
-
 
 def _write_plan(path, entries_yaml: str) -> None:
     path.write_text(f"entries:\n{entries_yaml}", encoding="utf-8")
@@ -199,8 +197,7 @@ async def test_export_dataset_excludes_synthetic_never_leaves_aeh():
 
 
 async def test_prune_prior_versions_removes_old_keeps_latest_and_other_bases():
-    """Re-fulfilling must not accumulate v1/v2/v3: _prune_prior_versions drops older versions of
-    the same base_name (keeping the just-written one) and never touches a different base_name."""
+    """Re-fulfilling must not accumulate v1/v2/v3: _prune_prior_versions drops older versions of the same base_name (keeping the just-written one) and never touches a different base_name."""
     from agent_eval_harness.datasets.fulfillment import _prune_prior_versions
 
     base = "synthetic_agent_io_agentX"
@@ -411,7 +408,7 @@ def _contract_with_kwargs(
             constructor_deps=["ProviderConfigService", "RetrievalService"],
         ),
         query_planning_subcall=query_planning,
-        has_retrieval_signal=True,  # D1: signal set by harvest; required for non-unimplemented archetypes
+        has_retrieval_signal=True,  # signal set by harvest; required for non-unimplemented archetypes
     )
 
 
@@ -425,7 +422,7 @@ def test_archetype_for_unimplemented_without_retrieval_signal():
 
 
 def test_archetype_for_real_archetype_when_has_retrieval_signal_and_empty_constructor_deps():
-    # A6/D1: empty constructor_deps is no longer a blocker when has_retrieval_signal is True (e.g. role-tier fired)
+    # empty constructor_deps is no longer a blocker when has_retrieval_signal is True (e.g. role-tier fired)
     contract = EvaluationContract(
         agent_id="retriever",
         invocation=InvocationContract(kwargs=[], constructor_deps=[]),
@@ -626,9 +623,7 @@ async def test_fulfill_plan_synthetic_agent_io_fulfilled_end_to_end(tmp_path):
 
 
 async def test_fulfill_plan_force_agent_ids_regenerates_already_fulfilled_dataset(tmp_path):
-    """The "Regenerate" action (DatasetReviewScreen) — a synthetic_agent_io dataset that's
-    already fulfilled is normally skipped entirely (see the carry-forward test above); force_agent_ids
-    must delete the stale dataset and its cases, then let the walk re-fulfill it as if new."""
+    """The "Regenerate" action (DatasetReviewScreen) — an already-fulfilled dataset is normally skipped entirely; force_agent_ids must delete the stale dataset and its cases, then let the walk re-fulfill it as if new."""
     map_path = tmp_path / "map.yaml"
     _write_plan_report(map_path, agent_id="auditor", eval_enabled=True)
     plan_path = tmp_path / "plan.yaml"
@@ -661,9 +656,7 @@ async def test_fulfill_plan_force_agent_ids_regenerates_already_fulfilled_datase
     )
     assert "synthetic_agent_io/auditor" not in rerun_report
 
-    # force_agent_ids resets required.min_cases to the global knob (DEFAULT_CASES_PER_AGENT, 5 by
-    # default) — it can't recover the stale entry's original 2, that's gone once fulfilled. 3
-    # items/round covers 5 in 2 rounds, well under the round ceiling, with no top-up needed.
+    # force_agent_ids resets required.min_cases to the global knob (DEFAULT_CASES_PER_AGENT, 5) — it can't recover the stale entry's original 2, that's gone once fulfilled.
     fresh_payload = json.dumps([
         {"input": {"A": {"confidence": "high"}}, "gold": {"overall_confidence": "high", "notes": "fresh1"}},
         {"input": {"A": {"confidence": "low"}}, "gold": {"overall_confidence": "low", "notes": "fresh2"}},
@@ -678,8 +671,7 @@ async def test_fulfill_plan_force_agent_ids_regenerates_already_fulfilled_datase
     assert forced_report["synthetic_agent_io/auditor"]["status"] == "fulfilled"
     new_dataset_id = forced_report["synthetic_agent_io/auditor"]["dataset_id"]
 
-    # next_version() reclaims the freed "v1" slot once the stale row is gone — same id is fine,
-    # what matters is the OLD cases are gone and the NEW ones (from the forced round) are there.
+    # next_version() reclaims the freed "v1" slot once the stale row is gone — what matters is the OLD cases are gone and the NEW ones are there.
     from agent_eval_harness.config import DEFAULT_CASES_PER_AGENT
     new_cases = await repository.get_dataset_cases(new_dataset_id)
     assert len(new_cases) == DEFAULT_CASES_PER_AGENT
@@ -688,9 +680,7 @@ async def test_fulfill_plan_force_agent_ids_regenerates_already_fulfilled_datase
 
 
 async def test_fulfill_plan_only_agent_ids_scopes_to_requested_agents_only(tmp_path):
-    """Stage3Screen's per-agent 'Fulfill Data' button — only_agent_ids must process exactly
-    the requested agents' groups and leave every other group entirely absent from the
-    report (not fulfilled, not failed, not needs_human — just never touched)."""
+    """Stage3Screen's per-agent 'Fulfill Data' button — only_agent_ids must process exactly the requested agents' groups and leave every other group entirely absent from the report."""
     plan_path = tmp_path / "plan.yaml"
     _write_plan(plan_path, textwrap.dedent("""\
           - id: agent1.snap

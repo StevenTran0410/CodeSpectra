@@ -22,7 +22,6 @@ def extract_topology(
     connect_edges: dict[str, set[str]] = {}
     constructor_edges: dict[str, set[str]] = {}
 
-    # Build mapping from class_name to all candidate_ids for that class (including splits)
     class_to_candidate_ids: dict[str, list[str]] = {}
     for candidate in candidates:
         if candidate.class_name not in class_to_candidate_ids:
@@ -36,7 +35,6 @@ def extract_topology(
         if parsed is not None:
             asts[file] = parsed[1]
 
-    # Phase A: Extract connect() edges using unified wiring detector. Read separately from the
     # ast cache above — the wiring detector works on raw text and must still see files that fail
     # to ast.parse.
     file_contents = {}
@@ -63,18 +61,15 @@ def extract_topology(
                 source_ids = class_to_candidate_ids.get(source_class_name, [])
                 dest_ids = class_to_candidate_ids.get(dest_class_name, [])
 
-                # Apply edge to all variants of the class
                 for src_id in source_ids:
                     for dest_id in dest_ids:
                         if src_id not in connect_edges:
                             connect_edges[src_id] = set()
                         connect_edges[src_id].add(dest_id)
 
-    # Phase B: Extract constructor injection edges
     for file, tree in asts.items():
         for node in tree.body:
             if isinstance(node, ast.ClassDef):
-                # Find all candidate_ids for this class
                 class_candidate_ids = class_to_candidate_ids.get(node.name, [])
 
                 if not class_candidate_ids:
@@ -85,7 +80,6 @@ def extract_topology(
                     if isinstance(item, ast.FunctionDef) and item.name == "__init__":
                         for arg in item.args.args:
                             if arg.annotation:
-                                # Collect all Name nodes from the annotation
                                 for name_node in ast.walk(arg.annotation):
                                     if isinstance(name_node, ast.Name):
                                         # Only include if this is a known candidate class
@@ -94,7 +88,6 @@ def extract_topology(
                                         )
 
                                         if injected_ids:
-                                            # Add edge from all variants of this class
                                             for class_id in class_candidate_ids:
                                                 for injected_id in injected_ids:
                                                     if class_id not in constructor_edges:
@@ -103,10 +96,8 @@ def extract_topology(
                                                         injected_id
                                                     )
 
-    # Phase C: Combine and invert to build full topology
     edges: dict[str, TopologyEdges] = {}
 
-    # Collect all edges
     all_edges: dict[str, set[str]] = {}
     for source, targets in connect_edges.items():
         if source not in all_edges:
@@ -139,7 +130,6 @@ def extract_topology(
             edges[source].downstream.append(target)
             edges[target].upstream.append(source)
 
-    # Dedupe
     for topology in edges.values():
         topology.upstream = list(dict.fromkeys(topology.upstream))
         topology.downstream = list(dict.fromkeys(topology.downstream))

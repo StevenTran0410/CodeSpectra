@@ -28,14 +28,12 @@ class RoutingLLMClient:
         temperature: float | None = 0.2,
         json_mode: bool = False,
     ) -> LLMResponse:
-        # 1. Check ContextVar first (Tier-2 support)
         comp_id = current_component_id_var.get()
         if comp_id and comp_id in self._overrides:
             return await self._overrides[comp_id].complete(
                 messages, max_tokens=max_tokens, temperature=temperature, json_mode=json_mode
             )
 
-        # 2. Check Haystack span (Tier-1 support)
         try:
             from haystack.tracing import tracer as haystack_global_tracer
 
@@ -59,7 +57,6 @@ class RoutingLLMClient:
                 exc_info=True,
             )
 
-        # 3. Fallback to default client
         return await self._default.complete(
             messages, max_tokens=max_tokens, temperature=temperature, json_mode=json_mode
         )

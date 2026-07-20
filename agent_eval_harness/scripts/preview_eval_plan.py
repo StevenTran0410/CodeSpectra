@@ -29,9 +29,10 @@ from pathlib import Path
 
 import aiosqlite
 
-from agent_eval_harness.code_injection.plan_renderer import render_eval_plan_md
-from agent_eval_harness.code_injection.wiring import build_wiring_for_codespectra
+from agent_eval_harness.code_injection.plan_renderer import render_eval_plan_files
+from agent_eval_harness.code_injection.wiring import build_wiring
 from agent_eval_harness.config import AEHConfig
+from agent_eval_harness.discovery.enrichment import resolve_agent_knowledge_dir
 from agent_eval_harness.datasets.fulfillment import export_dataset
 from agent_eval_harness.mapping.system_map import load_system_map
 from agent_eval_harness.metrics.suite import load_suite
@@ -44,8 +45,7 @@ async def _find_latest_session_id() -> tuple[str | None, bool]:
     """Returns (session_id, has_plan_report). Prefers a session with a plan_report_path;
     falls back to any session with at least map_path + plan_path, flagging the report as
     missing so the caller can render the thin legacy view instead of erroring out."""
-    # Same AEH_DATA_DIR / "aeh.db" resolution init_db() uses (store/database.py:308) —
-    # this is a read-only lookup query, not a second connection manager.
+    # Same AEH_DATA_DIR / "aeh.db" resolution init_db() uses — a read-only lookup query, not a second connection manager.
     db_path = Path(os.getenv("AEH_DATA_DIR", ".")) / "aeh.db"
     async with aiosqlite.connect(db_path) as db:
         db.row_factory = aiosqlite.Row
@@ -118,26 +118,44 @@ async def main() -> None:
         dataset_summaries: list[dict] = []
         for dataset_id, gate_ids in datasets_to_gate_ids.items():
             cases = await export_dataset(dataset_id)
+            meta = await repository.get_dataset_metadata(dataset_id)
             dataset_summaries.append({
                 "dataset_id": dataset_id,
-                "kind": cases[0].kind if cases else "",
+                "kind": (meta or {}).get("kind") or (cases[0].kind if cases else ""),
                 "case_count": len(cases),
                 "gate_ids": gate_ids,
                 "example_case": cases[0].model_dump() if cases else None,
             })
 
-        wiring = build_wiring_for_codespectra(system_map, session_id)
-        wiring["aeh_db_path"] = str((Path(os.environ["AEH_DATA_DIR"]) / "aeh.db").resolve())
+        agent_invocations: dict[str, dict] = {}
+        if plan_report and plan_report.agents:
+            for ar in plan_report.agents:
+                if ar.contract and ar.contract.invocation:
+                    inv = ar.contract.invocation
+                    agent_invocations[ar.agent_id] = {
+                        "invocation_mode": inv.invocation_mode,
+                        "case_binding": inv.case_binding,
+                        "route": inv.route,
+                        "constructor_deps": inv.constructor_deps,
+                    }
+
+        wiring = build_wiring(system_map, session_id, dataset_kinds=None, agent_invocations=agent_invocations)
+        aeh_data_dir = Path(os.environ["AEH_DATA_DIR"])
+        wiring["aeh_db_path"] = str((aeh_data_dir / "aeh.db").resolve())
+        wiring["aeh_out_dir"] = str((aeh_data_dir / "aeh" / session_id / "runs").resolve())
         wiring["dataset_ids"] = sorted(datasets_to_gate_ids.keys())
         branch_name = sess.get("eval_branch_name") or f"aeh/eval-{session_id}"
-        md_content = render_eval_plan_md(
+        files = render_eval_plan_files(
             system_map, wiring, dataset_summaries, session_id, branch_name,
             plan_report=plan_report, repo_root=repo_root,
+            knowledge_dir=resolve_agent_knowledge_dir(session_id),
         )
 
-        out_path = Path(__file__).resolve().parent / "AEH_EVAL_PLAN.preview.md"
-        out_path.write_text(md_content, encoding="utf-8")
-        print(f"Wrote preview to: {out_path}")
+        out_dir = Path(__file__).resolve().parent / "eval_plan_preview"
+        out_dir.mkdir(exist_ok=True)
+        for filename, content in files.items():
+            (out_dir / filename).write_text(content, encoding="utf-8")
+        print(f"Wrote {len(files)} files to: {out_dir}")
     finally:
         await close_db()
 

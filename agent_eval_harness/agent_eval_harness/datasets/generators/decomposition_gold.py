@@ -29,7 +29,6 @@ async def generate(
     if seed is not None:
         random.seed(seed)
 
-    # 1. Read constraint dynamically from System Map
     system_map = load_system_map(parsed_config.system_map_path)
     component = system_map.component_by_id(parsed_config.component_id)
     if not component:
@@ -55,7 +54,6 @@ async def generate(
     num_categories = 3 if limit is not None else 2
     per_cat = max(1, parsed_config.count // num_categories)
 
-    # 2. Clean Multi-Intent Cases (2 to limit intents, or a fixed default range with no limit)
     intents_count_range = (2, max(2, limit)) if limit is not None else (2, 4)
     prompt_clean = (
         f"Generate exactly {per_cat} unique examples of user queries containing multiple "
@@ -69,7 +67,6 @@ async def generate(
         f"Do not include any Markdown wrap (like ```json) or explanation."
     )
 
-    # 3. Rambling Single-Intent Cases
     prompt_rambling = (
         f"Generate exactly {per_cat} unique examples of long, wordy, or rambling user "
         f"queries that contain EXACTLY ONE core intent.\n"

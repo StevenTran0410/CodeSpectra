@@ -1,9 +1,13 @@
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import {
   AlertCircle,
   ArrowLeft,
   CheckCircle2,
+  Copy,
+  FolderOpen,
+  RefreshCw,
+  Trash2,
 } from 'lucide-react'
 import { Button, useToastStore } from '../../components/ui'
 
@@ -15,8 +19,56 @@ export default function Stage4Screen(): React.ReactElement {
 
   const [error, setError] = useState<string | null>(null)
   const [planPath, setPlanPath] = useState<string | null>(null)
+  const [planDir, setPlanDir] = useState<string | null>(null)
+  const [planFiles, setPlanFiles] = useState<string[]>([])
   const [baseRef, setBaseRef] = useState('main')
   const [planCreating, setPlanCreating] = useState(false)
+  const [planDeleting, setPlanDeleting] = useState(false)
+
+  // Surface an already-rendered plan on open, so a stale one is never invisible.
+  useEffect(() => {
+    if (!sessionId) return
+    let cancelled = false
+    window.api.aeh
+      .getEvalPlan(sessionId)
+      .then((data) => {
+        if (cancelled || !data?.plan_path) return
+        setPlanPath(data.plan_path)
+        setPlanDir(data.plan_dir ?? null)
+        setPlanFiles(data.files ?? [])
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [sessionId])
+
+  async function handleDeletePlan() {
+    setPlanDeleting(true)
+    setError(null)
+    try {
+      await window.api.aeh.deleteEvalPlan(sessionId)
+      setPlanPath(null)
+      setPlanDir(null)
+      setPlanFiles([])
+      toast.success('Old plan deleted')
+    } catch (err: any) {
+      setError(err?.message ?? 'Failed to delete plan')
+    } finally {
+      setPlanDeleting(false)
+    }
+  }
+
+  async function handleRegeneratePlan() {
+    setPlanCreating(true)
+    setError(null)
+    try {
+      await window.api.aeh.deleteEvalPlan(sessionId)
+    } catch {
+      // A missing plan is fine — regenerate is also the "render it fresh" path.
+    }
+    await handleCreatePlan()
+  }
 
   async function handleCreatePlan() {
     setPlanCreating(true)
@@ -24,12 +76,25 @@ export default function Stage4Screen(): React.ReactElement {
     try {
       const data = await window.api.aeh.createEvalPlan(sessionId, baseRef)
       setPlanPath(data.plan_path)
-      toast.success('Eval plan created. Have your coding agent read AEH_EVAL_PLAN.md.')
+      setPlanDir(data.plan_dir ?? null)
+      setPlanFiles(data.files ?? [])
+      toast.success(`Eval plan created — ${data.files?.length ?? 0} files. Start with AGENTS.md.`)
     } catch (err: any) {
       setError(err?.message ?? 'Failed to create eval plan')
     } finally {
       setPlanCreating(false)
     }
+  }
+
+  async function handleCopyPath() {
+    if (!planDir) return
+    await window.api.app.copyToClipboard(planDir)
+    toast.success('Folder path copied')
+  }
+
+  async function handleOpenFolder() {
+    if (!planPath) return
+    await window.api.app.showInFolder(planPath)
   }
 
   if (!sessionId) {
@@ -84,8 +149,9 @@ export default function Stage4Screen(): React.ReactElement {
             <div>
               <h2 className="text-sm font-semibold text-slate-200 mb-3">Create Eval Plan</h2>
               <p className="text-xs text-slate-400 mb-4">
-                Writes AEH_EVAL_PLAN.md with all instrumentation files and instructions for
-                your coding agent — including creating the eval branch itself. AEH doesn't
+                Writes 4 self-contained files — AGENTS.md (rules), TASKS.md (checklist),
+                REFERENCE.md (per-agent detail), CODE.md (generated code) — with everything
+                your coding agent needs, including creating the eval branch itself. AEH doesn't
                 touch git for this; the plan tells the coding agent to do it as its own
                 first step.
               </p>
@@ -108,12 +174,69 @@ export default function Stage4Screen(): React.ReactElement {
 
                 {planPath ? (
                   <div className="space-y-2">
-                    <div className="flex items-center gap-2 p-3 bg-emerald-950/20 border border-emerald-800/40 rounded-lg">
-                      <CheckCircle2 size={16} className="text-emerald-400 shrink-0" />
-                      <div className="text-xs text-emerald-300">{planPath}</div>
+                    <div className="p-3 bg-emerald-950/20 border border-emerald-800/40 rounded-lg space-y-2">
+                      <div className="flex items-center gap-2">
+                        <CheckCircle2 size={16} className="text-emerald-400 shrink-0" />
+                        <div className="text-xs text-emerald-300 break-all">
+                          {planDir ?? planPath}
+                        </div>
+                      </div>
+                      {planFiles.length > 0 && (
+                        <div className="flex flex-wrap gap-1.5 pl-6">
+                          {planFiles.map((f) => (
+                            <span
+                              key={f}
+                              className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-900/30 border border-emerald-800/40 text-emerald-300"
+                            >
+                              {f}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      <div className="flex gap-2 pl-6">
+                        <Button
+                          onClick={handleCopyPath}
+                          disabled={!planDir}
+                          className="text-[11px] h-7 px-2 bg-slate-800 hover:bg-slate-700 text-slate-200"
+                        >
+                          <Copy size={12} className="mr-1" />
+                          Copy path
+                        </Button>
+                        <Button
+                          onClick={handleOpenFolder}
+                          className="text-[11px] h-7 px-2 bg-slate-800 hover:bg-slate-700 text-slate-200"
+                        >
+                          <FolderOpen size={12} className="mr-1" />
+                          Open folder
+                        </Button>
+                        <Button
+                          onClick={handleRegeneratePlan}
+                          loading={planCreating}
+                          disabled={planCreating || planDeleting}
+                          className="text-[11px] h-7 px-2 bg-indigo-700 hover:bg-indigo-600 text-white"
+                        >
+                          <RefreshCw size={12} className="mr-1" />
+                          Regenerate
+                        </Button>
+                        <Button
+                          onClick={handleDeletePlan}
+                          loading={planDeleting}
+                          disabled={planCreating || planDeleting}
+                          className="text-[11px] h-7 px-2 bg-rose-900/60 hover:bg-rose-800 text-rose-100"
+                        >
+                          <Trash2 size={12} className="mr-1" />
+                          Delete
+                        </Button>
+                      </div>
+                      <p className="text-[10px] text-slate-500 pl-6">
+                        Regenerate after any Stage 2/3 change — an existing plan is served
+                        as-is and can go stale.
+                      </p>
                     </div>
                     <p className="text-[11px] text-slate-400">
-                      Have your coding agent read the plan and implement the instrumentation.
+                      Copy this folder to your target repo's machine and point your coding agent at
+                      it — <span className="text-slate-300">AGENTS.md</span> first, then work through{' '}
+                      <span className="text-slate-300">TASKS.md</span>.
                     </p>
                   </div>
                 ) : (

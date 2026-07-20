@@ -71,7 +71,6 @@ async def main(system_map_path: str, target_module: str | None = None) -> None:
         if normalized_spans:
             map_spans_to_components(normalized_spans, system_map)
 
-        # Collect runtime component IDs (set by map_spans_to_components)
         runtime_ids = set()
         for span in normalized_spans:
             if span.component_id:

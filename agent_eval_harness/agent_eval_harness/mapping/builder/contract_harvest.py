@@ -11,6 +11,7 @@ from pathlib import Path
 import yaml
 
 from agent_eval_harness.config import ContractConventions
+from agent_eval_harness.datasets.archetype_vocabulary import KWARG_CASE_KEY_MAPPING
 from agent_eval_harness.mapping.agent_flow import AgentFlowMap
 from agent_eval_harness.mapping.builder.types import parse_python_source
 from agent_eval_harness.mapping.system_map import Component, SystemMap
@@ -159,19 +160,24 @@ def _harvest_constructor_deps(cls: ast.ClassDef) -> list[str]:
     for node in cls.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "__init__":
             deps = []
-            for arg in node.args.args[1:]:  # skip self
+            for arg in node.args.args[1:]:
                 deps.append(_unparse(arg.annotation) or arg.arg)
             return deps
     return []
 
 
 def _derive_case_binding(kwargs: list[KwargSpec]) -> dict[str, str]:
+    """Derive case→kwarg bindings from archetype field-vocabulary (KWARG_CASE_KEY_MAPPING in archetype_vocabulary.py — the one canonical source), falling back to a same-name guess only when the vocabulary has no mapping."""
     binding: dict[str, str] = {}
     for spec in kwargs:
         if spec.name in _CONFIG_PARAMS:
             binding[spec.name] = f"config:{spec.name}"
-        elif spec.required:
-            binding[spec.name] = f"case:$.input.{spec.name}"
+        elif spec.required or spec.name in KWARG_CASE_KEY_MAPPING:
+            if spec.name in KWARG_CASE_KEY_MAPPING:
+                case_key = KWARG_CASE_KEY_MAPPING[spec.name]
+                binding[spec.name] = f"case:$.input.{case_key}"
+            else:
+                binding[spec.name] = f"case:$.input.{spec.name}"
     return binding
 
 
@@ -561,29 +567,15 @@ def harvest_component_contract(
         notes.extend(f"{component.id}: {n}" for n in kw_notes)
         constructor_deps = _harvest_constructor_deps(cls)
         input_kind = _derive_input_kind(kwargs)
-        if not constructor_deps:
-            invocation_mode = "in_harness"
-            route = None
-            case_binding = _derive_case_binding(kwargs)
-        elif letter:
-            # Rerun via the pipeline's per-section endpoint — live constructor deps run in that process, not AEH.
-            invocation_mode = "per_agent_route"
-            route = (conventions or ContractConventions()).rerun_section_route
-            case_binding = {
-                "report_id": "case:$.input.report_id",
-                "section": f"const:{letter}",
-                "provider_id": "config:provider_id",
-                "model_id": "config:model_id",
-            }
+        # In-process is the only mode that can pass a case's kwargs AND swap a retrieval dependency for a stub — a per-section route resolves its own state from a stored report and would run against the real repo, ignoring the case entirely.
+        invocation_mode = "in_harness"
+        route = (conventions or ContractConventions()).rerun_section_route if letter else None
+        case_binding = _derive_case_binding(kwargs)
+        if route:
             notes.append(
-                f"{component.id}: invocation via {route} requires an existing analysis "
-                "report for the snapshot — report_id is not the same identifier as snapshot_id"
+                f"{component.id}: a per-section route ({route}) exists but is not used for "
+                "evaluation — it rebuilds live dependencies and cannot accept a case's input"
             )
-        else:
-            # Live constructor deps with no known route — statics can't resolve invocation here.
-            invocation_mode = "unsupported"
-            route = None
-            case_binding = _derive_case_binding(kwargs)
         invocation = InvocationContract(
             callable=component.entry_point,
             method=entry.name,

@@ -7,8 +7,6 @@ from agent_eval_harness.instrumentation.base import CapturedSpan
 from agent_eval_harness.store import repository
 from agent_eval_harness.store.database import _run_migrations, close_db, get_db, init_db
 
-pytestmark = pytest.mark.asyncio
-
 
 @pytest.fixture(autouse=True)
 async def _setup_db(tmp_path, monkeypatch):
@@ -132,7 +130,6 @@ async def test_discovery_candidates_persistence() -> None:
     assert c["verdict"] == "proposed"
     assert c["excluded_files"] == ["bad_file.py"]
 
-    # Test update
     await repository.update_candidate_excluded_files(c["id"], ["bad_file.py", "another.py"])
     updated = await repository.get_discovery_candidate(c["id"])
     assert updated is not None
@@ -160,7 +157,6 @@ async def test_list_discovery_sessions_finds_session_by_snapshot_id_even_when_re
     by_wrong_repo_ref = await repository.list_discovery_sessions(repo_ref="snap-mismatch-test")
     assert session_id not in [s["id"] for s in by_wrong_repo_ref]
 
-    # snapshot_id filtering must find it regardless.
     by_snapshot_id = await repository.list_discovery_sessions(snapshot_id="snap-mismatch-test")
     assert session_id in [s["id"] for s in by_snapshot_id]
 
@@ -172,7 +168,6 @@ async def test_discovery_session_pause_resume_roundtrip() -> None:
     assert session["status"] == "running"
     assert session["pause_info"] is None
 
-    # Pause it
     await repository.pause_discovery_session(
         session_id, "prov-123", "model-abc", reasoning_effort="high", thinking_budget=4096
     )
@@ -187,7 +182,6 @@ async def test_discovery_session_pause_resume_roundtrip() -> None:
         "thinking_budget": 4096,
     }
 
-    # Resume it
     await repository.resume_discovery_session(session_id)
     resumed = await repository.get_discovery_session(session_id)
     assert resumed is not None
@@ -228,7 +222,6 @@ async def test_expansion_session_agent_flows_path_roundtrip() -> None:
     session_id = "sess-agentflows-123"
     await repository.insert_expansion_session(session_id, "cand-123", "snap-123")
 
-    # Before generation, agent_flows_path is unset.
     sess = await repository.get_expansion_session(session_id)
     assert sess is not None
     assert sess["agent_flows_path"] is None
@@ -272,7 +265,7 @@ async def test_cancel_orphaned_running_sessions_only_touches_running() -> None:
 
     completed_exp = await repository.get_expansion_session(completed_expansion)
     assert completed_exp is not None
-    assert completed_exp["status"] == "completed"  # untouched
+    assert completed_exp["status"] == "completed"
 
 
 async def test_evaluation_entry_id_agent_id_roundtrip() -> None:

@@ -36,7 +36,6 @@ async def generate(
         query = input_data.get("query", "")
         contexts = labels_data.get("contexts", [])
         
-        # 1. Full context (Sufficient)
         cases.append(DatasetCase(
             id=new_id(),
             dataset=dataset_name,
@@ -47,7 +46,6 @@ async def generate(
             provenance="synthetic"
         ))
         
-        # 2. No context (Insufficient)
         cases.append(DatasetCase(
             id=new_id(),
             dataset=dataset_name,
@@ -58,7 +56,6 @@ async def generate(
             provenance="synthetic"
         ))
         
-        # 3. Partial context (Ambiguous / judgment call)
         if isinstance(contexts, list) and len(contexts) > 1:
             partial_contexts = contexts[:len(contexts) // 2]
             cases.append(DatasetCase(

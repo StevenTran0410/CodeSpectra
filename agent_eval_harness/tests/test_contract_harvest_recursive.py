@@ -163,7 +163,6 @@ def test_depth_overflow(tmp_path: Path):
     """Test that depth overflow is handled gracefully."""
     file_path = _write_fixture(tmp_path, "nested_td", NESTED_TYPEDDICT_SRC)
     asts = _parse_files([file_path])
-    # Start at depth 6 (max is 6), so check should reject immediately
     ctx = _SchemaResolveCtx(asts=asts, files_root=tmp_path, visited=set(), depth=6, conventions=None)
 
     result = _resolve_class_schema("Person", ctx)

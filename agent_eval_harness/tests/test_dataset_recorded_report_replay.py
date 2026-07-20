@@ -13,8 +13,6 @@ from agent_eval_harness.planning.report import AgentPlanReport, EvaluationPlanRe
 from agent_eval_harness.store import repository
 from tests._stubs import FakeCodeSpectraClient
 
-pytestmark = pytest.mark.asyncio
-
 
 def _write_plan(path, entries_yaml: str) -> None:
     path.write_text(f"entries:\n{entries_yaml}", encoding="utf-8")
@@ -59,8 +57,8 @@ async def test_generator_empty_reports():
 
 async def test_fulfill_plan_integration_recorded_report_replay(tmp_path):
     map_path = tmp_path / "map.yaml"
-    # D9/CS-303: letters now come from each agent's own harvested field_downstream_consumers,
-    # not an "agent_id == synthesizer" literal — auditor reads A/J (no K), synthesizer reads A/B/K.
+    # Letters come from each agent's own harvested field_downstream_consumers, not an
+    # "agent_id == synthesizer" literal — auditor reads A/J (no K), synthesizer reads A/B/K.
     plan_report = EvaluationPlanReport(
         target_system_id="t",
         agents=[

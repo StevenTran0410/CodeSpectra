@@ -12,8 +12,6 @@ from agent_eval_harness.ingest.spanlog_ingest import (
 from agent_eval_harness.store import repository
 from agent_eval_harness.store.database import close_db, init_db
 
-pytestmark = pytest.mark.asyncio
-
 
 @pytest.fixture(autouse=True)
 async def _setup_db(tmp_path, monkeypatch):
@@ -56,9 +54,7 @@ async def test_parse_and_persist_clean_run_marks_completed(tmp_path: Path) -> No
 
 
 async def test_dataset_case_id_is_populated_on_the_trace(tmp_path: Path) -> None:
-    """Regression guard for the exact gap the direction doc flagged: traces.dataset_case_id
-    has existed since migration v0 but was never populated by any real code path — ingest is
-    the first one to actually write it."""
+    """Regression guard: traces.dataset_case_id has existed since migration v0 but was never populated until ingest."""
     log_path = tmp_path / "eval_log.124.jsonl"
     _write_log(log_path, _clean_log_records())
     parsed = parse_spanlog(log_path)

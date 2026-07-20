@@ -48,7 +48,6 @@ async def validate_plan(plan_path: str | Path) -> PlanValidationReport:
     errors: list[str] = []
     readiness: dict[str, GateReadiness] = {}
 
-    # 1. Schema parse
     try:
         suite = load_suite(plan_path)
     except Exception as e:
@@ -56,7 +55,6 @@ async def validate_plan(plan_path: str | Path) -> PlanValidationReport:
             errors=[f"Schema validation failed: {e}"], readiness={}
         )
 
-    # Fetch DB datasets for reference checks
     try:
         db_datasets = await repository.list_dataset_ids()
         existing_ds_ids = {ds["dataset_id"] for ds in db_datasets}
@@ -140,7 +138,6 @@ async def validate_plan(plan_path: str | Path) -> PlanValidationReport:
                     "Must resolve by specifying a 'ref' or 'waived' reason."
                 )
                 blocked_reasons.append(_REASON_DATASET_UNFULFILLED)
-                # Validate kind vocabulary
                 if kind and kind not in DATASET_KINDS:
                     errors.append(
                         f"Entry '{entry.id}': dataset kind '{kind}' is not in "

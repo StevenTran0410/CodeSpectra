@@ -1,5 +1,4 @@
-"""RunSource='ingested' seam — scores an already-ingested Stage 4 run's persisted spans
-directly, instead of run_sweep's normal live in-process execute_run path."""
+"""RunSource='ingested' seam — scores an already-ingested Stage 4 run's persisted spans directly, instead of run_sweep's normal live in-process execute_run path."""
 from __future__ import annotations
 
 import json
@@ -13,8 +12,6 @@ from agent_eval_harness.mapping.system_map import Component, SystemMap, save_sys
 from agent_eval_harness.metrics.sweep import run_sweep
 from agent_eval_harness.store import repository
 from agent_eval_harness.store.database import close_db, init_db
-
-pytestmark = pytest.mark.asyncio
 
 
 @pytest.fixture(autouse=True)
@@ -130,8 +127,7 @@ async def test_ingested_source_judge_gate_returns_not_supported_placeholder(tmp_
 
 
 async def test_ingested_source_does_not_overwrite_run_status_set_at_ingest(tmp_path: Path) -> None:
-    """The run's status reflects whether the INJECTED EXECUTION succeeded (set at ingest
-    time) — a scoring pass on top of it must never overwrite that, even on success."""
+    """The run's status reflects whether the injected execution succeeded (set at ingest time) — a scoring pass on top of it must never overwrite that, even on success."""
     schema = {"type": "object"}
     map_path = _write_map(tmp_path)
     suite_path = _write_suite(tmp_path, schema)

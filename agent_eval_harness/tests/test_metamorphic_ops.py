@@ -11,9 +11,7 @@ from agent_eval_harness.datasets.metamorphic_ops import (
 )
 
 
-# ---------------------------------------------------------------------------
 # argmin_k — the mandatory behavioral invariant test: it must actually FIRE.
-# ---------------------------------------------------------------------------
 
 def test_argmin_k_flags_omitted_lower_score():
     """Auditor case: scores D=49,E=58,J=61,G=63; weakest_sections=[D,E,G] wrongly omits J
@@ -76,9 +74,7 @@ def test_argmin_k_missing_fields_returns_false():
     ) is False  # fewer keys than k
 
 
-# ---------------------------------------------------------------------------
 # subset_eq
-# ---------------------------------------------------------------------------
 
 def test_subset_eq_true_and_false():
     assert subset_eq({"a": [1, 2], "b": [1, 2, 3]}, sub_field="a", super_field="b") is True
@@ -86,9 +82,7 @@ def test_subset_eq_true_and_false():
     assert subset_eq({"a": "not-a-list", "b": [1]}, sub_field="a", super_field="b") is False
 
 
-# ---------------------------------------------------------------------------
 # contains_injected_token
-# ---------------------------------------------------------------------------
 
 def test_contains_injected_token_in_list_field():
     output = {"violations_found": ["contradiction: __mr_conflict__ present", "other"]}
@@ -110,9 +104,7 @@ def test_contains_injected_token_string_field_min_count():
     assert contains_injected_token(output, output_field="summary", token="__mr_conflict__", min_count=3) is False
 
 
-# ---------------------------------------------------------------------------
 # non_empty
-# ---------------------------------------------------------------------------
 
 def test_non_empty_variants():
     assert non_empty({"context": ["x"]}, target_field="context") is True
@@ -122,9 +114,7 @@ def test_non_empty_variants():
     assert non_empty({"count": 0}, target_field="count") is True  # scalar zero is not "empty"
 
 
-# ---------------------------------------------------------------------------
 # field_equals
-# ---------------------------------------------------------------------------
 
 def test_field_equals():
     assert field_equals({"sufficient": False}, target_field="sufficient", expect=False) is True
@@ -132,9 +122,7 @@ def test_field_equals():
     assert field_equals({}, target_field="sufficient", expect=False) is False
 
 
-# ---------------------------------------------------------------------------
 # apply_transform / evaluate_invariant dispatch (non-CodeSpectra fixture, generic field names)
-# ---------------------------------------------------------------------------
 
 def test_apply_transform_degrade_section_on_flat_list_field():
     """multi_agent-shaped input: a list-typed top-level field degrades to []."""

@@ -37,7 +37,6 @@ def make_deepeval_llm_adapter(llm_client: LLMClient):
         def __init__(self, client: LLMClient) -> None:
             self.client = client
             self.model_name = "CodeSpectra Proxy"
-            # Track last response for cost_tokens bookkeeping
             self._last_prompt_tokens: int | None = None
             self._last_completion_tokens: int | None = None
 

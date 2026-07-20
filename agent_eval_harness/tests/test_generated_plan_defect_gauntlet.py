@@ -15,8 +15,6 @@ from agent_eval_harness.planning.validation import validate_plan
 from test_targets._shared.defects import DefectConfig
 from test_targets.multi_agent.pipeline import build_pipeline
 
-pytestmark = pytest.mark.asyncio
-
 _MAP_PATH = (
     Path(__file__).parent.parent
     / "test_targets"
@@ -64,7 +62,6 @@ async def test_generated_plan_passes_validation(tmp_path) -> None:
     llm_client = FakeLLMClient(LLMResponse(content="Rubric text", model="fake"))
     plan = await generate_plan(_MAP_PATH, llm_client)
 
-    # Approve/waive all needs_human and dataset requirements for validation
     for entry in plan.entries:
         if entry.status == "needs_human":
             entry.status = None

@@ -12,9 +12,7 @@ DB_FILENAME = "aeh.db"
 
 _db: aiosqlite.Connection | None = None
 
-# ──────────────────────────────────────────────────────────────────────────────
 # Migrations — add new dicts at the end; never modify existing ones.
-# ──────────────────────────────────────────────────────────────────────────────
 _MIGRATIONS: list[dict[str, Any]] = [
     {
         "version": 0,
@@ -370,9 +368,7 @@ def get_db() -> aiosqlite.Connection:
     return _db
 
 
-# ──────────────────────────────────────────────────────────────────────────────
 # Internal migration runner
-# ──────────────────────────────────────────────────────────────────────────────
 async def _run_migrations(db: aiosqlite.Connection) -> None:
     table_exists = await db.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='app_metadata'"

@@ -123,7 +123,6 @@ async def load_project_context(
             and snapshot_commit_hash != report_commit_hash
         )
 
-        # Extract sections A-L keyed by letter
         identity_section = sections.get("A")
         synthesis_section = sections.get("L")
         architecture_section = sections.get("B")

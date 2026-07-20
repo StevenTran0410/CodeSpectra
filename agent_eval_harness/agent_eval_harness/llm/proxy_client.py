@@ -29,7 +29,6 @@ class CodeSpectraProxyClient:
         self._model_id = model_id
         self._http = http_client or httpx.AsyncClient(timeout=_DEFAULT_HTTP_TIMEOUT_SECONDS)
         # Constructor-level, like provider_id/model_id — applies to every complete()
-        # call this client makes, so every AEH call site gets the user's chosen
         # reasoning settings without threading them through each individual call.
         self._reasoning_effort = reasoning_effort
         self._thinking_budget = thinking_budget

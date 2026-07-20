@@ -131,7 +131,6 @@ async def discover_agentic_systems(
 
     logger.info(f"Found {len(hits)} fingerprint hits. Starting Pass B: Graph Clustering...")
 
-    # Fetch Louvain communities
     try:
         communities_res = await client.get_communities(snapshot_id)
         node_index = communities_res.get("node_index", {})
@@ -305,7 +304,6 @@ async def discover_agentic_systems(
                     candidate_profile.setdefault("risk_flags", []).append(finding)
                     candidate_profile["needs_human"] = True
 
-        # Pass D: Detect wiring block
         file_contents = {}
         for path in candidate_profile.get("cluster_files", []):
             try:

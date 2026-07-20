@@ -1,6 +1,4 @@
-"""CS-302 AC1: a derived metamorphic_relation case goes the whole way — derive → sweep → a real
-pass/fail in the report — not "the case exists in the DB". Uses the self-consistency relation
-(transform=null) so it yields a determinate verdict off the reviewed source gold, no agent run."""
+"""A derived metamorphic_relation case goes the whole way — derive, sweep, a real pass/fail in the report, not just "the case exists in the DB" — using the self-consistency relation (transform=null) for a determinate verdict off the reviewed source gold, no agent run."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -17,8 +15,6 @@ from agent_eval_harness.mapping.system_map import Component, SystemMap, save_sys
 from agent_eval_harness.metrics.sweep import run_sweep
 from agent_eval_harness.store import repository
 from agent_eval_harness.store.database import close_db, init_db
-
-pytestmark = pytest.mark.asyncio
 
 
 @pytest.fixture(autouse=True)
@@ -57,8 +53,7 @@ def _write_suite(tmp_path: Path, dataset_ref: str) -> str:
 
 
 async def _seed_reviewed_source(dataset_id: str) -> None:
-    """A reviewed fan_in_judge cohort whose gold carries section_scores + weakest_sections —
-    one case whose weakest list is a valid argmin-3, one that wrongly omits a lower-scoring key."""
+    """A reviewed fan_in_judge cohort: one case's weakest list is a valid argmin-3, one wrongly omits a lower-scoring key."""
     cases = [
         DatasetCase(
             id=repository.new_id(), dataset=dataset_id, kind="synthetic_agent_io",

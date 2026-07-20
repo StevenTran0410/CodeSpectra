@@ -14,8 +14,7 @@ function aehClient(): BackendClient {
   return new BackendClient(port)
 }
 
-/** For "might not exist yet" GET resources: 404 -> null instead of a thrown error the
- *  renderer would otherwise have to pattern-match out of an IPC-serialized message. */
+/** For "might not exist yet" GET resources: 404 -> null instead of a thrown error the renderer would otherwise have to pattern-match out of an IPC-serialized message. */
 async function getOrNull<T>(path: string): Promise<T | null> {
   try {
     return await aehClient().get<T>(path)
@@ -177,6 +176,14 @@ export function registerAEHHandlers(): void {
       `/api/discovery/expansion-sessions/${sessionId}/eval-plan?base_ref=${encodeURIComponent(baseRef)}`,
       {}
     )
+  )
+
+  ipcMain.handle('aeh:getEvalPlan', (_e, sessionId: string) =>
+    aehClient().get(`/api/discovery/expansion-sessions/${sessionId}/eval-plan`)
+  )
+
+  ipcMain.handle('aeh:deleteEvalPlan', (_e, sessionId: string) =>
+    aehClient().delete(`/api/discovery/expansion-sessions/${sessionId}/eval-plan`)
   )
 
   ipcMain.handle('aeh:loadEvalResults', (_e, sessionId: string) =>

@@ -45,7 +45,6 @@ class TestRobustness:
 
                     dest_file.write_text(ast.unparse(tree), encoding="utf-8")
 
-                # Create a default response with low confidence
                 default_response = LLMResponse(
                     content=json.dumps({
                         "role": "unknown",

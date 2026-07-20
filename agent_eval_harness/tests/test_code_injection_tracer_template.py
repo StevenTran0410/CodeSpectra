@@ -1,6 +1,4 @@
-"""Exercises the injected tracer.py template against REAL haystack.tracing (haystack-ai is
-already an AEH dependency) — the same protocol the target repo will actually invoke, copied
-to an isolated directory so `out/` lands next to the copy, exactly as it will in `.aeh/`."""
+"""Exercises the injected tracer.py template against REAL haystack.tracing, copied to an isolated directory so `out/` lands next to the copy, exactly as it will in `.aeh/`."""
 from __future__ import annotations
 
 import importlib.util
@@ -35,15 +33,21 @@ def tracer_module(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ModuleType
 
 
 def _log_lines(module: ModuleType) -> list[dict]:
-    if not module._LOG_PATH.exists():
+    path = module.log_path()
+    if not path.exists():
         return []
-    return [json.loads(line) for line in module._LOG_PATH.read_text(encoding="utf-8").splitlines()]
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
 
 def test_log_path_is_per_pid_sibling_out_dir(tracer_module: ModuleType) -> None:
-    assert tracer_module._LOG_PATH.parent.name == "out"
-    assert tracer_module._LOG_PATH.parent.parent == tracer_module._OUT_DIR.parent
-    assert str(os.getpid()) in tracer_module._LOG_PATH.name
+    assert tracer_module.log_path().parent.name == "out"
+    assert str(os.getpid()) in tracer_module.log_path().name
+
+
+def test_log_path_follows_aeh_out_dir_env(tracer_module: ModuleType, tmp_path, monkeypatch) -> None:
+    """Output must follow the harness data dir, never sit in the target's source tree."""
+    monkeypatch.setenv("AEH_OUT_DIR", str(tmp_path / "runs"))
+    assert tracer_module.log_path().parent == tmp_path / "runs"
 
 
 def test_register_tracer_attaches_to_haystack(tracer_module: ModuleType) -> None:

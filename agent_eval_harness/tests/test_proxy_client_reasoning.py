@@ -1,5 +1,4 @@
-"""CodeSpectraProxyClient attaches its constructor-level reasoning_effort/thinking_budget
-to every outgoing request body without any AEH call site needing to know about them."""
+"""CodeSpectraProxyClient attaches its constructor-level reasoning_effort/thinking_budget to every outgoing request body without any AEH call site needing to know about them."""
 from __future__ import annotations
 
 import json
@@ -9,8 +8,6 @@ import pytest
 
 from agent_eval_harness.llm.client import LLMMessage
 from agent_eval_harness.llm.proxy_client import CodeSpectraProxyClient
-
-pytestmark = pytest.mark.asyncio
 
 
 class _CapturingTransport(httpx.AsyncBaseTransport):
@@ -60,9 +57,7 @@ async def test_reasoning_fields_absent_by_default() -> None:
 
 
 async def test_per_call_reasoning_effort_overrides_constructor_default() -> None:
-    """A caller doing bounded structured JSON extraction (e.g. agentic_planner's DAG
-    nodes) can force a low effort for just its own call, regardless of what reasoning
-    effort the client was configured with for other calls."""
+    """A caller doing bounded structured JSON extraction can force a low effort for just its own call, regardless of the client's configured default."""
     transport = _CapturingTransport()
     http_client = httpx.AsyncClient(transport=transport)
     client = CodeSpectraProxyClient(

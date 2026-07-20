@@ -13,8 +13,6 @@ from agent_eval_harness.mapping.system_map import load_system_map
 from test_targets._shared.defects import DefectConfig
 from test_targets.multi_agent.pipeline import build_pipeline
 
-pytestmark = pytest.mark.asyncio
-
 _MAP_PATH = Path(__file__).parent.parent / "test_targets" / "multi_agent" / "system_map.yaml"
 
 _QUERY = "Can I get a refund and also change my shipping address?"

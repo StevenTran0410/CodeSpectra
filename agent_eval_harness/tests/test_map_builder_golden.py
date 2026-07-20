@@ -80,11 +80,9 @@ class TestMapBuilderGolden:
             builder = SystemMapBuilder(_NeverCallClient())
             system_map, summary = await builder.build(t2_dir)
 
-            # Find guard and planner
             guard_candidates = [c for c in system_map.components if "guard" in c.id]
             planner = system_map.component_by_id("planner")
 
-            # Check MIN_QUERY_LENGTH in at least one guard variant
             guard_has_constraint = False
             for guard in guard_candidates:
                 for constraint in guard.constraints:
@@ -97,7 +95,6 @@ class TestMapBuilderGolden:
 
             assert guard_has_constraint, "MIN_QUERY_LENGTH constraint not found in guard"
 
-            # Check MAX_ITEMS_PER_CALL in planner
             planner_has_constraint = False
             if planner:
                 for constraint in planner.constraints:
@@ -156,7 +153,6 @@ class TestMapBuilderGolden:
             builder = SystemMapBuilder(_NeverCallClient())
             system_map, summary = await builder.build(t2_dir)
 
-            # Check for fixed headers
             assert "=== AEH System Map Summary ===" in summary
             assert "target:" in summary
             assert "components_found:" in summary

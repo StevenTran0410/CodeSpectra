@@ -12,8 +12,6 @@ from agent_eval_harness.mapping.system_map import load_system_map
 from test_targets._shared.defects import DefectConfig
 from test_targets.linear_rag.pipeline import build_pipeline
 
-pytestmark = pytest.mark.asyncio
-
 _MAP_PATH = Path(__file__).parent.parent / "test_targets" / "linear_rag" / "system_map.yaml"
 
 

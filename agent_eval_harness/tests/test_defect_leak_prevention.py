@@ -8,8 +8,6 @@ import pytest
 from agent_eval_harness.store import repository
 from agent_eval_harness.store.database import close_db, init_db
 
-pytestmark = pytest.mark.asyncio
-
 
 @pytest.fixture(autouse=True)
 async def _setup_db(tmp_path, monkeypatch):
@@ -22,13 +20,12 @@ async def _setup_db(tmp_path, monkeypatch):
 async def test_insert_run_defect_leak_prevention(monkeypatch) -> None:
     monkeypatch.setenv("AEH_DEFECT_GUARD_LEAK", "1")
 
-    # 1. Insert a run targeting a generic system, passing no active_defects.
     run_id = await repository.insert_run("my_real_target")
     run = await repository.get_run(run_id)
     assert run is not None
     assert run.get("active_defects") is None
 
-    # 2. Insert a run explicitly passing active_defects (like what the CLI does for T1/T2/T3)
+    # Explicit active_defects, like the CLI passes for T1/T2/T3
     run_id_explicit = await repository.insert_run(
         "my_test_target", active_defects=["DEFECT_GUARD_LEAK"]
     )

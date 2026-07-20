@@ -15,8 +15,6 @@ from agent_eval_harness.store import repository
 from agent_eval_harness.store.database import close_db, init_db, get_db
 from agent_eval_harness.ui.server import app
 
-pytestmark = pytest.mark.asyncio
-
 
 @pytest.fixture(autouse=True)
 async def _setup_db(tmp_path, monkeypatch):
@@ -27,7 +25,6 @@ async def _setup_db(tmp_path, monkeypatch):
 
 
 async def test_generate_plan_returns_valid_suite(tmp_path) -> None:
-    # Create fake system map YAML
     map_content = {
         "target_system_id": "test_system",
         "discrepancies": [],
@@ -58,7 +55,6 @@ async def test_generate_plan_returns_valid_suite(tmp_path) -> None:
 
 
 async def test_put_round_trip_flips_provenance_correctly(tmp_path) -> None:
-    # 1. Setup expansion session in DB and write initial plan YAML
     plan_file = tmp_path / "test_map_plan.yaml"
     initial_suite = {
         "entries": [
@@ -93,7 +89,6 @@ async def test_put_round_trip_flips_provenance_correctly(tmp_path) -> None:
     )
     await db.commit()
 
-    # 2. Call PUT route to simulate human editing the rationale of faithfulness
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
         update_payload = {
@@ -125,18 +120,14 @@ async def test_put_round_trip_flips_provenance_correctly(tmp_path) -> None:
         assert res.status_code == 200
         assert res.json() == {"success": True}
 
-        # 3. Reload plan and verify provenance changes
         updated_suite = load_suite(plan_file)
         entries_by_id = {e.id: e for e in updated_suite.entries}
-        
-        # Changed rationale should trigger human_added provenance
+
         assert entries_by_id["writer.faithfulness"].provenance == "human_added"
-        # Unchanged entry should keep rule provenance
         assert entries_by_id["writer.answer_relevancy"].provenance == "rule"
 
 
 async def test_advance_refuses_to_skip_review_gate() -> None:
-    # 1. Insert discovery session in DB at awaiting_candidate_review stage
     db = get_db()
     session_id = "test-discovery-session"
     await db.execute(
@@ -148,17 +139,14 @@ async def test_advance_refuses_to_skip_review_gate() -> None:
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-        # 2. Call advance without confirmed_candidates payload
         payload = {}
         res = await client.post(
             f"/api/discovery/sessions/{session_id}/advance",
             json=payload,
         )
-        # Should raise 400 error due to missing confirmation payload
         assert res.status_code == 400
         assert "Must provide confirmed_candidates" in res.json()["detail"]
 
-        # 3. Call advance with valid confirmed_candidates payload
         payload_ok = {"confirmed_candidates": ["cand-1"]}
         res_ok = await client.post(
             f"/api/discovery/sessions/{session_id}/advance",

@@ -13,15 +13,9 @@ from agent_eval_harness.mapping.system_map import load_system_map
 from test_targets._shared.defects import DefectConfig
 from test_targets.multi_agent.pipeline import build_pipeline
 
-pytestmark = pytest.mark.asyncio
-
 _MAP_PATH = Path(__file__).parent.parent / "test_targets" / "multi_agent" / "system_map.yaml"
 _QUERY = "Can I get a refund and also change my shipping address?"
 
-
-# ────────────────────────────────────────────────────────────────────────────
-# Shared helpers
-# ────────────────────────────────────────────────────────────────────────────
 
 async def _collect_spans(responses: list[LLMResponse], defects: DefectConfig) -> list[dict]:
     """Run the multi_agent target and return spans as plain dicts (no DB needed)."""
@@ -38,7 +32,7 @@ async def _collect_spans(responses: list[LLMResponse], defects: DefectConfig) ->
     finally:
         adapter.detach()
 
-    # Convert CapturedSpan to plain dicts matching the DB row format
+    # Converts CapturedSpan to plain dicts matching the DB row format
     now = datetime.now(UTC).isoformat()
     return [
         {
@@ -60,11 +54,7 @@ async def _collect_spans(responses: list[LLMResponse], defects: DefectConfig) ->
     ]
 
 
-# ────────────────────────────────────────────────────────────────────────────
-# DEFECT 1: PLANNER_OVERPACK
-# Must move: assertion.max_items_per_call → FAIL
-# Must NOT move: guard/judge/writer metrics
-# ────────────────────────────────────────────────────────────────────────────
+# DEFECT 1 PLANNER_OVERPACK: must move max_items_per_call to FAIL; must not move guard/judge/writer metrics
 
 async def test_defect_planner_overpack_moves_max_items_assertion() -> None:
     from agent_eval_harness.metrics.assertions.max_items_per_call import max_items_per_call
@@ -85,7 +75,7 @@ async def test_defect_planner_overpack_moves_max_items_assertion() -> None:
     spans_clean = await _collect_spans(responses_clean, DefectConfig())
     spans_defect = await _collect_spans(responses_defect, DefectConfig(planner_overpack=True))
 
-    # The assertion checks the WORKER component's output_json.intents.
+    # Checks the WORKER component's output_json.intents.
     result_clean = max_items_per_call(spans_clean, "worker", {"limit": 2})
     result_defect = max_items_per_call(spans_defect, "worker", {"limit": 2})
 
@@ -93,11 +83,7 @@ async def test_defect_planner_overpack_moves_max_items_assertion() -> None:
     assert result_defect.passed is False, "Defect run must fail max_items_per_call"
 
 
-# ────────────────────────────────────────────────────────────────────────────
-# DEFECT 2: NO_RETRY
-# Must move: assertion.retry_on_reject_required → FAIL
-# Must NOT move: judge's classifier score
-# ────────────────────────────────────────────────────────────────────────────
+# DEFECT 2 NO_RETRY: must move retry_on_reject_required to FAIL; must not move judge's classifier score
 
 async def test_defect_no_retry_moves_retry_assertion() -> None:
     from agent_eval_harness.metrics.assertions.retry_on_reject_required import (
@@ -108,9 +94,7 @@ async def test_defect_no_retry_moves_retry_assertion() -> None:
     responses_clean = [
         LLMResponse(content="valid", model="fake-nano"),
         LLMResponse(content='["intent"]', model="fake-frontier"),
-        # first judge -> reject
         LLMResponse(content="insufficient context, need more", model="fake-strong"),
-        # second judge -> pass
         LLMResponse(content="sufficient context found", model="fake-strong"),
         LLMResponse(content="answer", model="fake-mini"),
     ]
@@ -118,7 +102,6 @@ async def test_defect_no_retry_moves_retry_assertion() -> None:
     responses_defect = [
         LLMResponse(content="valid", model="fake-nano"),
         LLMResponse(content='["intent"]', model="fake-frontier"),
-        # judge -> reject
         LLMResponse(content="insufficient context, need more", model="fake-strong"),
         LLMResponse(content="answer", model="fake-mini"),  # writer (no second worker)
     ]
@@ -143,21 +126,16 @@ async def test_defect_no_retry_does_not_move_max_retries() -> None:
         LLMResponse(content="insufficient context, need more", model="fake-strong"),
         LLMResponse(content="answer", model="fake-mini"),
     ]
-    # With NO_RETRY, there's only 1 worker span (= within limit)
+    # With NO_RETRY, there's only 1 worker span (within limit)
     spans_defect = await _collect_spans(responses, DefectConfig(no_retry=True))
     result = max_retries(spans_defect, "worker", {"limit": 1})
     assert result.passed is True, "max_retries must not move when NO_RETRY defect is on"
 
 
-# ────────────────────────────────────────────────────────────────────────────
-# DEFECT 3: WRONG_TOOL
-# Must move: first tool_call span's tool name (case_law_search -> decoy_lookup)
-# Must NOT move: guard/planner metrics; no_unnecessary_calls itself (see note below)
-# ────────────────────────────────────────────────────────────────────────────
+# DEFECT 3 WRONG_TOOL: must move first tool_call's tool name (case_law_search -> decoy_lookup); must not move guard/planner metrics
 
 async def test_defect_wrong_tool_flags_no_unnecessary_calls() -> None:
-    """T2's WorkerComponent always calls both tools unconditionally; WRONG_TOOL only
-    changes which tool is called first."""
+    """T2's WorkerComponent always calls both tools unconditionally; WRONG_TOOL only changes which tool is called first."""
     from agent_eval_harness.metrics.assertions.no_unnecessary_calls import no_unnecessary_calls
 
     responses = [
@@ -170,7 +148,6 @@ async def test_defect_wrong_tool_flags_no_unnecessary_calls() -> None:
     spans_clean = await _collect_spans(responses, DefectConfig(wrong_tool=False))
     spans_defect = await _collect_spans(responses, DefectConfig(wrong_tool=True))
 
-    # Metric-level differentiator: first tool_call span's tool name.
     def _first_tool_name(spans: list[dict]) -> str | None:
         for s in spans:
             if s.get("span_type") == "tool_call":
@@ -187,18 +164,13 @@ async def test_defect_wrong_tool_flags_no_unnecessary_calls() -> None:
     assert len(result_clean.details.get("flagged_tool_calls", [])) >= 1
     assert len(result_defect.details.get("flagged_tool_calls", [])) >= 1
 
-    # And that planner's max_items assertion is unchanged
     from agent_eval_harness.metrics.assertions.max_items_per_call import max_items_per_call
     planner_clean = max_items_per_call(spans_clean, "planner", {"limit": 2})
     planner_defect = max_items_per_call(spans_defect, "planner", {"limit": 2})
     assert planner_clean.passed == planner_defect.passed, "planner.max_items must not change"
 
 
-# ────────────────────────────────────────────────────────────────────────────
-# DEFECT 4: JUDGE_RUBBER_STAMP
-# Must move: judge always says sufficient=True → retry_on_reject_required vacuous
-# Must NOT move: assertion.max_items_per_call
-# ────────────────────────────────────────────────────────────────────────────
+# DEFECT 4 JUDGE_RUBBER_STAMP: must move judge to always report sufficient (retry_on_reject_required vacuous); must not move max_items_per_call
 
 async def test_defect_judge_rubber_stamp_leaves_planner_assertion_unchanged() -> None:
     from agent_eval_harness.metrics.assertions.max_items_per_call import max_items_per_call
@@ -212,8 +184,7 @@ async def test_defect_judge_rubber_stamp_leaves_planner_assertion_unchanged() ->
     responses_defect = [
         LLMResponse(content="valid", model="fake-nano"),
         LLMResponse(content='["i1", "i2"]', model="fake-frontier"),
-        # rubber_stamp skips LLM — writer still gets a response
-        LLMResponse(content="answer", model="fake-mini"),
+        LLMResponse(content="answer", model="fake-mini"),  # rubber_stamp skips LLM — writer still gets a response
     ]
 
     spans_clean = await _collect_spans(responses_clean, DefectConfig())
@@ -227,11 +198,7 @@ async def test_defect_judge_rubber_stamp_leaves_planner_assertion_unchanged() ->
     )
 
 
-# ────────────────────────────────────────────────────────────────────────────
-# DEFECT 5: WRITER_HALLUCINATE
-# Must move: writer produces hallucinated output (visible in final_output)
-# Must NOT move: upstream assertion pass/fail (planner max_items)
-# ────────────────────────────────────────────────────────────────────────────
+# DEFECT 5 WRITER_HALLUCINATE: must move writer output to hallucinate; must not move upstream planner max_items assertion
 
 async def test_defect_writer_hallucinate_moves_output_not_upstream() -> None:
     from agent_eval_harness.instrumentation.tier1_haystack import HaystackAdapter
@@ -253,7 +220,6 @@ async def test_defect_writer_hallucinate_moves_output_not_upstream() -> None:
     finally:
         adapter.detach()
 
-    # DEFECT_WRITER_HALLUCINATE injects fabricated claims
     assert "full refund" in result.final_output, (
         "Writer hallucinate defect must inject 'full refund' into output"
     )
@@ -280,11 +246,7 @@ async def test_defect_writer_hallucinate_moves_output_not_upstream() -> None:
     assert worker_result.passed is True, "max_items_per_call must not be affected by HALLUCINATE"
 
 
-# ────────────────────────────────────────────────────────────────────────────
-# DEFECT 6: GUARD_LEAK
-# Must move: guard leaks a rejected query through as pass
-# Must NOT move: guard_rule metrics (rule stage is separate)
-# ────────────────────────────────────────────────────────────────────────────
+# DEFECT 6 GUARD_LEAK: must move guard to leak a rejected query as pass; must not move guard_rule metrics (separate stage)
 
 async def test_defect_guard_leak_produces_pass_verdict() -> None:
     """With GUARD_LEAK on, the LLM guard stage emits 'pass' even when LLM says reject."""

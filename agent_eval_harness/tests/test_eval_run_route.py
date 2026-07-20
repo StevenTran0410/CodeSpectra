@@ -1,5 +1,5 @@
-"""Route-level tests for CS-289's PUT plan-report (Workstream E2) and POST eval-run
-(Workstream D6) endpoints. Follows test_agentic_plan_routes.py's fake-external-calls pattern."""
+"""Route-level tests for the PUT plan-report and POST eval-run endpoints.
+Follows test_agentic_plan_routes.py's fake-external-calls pattern."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -17,8 +17,6 @@ from agent_eval_harness.mapping.system_map import Component, SystemMap, save_sys
 from agent_eval_harness.store import repository
 from agent_eval_harness.store.database import close_db, init_db
 from agent_eval_harness.ui.server import app
-
-pytestmark = pytest.mark.asyncio
 
 
 @pytest.fixture(autouse=True)
@@ -78,7 +76,7 @@ async def _seed_completed_expansion_session(tmp_path: Path, session_id: str = "s
     save_agent_flow_map(agent_flow_map, agent_flows_path)
     await repository.update_expansion_session_agentflows_path(session_id, str(agent_flows_path))
 
-    # CS-300 R1: /plan 400s unless Stage 2.5 enrichment has produced at least one row.
+    # /plan 400s unless Stage 2.5 enrichment has produced at least one row.
     await repository.upsert_agent_knowledge(
         session_id=session_id, agent_id="widget_agent",
         md_path="", json_path="", evidence_hash="seed", confidence="high", query_count=0,

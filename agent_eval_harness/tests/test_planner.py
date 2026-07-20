@@ -23,8 +23,6 @@ _LINEAR_RAG_MAP = Path(__file__).parent.parent / "test_targets" / "linear_rag" /
 _MULTI_AGENT_MAP = Path(__file__).parent.parent / "test_targets" / "multi_agent" / "system_map.yaml"
 _T3_RERANKER_MAP = Path(__file__).parent.parent / "test_targets" / "t3_reranker" / "system_map.yaml"
 
-pytestmark = pytest.mark.asyncio
-
 
 async def test_get_component_info() -> None:
     """Verify docstring and source extraction functions work on valid entry points."""
@@ -34,8 +32,7 @@ async def test_get_component_info() -> None:
 
 
 async def test_resolve_dataset_ref_always_returns_fresh_required_block() -> None:
-    """Plan (re)generation must never link to an already-existing dataset — every dataset
-    requirement always starts unfulfilled so Fulfill Datasets always regenerates for real."""
+    """Plan (re)generation must never link to an already-existing dataset — every dataset requirement always starts unfulfilled."""
     ref = _resolve_dataset_ref("qa_testset")
     assert ref is not None
     assert ref.ref is None
@@ -57,7 +54,6 @@ async def test_generate_plan_linear_rag() -> None:
     llm_client = FakeLLMClient(LLMResponse(content="Rubric text", model="fake"))
     plan = await generate_plan(_LINEAR_RAG_MAP, llm_client)
 
-    # Hand-written suite has writer.faithfulness and writer.answer_relevancy
     suite_entries = {e.id: e for e in plan.entries}
     assert "writer.faithfulness" in suite_entries
     assert "writer.answer_relevancy" in suite_entries
@@ -88,9 +84,7 @@ async def test_generate_plan_multi_agent() -> None:
 
 
 async def test_baseline_gates_for_component_tool_role_still_returns_constraint_entries() -> None:
-    """CS-299: the old early return at planner.py:373 discarded AST-mined constraint gates
-    for tool/unknown roles even though constraints are unrelated to role — this is a real
-    latent bug, inert only because the CodeSpectra fixture map has zero mined constraints."""
+    """Constraint gates must fire for tool/unknown roles too since constraints are role-independent — inert only because the fixture map has zero mined constraints."""
     component = Component(
         id="important_files", role="tool", entry_point="m:ImportantFiles",
         constraints=[Constraint(name="max_retries", value=3, source="test.py:1")],
@@ -122,10 +116,7 @@ async def test_role_skip_note_fires_for_tool_and_unknown_only() -> None:
 
 @pytest.mark.parametrize("role", sorted(VALID_ROLES))
 async def test_component_role_rules_unchanged_for_every_valid_role(role: str) -> None:
-    """CS-300 AC5: role now comes from Stage 2.5 instead of Stage 2, but _component_role_rules
-    itself is untouched by this ticket — this test proves it by exercising every role in the
-    vocabulary and pinning the exact rule set each one fires, on a minimal single-component map
-    (no downstream tools, no validator retry loop, so retrieval_agent fires nothing here)."""
+    """Pins the exact rule set fired per role on a minimal single-component map (no downstream tools, no validator retry loop, so retrieval_agent fires nothing here)."""
     component = Component(id="c1", role=role, entry_point="m:C1")
     components_by_id = {"c1": component}
     system_map = SystemMap(target_system_id="t", components=[component])
@@ -152,7 +143,6 @@ async def test_component_role_rules_unchanged_for_every_valid_role(role: str) ->
 
 async def test_geval_rubric_tailoring() -> None:
     """Verify that rubric text is fetched from LLM response or falls back correctly."""
-    # Test case 1: LLM returns custom JSON
     custom_rubric_json = json.dumps({"rubric_text": "Custom Tailored Rubric Wording."})
     llm_client = FakeLLMClient(LLMResponse(content=custom_rubric_json, model="fake"))
 
@@ -162,7 +152,6 @@ async def test_geval_rubric_tailoring() -> None:
     ][0]
     assert decomp_entry.params["rubric_text"] == "Custom Tailored Rubric Wording."
 
-    # Test case 2: LLM returns fallback
     fallback_content = "This is a fallback offline demo answer."
     llm_client_fallback = FakeLLMClient(LLMResponse(content=fallback_content, model="fake"))
     plan_fallback = await generate_plan(_MULTI_AGENT_MAP, llm_client_fallback)
@@ -181,9 +170,8 @@ async def test_generate_plan_t3_generalization() -> None:
     plan = await generate_plan(_T3_RERANKER_MAP, llm_client)
 
     suite_entries = {e.id: e for e in plan.entries}
-    # retriever and reranker are retrieval_agents
     assert "writer.faithfulness" in suite_entries
     assert "writer.answer_relevancy" in suite_entries
 
-    # retriever and reranker have no downstream tools in the T3 map, so only writer-level gates are expected.
+    # retriever/reranker have no downstream tools in the T3 map, so only writer-level gates are expected.
     assert len(plan.entries) >= 2

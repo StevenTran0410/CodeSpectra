@@ -214,7 +214,6 @@ async def expand_candidate(
     hop_cap: int = 3,
     project_context: ProjectContext | None = None,
 ) -> dict:
-    # 1. Chunks Extraction for Seeds
     seeds = []
     chunked_files = set()
     evidence_list = candidate.get("evidence", [])
@@ -324,7 +323,6 @@ async def expand_candidate(
                 boundary_reasons.append(verdict_data.get("reason", ""))
                 continue
 
-            # Track annotation data for accepted files
             annotations[file_path] = verdict_data
 
             accepted_chunks.add(chunk_key)

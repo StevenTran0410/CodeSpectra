@@ -75,7 +75,6 @@ async def test_embedding_proxy_client_local() -> None:
 
 class FakeEmbeddingClient:
     async def embed_texts(self, texts: list[str]) -> list[list[float]]:
-        # Return a simple mock vector for each text
         return [[float(len(t)), 0.5] for t in texts]
 
 

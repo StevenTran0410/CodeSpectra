@@ -60,7 +60,6 @@ async def score_classifier(
 
         try:
             result: Any = await component.run_async(query)
-            # Normalize result to a label string
             if isinstance(result, dict):
                 pred_label = str(
                     result.get("verdict", result.get("label", result.get("decision", "")))

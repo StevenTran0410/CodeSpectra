@@ -9,9 +9,7 @@ _PROMPT_HINT = re.compile(r"prompt", re.IGNORECASE)
 
 
 def locate_prompt_reference(component_file: str, repo_root: Path) -> str | None:
-    """component_file is repo-root-relative (e.g. "backend/domain/analysis/agents/agent_x.py").
-    Returns a human-readable pointer, e.g. "backend/domain/analysis/prompts.py (imported as
-    AGENT_A_SYSTEM)", or None if no prompt-shaped import was found in this file."""
+    """component_file is repo-root-relative. Returns a human-readable pointer, e.g. "<pkg>/prompts.py (imported as SOME_SYSTEM_PROMPT)", or None if no prompt-shaped import was found."""
     abs_path = repo_root / component_file
     if not component_file or not abs_path.is_file():
         return None

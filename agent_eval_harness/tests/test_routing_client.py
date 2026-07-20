@@ -15,13 +15,11 @@ async def test_routing_llm_client_contextvar() -> None:
 
     routing_client = RoutingLLMClient(default=default_client, overrides={"writer": override_client})
 
-    # 1. No contextvar -> should use default client
     res = await routing_client.complete([LLMMessage(role="user", content="hello")])
     assert res.content == "default"
     assert len(default_client.calls) == 1
     assert len(override_client.calls) == 0
 
-    # 2. Contextvar set to writer -> should use override client
     token = current_component_id_var.set("writer")
     try:
         res = await routing_client.complete([LLMMessage(role="user", content="hello")])
@@ -31,7 +29,6 @@ async def test_routing_llm_client_contextvar() -> None:
     finally:
         current_component_id_var.reset(token)
 
-    # 3. Contextvar set to retriever (no override) -> should use default client
     token = current_component_id_var.set("retriever")
     try:
         res = await routing_client.complete([LLMMessage(role="user", content="hello")])

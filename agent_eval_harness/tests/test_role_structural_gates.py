@@ -38,9 +38,7 @@ async def _ensure_db() -> None:
     except RuntimeError:
         await init_db()
 
-# ──────────────────────────────────────────────────────────────────────────────
 # admissible_roles — pure, no LLM, primitives only (CS-300: no CandidateComponent/TopologyEdges)
-# ──────────────────────────────────────────────────────────────────────────────
 
 
 class TestAdmissibleRoles:

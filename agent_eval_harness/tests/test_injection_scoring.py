@@ -52,7 +52,6 @@ async def test_score_case_deterministic_anchors_run_before_groundedness():
 
     contract = _contract(fallback_literal={"notes": "Audit could not be completed."})
     actual_output = {"overall_confidence": "high", "notes": "looks good"}
-    # score 10/10 -> normalized 1.0 -> passed
     llm_client = FakeLLMClient(_geval_responses(10))
 
     results = await score_case(
@@ -94,7 +93,6 @@ async def test_score_case_order_short_circuits_gold_dependent_on_groundedness_fa
     contract = _contract()
     actual_output = {"overall_confidence": "high", "notes": "invented fact not in input"}
     gold = {"purpose": "this repo does X"}
-    # score 2/10 -> normalized 0.2 -> not passed
     llm_client = FakeLLMClient(_geval_responses(2, reason="fabricated"))
 
     results = await score_case(

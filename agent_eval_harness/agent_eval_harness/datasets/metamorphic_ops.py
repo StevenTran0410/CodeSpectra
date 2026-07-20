@@ -8,9 +8,7 @@ from typing import Any
 
 from agent_eval_harness.datasets import perturbation
 
-# ---------------------------------------------------------------------------
 # Transforms — mutate a case's input, returning a new dict (caller's is untouched).
-# ---------------------------------------------------------------------------
 
 def degrade_section(input_data: dict, target_field: str) -> dict:
     return perturbation.degrade_section(input_data, target_field)
@@ -33,9 +31,7 @@ def apply_transform(op: str, input_data: dict, params: dict[str, Any]) -> dict:
     return fn(input_data, **params)
 
 
-# ---------------------------------------------------------------------------
 # Invariants — pure predicates over an agent's output dict; True = invariant holds.
-# ---------------------------------------------------------------------------
 
 def argmin_k(
     output: dict, scores_field: str, report_field: str, k: int, allow_ties: bool = True

@@ -45,6 +45,12 @@ export class BackendClient {
     return res.json() as Promise<T>
   }
 
+  async delete<T>(path: string): Promise<T> {
+    const res = await fetch(`${this.base}${path}`, { method: 'DELETE' })
+    if (!res.ok) await this._throwHttpError(res)
+    return res.json() as Promise<T>
+  }
+
   /** Short routes go over `fetch`; long routes MUST pass `timeoutMs` and go over Node's `http` instead, since undici's ~5-min `headersTimeout` isn't overridden by an AbortSignal and would abort a long server-side run client-side while the backend keeps working. */
   async post<T>(path: string, body: unknown, timeoutMs?: number): Promise<T> {
     if (timeoutMs) return this._postViaHttp<T>(path, body, timeoutMs)

@@ -118,7 +118,6 @@ class RagasQATestsetBackend:
         llm = make_ragas_llm_adapter(llm_client)
         embeddings = make_ragas_embeddings(embedding_client)
 
-        # Load documents
         docs = []
         for path in corpus_paths:
             with open(path, encoding="utf-8") as f:

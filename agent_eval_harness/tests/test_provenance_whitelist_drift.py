@@ -1,9 +1,4 @@
-"""CI guard: the SQL provenance whitelist in run_eval.py must stay in sync with TRUSTED_PROVENANCE.
-
-If either side is edited alone this test goes red, forcing the developer to update both.
-run_eval.py cannot import agent_eval_harness by design (see its module docstring), so the
-duplicate is architecturally forced — a test is the strongest enforcement achievable.
-"""
+"""CI guard: the SQL provenance whitelist in run_eval.py must stay in sync with TRUSTED_PROVENANCE — run_eval.py can't import agent_eval_harness by design, so this duplicate check is the strongest enforcement available."""
 import importlib.util
 import pathlib
 import re
@@ -15,10 +10,8 @@ import pytest
 from agent_eval_harness.datasets.types import TRUSTED_PROVENANCE
 from agent_eval_harness.store.database import close_db, init_db
 
-# Own DB lifecycle for the async export_dataset test below (module convention, e.g.
-# test_eval_run_route.py) — several sibling test modules run their own init_db()/close_db()
-# cycle, which otherwise leaves the shared session-scoped DB closed for whatever
-# alphabetically runs next.
+# Own DB lifecycle: sibling test modules run their own init_db()/close_db() cycle, else the
+# shared DB is left closed for whichever module runs next alphabetically.
 
 
 @pytest.fixture(autouse=True)
@@ -57,8 +50,7 @@ def test_run_eval_sql_provenance_list_matches_trusted_provenance():
 
 
 def _load_run_eval_module():
-    """Imports the master run_eval.py template as a real module (its own sibling tracer.py
-    stub satisfies its only non-stdlib import) so its actual SQL, not a regex proxy, runs."""
+    """Imports the master run_eval.py template as a real module (its sibling tracer.py stub satisfies its only non-stdlib import) so its actual SQL, not a regex proxy, runs."""
     if str(_TEMPLATES_DIR) not in sys.path:
         sys.path.insert(0, str(_TEMPLATES_DIR))
     spec = importlib.util.spec_from_file_location("run_eval_template_under_test", _TEMPLATE_PATH)
@@ -68,10 +60,8 @@ def _load_run_eval_module():
 
 
 def test_ac3_run_eval_load_cases_includes_derived_reviewed(tmp_path):
-    """AC3: a 'derived+reviewed' case reaches run_eval._load_cases (not silently filtered to
-    0 by the SQL whitelist), while a still-unreviewed 'synthetic' case is excluded."""
-    # Own subdir, distinct from the module's autouse _setup_db fixture's AEH_DATA_DIR/aeh.db —
-    # this test builds a raw sqlite file by hand, unrelated to the shared repository DB.
+    """A 'derived+reviewed' case reaches run_eval._load_cases (not silently filtered to 0 by the SQL whitelist), while a still-unreviewed 'synthetic' case is excluded."""
+    # Own subdir, distinct from the autouse _setup_db fixture's DB — a raw sqlite file built by hand.
     raw_db_dir = tmp_path / "raw_run_eval_fixture"
     raw_db_dir.mkdir()
     db_path = raw_db_dir / "aeh.db"
@@ -84,9 +74,10 @@ def test_ac3_run_eval_load_cases_includes_derived_reviewed(tmp_path):
         "INSERT INTO dataset_cases (id, dataset_id, input_json, expected_json, labels_json, "
         "provenance) VALUES (?, ?, ?, ?, ?, ?)",
         [
-            ("c1", "ds1", '{"kind":"x","a":1}', "{}", None, "generated+reviewed"),
-            ("c2", "ds1", '{"kind":"x","a":2}', "{}", None, "derived+reviewed"),
-            ("c3", "ds1", '{"kind":"x","a":3}', "{}", None, "synthetic"),
+            # labels carry agent_id — that selects the dispatch module, so a case without it is skipped before provenance is even considered.
+            ("c1", "ds1", '{"kind":"x","a":1}', "{}", '{"agent_id":"a1"}', "generated+reviewed"),
+            ("c2", "ds1", '{"kind":"x","a":2}', "{}", '{"agent_id":"a1"}', "derived+reviewed"),
+            ("c3", "ds1", '{"kind":"x","a":3}', "{}", '{"agent_id":"a1"}', "synthetic"),
         ],
     )
     conn.commit()
@@ -99,8 +90,7 @@ def test_ac3_run_eval_load_cases_includes_derived_reviewed(tmp_path):
 
 
 async def test_ac3_derived_reviewed_case_survives_export_dataset():
-    """AC3: export_dataset (fulfillment.py) keeps a 'derived+reviewed' case, same trust tier
-    as 'generated+reviewed'/'handwritten' — never silently dropped."""
+    """export_dataset keeps a 'derived+reviewed' case, same trust tier as 'generated+reviewed'/'handwritten' — never silently dropped."""
     from agent_eval_harness.datasets.fulfillment import export_dataset
     from agent_eval_harness.datasets.types import DatasetCase
     from agent_eval_harness.store import repository

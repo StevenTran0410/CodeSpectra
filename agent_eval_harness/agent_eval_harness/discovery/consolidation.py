@@ -58,7 +58,6 @@ async def consolidate_candidates(
         pool |= set(c.get("cluster_files", []))
     pool -= set(already_claimed.keys())
 
-    # 3. Score each pooled file against each candidate's core seed via real symbol edges.
     file_provenance: dict[str, dict[str, str]] = {str(c["community_id"]): {} for c in candidates}
     matched: dict[str, set[str]] = {str(c["community_id"]): set(seed) for c, seed, _ in anchors}
 

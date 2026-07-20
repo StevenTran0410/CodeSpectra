@@ -7,11 +7,9 @@ from agent_eval_harness.store import repository
 
 @pytest.mark.asyncio
 async def test_dataset_versioning_and_immutability():
-    # 1. Base name is new
     v1 = await next_version("t2_guard")
     assert v1 == "t2_guard_v1"
 
-    # 2. Insert some cases under t2_guard_v1
     case1 = DatasetCase(
         id="c1",
         dataset="t2_guard_v1",
@@ -23,11 +21,9 @@ async def test_dataset_versioning_and_immutability():
     )
     await repository.insert_dataset_cases_bulk("t2_guard_v1", [case1])
 
-    # 3. Request next version, should see v2
     v2 = await next_version("t2_guard")
     assert v2 == "t2_guard_v2"
 
-    # 4. Check immutability: insert to v2 and make sure v1 remains unchanged
     case2 = DatasetCase(
         id="c2",
         dataset="t2_guard_v2",

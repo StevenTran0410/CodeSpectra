@@ -313,7 +313,6 @@ async def _score_judge_entry(
     results: list[MetricResult] = []
     queries = _get_queries_for_entry(entry)
 
-    # Batch all queries into one execute_run call — see _score_assertion_entry for why.
     outcomes = await execute_run(
         target, map_path, llm_client, queries, tier, active_defects=active_defects, run_id=run_id
     )

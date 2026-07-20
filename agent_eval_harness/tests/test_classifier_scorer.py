@@ -6,8 +6,6 @@ import uuid
 
 import pytest
 
-pytestmark = pytest.mark.asyncio
-
 
 async def _seed_dataset(dataset_id: str, cases: list[dict]) -> None:
     """Insert raw case dicts directly into dataset_cases."""
@@ -72,7 +70,6 @@ async def test_classifier_scorer_known_confusion_matrix() -> None:
     ]
     await _seed_dataset(dataset_id, cases)
 
-    # Monkeypatch _resolve_entry_point to return our stub
     import agent_eval_harness.metrics.classifier as classifier_module
 
     original_resolve = classifier_module._resolve_entry_point

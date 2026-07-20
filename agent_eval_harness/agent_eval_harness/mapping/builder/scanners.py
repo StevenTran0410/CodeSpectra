@@ -42,7 +42,6 @@ class HaystackScanner:
         add_component_names: dict[str, str] = {}  # {haystack_name: class_name}
         module_level_async_functions: dict[str, ast.AsyncFunctionDef] = {}
 
-        # Parse all files once upfront
         for file in source_files:
             parsed = parse_python_source(file)
             if parsed is None:
@@ -55,21 +54,17 @@ class HaystackScanner:
         for file, tree in asts.items():
             self_attr_classes = _build_self_attr_classes(tree)
 
-            # Collect top-level async functions for tool discovery
             for node in tree.body:
                 if isinstance(node, ast.AsyncFunctionDef):
                     module_level_async_functions[node.name] = node
 
-            # Find @component classes and add_component() calls
             for node in tree.body:
                 if isinstance(node, ast.ClassDef):
-                    # Check for @component decorator
                     for decorator in node.decorator_list:
                         if self._is_component_decorator(decorator):
                             known_classes.add(node.name)
                             break
 
-                # Find add_component() calls — resolve through factory/wrapper components
                 # (e.g. add_component(alias, _WrapperComponent(..., self._real_agent, ...)))
                 # to the real wrapped class, same as the wiring detector does for Stage 1.
                 for child in ast.walk(node):
@@ -89,7 +84,6 @@ class HaystackScanner:
                                     add_component_names[haystack_name] = class_name
                                     known_classes.add(class_name)
 
-                # Find add_node() calls (LangGraph)
                 for child in ast.walk(node):
                     if isinstance(child, ast.Call):
                         if isinstance(child.func, ast.Attribute) and child.func.attr == "add_node":
@@ -110,7 +104,6 @@ class HaystackScanner:
                                     known_classes.add(class_name)
                                     add_component_names[alias] = class_name
 
-                # Find BitOr calls (LangChain LCEL)
                 processed_binops = set()
                 for child in ast.walk(node):
                     if isinstance(child, (ast.Assign, ast.AnnAssign, ast.Expr, ast.Return, ast.Yield)):
@@ -151,7 +144,6 @@ class HaystackScanner:
                                 if arg.annotation:
                                     for name_node in ast.walk(arg.annotation):
                                         if isinstance(name_node, ast.Name):
-                                            # Check if this name is an actual class in asts
                                             for check_tree in asts.values():
                                                 for check_node in check_tree.body:
                                                     if (
@@ -166,7 +158,6 @@ class HaystackScanner:
 
             for node in tree.body:
                 if isinstance(node, ast.ClassDef) and node.name in known_classes:
-                    # Get haystack_name if it's registered via add_component
                     haystack_name = None
                     for name, class_name in add_component_names.items():
                         if class_name == node.name:
@@ -191,7 +182,6 @@ class HaystackScanner:
             # Tool discovery: find dict literals with async function values
             for node in ast.walk(tree):
                 if isinstance(node, ast.Call):
-                    # Track the owner class name (e.g., for WorkerComponent(...))
                     owner_class_name = None
                     if isinstance(node.func, ast.Name):
                         owner_class_name = node.func.id
@@ -241,7 +231,6 @@ class HaystackScanner:
         """Extract first ~30 lines of a class/function body."""
         if line <= 1 or line > len(lines):
             return ""
-        # Start from the line after the def/class line
         start = line
         end = min(line + _SNIPPET_LINE_COUNT - 1, len(lines))
         return "\n".join(lines[start : end + 1])
@@ -285,7 +274,6 @@ class HaystackScanner:
         component_name = component_name_arg.value
         tags = {}
 
-        # Extract tags from the dict (args[2] or keyword arg)
         dict_arg = None
         if len(call.args) >= 3 and isinstance(call.args[2], ast.Dict):
             dict_arg = call.args[2]
@@ -320,7 +308,6 @@ class HaystackScanner:
         source_lines: list[str] | None = None,
     ) -> None:
         """Extract tool candidates from a dict literal with async function values."""
-        # Check if ALL values are Name nodes referencing async functions
         all_async_funcs = True
         for value in dict_node.values:
             if not (
@@ -332,7 +319,6 @@ class HaystackScanner:
         if not all_async_funcs:
             return
 
-        # Extract each key/value pair
         for key, value in zip(dict_node.keys, dict_node.values):
             if not (
                 isinstance(key, ast.Constant)
@@ -369,14 +355,12 @@ class HaystackScanner:
         result = []
 
         for candidate in candidates:
-            # Group hints by component_name
             hints_by_component_name: dict[str, list[ManualSpanHint]] = {}
             for hint in candidate.manual_span_hints:
                 if hint.component_name not in hints_by_component_name:
                     hints_by_component_name[hint.component_name] = []
                 hints_by_component_name[hint.component_name].append(hint)
 
-            # Check if any component_name group has a multi-valued tag key
             should_split = False
             split_info: dict[str, dict[str, list[ManualSpanHint]]] = {}
 
@@ -384,7 +368,6 @@ class HaystackScanner:
                 if len(hints) == 1:
                     continue
 
-                # Check for multi-valued tag keys
                 tag_values: dict[str, set[str]] = {}
                 for hint in hints:
                     for key, value in hint.tags.items():
@@ -407,7 +390,6 @@ class HaystackScanner:
             if not should_split:
                 result.append(candidate)
             else:
-                # Create split candidates
                 for tag_key, value_dict in split_info.items():
                     for tag_value, hints_for_value in value_dict.items():
                         split_candidate = CandidateComponent(
@@ -438,7 +420,6 @@ class HaystackScanner:
                 seen.add(key)
                 deduped.append(candidate)
 
-        # Sort by (file, line)
         deduped.sort(key=lambda c: (str(c.file), c.line))
 
         return deduped

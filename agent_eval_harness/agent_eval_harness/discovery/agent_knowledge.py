@@ -87,6 +87,20 @@ class ComponentRoleVerdict(BaseModel):
         return v if v else 'unknown'
 
 
+class DepRoleVerdict(BaseModel):
+    """One constructor dependency's role verdict from Stage 2.5 enrichment.
+    Mirroring ComponentRoleVerdict, but for dependencies rather than components."""
+    dep: str  # dependency name from constructor_deps
+    role: str = 'unknown'  # e.g., 'llm_provider', 'retrieval', 'storage'
+    confidence: float = 0.0
+    reasoning: str = ''
+
+    @field_validator('role')
+    @classmethod
+    def validate_role(cls, v: str) -> str:
+        return v if v else 'unknown'
+
+
 class ContextBuilderRef(BaseModel):
     """A helper that builds context for this agent. file/line optional — see Citation."""
     name: str
@@ -114,18 +128,17 @@ class AgentKnowledge(BaseModel):
     """Enriched semantic profile of an agent, combining static harvest with LLM analysis."""
     model_config = ConfigDict(extra='ignore')
 
-    # Structural fields (sourced from static harvest, LLM never overrides)
+    # Structural fields — sourced from static harvest; the LLM never overrides these.
     location: LocationInfo | None = None
     components: list[ComponentRef] = Field(default_factory=list)
     input_contract: list[ContractArg] = Field(default_factory=list)
     output_contract: OutputContract | None = None
     prompt_sites: list[PromptSiteRef] = Field(default_factory=list)
 
-    # Role verdicts — first conclusion of the LLM round, post hard-gate. NEVER authoritative;
-    # the same gated values are written onto Component.role on the system_map.
+    # Role verdicts — first conclusion of the LLM round, post hard-gate; NEVER authoritative, see Component.role on the system_map.
     component_roles: list[ComponentRoleVerdict] = Field(default_factory=list)
+    constructor_dep_roles: list[DepRoleVerdict] = Field(default_factory=list)
 
-    # Semantic fields (LLM-derived, all with citations)
     functionality: str = ''
     functionality_citations: list[Citation] = Field(default_factory=list)
     context_builders: list[ContextBuilderRef] = Field(default_factory=list)
@@ -137,7 +150,6 @@ class AgentKnowledge(BaseModel):
     constraints: list = Field(default_factory=list)  # hard rules the prompt imposes → Stage 3 gate fuel
     method_steps: list = Field(default_factory=list)  # ordered procedure the prompt tells the agent to follow
 
-    # Flags and metadata
     degraded: bool = False
     confidence: Literal['low', 'medium', 'high'] = 'low'
     degraded_reason: str | None = None
@@ -279,13 +291,8 @@ def verify_citations(
     repo_root: Path,
     symbols_by_file: dict[str, list[dict]] | None = None,
 ) -> VerificationReport:
-    """Verify semantic-field citations against the real repo (structural fields are
-    static-wins, never re-verified). A citation is valid if it can be resolved to
-    readable context — the symbol text is on the line, OR the line falls inside/just
-    above an indexed symbol span (downstream reads the whole function/class anyway), OR
-    it coincides with a detected prompt site. Only citations that resolve to nothing are
-    flagged. symbols_by_file (from code_symbols) enables the span check; absent it, only
-    the line-text and prompt-site checks run."""
+    """Verify semantic-field citations against the real repo; a citation is valid if the symbol text is on the line, the line falls inside/near an indexed symbol span, or it coincides with a detected prompt site — only citations resolving to nothing are flagged.
+    Structural fields are never re-verified; symbols_by_file (from code_symbols) enables the span check and is optional."""
     report = VerificationReport(agent_id='', claims=[])
     symbols_by_file = symbols_by_file or {}
     prompt_site_locs = {
@@ -348,8 +355,7 @@ def verify_citations(
                 continue
 
             actual_line = lines[line - 1]
-            # A citation resolves to readable context if the symbol text is on the line, OR the line
-            # falls inside/just above an indexed symbol span, OR it lands on a detected prompt site.
+            # Resolved if symbol text is on the line, OR falls inside/near a symbol span, OR lands on a prompt site.
             resolved = (
                 (not symbol or symbol in actual_line)
                 or _resolves_to_symbol(file, line)

@@ -115,32 +115,28 @@ def test_run_signature_kwargs_defaults_and_required(tmp_path: Path) -> None:
     assert by_name["repo_name"].required is False
     assert by_name["repo_name"].default_repr == "''"
     assert invocation.constructor_deps == ["ProviderConfigService", "RetrievalService"]
-    # Live constructor deps, but a validator letter is found ("A") -> a known route exists.
-    assert invocation.invocation_mode == "per_agent_route"
-    assert invocation.route == "/api/analysis/rerun_section"
+    # Constructor deps do not force a route: only in-process invocation can substitute a retrieval stub.
+    assert invocation.invocation_mode == "in_harness"
+    assert invocation.route == "/api/analysis/rerun_section"  # recorded, not used to drive cases
     assert invocation.citations and "foo_agent.py" in invocation.citations[0]
 
 
-def test_case_binding_uses_route_shape_when_per_agent_route(tmp_path: Path) -> None:
-    """FooAgent has both constructor_deps and a validator letter -> per_agent_route mode,
-    so case_binding must be the route's real body shape, not the raw run() kwargs shape."""
+def test_case_binding_uses_run_kwargs_even_when_a_route_exists(tmp_path: Path) -> None:
+    """A per-section route resolves its own state from a stored report, so it can never take a synthetic case's input; the binding must be the real run() kwargs shape instead."""
     asts = _parse_files(_write_fixture(tmp_path))
     invocation, _, _, notes, input_kind = harvest_component_contract(_foo_component(), asts, tmp_path)
 
     assert invocation is not None
-    assert invocation.case_binding == {
-        "report_id": "case:$.input.report_id",
-        "section": "const:A",
-        "provider_id": "config:provider_id",
-        "model_id": "config:model_id",
-    }
+    assert "report_id" not in invocation.case_binding
+    assert invocation.case_binding["snapshot_id"] == "case:$.input.snapshot_id"
+    assert invocation.case_binding["provider_id"] == "config:provider_id"
     assert input_kind == "structured"
-    assert any("report_id" in n and "snapshot_id" in n for n in notes)
+    # The route is surfaced as a note so a reader knows it exists and why it is unused.
+    assert any("not used for evaluation" in n for n in notes)
 
 
 def test_case_binding_uses_kwargs_shape_when_no_route_available(tmp_path: Path) -> None:
-    """Constructor deps present but no validator letter found -> no known route; stays
-    'unsupported', and case_binding falls back to the raw kwargs shape (not fabricated)."""
+    """Constructor deps but no route: still in-process, binding is the raw kwargs shape."""
     (tmp_path / "noletter.py").write_text(
         "class NoLetterAgent:\n"
         "    def __init__(self, provider_service: ProviderConfigService):\n"
@@ -156,7 +152,7 @@ def test_case_binding_uses_kwargs_shape_when_no_route_available(tmp_path: Path) 
 
     assert invocation is not None
     assert invocation.constructor_deps == ["ProviderConfigService"]
-    assert invocation.invocation_mode == "unsupported"
+    assert invocation.invocation_mode == "in_harness"
     assert invocation.route is None
     assert invocation.case_binding == {
         "provider_id": "config:provider_id",
@@ -192,10 +188,8 @@ def test_fallback_literal_with_dynamic_marker(tmp_path: Path) -> None:
     assert output.fallback_source is not None
 
 
-# CS-302 AC3 / Slice 3: an agent that returns a dict LITERAL (no validator letter, no SCHEMA
-# constant — the multi_agent JudgeComponent shape) must still yield a harvested output schema,
-# inferred from the return dict on the MAIN path, so its gold can be validated instead of
-# rubber-stamped.
+# An agent that returns a dict LITERAL (no validator letter, no SCHEMA constant) must still yield
+# a harvested output schema, inferred from the return dict on the main path.
 _DICT_LITERAL_AGENT_SRC = '''
 class JudgeAgent:
     def __init__(self, llm_client):
@@ -290,9 +284,7 @@ def test_json_schema_str_fallback(tmp_path: Path) -> None:
 
 
 def test_dynamic_schema_str_not_misattributed_across_files(tmp_path: Path) -> None:
-    """A dynamic constant in the imported-from file must never fall through to an
-    unrelated file's same-named literal constant — that would silently misattribute
-    one component's schema to another."""
+    """A dynamic constant in the imported-from file must never fall through to an unrelated file's same-named literal constant — that would silently misattribute one component's schema to another."""
     (tmp_path / "agent_mod.py").write_text(
         "from shared_prompts import AGENT_SCHEMA_STR\n\n"
         "class SharedAgent:\n"
@@ -304,8 +296,7 @@ def test_dynamic_schema_str_not_misattributed_across_files(tmp_path: Path) -> No
         'BASE = "x"\nAGENT_SCHEMA_STR = f"schema {BASE}"\n',
         encoding="utf-8",
     )
-    # Unrelated file that happens to define a same-named constant with a real literal —
-    # must NOT be picked up as this agent's schema.
+    # Unrelated file that happens to define a same-named constant with a real literal — must NOT be picked up as this agent's schema.
     (tmp_path / "other_module.py").write_text(
         'AGENT_SCHEMA_STR = \'{"type": "object", "properties": {"unrelated": {"type": "string"}}}\'\n',
         encoding="utf-8",
@@ -320,8 +311,7 @@ def test_dynamic_schema_str_not_misattributed_across_files(tmp_path: Path) -> No
 
 
 def test_fallback_disambiguates_by_entry_method_call(tmp_path: Path) -> None:
-    """Two methods contain 'fallback' in their name; the decoy sorts first in the
-    class body but the real one is the one the entry method actually calls."""
+    """Two methods contain 'fallback' in their name; the decoy sorts first in the class body but the real one is the one the entry method actually calls."""
     (tmp_path / "picky.py").write_text(
         "class PickyAgent:\n"
         "    def _fallback_provider_config(self) -> dict:\n"
@@ -344,9 +334,7 @@ def test_fallback_disambiguates_by_entry_method_call(tmp_path: Path) -> None:
 
 
 def test_harvest_fallback_falls_through_to_pipeline_module_for_k(tmp_path: Path) -> None:
-    """K/L-shaped agents have no own try/except — validate_section() alone means the entry
-    method's fallback lives in a module-level `_section_<letter>_pipeline_fallback()` in a
-    different file (the pipeline orchestrator), never a class method (A5)."""
+    """K/L-shaped agents have no own try/except — validate_section() alone means the entry method's fallback lives in a module-level `_section_<letter>_pipeline_fallback()` in a different file (the pipeline orchestrator), never a class method."""
     (tmp_path / "agent_k.py").write_text(
         "from schemas import validate_section\n\n"
         "class KAgent:\n"
@@ -373,8 +361,7 @@ def test_harvest_fallback_falls_through_to_pipeline_module_for_k(tmp_path: Path)
 
 
 def test_harvest_fallback_no_fallthrough_without_a_validator_letter(tmp_path: Path) -> None:
-    """The pipeline-fallback fallthrough is letter-keyed — an agent with no own fallback
-    method AND no validator letter has nothing to fall through to (never guessed)."""
+    """The pipeline-fallback fallthrough is letter-keyed — an agent with no own fallback method AND no validator letter has nothing to fall through to (never guessed)."""
     (tmp_path / "agent_x.py").write_text(
         "class XAgent:\n"
         "    async def run(self, snapshot_id: str):\n"
@@ -392,14 +379,8 @@ def test_harvest_fallback_no_fallthrough_without_a_validator_letter(tmp_path: Pa
     assert output is not None and output.fallback_literal is None
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# CS-303 Slice 6 / AC3 — contract_conventions config seam
-# ──────────────────────────────────────────────────────────────────────────────
-
-
 def test_contract_conventions_rerun_section_route_overridable(tmp_path: Path) -> None:
-    """rerun_section_route has no harvestable equivalent at all (statics can't discover a
-    target's REST route) — config is the only source, so it must actually reach the output."""
+    """rerun_section_route has no harvestable equivalent at all (statics can't discover a target's REST route) — config is the only source, so it must actually reach the output."""
     asts = _parse_files(_write_fixture(tmp_path))
     default_invocation, _, _, _, _ = harvest_component_contract(_foo_component(), asts, tmp_path)
     assert default_invocation is not None
@@ -416,10 +397,7 @@ def test_contract_conventions_rerun_section_route_overridable(tmp_path: Path) ->
 def test_contract_conventions_pipeline_fallback_pattern_fills_what_default_could_not_supply(
     tmp_path: Path,
 ) -> None:
-    """AC3 (config fills a convention harvest could NOT obtain): KAgent has no own fallback
-    method, so the module-level pipeline-fallback lookup is the only source — under the
-    DEFAULT pattern the real function's custom name isn't found (None); a config matching its
-    actual name resolves it."""
+    """Config fills a convention harvest could NOT obtain: KAgent has no own fallback method, so the module-level pipeline-fallback lookup is the only source — under the DEFAULT pattern the real function's custom name isn't found; a config matching its actual name resolves it."""
     (tmp_path / "agent_k.py").write_text(
         "from schemas import validate_section\n\n"
         "class KAgent:\n"
@@ -450,9 +428,7 @@ def test_contract_conventions_pipeline_fallback_pattern_fills_what_default_could
 def test_contract_conventions_harvest_wins_over_config_when_class_fallback_present(
     tmp_path: Path,
 ) -> None:
-    """AC3 (harvest wins when it already supplies a value): an agent with its OWN class-level
-    fallback method must keep that literal regardless of what pipeline_fallback_name_pattern
-    is configured — the module-level pattern search is never even reached."""
+    """Harvest wins when it already supplies a value: an agent with its OWN class-level fallback method must keep that literal regardless of what pipeline_fallback_name_pattern is configured — the module-level pattern search is never even reached."""
     (tmp_path / "agent_b.py").write_text(
         "from schemas import validate_section\n\n"
         "class BAgent:\n"
@@ -619,10 +595,7 @@ async def test_generate_plan_agentic_attaches_contracts(tmp_path: Path) -> None:
 
 
 async def test_generate_plan_agentic_emits_synthetic_agent_io_gate_for_non_fan_in_agent(tmp_path: Path) -> None:
-    """CS-289: the gate-emission rule in reconcile() must fire for ANY archetype-classifiable
-    agent (here FooAgent classifies as rag_single_shot via _archetype_for — it has a
-    RetrievalService constructor dep and no mem_ctx/arch_bundle/folder_tree/query-planning
-    kwargs) — not just fan-in agents like K/L."""
+    """The gate-emission rule in reconcile() must fire for ANY archetype-classifiable agent (here FooAgent classifies as rag_single_shot via _archetype_for) — not just fan-in agents like K/L."""
     from agent_eval_harness.llm.client import LLMResponse
     from agent_eval_harness.llm.fake_client import FakeLLMClient
     from agent_eval_harness.planning.agentic_planner import generate_plan_agentic
@@ -647,4 +620,72 @@ async def test_generate_plan_agentic_emits_synthetic_agent_io_gate_for_non_fan_i
     ]
     assert len(synth_entries) == 1
     assert synth_entries[0].agent_id == "foo"
-    assert synth_entries[0].provenance == "rule"
+
+
+def test_derive_case_binding_v2_arch_bundle_vs_bundle() -> None:
+    """_derive_case_binding v2 fixes arch_bundle → bundle mapping (was mapped to itself; archetype vocabulary specifies `bundle`)."""
+    from agent_eval_harness.mapping.builder.contract_harvest import _derive_case_binding
+    from agent_eval_harness.planning.contract import KwargSpec
+
+    kwargs = [
+        KwargSpec(name="provider_id", annotation="str", default_repr=None, required=True),
+        KwargSpec(name="snapshot_id", annotation="str", default_repr=None, required=True),
+        KwargSpec(name="arch_bundle", annotation="dict", default_repr=None, required=False),
+        KwargSpec(name="graph_summary", annotation="str", default_repr=None, required=False),
+    ]
+
+    binding = _derive_case_binding(kwargs)
+
+    assert binding.get("arch_bundle") == "case:$.input.bundle", \
+        f"arch_bundle should map to bundle case key, got {binding.get('arch_bundle')}"
+    assert binding.get("graph_summary") == "case:$.input.graph_summary", \
+        f"graph_summary should fallback to same-name, got {binding.get('graph_summary')}"
+    assert binding.get("provider_id") == "config:provider_id", \
+        f"provider_id should use config: prefix, got {binding.get('provider_id')}"
+    assert binding.get("snapshot_id") == "case:$.input.snapshot_id", \
+        f"snapshot_id should map to case key, got {binding.get('snapshot_id')}"
+
+
+def test_derive_case_binding_v2_fallback_same_name() -> None:
+    """_derive_case_binding v2 falls back to same-name mapping for kwargs not in the archetype vocabulary — this allows generic/foreign architectures to work without requiring full vocabulary."""
+    from agent_eval_harness.mapping.builder.contract_harvest import _derive_case_binding
+    from agent_eval_harness.planning.contract import KwargSpec
+
+    kwargs = [
+        KwargSpec(name="custom_input", annotation="str", default_repr=None, required=True),
+        KwargSpec(name="query", annotation="str", default_repr=None, required=True),
+        KwargSpec(name="context", annotation="dict", default_repr=None, required=False),
+    ]
+
+    binding = _derive_case_binding(kwargs)
+
+    assert binding.get("custom_input") == "case:$.input.custom_input", \
+        "Unknown kwarg should fallback to same-name"
+    assert binding.get("query") == "case:$.input.query", \
+        "Unknown kwarg should fallback to same-name"
+    assert "context" not in binding, \
+        "Optional kwarg not in vocabulary should be skipped"
+
+
+def test_derive_case_binding_v2_known_mapping() -> None:
+    """_derive_case_binding v2 correctly maps known archetype kwargs per the documented field-vocabulary."""
+    from agent_eval_harness.mapping.builder.contract_harvest import _derive_case_binding
+    from agent_eval_harness.planning.contract import KwargSpec
+
+    kwargs = [
+        KwargSpec(name="identity_output", annotation="dict", default_repr=None, required=False),
+        KwargSpec(name="folder_tree", annotation="str", default_repr=None, required=False),
+        KwargSpec(name="repo_name", annotation="str", default_repr=None, required=False),
+        KwargSpec(name="mem_ctx", annotation="dict", default_repr=None, required=False),
+    ]
+
+    binding = _derive_case_binding(kwargs)
+
+    assert binding.get("identity_output") == "case:$.input.project_identity_output", \
+        "identity_output should map to project_identity_output"
+    assert binding.get("folder_tree") == "case:$.input.folder_tree", \
+        "folder_tree should map to itself"
+    assert binding.get("repo_name") == "case:$.input.repo_name", \
+        "repo_name should map to itself"
+    assert binding.get("mem_ctx") == "case:$.input.mem_ctx", \
+        "mem_ctx should map to itself"

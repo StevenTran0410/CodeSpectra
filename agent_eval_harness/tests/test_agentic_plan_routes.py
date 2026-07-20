@@ -1,5 +1,4 @@
-"""Route-level tests for the Stage 3 agentic planner endpoints; fakes the snapshot
-lookup and LLM calls, everything else runs for real."""
+"""Route-level tests for the Stage 3 agentic planner endpoints; fakes the snapshot lookup and LLM calls, everything else runs for real."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -17,8 +16,6 @@ from agent_eval_harness.store import repository
 from agent_eval_harness.store.database import close_db, init_db
 from agent_eval_harness.ui.server import app
 
-pytestmark = pytest.mark.asyncio
-
 
 @pytest.fixture(autouse=True)
 async def _setup_db(tmp_path, monkeypatch):
@@ -30,9 +27,7 @@ async def _setup_db(tmp_path, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _patch_external_calls(monkeypatch, tmp_path):
-    """Every DAG node's LLM call is answered with "{}" — every node degrades gracefully
-    (defensive parsing), leaving only the deterministic baseline in the resulting plan.
-    Enough to exercise routing/persistence/wiring without needing per-node canned JSON."""
+    """Every DAG node's LLM call is answered with "{}", so every node degrades gracefully — enough to exercise routing/persistence/wiring without per-node canned JSON."""
 
     async def fake_get_snapshot(self, snapshot_id: str) -> dict:
         return {"local_path": str(tmp_path)}
@@ -89,7 +84,7 @@ async def _seed_completed_expansion_session(
         save_agent_flow_map(agent_flow_map, agent_flows_path)
         await repository.update_expansion_session_agentflows_path(session_id, str(agent_flows_path))
 
-        # CS-300 R1: /plan 400s unless Stage 2.5 enrichment has produced at least one row.
+        # /plan 400s unless Stage 2.5 enrichment has produced at least one row.
         await repository.upsert_agent_knowledge(
             session_id=session_id, agent_id="widget_agent",
             md_path="", json_path="", evidence_hash="seed", confidence="high", query_count=0,
@@ -198,11 +193,9 @@ async def test_generate_plan_missing_local_path_returns_400_not_500(tmp_path: Pa
 
 
 async def test_generate_plan_field_downstream_consumers_resolves_boundary_only_helper(tmp_path: Path) -> None:
-    """CS-289 A3 regression: found live against the real CodeSpectra repo — SynthesisAgent's
-    field reads are 100% delegated to _section_compressor.py, a helper Stage 2 discovered but
-    never accepted (it landed in `boundary`, not `accepted`, since it isn't its own
-    component). Contract harvest must still see it, or field_downstream_consumers comes back
-    completely empty and the synthetic_agent_io gate never gets emitted for that agent."""
+    """Regression: contract harvest must still see a field read delegated to a helper file that
+    landed in `boundary` (not `accepted`), or field_downstream_consumers comes back empty and
+    the synthetic_agent_io gate never gets emitted for that agent."""
     (tmp_path / "myapp").mkdir()
     (tmp_path / "myapp" / "fan_in_agent.py").write_text(
         "from myapp.helper import build_input\n\n"

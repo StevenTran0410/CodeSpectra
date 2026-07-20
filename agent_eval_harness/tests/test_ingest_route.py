@@ -12,8 +12,6 @@ from agent_eval_harness.store import repository
 from agent_eval_harness.store.database import close_db, init_db
 from agent_eval_harness.ui.server import app
 
-pytestmark = pytest.mark.asyncio
-
 
 @pytest.fixture(autouse=True)
 async def _setup_db(tmp_path, monkeypatch):

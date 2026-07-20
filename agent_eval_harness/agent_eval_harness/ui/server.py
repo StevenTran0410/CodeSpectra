@@ -18,8 +18,11 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from agent_eval_harness.code_injection.injection_target import BranchInjectionTarget, InjectionTargetError
-from agent_eval_harness.code_injection.plan_renderer import render_eval_plan_md
-from agent_eval_harness.code_injection.wiring import build_wiring_for_codespectra
+from agent_eval_harness.code_injection.plan_renderer import (
+    PRESERVED_PLAN_FILES,
+    render_eval_plan_files,
+)
+from agent_eval_harness.code_injection.wiring import build_wiring
 from agent_eval_harness.config import AEHConfig
 from agent_eval_harness.datasets.fulfillment import export_dataset
 from agent_eval_harness.discovery.analysis_context import load_project_context
@@ -48,7 +51,6 @@ logger = logging.getLogger("agent_eval_harness.ui.server")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Default AEH_DATA_DIR to cwd if the caller hasn't set it
     if not os.getenv("AEH_DATA_DIR"):
         os.environ["AEH_DATA_DIR"] = os.getcwd()
     await init_db()
@@ -63,7 +65,6 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Enable CORS for local development (e.g. Vite on port 5173 talking to FastAPI on 8321)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -131,8 +132,6 @@ class TraceDetailResponse(BaseModel):
     spans: list[dict[str, Any]]
 
 
-# --- API Routes ---
-
 _F = TypeVar("_F", bound=Callable[..., Any])
 
 
@@ -192,7 +191,6 @@ async def get_runs(target_system_id: str | None = None):
 async def get_run_detail(run_id: str):
     run = await _get_run_or_404(run_id)
 
-    # Load system map from map_path if possible
     system_map_dict = {
         "target_system_id": run["target_system_id"],
         "discrepancies": [],
@@ -207,7 +205,6 @@ async def get_run_detail(run_id: str):
         except Exception as e:
             logger.warning(f"Could not load system map from {run['map_path']}: {e}")
 
-    # Fetch component aggregates
     db = get_db()
     async with db.execute(
         "SELECT component_id, COUNT(*) as total, "
@@ -232,7 +229,6 @@ async def get_run_detail(run_id: str):
         except Exception as e:
             logger.warning(f"Could not parse active_defects for run {run_id}: {e}")
 
-    # Fetch overall pass rate from database
     async with db.execute(
         "SELECT COALESCE("
         "CAST(SUM(CASE WHEN passed = 1 THEN 1 ELSE 0 END) AS REAL) / "
@@ -513,7 +509,6 @@ async def rerun_run(run_id: str, body: RerunRequest):
 
     _rerun_in_flight.add(run_id)
 
-    # 1. Determine active defects (fallback to parent's active defects if not provided)
     active_defects = body.active_defects
     if active_defects is None:
         try:
@@ -524,7 +519,6 @@ async def rerun_run(run_id: str, body: RerunRequest):
             logger.warning(f"Could not parse parent active_defects for rerun of {run_id}: {e}")
             active_defects = []
 
-    # 2. Insert the new run row in "running" state
     new_run_id = await repository.insert_run(
         target_system_id=parent["target_system_id"],
         eval_plan_id=parent["eval_plan_id"],
@@ -536,12 +530,10 @@ async def rerun_run(run_id: str, body: RerunRequest):
         model_overrides=body.model_overrides,
     )
 
-    # 3. Define the background executor
     async def _execute_rerun_task():
         try:
             config = AEHConfig.load()
 
-            # Build the base/default client
             if config.provider_id and config.backend_url and config.backend_token:
                 default_client = CodeSpectraProxyClient(
                     config.backend_url,
@@ -558,7 +550,6 @@ async def rerun_run(run_id: str, body: RerunRequest):
                     )
                 )
 
-            # Build override clients
             overrides = {}
             system_map = None
             if parent.get("map_path"):
@@ -570,14 +561,12 @@ async def rerun_run(run_id: str, body: RerunRequest):
             for comp_id, override_val in body.model_overrides.items():
                 if not override_val:
                     continue
-                # Determine provider_id and model_id
                 if ":" in override_val:
                     p_id, m_id = override_val.split(":", 1)
                 else:
                     p_id = config.provider_id or "fake-provider"
                     m_id = override_val
 
-                # Build client for this override
                 if config.backend_url and config.backend_token and p_id != "fake-provider":
                     client = CodeSpectraProxyClient(
                         config.backend_url,
@@ -604,7 +593,7 @@ async def rerun_run(run_id: str, body: RerunRequest):
             routing_client = RoutingLLMClient(default=default_client, overrides=overrides)
 
             try:
-                # Run the sweep using the routing client, passing new_run_id to reuse the row
+                # new_run_id reuses the row inserted above instead of creating a second one.
                 await run_sweep(
                     target=parent["target"],
                     map_path=parent["map_path"],
@@ -663,7 +652,6 @@ async def ingest_eval_run_route(body: IngestEvalRunRequest):
     return {"run_id": run_id, "status": run["status"] if run else "unknown"}
 
 
-# --- Discovery Models & Endpoints ---
 
 class StartDiscoveryRequest(BaseModel):
     repo_ref: str
@@ -730,7 +718,7 @@ async def _get_expansion_session_or_404(session_id: str) -> dict:
 
 
 def _get_repo_root() -> Path:
-    """backend_source_path points AT the target's backend/ folder; its parent is the actual git repo root."""
+    """Repo root is parent of the target source folder; loaded from AEHConfig."""
     config = AEHConfig.load()
     if not config.backend_source_path:
         raise HTTPException(
@@ -955,7 +943,6 @@ async def health_check():
     return {"status": "ok"}
 
 
-# --- Expansion & Planning Endpoints ---
 
 class ExpandCandidateRequest(BaseModel):
     provider_id: str | None = None
@@ -1010,7 +997,7 @@ async def run_expansion_background(
             raise RuntimeError(f"Snapshot {snapshot_id} is missing local_path context.")
 
         local_path = Path(local_path_str)
-        # accepted is now a list of dicts with file, role_hint, key_symbols, follow fields
+        # accepted entries are dicts with file, role_hint, key_symbols, follow fields
         abs_files = [local_path / (p["file"] if isinstance(p, dict) else p) for p in res["accepted"]]
 
         builder = SystemMapBuilder(llm_client)
@@ -1157,6 +1144,8 @@ class GeneratePlanRequest(BaseModel):
 
 class JudgeAgentCasesRequest(BaseModel):
     agent_id: str
+    # Re-judges cases already scored, replacing their evaluations — needed whenever the scoring rules change, since stored scores are otherwise frozen.
+    force: bool = False
     provider_id: str | None = None
     model_id: str | None = None
     backend_url: str | None = None
@@ -1225,7 +1214,7 @@ async def generate_plan_route(session_id: str, body: GeneratePlanRequest):
         if not local_path_str:
             raise HTTPException(status_code=400, detail="Snapshot is missing local_path context.")
         local_path = Path(local_path_str)
-        # accepted is now a list of dicts with file, role_hint, key_symbols, follow fields
+        # accepted entries are dicts with file, role_hint, key_symbols, follow fields
         abs_files = [local_path / (p["file"] if isinstance(p, dict) else p) for p in sess["accepted"]]
         source_by_component = build_source_by_component(abs_files, system_map)
 
@@ -1273,7 +1262,6 @@ async def generate_plan_route(session_id: str, body: GeneratePlanRequest):
         await repository.update_expansion_session_plan_path(session_id, str(plan_path))
         await repository.update_expansion_session_plan_report_path(session_id, str(plan_report_path))
 
-        # Advance parent discovery session pipeline stage
         candidate = await repository.get_discovery_candidate(sess["candidate_id"])
         if candidate:
             await repository.update_discovery_session_pipeline_stage(candidate["session_id"], "awaiting_plan_review")
@@ -1582,17 +1570,14 @@ async def update_plan_route(session_id: str, body: UpdatePlanRequest):
     from agent_eval_harness.metrics.suite import Suite, load_suite
     import yaml
 
-    # Load existing plan to diff provenance
     old_suite = load_suite(plan_path_str)
     old_by_id = {e.id: e for e in old_suite.entries}
 
-    # Validate via Suite.model_validate — hard gate
     try:
         new_suite = Suite.model_validate({"entries": body.entries})
     except Exception as e:
         raise HTTPException(status_code=422, detail=f"Invalid plan entries: {e}")
 
-    # Flip provenance to human_added for materially changed entries
     updated_entries = []
     for entry in new_suite.entries:
         old = old_by_id.get(entry.id)
@@ -1606,7 +1591,7 @@ async def update_plan_route(session_id: str, body: UpdatePlanRequest):
         ):
             updated = entry.model_copy(update={"provenance": "human_added"})
         else:
-            updated = entry  # unchanged - keep original provenance
+            updated = entry
         updated_entries.append(updated)
 
     final_suite = Suite(entries=updated_entries)
@@ -1649,12 +1634,11 @@ async def generate_agent_flows_route(session_id: str, body: AgentFlowRequest):
                 status_code=400, detail="Snapshot is missing local_path context."
             )
         local_path = Path(local_path_str)
-        # accepted is now a list of dicts with file, role_hint, key_symbols, follow fields
+        # accepted entries are dicts with file, role_hint, key_symbols, follow fields
         abs_files = [local_path / (p["file"] if isinstance(p, dict) else p) for p in sess["accepted"]]
 
         source_by_component = build_source_by_component(abs_files, system_map)
 
-        # Feature map hint nudges the agent-flow grouping prompt with product-level context
         project_ctx = await load_project_context(client, sess["snapshot_id"])
         feature_map_hint = (
             project_ctx.feature_map.as_context_block()
@@ -1803,18 +1787,85 @@ async def restore_eval_branch(session_id: str):
     return {"restored_branch": original_branch}
 
 
+def _plan_dir_for(session_id: str) -> Path:
+    return Path(os.getenv("AEH_DATA_DIR", ".")) / "aeh" / session_id / "plans"
+
+
+def _reharvest_contracts(sess: dict, system_map) -> dict:
+    """Re-run the contract harvest at render time (pure AST, costs nothing) — the plan_report's frozen copy goes stale as soon as the target changes, sending the coding agent at a call shape that no longer exists.
+    Returns {} on any problem so the caller keeps the stored copy."""
+    try:
+        flows_path = sess.get("agent_flows_path")
+        if not flows_path or not Path(flows_path).exists():
+            return {}
+        root = _get_repo_root()
+        rel = [(p["file"] if isinstance(p, dict) else p) for p in (sess.get("accepted") or [])]
+        rel += list(sess.get("boundary") or [])
+        files = [f for f in (root / r for r in rel) if f.exists()]
+        if not files:
+            return {}
+        from agent_eval_harness.mapping.builder.contract_harvest import harvest_contracts
+
+        return harvest_contracts(
+            system_map, load_agent_flow_map(flows_path), files, root,
+            AEHConfig.load().contract_conventions,
+        )
+    except Exception as e:
+        logger.warning(f"eval-plan: contract re-harvest failed, using stored contracts: {e}")
+        return {}
+
+
+@app.get("/api/discovery/expansion-sessions/{session_id}/eval-plan")
+async def get_eval_plan(session_id: str):
+    """Existing handoff plan for this session, or plan_path=None if none was rendered."""
+    sess = await _get_expansion_session_or_404(session_id)
+    stored = sess.get("eval_plan_md_path")
+    plan_dir = Path(stored).parent if stored else _plan_dir_for(session_id)
+    files = sorted(p.name for p in plan_dir.glob("*.md")) if plan_dir.exists() else []
+    if not files:
+        return {"plan_path": None, "plan_dir": None, "files": []}
+    entry = plan_dir / "AGENTS.md"
+    return {
+        "plan_path": str(entry if entry.exists() else plan_dir / files[0]),
+        "plan_dir": str(plan_dir),
+        "files": files,
+    }
+
+
+@app.delete("/api/discovery/expansion-sessions/{session_id}/eval-plan")
+async def delete_eval_plan(session_id: str):
+    """Delete this session's rendered plan files and clear the idempotency pointer. Files the coding agent authors are kept — Regenerate routes through here, so deleting them would defeat the point of preserving them on re-render."""
+    await _get_expansion_session_or_404(session_id)
+    plan_dir = _plan_dir_for(session_id)
+    removed = 0
+    kept: list[str] = []
+    if plan_dir.exists():
+        for p in plan_dir.glob("*.md"):
+            if p.name in PRESERVED_PLAN_FILES:
+                kept.append(p.name)
+                continue
+            p.unlink()
+            removed += 1
+    await repository.update_expansion_session_eval_plan_md_path(session_id, None)
+    return {"deleted": removed, "kept": kept}
+
+
 @app.post("/api/discovery/expansion-sessions/{session_id}/eval-plan")
 async def create_eval_plan(session_id: str, base_ref: str = "main"):
     sess = await _get_expansion_session_or_404(session_id)
     repo_root = _get_repo_root()
     eval_branch = sess.get("eval_branch_name") or f"aeh/eval-{session_id}"
-    # Guard: plan must not already exist
-    plan_md_path = repo_root / "AEH_EVAL_PLAN.md"
-    if plan_md_path.exists():
-        raise HTTPException(
-            status_code=409,
-            detail="AEH_EVAL_PLAN.md already exists on this branch.",
-        )
+
+    # Idempotent on the stored plan path; nothing is checked in the target repo.
+    if sess.get("eval_plan_md_path"):
+        existing = Path(sess["eval_plan_md_path"])
+        existing_dir = existing.parent
+        return {
+            "plan_path": str(existing),
+            "plan_dir": str(existing_dir),
+            "files": sorted(p.name for p in existing_dir.glob("*.md")) if existing_dir.exists() else [],
+        }
+
     if not sess.get("map_path"):
         raise HTTPException(status_code=400, detail="No system map for this session.")
     if not sess.get("plan_path"):
@@ -1831,7 +1882,11 @@ async def create_eval_plan(session_id: str, base_ref: str = "main"):
     system_map = load_system_map(sess["map_path"])
     suite = load_suite(sess["plan_path"])
     plan_report = load_plan_report(plan_report_path_str)
-    # Collect dataset ids from suite entries, grouped by gate_id
+    # In-memory only: the plan on disk keeps whatever Stage 3 recorded.
+    fresh_contracts = _reharvest_contracts(sess, system_map)
+    for agent_report in plan_report.agents:
+        if agent_report.agent_id in fresh_contracts:
+            agent_report.contract = fresh_contracts[agent_report.agent_id]
     datasets_to_gate_ids: dict[str, list[str]] = {}
     for entry in suite.entries:
         if entry.dataset and entry.dataset.ref:
@@ -1840,7 +1895,9 @@ async def create_eval_plan(session_id: str, base_ref: str = "main"):
     dataset_summaries: list[dict] = []
     for dataset_id, gate_ids in datasets_to_gate_ids.items():
         cases = await export_dataset(dataset_id)
-        kind = cases[0].kind if cases else ""
+        # Metadata knows the kind even when every case is filtered out by provenance.
+        meta = await repository.get_dataset_metadata(dataset_id)
+        kind = (meta or {}).get("kind") or (cases[0].kind if cases else "")
         dataset_summaries.append({
             "dataset_id": dataset_id,
             "kind": kind,
@@ -1848,42 +1905,77 @@ async def create_eval_plan(session_id: str, base_ref: str = "main"):
             "gate_ids": gate_ids,
             "example_case": cases[0].model_dump() if cases else None,
         })
-    wiring = build_wiring_for_codespectra(system_map, session_id)
-    wiring["aeh_db_path"] = str((Path(os.getenv("AEH_DATA_DIR", ".")) / DB_FILENAME).resolve())
+    # Derive agent_invocations from harvested contracts (no CodeSpectra hardcodes)
+    agent_invocations = {}
+    if plan_report and plan_report.agents:
+        for agent_report in plan_report.agents:
+            if agent_report.contract and agent_report.contract.invocation:
+                invocation = agent_report.contract.invocation
+                agent_invocations[agent_report.agent_id] = {
+                    "invocation_mode": invocation.invocation_mode,
+                    "case_binding": invocation.case_binding,
+                    "route": invocation.route,
+                    "constructor_deps": invocation.constructor_deps,
+                }
+
+    wiring = build_wiring(system_map, session_id, dataset_kinds=None, agent_invocations=agent_invocations)
+    aeh_data_dir = Path(os.getenv("AEH_DATA_DIR", "."))
+    wiring["aeh_db_path"] = str((aeh_data_dir / DB_FILENAME).resolve())
+    # Spanlogs and manifests land here, never inside the target repo.
+    wiring["aeh_out_dir"] = str((aeh_data_dir / "aeh" / session_id / "runs").resolve())
     wiring["dataset_ids"] = sorted(datasets_to_gate_ids.keys())
-    from agent_eval_harness.discovery.enrichment import agent_knowledge_dir
-    md_content = render_eval_plan_md(
+    from agent_eval_harness.discovery.enrichment import resolve_agent_knowledge_dir
+    files = render_eval_plan_files(
         system_map, wiring, dataset_summaries, session_id, eval_branch,
         plan_report=plan_report, repo_root=repo_root, base_ref=base_ref,
-        knowledge_dir=agent_knowledge_dir(session_id),
+        knowledge_dir=resolve_agent_knowledge_dir(session_id),
     )
-    plan_md_path.write_text(md_content, encoding="utf-8")
+
+    # The 4 handoff files live in AppData, never in the target repo.
+    plan_dir = aeh_data_dir / "aeh" / session_id / "plans"
+    plan_dir.mkdir(parents=True, exist_ok=True)
+    for filename, content in files.items():
+        target = plan_dir / filename
+        if filename in PRESERVED_PLAN_FILES and target.exists():
+            continue  # the coding agent's own notes — a re-render must not erase them
+        target.write_text(content, encoding="utf-8")
+
+    # Idempotency + UI anchor points at the entrypoint file (AGENTS.md) in the plan dir.
+    entry_path = plan_dir / "AGENTS.md"
     await repository.update_expansion_session_eval_plan_md_path(
-        session_id, str(plan_md_path)
+        session_id, str(entry_path)
     )
-    return {"plan_path": str(plan_md_path)}
+    return {"plan_path": str(entry_path), "plan_dir": str(plan_dir),
+            "files": sorted(files.keys())}
 
 
 @app.post("/api/discovery/expansion-sessions/{session_id}/eval-results")
-async def load_eval_results(session_id: str):
+async def load_eval_results(session_id: str, manifest_path: str | None = None):
+    """Load eval results, delegating to the generic ingest endpoint; if manifest_path is None, attempts a legacy path for backward compat."""
     sess = await _get_expansion_session_or_404(session_id)
     from agent_eval_harness.ingest.spanlog_ingest import IngestError, parse_spanlog, persist_spanlog
-    repo_root = _get_repo_root()
-    manifest_path = repo_root / "backend" / ".aeh" / "manifest.json"
-    if not manifest_path.exists():
+
+    # Runs write their manifest to this session's own runs dir; the pre-AppData location is only a fallback for plans installed before that move.
+    if not manifest_path:
+        candidates = [
+            Path(os.getenv("AEH_DATA_DIR", ".")) / "aeh" / session_id / "runs" / "manifest.json",
+            _get_repo_root() / "backend" / ".aeh" / "manifest.json",
+        ]
+        manifest_path = str(next((c for c in candidates if c.exists()), candidates[0]))
+
+    manifest_path_obj = Path(manifest_path)
+    if not manifest_path_obj.exists():
         raise HTTPException(
             status_code=404,
-            detail=(
-                "manifest not found at backend/.aeh/manifest.json — "
-                "run POST /aeh/run-eval on your running backend first"
-            ),
+            detail=f"manifest not found at {manifest_path}",
         )
+
     try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest = json.loads(manifest_path_obj.read_text(encoding="utf-8"))
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"could not read manifest: {e}")
 
-    # Idempotent on the manifest's run_id — re-ingesting an unchanged manifest returns the existing run.
+    # Idempotent on the manifest's run_id — re-ingesting an unchanged manifest returns the existing run
     manifest_run_id = manifest.get("run_id")
     if (
         manifest_run_id
@@ -1900,10 +1992,12 @@ async def load_eval_results(session_id: str):
             status_code=400,
             detail="manifest is missing a valid log_path",
         )
+
     try:
         parsed = parse_spanlog(Path(log_path_str))
     except IngestError as e:
         raise HTTPException(status_code=422, detail=str(e))
+
     run_id = await persist_spanlog(
         parsed,
         target_system_id=manifest.get("plan_id", "unknown"),
@@ -1976,7 +2070,8 @@ _JUDGE_BATCH_SIZE = 4  # concurrent LLM calls per batch — this is a dev-only t
 
 @app.post("/api/eval-runs/{run_id}/judge")
 async def judge_eval_run_agent_cases(run_id: str, body: JudgeAgentCasesRequest):
-    """Ad-hoc per-agent semantic-match + field precision/recall scoring; idempotent per case (existing 'semantic_match' eval is skipped)."""
+    """Ad-hoc per-agent semantic-match + field precision/recall scoring; idempotent per case
+    (existing 'semantic_match' eval is skipped) unless `force`, which re-scores every case."""
     run = await repository.get_run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Run not found.")
@@ -1992,10 +2087,15 @@ async def judge_eval_run_agent_cases(run_id: str, body: JudgeAgentCasesRequest):
         )
 
     traces = await repository.get_traces_for_run(run_id)
-    existing = await repository.get_evaluations_for_component(run_id, body.agent_id)
-    already_scored_trace_ids = {
-        e["trace_id"] for e in existing if e["metric_name"] == "semantic_match"
-    }
+    if body.force:
+        # Wipe first, so a re-judge replaces this agent's scores rather than stacking a second set of rows the UI would read arbitrarily.
+        await repository.delete_evaluations_for_component(run_id, body.agent_id)
+        already_scored_trace_ids: set[str] = set()
+    else:
+        existing = await repository.get_evaluations_for_component(run_id, body.agent_id)
+        already_scored_trace_ids = {
+            e["trace_id"] for e in existing if e["metric_name"] == "semantic_match"
+        }
 
     case_ids = [t["dataset_case_id"] for t in traces if t.get("dataset_case_id")]
     cases_by_id = await repository.get_dataset_cases_by_ids(case_ids)
@@ -2045,10 +2145,17 @@ async def judge_eval_run_agent_cases(run_id: str, body: JudgeAgentCasesRequest):
                 evaluator=judged["model"], cost_tokens=judged["tokens"],
             )
             for field_name, pr in judged["field_matches"].items():
+                # F1, not precision — precision alone rewards omitting gold items and punishes correct extra detail; None when gold was empty means unscorable, not zero.
                 await repository.insert_evaluation(
                     run_id, f"precision_recall.{field_name}", "llm_judge",
                     trace_id=trace["id"], component_id=body.agent_id,
-                    score=pr["precision"], details=pr,
+                    score=pr["f1"], details=pr,
+                )
+            for field_name, sm in judged["scalar_matches"].items():
+                await repository.insert_evaluation(
+                    run_id, f"field_exact.{field_name}", "llm_judge",
+                    trace_id=trace["id"], component_id=body.agent_id,
+                    score=sm["score"], details=sm,
                 )
             scored += 1
 
@@ -2133,7 +2240,6 @@ async def advance_session(session_id: str, body: AdvanceSessionRequest):
         await repository.update_discovery_session_pipeline_stage(session_id, "done")
 
     elif stage in ("fingerprinting", "expanding", "planning"):
-        # Running - return current status (poll-friendly)
         return {"pipeline_stage": stage, "status": sess["status"]}
 
     else:
@@ -2146,7 +2252,6 @@ async def advance_session(session_id: str, body: AdvanceSessionRequest):
 current_dir = Path(__file__).parent
 dist_dir = current_dir / "dist"
 
-# If the UI build output directory exists, serve it
 if dist_dir.exists():
     app.mount(
         "/assets",

@@ -55,7 +55,6 @@ class TestHaystackScanner:
 
         candidates = scanner.scan(files)
 
-        # Filter to just T1 components (not from other targets)
         t1_candidates = [c for c in candidates if c.file.parent.name == "linear_rag"]
 
         class_names = {c.class_name for c in t1_candidates}
@@ -65,14 +64,12 @@ class TestHaystackScanner:
     def test_haystack_scanner_finds_all_candidates_in_t2(self, target_root: Path):
         """T2 (multi_agent) has 8 logical candidates after split."""
         scanner = HaystackScanner()
-        # Scan entire test_targets to include imported classes like WriterComponent
         files = sorted(target_root.glob("**/*.py"))
 
         candidates = scanner.scan(files)
 
         candidate_ids = {c.candidate_id for c in candidates}
 
-        # Check for core T2 candidates
         expected = {
             "guard_rule", "guard_llm", "planner", "worker",
             "judge", "writer", "case_law_search", "decoy_lookup"
@@ -94,7 +91,6 @@ class TestHaystackScanner:
         guard_candidates = [c for c in candidates if "guard" in c.candidate_id]
         assert len(guard_candidates) > 0
 
-        # Check that we have hints with tags
         all_hints = []
         for candidate in guard_candidates:
             all_hints.extend(candidate.manual_span_hints)
@@ -154,13 +150,11 @@ class TestHaystackScanner:
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
 
-            # Create a valid file
             valid_file = tmp_path / "valid.py"
             valid_file.write_text(
                 "@component\nclass ValidComponent:\n    pass\n"
             )
 
-            # Create a broken file
             broken_file = tmp_path / "broken.py"
             broken_file.write_text("this is not valid python !!!")
 
@@ -242,7 +236,6 @@ class TestHaystackScanner:
             assert "LCELStep1" in class_names
             assert "LCELStep2" in class_names
 
-            # Verify that haystack_name / aliases map correctly to node alias
             by_class = {c.class_name: c for c in candidates}
             assert by_class["MyAgent"].haystack_name == "agent"
             assert by_class["MyTool"].haystack_name == "tool"
@@ -260,14 +253,12 @@ class TestTopology:
         candidates = scanner.scan(files)
         topology = extract_topology(files, candidates)
 
-        # Find retriever and writer candidates
         retriever = next((c for c in candidates if c.class_name == "RetrieverComponent"), None)
         writer = next((c for c in candidates if c.class_name == "WriterComponent"), None)
 
         assert retriever is not None
         assert writer is not None
 
-        # Check topology
         retriever_id = retriever.candidate_id
         writer_id = writer.candidate_id
 
@@ -353,7 +344,6 @@ class TestConstraints:
 
         constraints = mine_constraints(files, candidates, package_root)
 
-        # Check guard candidates have the constraint
         guard_candidates = [c for c in candidates if "guard" in c.candidate_id]
         found = False
 
@@ -439,7 +429,6 @@ class TestConstraints:
             with tempfile.TemporaryDirectory() as tmp_dir:
                 tmp_path = Path(tmp_dir)
 
-                # Create a synthetic Python file with a prompt literal
                 (tmp_path / "synthetic.py").write_text('''
 from haystack import component
 
@@ -451,7 +440,6 @@ class SyntheticComponent:
         return prompt
 ''')
 
-                # Scan it to get the candidate
                 scanner = HaystackScanner()
                 candidates = scanner.scan([tmp_path / "synthetic.py"])
 
@@ -462,7 +450,6 @@ class SyntheticComponent:
                     tmp_path,
                 )
 
-                # Set up LLM client with expected response
                 llm_response = LLMResponse(
                     content=json.dumps([{
                         "name": "max_retries",
@@ -480,7 +467,6 @@ class SyntheticComponent:
                     phase_a_results,
                 )
 
-                # Check results
                 assert len(candidates) > 0
                 for candidate in candidates:
                     if "synthetic" in candidate.class_name.lower():

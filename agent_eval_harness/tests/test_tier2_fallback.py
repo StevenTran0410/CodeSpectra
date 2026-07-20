@@ -11,8 +11,6 @@ from agent_eval_harness.llm.fake_client import FakeLLMClient
 from agent_eval_harness.mapping.system_map import load_system_map
 from test_targets.linear_rag.pipeline import set_default_llm_client
 
-pytestmark = pytest.mark.asyncio
-
 _MAP_PATH = Path(__file__).parent.parent / "test_targets" / "linear_rag" / "system_map.yaml"
 
 

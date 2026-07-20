@@ -111,7 +111,6 @@ class SystemMapBuilder:
                 continue
             _, tree = parsed
 
-            # Collect ImportFrom statements
             for node in ast.walk(tree):
                 if isinstance(node, ast.ImportFrom) and node.module:
                     if node.names:
@@ -119,7 +118,6 @@ class SystemMapBuilder:
                             import_name = alias.asname or alias.name
                             imported_names.setdefault(import_name, set()).add(node.module)
 
-            # Check if any imported names are used in constructor annotations
             for node in ast.walk(tree):
                 if isinstance(node, ast.ClassDef):
                     for item in node.body:
@@ -183,12 +181,9 @@ class SystemMapBuilder:
                 )
             ]
 
-        # Split candidates: match by component_name + distinguishing tag
         if candidate.tag_suffix is not None:
-            # Find the manual_span hint to get the component_name
             if candidate.manual_span_hints:
                 hint = candidate.manual_span_hints[0]
-                # Find the tag key whose value matches the tag_suffix
                 for key, value in hint.tags.items():
                     if value == candidate.tag_suffix:
                         return [
@@ -202,7 +197,6 @@ class SystemMapBuilder:
 
         # Regular candidates: check if they own tool candidates
         if candidate.manual_span_hints:
-            # Check if any tool candidate is owned by this candidate's class
             owns_tools = False
             for tool_candidate in all_candidates:
                 if tool_candidate.is_tool:
@@ -211,7 +205,6 @@ class SystemMapBuilder:
                         break
 
             if owns_tools:
-                # Check for either single or double quote characters on string literals.
                 for hint in candidate.manual_span_hints:
                     is_string_literal = (
                         hint.op_name.startswith("'") and hint.op_name.endswith("'")

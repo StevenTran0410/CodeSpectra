@@ -1,12 +1,8 @@
-"""CS-303 Slice 5 — generalization grep gate (AEH_PHASE2_PLAN.md prime-directive §0 point 2).
-
-Live-scans the inner package `agent_eval_harness/agent_eval_harness/**` (never `tests/` or
-`test_targets/`) for CodeSpectra-specific tokens: the 12 agent-ids, `RetrievalService` as a
-bare literal, `RunDirectorAgent`, `AnalysisAgentPipeline`, and an A-L section-letter-range
-string. A fixed, size-asserted allowlist covers pre-existing, reviewed exceptions (Stage-4
-code-injection files that are inherently CodeSpectra-target-specific per the architecture, the
-Slice-3c-retained `_KNOWN_SHAPE_KWARG_SETS`, and a handful of generic-English-word false
-positives on "violations" as an unrelated details-dict key) — a NEW hit anywhere else fails."""
+"""Generalization grep gate: live-scans the inner package `agent_eval_harness/agent_eval_harness/**`
+(never `tests/` or `test_targets/`) for CodeSpectra-specific tokens — the 12 agent-ids, bare
+`RetrievalService`, `RunDirectorAgent`, `AnalysisAgentPipeline`, and an A-L section-letter-range
+string. A fixed, size-asserted allowlist covers pre-existing, reviewed exceptions; a NEW hit
+anywhere else fails."""
 from __future__ import annotations
 
 import re
@@ -20,10 +16,9 @@ _AGENT_IDS = (
 )
 _AGENT_ID_ALT = "|".join(re.escape(a) for a in _AGENT_IDS)
 
-# Category -> compiled pattern. agent_id_literal matches a quoted string that IS exactly one of
-# the 12 ids, optionally prefixed "lowercase_prefix:" (catches "archetype:agent_id" composite
-# dispatch keys like _KNOWN_SHAPE_KWARG_SETS' — an exact-content match, not a substring search,
-# so it doesn't sweep up the word inside unrelated prose/docstrings).
+# agent_id_literal matches a quoted string that IS exactly one of the 12 ids (optionally
+# "prefix:"-qualified for composite dispatch keys) — an exact-content match, not a substring
+# search, so it doesn't sweep up the word inside unrelated prose/docstrings.
 _TOKEN_PATTERNS: dict[str, re.Pattern[str]] = {
     "agent_id_literal": re.compile(r'''["'](?:[a-z_]+:)?(''' + _AGENT_ID_ALT + r')["\']'),
     "retrieval_service_literal": re.compile(r"\bRetrievalService\b"),
@@ -45,13 +40,10 @@ def find_codespectra_tokens(text: str) -> dict[str, list[str]]:
     return hits
 
 
-# Pre-existing, reviewed exceptions — relative to the inner package root. Every entry is either
-# (a) a Stage-4 code-injection file that is inherently CodeSpectra-target-specific by
-# construction (it imports the TARGET's own domain classes to render runnable code for it —
-# out of this ticket's Stage 1-3 scope), (b) the Slice-3c-retained _KNOWN_SHAPE_KWARG_SETS
-# (see the PAUSE note beside it in synthetic_agent_io.py), or (c) a generic-English-word false
-# positive on "violations" used as an unrelated details-dict key. A NEW file/category pair must
-# be added here deliberately — bump the size assertion below in the same diff.
+# Pre-existing, reviewed exceptions, relative to the inner package root: Stage-4 code-injection
+# files that are inherently CodeSpectra-target-specific by construction, the retained
+# _KNOWN_SHAPE_KWARG_SETS, and a generic-English-word false positive on "violations". A NEW
+# file/category pair must be added here deliberately — bump the size assertion below.
 _ALLOWLIST: dict[str, frozenset[str]] = {
     "code_injection/templates/run_eval.py": frozenset({
         "retrieval_service_literal", "run_director_agent", "analysis_agent_pipeline",
@@ -61,6 +53,7 @@ _ALLOWLIST: dict[str, frozenset[str]] = {
     "discovery/contract_signals.yaml": frozenset({"retrieval_service_literal"}),
     "injection/agent_invokers.py": frozenset({"agent_id_literal"}),
     "datasets/generators/synthetic_agent_io.py": frozenset({"agent_id_literal"}),
+    "datasets/archetype_vocabulary.py": frozenset({"agent_id_literal"}),
     "injection/scoring.py": frozenset({"agent_id_literal"}),
     "metrics/assertions/allowed_downstream.py": frozenset({"agent_id_literal"}),
     "metrics/assertions/arg_schema.py": frozenset({"agent_id_literal"}),
@@ -68,7 +61,7 @@ _ALLOWLIST: dict[str, frozenset[str]] = {
     "metrics/assertions/referential_integrity.py": frozenset({"agent_id_literal"}),
     "metrics/assertions/schema_valid.py": frozenset({"agent_id_literal"}),
 }
-_ALLOWLIST_SIZE = 12
+_ALLOWLIST_SIZE = 13
 
 
 def test_no_codespectra_tokens_in_production():

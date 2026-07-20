@@ -1,11 +1,9 @@
 """Behavioral tests for the post-review derive route (agent_eval_harness/datasets/metamorphic_derive.py).
 
-Covers the 3 remaining mandatory invariants (argmin_k is covered in test_metamorphic_ops.py):
-1. Negative derive test — an UNREVIEWED source cohort must 400 (MetamorphicPreconditionError)
-   and mint zero derived+reviewed rows (AC4 / Q1-b guard).
-4. End-to-end amortization proof on a non-CodeSpectra target (multi_agent-shaped JudgeComponent
-   I/O): derived cases land as derived+reviewed, and synthetic_count for that dataset is
-   exactly 0 with spot_audit_pct=0 (AC2).
+Covers the remaining mandatory invariants (argmin_k is covered in test_metamorphic_ops.py): an
+UNREVIEWED source cohort must 400 (MetamorphicPreconditionError) and mint zero derived+reviewed
+rows; and an end-to-end amortization proof on a non-CodeSpectra target (multi_agent-shaped
+JudgeComponent I/O) where synthetic_count lands at 0 with spot_audit_pct=0.
 """
 import pytest
 
@@ -19,11 +17,8 @@ from agent_eval_harness.datasets.types import DatasetCase
 from agent_eval_harness.store import repository
 from agent_eval_harness.store.database import close_db, init_db
 
-# Own DB lifecycle (module convention, e.g. test_eval_run_route.py) — several sibling test
-# modules run their own init_db()/close_db() cycle, which otherwise leaves the shared
-# session-scoped DB closed for whatever alphabetically runs next.
-pytestmark = pytest.mark.asyncio
-
+# Own DB lifecycle: sibling test modules run their own init_db()/close_db() cycle, which
+# otherwise leaves the shared session-scoped DB closed for whatever alphabetically runs next.
 
 @pytest.fixture(autouse=True)
 async def _setup_db(tmp_path, monkeypatch):
@@ -57,9 +52,7 @@ async def _get_dataset_row(dataset_id: str) -> dict | None:
     return next((r for r in rows if r["dataset_id"] == dataset_id), None)
 
 
-# ---------------------------------------------------------------------------
-# Invariant 1 — negative derive test (AC4 / Q1-b guard)
-# ---------------------------------------------------------------------------
+# Invariant 1: negative derive test — an unreviewed source cohort must be rejected.
 
 async def test_derive_rejects_unreviewed_source_and_mints_zero_rows():
     source_id = "mderive_unreviewed_source_v1"
@@ -90,7 +83,7 @@ async def test_derive_rejects_unreviewed_source_and_mints_zero_rows():
         assert "not fully reviewed" in str(e)
 
     minted = await repository.get_dataset_cases(target_dataset_id)
-    assert minted == []  # zero derived+reviewed rows minted
+    assert minted == []
 
 
 async def test_preview_also_rejects_unreviewed_source():
@@ -130,9 +123,7 @@ async def test_derive_rejects_when_relation_not_yet_approved():
     assert minted == []
 
 
-# ---------------------------------------------------------------------------
-# Invariant 4 — end-to-end amortization proof on multi_agent (AC2)
-# ---------------------------------------------------------------------------
+# Invariant 4: end-to-end amortization proof on multi_agent — synthetic_count lands at 0.
 
 async def test_ac2_derive_on_multi_agent_shaped_source_yields_zero_synthetic_count():
     source_id = "mderive_ac2_source_v1"
@@ -140,7 +131,7 @@ async def test_ac2_derive_on_multi_agent_shaped_source_yields_zero_synthetic_cou
 
     preview = await preview_relation("empty_context_is_insufficient", source_id, sample_size=10)
     assert preview["sample_count"] == 4
-    # The :23-24 fix in action: a list-typed field degrades to [], not {}.
+    # A list-typed field degrades to [], not {}.
     for sample in preview["samples"]:
         assert sample["derived_input"]["context"] == []
 
@@ -160,7 +151,7 @@ async def test_ac2_derive_on_multi_agent_shaped_source_yields_zero_synthetic_cou
 
     row = await _get_dataset_row(target_dataset_id)
     assert row is not None
-    assert row["synthetic_count"] == 0  # AC2: amortization proof via repository.py:247's own formula
+    assert row["synthetic_count"] == 0  # amortization proof via repository's own formula
     assert row["reviewed_count"] == 0  # trusted via derived+reviewed, not generated+reviewed
     assert row["review_complete"] is True
 
@@ -209,9 +200,7 @@ async def test_derive_spot_audit_pct_routes_sample_to_review_queue():
     assert row["synthetic_count"] == 1
 
 
-# ---------------------------------------------------------------------------
-# CS-302 Slice 1.3 — applies_to is a HARD gate, not decoration
-# ---------------------------------------------------------------------------
+# applies_to is a HARD gate, not decoration.
 
 async def _seed_reviewed_source_with_archetype(dataset_id: str, archetype: str, n: int = 2) -> None:
     cases = [

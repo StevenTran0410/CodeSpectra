@@ -8,8 +8,6 @@ import pytest
 from agent_eval_harness.planning.validation import PlanValidationReport, validate_plan
 from agent_eval_harness.store.database import close_db, init_db
 
-pytestmark = pytest.mark.asyncio
-
 
 @pytest.fixture(autouse=True)
 async def _init_db(tmp_path, monkeypatch):
@@ -88,7 +86,6 @@ async def test_validation_invalid_metric_name(tmp_path) -> None:
     errors = _errors(report)
     assert len(errors) == 2
     assert any("not registered in METRIC_REGISTRY" in e for e in errors)
-    # Both gates are blocked with metric_not_dispatchable
     assert report.readiness["writer.unknown_metric"].status == "blocked"
     assert "metric_not_dispatchable" in report.readiness["writer.unknown_metric"].reasons
     assert report.readiness["planner.bad_assertion"].status == "blocked"
@@ -129,10 +126,9 @@ async def test_validation_dataset_missing_and_waived(tmp_path) -> None:
 
     report = await validate_plan(plan_path)
     errors = _errors(report)
-    # nonexistent ref error + dataset_unfulfilled (guard3) + both missing entry_point
+    # errors list also carries a missing entry_point error for both gates, not asserted here.
     assert any("nonexistent_dataset_ref" in e for e in errors)
     assert any("guard_classification' is unfulfilled" in e for e in errors)
-    # guard3 has unfulfilled dataset → blocked
     assert report.readiness["guard3.classifier"].status == "blocked"
     assert "dataset_unfulfilled" in report.readiness["guard3.classifier"].reasons
 
@@ -179,8 +175,7 @@ async def test_validation_no_queries_blocked(tmp_path) -> None:
 
 
 async def test_validation_real_todo_placeholder_blocks_no_queries(tmp_path) -> None:
-    """A real generated query placeholder (not just the bare '<TODO>') must still be
-    recognized as a bad query, so it doesn't silently pass readiness."""
+    """A real generated query placeholder (not just the bare '<TODO>') must still be recognized as a bad query, so it doesn't silently pass readiness."""
     plan_content = textwrap.dedent("""
         entries:
           - id: architecture.allowed_downstream
@@ -202,8 +197,7 @@ async def test_validation_real_todo_placeholder_blocks_no_queries(tmp_path) -> N
 
 
 async def test_validation_dataset_unreviewed_blocks_ref(tmp_path) -> None:
-    """A ref pointing at a real dataset that still has only synthetic cases left is
-    blocked with dataset_unreviewed."""
+    """A ref pointing at a real dataset that still has only synthetic cases left is blocked with dataset_unreviewed."""
     from agent_eval_harness.datasets.types import DatasetCase
     from agent_eval_harness.store import repository
 
