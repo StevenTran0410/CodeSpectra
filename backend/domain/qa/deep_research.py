@@ -1,12 +1,18 @@
-"""Deep Research Agent — iterative codebase investigation via graph + retrieval."""
+"""Deep Research Agent — iterative codebase investigation via LangGraph + retrieval."""
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any
+from pathlib import Path
+from typing import Any, TypedDict
+
+from langgraph.graph import StateGraph, START, END
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 _ProgressCb = Callable[[dict], Awaitable[None]]
 
@@ -21,9 +27,6 @@ from pydantic import BaseModel
 
 from .graph_queries import (
     TraceStep,
-    ImpactResult,
-    get_callees_of,
-    get_callers_of,
     trace_call_chain,
     get_impact_cone,
 )
@@ -37,6 +40,39 @@ class _GraphCtx:
     top_central: list[str] = field(default_factory=list)       # top-N files by score
     community_of: dict[str, int] = field(default_factory=dict) # rel_path → community_id
     community_hubs: dict[int, list[str]] = field(default_factory=dict)  # cid → hub files
+
+
+class DeepResearchState(TypedDict, total=False):
+    """LangGraph state for deep research investigation."""
+
+    question: str
+    snapshot_id: str
+    provider_id: str
+    model_id: str
+    max_hops: int
+    hop_cap: int
+    gctx: dict
+    plan: list[dict]
+    plan_cursor: int
+    step_findings: list[dict[str, Any]]
+    visited_files: list[str]
+    accumulated_chunk_ids: list[str]
+    all_evidences: list[RetrievalEvidence]
+    debug: dict[str, Any]
+    step_type: str
+    target: str
+    description: str
+    new_files: list[str]
+    graph_path: list[str] | None
+    graph_path_with_conf: list[str] | None
+    tentative_files: list[str]
+    tentative_confidence: dict[str, float]
+    current_evidence: list[RetrievalEvidence]
+    sufficient: bool
+    summary: str
+    reasoning_chain: list[dict]
+    confidence: str
+    unknowns: list[str]
 
 
 async def _load_graph_ctx(snapshot_id: str) -> _GraphCtx:
@@ -85,7 +121,6 @@ def _symbol_graph_path(trace: list[TraceStep], limit: int = 6) -> list[str]:
     path: list[str] = []
     for step in trace[:limit]:
         if step.symbols_involved:
-            # Use the most specific symbol (strip file prefix for display)
             sym = step.symbols_involved[0]
             path.append(sym)
         else:
@@ -102,11 +137,9 @@ def _path_confidence_breakdown(trace: list[TraceStep], limit: int = 6) -> tuple[
     """
     if not trace:
         return 1.0, []
-    # Use the last non-seed step's path confidence as the final value
     final_conf = trace[-1].path_confidence if trace else 1.0
     hop_confs = []
-    for step in trace[1:limit]:  # Skip seed (step 0)
-        # Collect the max confidence from this step's hops
+    for step in trace[1:limit]:
         max_conf = max((h.confidence_score for h in step.hops), default=1.0)
         hop_confs.append(max_conf)
     return final_conf, hop_confs
@@ -145,8 +178,8 @@ class ResearchStepResult(BaseModel):
     files_involved: list[str]
     finding: str
     graph_path: list[str] | None = None
-    tentative_files: list[str] = []  # files found only via low-confidence fallback
-    tentative_confidence: dict[str, float] = {}  # tentative file -> max hop confidence
+    tentative_files: list[str] = []
+    tentative_confidence: dict[str, float] = {}
 
 
 class DeepResearchResult(BaseModel):
@@ -211,7 +244,6 @@ Output JSON: {
 Output ONLY the JSON object.
 """
 
-# Step 1 of synthesis: stream a rich markdown answer
 _SYNTHESIZE_ANSWER_SYSTEM = """\
 You are synthesizing a codebase investigation into a final answer.
 You receive the original question, all step findings, AND the actual code evidence
@@ -230,7 +262,6 @@ FORMATTING — MANDATORY:
 Respond with ONLY the markdown answer. No JSON, no preamble.
 """
 
-# Step 2 of synthesis: compact metadata JSON
 _SYNTHESIZE_META_SYSTEM = """\
 You are extracting structured metadata from a completed codebase investigation.
 Given the question, step findings, and the synthesized answer, output ONLY a JSON object:
@@ -256,7 +287,7 @@ _RESEARCH_RETRIEVAL_BUDGET = 8_000
 
 
 class DeepResearchAgent(BaseTypedAgent):
-    """Agent that performs multi-step codebase research via call chains and retrieval."""
+    """Agent that performs multi-step codebase research via LangGraph + retrieval."""
 
     def __init__(
         self,
@@ -265,6 +296,7 @@ class DeepResearchAgent(BaseTypedAgent):
     ) -> None:
         super().__init__(provider_service)
         self._retrieval = retrieval_service
+        self._current_progress_cb: _ProgressCb | None = None
 
     async def research(
         self,
@@ -276,227 +308,461 @@ class DeepResearchAgent(BaseTypedAgent):
         include_debug: bool = False,
         progress_cb: _ProgressCb | None = None,
     ) -> dict[str, Any]:
-        """Execute a deep research investigation."""
+        """Execute a deep research investigation via LangGraph."""
         t0 = time.monotonic()
+        self._current_progress_cb = progress_cb
+
+        graph = self._build_graph()
+        data_dir = Path(os.getenv("CODESPECTRA_DATA_DIR", "."))
+        data_dir.mkdir(parents=True, exist_ok=True)
+        checkpoint_path = str(data_dir / "deep_research_checkpoints.db")
+
+        question_hash = hashlib.sha1(question.encode()).hexdigest()[:12]
+        thread_id = f"{snapshot_id}:{question_hash}"
+
         debug: dict[str, Any] = {} if include_debug else {}
+        if include_debug:
+            debug["thread_id"] = thread_id
 
-        async def _emit(phase: str, detail: str = "", step: int | None = None) -> None:
-            if progress_cb:
-                ev: dict = {"type": "status", "phase": phase, "detail": detail}
-                if step is not None:
-                    ev["step"] = step
-                await progress_cb(ev)
+        initial_state: DeepResearchState = {
+            "question": question,
+            "snapshot_id": snapshot_id,
+            "provider_id": provider_id,
+            "model_id": model_id,
+            "max_hops": max_hops,
+            "hop_cap": max_hops,
+            "gctx": {},
+            "plan": [],
+            "plan_cursor": 0,
+            "step_findings": [],
+            "visited_files": [],
+            "accumulated_chunk_ids": [],
+            "all_evidences": [],
+            "debug": debug,
+        }
 
-        # ── Enhancement: load centrality + community context upfront ──────────
+        async with AsyncSqliteSaver.from_conn_string(checkpoint_path) as saver:
+            compiled = graph.compile(checkpointer=saver)
+            config = {
+                "configurable": {
+                    "thread_id": thread_id,
+                }
+            }
+
+            async for _ in compiled.astream(initial_state, config=config, stream_mode="values"):
+                pass
+
+            final = await compiled.aget_state(config)
+            state = final.values
+
+        self._current_progress_cb = None
+
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+
+        result: dict[str, Any] = {
+            "summary": state.get("summary", ""),
+            "reasoning_chain": state.get("reasoning_chain") or [],
+            "files_explored": sorted(set(state.get("visited_files", []))),
+            "confidence": str(state.get("confidence", "medium")).lower(),
+            "unknowns": state.get("unknowns") or [],
+            "elapsed_ms": elapsed_ms,
+            "research_debug": debug if include_debug else None,
+        }
+        if result["confidence"] not in ("high", "medium", "low"):
+            result["confidence"] = "medium"
+
+        if include_debug:
+            result["research_debug"]["thread_id"] = thread_id
+
+        logger.info(
+            "[DeepResearchAgent] done in %dms, steps=%d, files_explored=%d, confidence=%s",
+            elapsed_ms,
+            len(state.get("step_findings", [])),
+            len(state.get("visited_files", [])),
+            result["confidence"],
+        )
+        return result
+
+    def _build_graph(self) -> StateGraph:
+        """Build the LangGraph StateGraph for deep research."""
+        graph = StateGraph(DeepResearchState)
+
+        graph.add_edge(START, "load_context")
+        graph.add_edge("load_context", "plan")
+
+        graph.add_node("load_context", self._node_load_context)
+        graph.add_node("plan", self._node_plan)
+        graph.add_node("trace_forward", self._node_trace_forward)
+        graph.add_node("trace_backward", self._node_trace_backward)
+        graph.add_node("impact", self._node_impact)
+        graph.add_node("retrieve", self._node_retrieve)
+        graph.add_node("analyze_step", self._node_analyze_step)
+        graph.add_node("synthesize", self._node_synthesize)
+
+        graph.add_conditional_edges(
+            "plan",
+            self._route_step_fn,
+            {
+                "trace_forward": "trace_forward",
+                "trace_backward": "trace_backward",
+                "impact": "impact",
+                "retrieve": "retrieve",
+                "synthesize": "synthesize",
+            }
+        )
+
+        graph.add_conditional_edges(
+            "analyze_step",
+            self._route_step_fn,
+            {
+                "trace_forward": "trace_forward",
+                "trace_backward": "trace_backward",
+                "impact": "impact",
+                "retrieve": "retrieve",
+                "synthesize": "synthesize",
+            }
+        )
+
+        graph.add_edge("trace_forward", "analyze_step")
+        graph.add_edge("trace_backward", "analyze_step")
+        graph.add_edge("impact", "analyze_step")
+        graph.add_edge("retrieve", "analyze_step")
+        graph.add_edge("synthesize", END)
+
+        return graph
+
+    def _route_step_fn(self, state: DeepResearchState) -> str:
+        """Conditional routing function: plan -> execute or synthesize."""
+        if state.get("plan_cursor", 0) >= len(state.get("plan", [])) or state.get("sufficient", False):
+            return "synthesize"
+        plan = state.get("plan", [])
+        if plan:
+            step_type = plan[state["plan_cursor"]].get("type", "retrieve")
+            return step_type
+        return "synthesize"
+
+    async def _node_load_context(self, state: DeepResearchState) -> DeepResearchState:
+        """Load centrality + community context."""
+        snapshot_id = state["snapshot_id"]
         gctx = await _load_graph_ctx(snapshot_id)
         logger.debug(
             "[DeepResearch] graph ctx: %d central files, %d community nodes",
             len(gctx.top_central), len(gctx.community_of),
         )
+        state["gctx"] = {
+            "centrality": gctx.centrality,
+            "top_central": gctx.top_central,
+            "community_of": gctx.community_of,
+            "community_hubs": gctx.community_hubs,
+        }
+        return state
 
-        # Step 1: Plan the investigation (hint planner with top central files)
-        await _emit("planning", "Planning investigation...")
-        plan = await self._plan(question, provider_id, model_id, gctx, snapshot_id)
-        if include_debug:
-            debug["plan"] = plan
+    async def _node_plan(self, state: DeepResearchState) -> DeepResearchState:
+        """Plan the investigation."""
+        await self._emit(self._current_progress_cb, "planning", "Planning investigation...")
 
-        hop_cap = max_hops
+        gctx_dict = state.get("gctx", {})
+        gctx = _GraphCtx(
+            centrality=gctx_dict.get("centrality", {}),
+            top_central=gctx_dict.get("top_central", []),
+            community_of=gctx_dict.get("community_of", {}),
+            community_hubs=gctx_dict.get("community_hubs", {}),
+        )
+
+        plan = await self._plan(
+            state["question"],
+            state["provider_id"],
+            state["model_id"],
+            gctx,
+            state["snapshot_id"],
+        )
+
+        hop_cap = state["max_hops"]
         if len(plan) >= 4 and any(s.get("type") in ("trace_forward", "trace_backward") for s in plan):
-            hop_cap = min(3, max_hops)
+            hop_cap = min(3, state["max_hops"])
             logger.debug("[DeepResearch] plan has %d steps with trace ops; capping hops at %d", len(plan), hop_cap)
 
-        # Step 2: Execute each plan step
-        step_findings: list[dict[str, Any]] = []
-        visited_files: set[str] = set()
-        all_evidences: list[RetrievalEvidence] = []
-        accumulated_chunk_ids: set[str] = set()
+        if state["debug"]:
+            state["debug"]["plan"] = plan
 
-        for plan_step in plan:
-            step_type = plan_step.get("type", "retrieve")
-            target = plan_step.get("target", question)
-            description = plan_step.get("description", "")
+        state["plan"] = plan
+        state["hop_cap"] = hop_cap
+        state["plan_cursor"] = 0
+        return state
 
-            # ── Graph operations ───────────────────────────────────────────────
-            new_files: list[str] = []
-            graph_path: list[str] | None = None
+    async def _node_trace_forward(self, state: DeepResearchState) -> DeepResearchState:
+        """Execute trace_forward step."""
+        return await self._execute_trace_step(state, "forward")
 
-            tentative_files: list[str] = []
-            tentative_confidence: dict[str, float] = {}
+    async def _node_trace_backward(self, state: DeepResearchState) -> DeepResearchState:
+        """Execute trace_backward step."""
+        return await self._execute_trace_step(state, "backward")
 
-            if step_type in ("trace_forward", "trace_backward"):
-                direction = "forward" if step_type == "trace_forward" else "backward"
-                trace = await trace_call_chain(
-                    snapshot_id, target, direction,
-                    max_hops=min(hop_cap, 4), high_confidence_only=True,
-                )
-                new_files = [s.file for s in trace if s.file not in visited_files]
+    async def _execute_trace_step(self, state: DeepResearchState, direction: str) -> DeepResearchState:
+        """Execute a trace_forward or trace_backward step."""
+        plan = state.get("plan", [])
+        cursor = state.get("plan_cursor", 0)
 
-                # Enhancement 5: confidence fallback — if trace found very few files,
-                # retry with low-confidence edges and mark them tentative
-                if len(new_files) < 2:
-                    trace_low = await trace_call_chain(
-                        snapshot_id, target, direction,
-                        max_hops=min(hop_cap, 4), high_confidence_only=False,
-                    )
-                    high_conf_files = {s.file for s in trace}
-                    extra = [
-                        s.file for s in trace_low
-                        if s.file not in visited_files and s.file not in high_conf_files
-                    ]
-                    if extra:
-                        logger.debug("[DeepResearch] confidence fallback added %d files", len(extra))
-                        new_files.extend(extra[:5])
-                        # Capture tentative files and their max hop confidences before overwriting trace
-                        tentative_files = extra[:5]
-                        for file in tentative_files:
-                            # Find max confidence among hops that led to this file in trace_low
-                            for step in trace_low:
-                                if step.file == file:
-                                    max_conf = max((h.confidence_score for h in step.hops), default=1.0)
-                                    tentative_confidence[file] = max_conf
-                                    break
-                    trace = trace_low  # use richer trace for symbol path
+        if cursor >= len(plan):
+            return state
 
-                # Enhancement 3: symbol-level graph path with confidence breakdown
-                if len(trace) > 1:
-                    graph_path = _symbol_graph_path(trace, limit=6)
-                    path_conf, hop_confs = _path_confidence_breakdown(trace, limit=6)
-                    # Format: "CALL GRAPH PATH (confidence: 0.61, hops: 0.9→0.85→0.4→...)"
-                    hop_str = "→".join(f"{c:.2f}" for c in hop_confs) if hop_confs else ""
-                    confidence_note = f" (confidence: {path_conf:.2f}" + (f", hops: {hop_str}" if hop_str else "") + ")"
-                    graph_path_with_conf = [confidence_note] + graph_path
+        plan_step = plan[cursor]
+        target = plan_step.get("target", state["question"])
+        description = plan_step.get("description", "")
+        visited_files_set = set(state.get("visited_files", []))
 
-            elif step_type == "impact":
-                impact = await get_impact_cone(snapshot_id, target, hops=3)
-                new_files = [f for f in impact.impacted_files if f not in visited_files]
+        trace = await trace_call_chain(
+            state["snapshot_id"], target, direction,
+            max_hops=min(state["hop_cap"], 4), high_confidence_only=True,
+        )
+        new_files = [s.file for s in trace if s.file not in visited_files_set]
 
-            else:  # "retrieve"
-                new_files = []
+        tentative_files: list[str] = []
+        tentative_confidence: dict[str, float] = {}
+        graph_path_with_conf: list[str] | None = None
 
-            # Enhancement 2: centrality-biased injection — sort forced_files by score
-            if gctx.centrality and new_files:
-                new_files = sorted(new_files, key=lambda f: -gctx.centrality.get(f, 0))
+        if len(new_files) < 2:
+            trace_low = await trace_call_chain(
+                state["snapshot_id"], target, direction,
+                max_hops=min(state["hop_cap"], 4), high_confidence_only=False,
+            )
+            high_conf_files = {s.file for s in trace}
+            extra = [
+                s.file for s in trace_low
+                if s.file not in visited_files_set and s.file not in high_conf_files
+            ]
+            if extra:
+                logger.debug("[DeepResearch] confidence fallback added %d files", len(extra))
+                new_files.extend(extra[:5])
+                tentative_files = extra[:5]
+                for file in tentative_files:
+                    for step in trace_low:
+                        if step.file == file:
+                            max_conf = max((h.confidence_score for h in step.hops), default=1.0)
+                            tentative_confidence[file] = max_conf
+                            break
+            trace = trace_low
 
-            # ── Retrieve evidence ──────────────────────────────────────────────
-            step_num = len(step_findings) + 1
-            await _emit("retrieving", description or f"Step {step_num}: {step_type}", step=step_num)
-            if step_type == "retrieve":
-                # Enhancement 1: multi-query decomposition for retrieve steps
-                sub_queries = await plan_queries(
-                    goal=description or target,
-                    provider_service=self._providers,
-                    provider_id=provider_id,
-                    model_id=model_id,
-                    fallback=[target],
-                )
-                bundle = await retrieve_multi(
-                    self._retrieval,
-                    snapshot_id,
-                    sub_queries,
-                    RetrievalSection.QA,
-                    RetrievalMode.HYBRID,
-                    max_results_each=10,
-                )
-                evidence = bundle.evidences
-                if bundle.quality:
-                    logger.info(
-                        "[DeepResearch.step%d] retrieval_quality flags=%s label=%s",
-                        step_num, bundle.quality.flags, bundle.quality.quality_label
-                    )
+        if len(trace) > 1:
+            graph_path = _symbol_graph_path(trace, limit=6)
+            path_conf, hop_confs = _path_confidence_breakdown(trace, limit=6)
+            hop_str = "→".join(f"{c:.2f}" for c in hop_confs) if hop_confs else ""
+            confidence_note = f" (confidence: {path_conf:.2f}" + (f", hops: {hop_str}" if hop_str else "") + ")"
+            graph_path_with_conf = [confidence_note] + graph_path
+            state["graph_path"] = graph_path
+            state["graph_path_with_conf"] = graph_path_with_conf
+
+        gctx_dict = state.get("gctx", {})
+        centrality = gctx_dict.get("centrality", {})
+        if centrality and new_files:
+            new_files = sorted(new_files, key=lambda f: -centrality.get(f, 0))
+
+        state["new_files"] = new_files
+        state["tentative_files"] = tentative_files
+        state["tentative_confidence"] = tentative_confidence
+
+        step_num = len(state.get("step_findings", [])) + 1
+        await self._emit(self._current_progress_cb, "retrieving", description or f"Step {step_num}: {plan_step.get('type')}", step=step_num)
+
+        evidence = await self._retrieve_evidence(
+            state["snapshot_id"],
+            description or state["question"],
+            forced_files=new_files[:8],
+        )
+        if not evidence:
+            logger.warning(
+                "[DeepResearch.step%d] trace returned 0 chunks; falling back to retrieve with target='%s'",
+                step_num, target
+            )
+            evidence = await self._retrieve_evidence(
+                state["snapshot_id"],
+                target,
+                forced_files=[],
+            )
+
+        state = self._accumulate_evidence(state, evidence, new_files, description or f"Step {step_num}: {plan_step.get('type')}")
+        return state
+
+    async def _node_impact(self, state: DeepResearchState) -> DeepResearchState:
+        """Execute impact step."""
+        plan = state.get("plan", [])
+        cursor = state.get("plan_cursor", 0)
+
+        if cursor >= len(plan):
+            return state
+
+        plan_step = plan[cursor]
+        target = plan_step.get("target", state["question"])
+        description = plan_step.get("description", "")
+        visited_files_set = set(state.get("visited_files", []))
+
+        impact = await get_impact_cone(state["snapshot_id"], target, hops=3)
+        new_files = [f for f in impact.impacted_files if f not in visited_files_set]
+
+        gctx_dict = state.get("gctx", {})
+        centrality = gctx_dict.get("centrality", {})
+        if centrality and new_files:
+            new_files = sorted(new_files, key=lambda f: -centrality.get(f, 0))
+
+        state["new_files"] = new_files
+        state["tentative_files"] = []
+        state["tentative_confidence"] = {}
+
+        step_num = len(state.get("step_findings", [])) + 1
+        await self._emit(self._current_progress_cb, "retrieving", description or f"Step {step_num}: impact", step=step_num)
+
+        evidence = await self._retrieve_evidence(
+            state["snapshot_id"],
+            description or state["question"],
+            forced_files=new_files[:8],
+        )
+
+        state = self._accumulate_evidence(state, evidence, new_files, description or f"Step {step_num}: impact")
+        return state
+
+    async def _node_retrieve(self, state: DeepResearchState) -> DeepResearchState:
+        """Execute retrieve step."""
+        plan = state.get("plan", [])
+        cursor = state.get("plan_cursor", 0)
+
+        if cursor >= len(plan):
+            return state
+
+        plan_step = plan[cursor]
+        target = plan_step.get("target", state["question"])
+        description = plan_step.get("description", "")
+
+        state["new_files"] = []
+        state["tentative_files"] = []
+        state["tentative_confidence"] = {}
+
+        step_num = len(state.get("step_findings", [])) + 1
+        await self._emit(self._current_progress_cb, "retrieving", description or f"Step {step_num}: retrieve", step=step_num)
+
+        sub_queries = await plan_queries(
+            goal=description or target,
+            provider_service=self._providers,
+            provider_id=state["provider_id"],
+            model_id=state["model_id"],
+            fallback=[target],
+        )
+        bundle = await retrieve_multi(
+            self._retrieval,
+            state["snapshot_id"],
+            sub_queries,
+            RetrievalSection.QA,
+            RetrievalMode.HYBRID,
+            max_results_each=10,
+        )
+        evidence = bundle.evidences
+        if bundle.quality:
+            logger.info(
+                "[DeepResearch.step%d] retrieval_quality flags=%s label=%s",
+                step_num, bundle.quality.flags, bundle.quality.quality_label
+            )
+
+        state = self._accumulate_evidence(state, evidence, [], description or f"Step {step_num}: retrieve")
+        return state
+
+    async def _node_analyze_step(self, state: DeepResearchState) -> DeepResearchState:
+        """Analyze the current step and decide if sufficient."""
+        plan = state.get("plan", [])
+        cursor = state.get("plan_cursor", 0)
+
+        if cursor >= len(plan):
+            return state
+
+        plan_step = plan[cursor]
+        step_type = plan_step.get("type", "retrieve")
+        target = plan_step.get("target", state["question"])
+        description = plan_step.get("description", "")
+        new_files = state.get("new_files", [])
+
+        step_num = len(state.get("step_findings", [])) + 1
+        await self._emit(self._current_progress_cb, "thinking", f"Analyzing step {step_num}...", step=step_num)
+
+        step_findings = state.get("step_findings", [])
+        all_evidences = state.get("all_evidences", [])
+        current_evidence = state.get("current_evidence", [])
+
+        prior_context = "\n".join(f"Step {i+1}: {f['finding']}" for i, f in enumerate(step_findings))
+        user_prompt = (
+            f"ORIGINAL QUESTION: {state['question']}\n\n"
+            f"CURRENT STEP: {description}\n"
+            f"STEP TYPE: {step_type}, TARGET: {target}\n\n"
+        )
+        if prior_context:
+            user_prompt += f"PRIOR FINDINGS:\n{prior_context}\n\n"
+
+        gctx_dict = state.get("gctx", {})
+        gctx = _GraphCtx(
+            centrality=gctx_dict.get("centrality", {}),
+            top_central=gctx_dict.get("top_central", []),
+            community_of=gctx_dict.get("community_of", {}),
+            community_hubs=gctx_dict.get("community_hubs", {}),
+        )
+        all_step_files = list({ev.rel_path for ev in current_evidence} | set(new_files))
+        community_block = _community_context_block(all_step_files, gctx)
+        if community_block:
+            user_prompt += community_block
+
+        prior_evidences = [ev for ev in all_evidences if ev.chunk_id not in {e.chunk_id for e in current_evidence}]
+        prior_evidence_block = (
+            render_bundle_subset(prior_evidences, limit=8, excerpt_chars=500)
+            if prior_evidences else ""
+        )
+        if prior_evidence_block:
+            user_prompt += f"PREVIOUSLY SEEN CODE (condensed):\n{prior_evidence_block}\n\n"
+
+        graph_path = state.get("graph_path")
+        if graph_path:
+            if len(graph_path) > 1 and isinstance(graph_path[0], str) and graph_path[0].startswith(" (confidence:"):
+                user_prompt += f"CALL GRAPH PATH (symbol-level){graph_path[0]}: {' → '.join(graph_path[1:])}\n\n"
             else:
-                retrieval_query = description or question
-                evidence = await self._retrieve_evidence(
-                    snapshot_id,
-                    retrieval_query,
-                    forced_files=new_files[:8],
-                )
-                if not evidence and step_type in ("trace_forward", "trace_backward"):
-                    logger.warning(
-                        "[DeepResearch.step%d] trace returned 0 chunks; falling back to retrieve with target='%s'",
-                        step_num, target
-                    )
-                    evidence = await self._retrieve_evidence(
-                        snapshot_id,
-                        target,
-                        forced_files=[],
-                    )
+                user_prompt += f"CALL GRAPH PATH (symbol-level): {' → '.join(graph_path)}\n\n"
 
-            visited_files.update(ev.rel_path for ev in evidence)
+        current_evidence_block = render_bundle_subset(current_evidence, limit=12, excerpt_chars=1200)
+        user_prompt += f"CURRENT STEP CODE EVIDENCE:\n{current_evidence_block}"
 
-            # Accumulate evidence across steps (deduplicated by chunk_id)
-            for ev in evidence:
-                if ev.chunk_id not in accumulated_chunk_ids:
-                    all_evidences.append(ev)
-                    accumulated_chunk_ids.add(ev.chunk_id)
+        step_schema = '{"finding": "string", "key_files": ["string"], "graph_path": ["string"], "sufficient": true}'
+        step_result = await self._chat_json_typed(
+            state["provider_id"],
+            state["model_id"],
+            _STEP_SYSTEM,
+            user_prompt,
+            step_schema,
+            max_completion_tokens=800,
+        )
 
-            # Current step evidence block (full detail)
-            current_evidence_block = render_bundle_subset(evidence, limit=12, excerpt_chars=1200)
+        stored_graph_path = state.get("graph_path_with_conf") or state.get("graph_path")
+        state["step_findings"].append(
+            {
+                "step_number": len(state.get("step_findings", [])) + 1,
+                "description": description,
+                "files_involved": step_result.get("key_files") or new_files[:5],
+                "finding": str(step_result.get("finding") or ""),
+                "graph_path": step_result.get("graph_path") or stored_graph_path,
+                "tentative_files": state.get("tentative_files", []),
+                "tentative_confidence": state.get("tentative_confidence", {}),
+            }
+        )
 
-            # Prior accumulated evidence (condensed — gives each step LLM running context)
-            prior_evidences = [ev for ev in all_evidences if ev.chunk_id not in {e.chunk_id for e in evidence}]
-            prior_evidence_block = (
-                render_bundle_subset(prior_evidences, limit=8, excerpt_chars=500)
-                if prior_evidences else ""
-            )
+        state["sufficient"] = bool(step_result.get("sufficient", False))
+        state["plan_cursor"] += 1
+        state["graph_path"] = None
+        state["graph_path_with_conf"] = None
+        state["current_evidence"] = []
 
-            # Enhancement 4: community context block
-            all_step_files = list({ev.rel_path for ev in evidence} | set(new_files))
-            community_block = _community_context_block(all_step_files, gctx)
+        return state
 
-            # ── LLM analyzes this step ─────────────────────────────────────────
-            await _emit("thinking", f"Analyzing step {step_num}...", step=step_num)
-            prior_context = "\n".join(f"Step {i+1}: {f['finding']}" for i, f in enumerate(step_findings))
-            user_prompt = (
-                f"ORIGINAL QUESTION: {question}\n\n"
-                f"CURRENT STEP: {description}\n"
-                f"STEP TYPE: {step_type}, TARGET: {target}\n\n"
-            )
-            if prior_context:
-                user_prompt += f"PRIOR FINDINGS:\n{prior_context}\n\n"
-            if community_block:
-                user_prompt += community_block
-            if prior_evidence_block:
-                user_prompt += f"PREVIOUSLY SEEN CODE (condensed):\n{prior_evidence_block}\n\n"
-            if graph_path:
-                # Display format includes confidence breakdown when available
-                if len(graph_path) > 1 and isinstance(graph_path[0], str) and graph_path[0].startswith(" (confidence:"):
-                    # graph_path_with_conf format: [confidence_note, ...symbols]
-                    user_prompt += f"CALL GRAPH PATH (symbol-level){graph_path[0]}: {' → '.join(graph_path[1:])}\n\n"
-                else:
-                    user_prompt += f"CALL GRAPH PATH (symbol-level): {' → '.join(graph_path)}\n\n"
-            user_prompt += f"CURRENT STEP CODE EVIDENCE:\n{current_evidence_block}"
+    async def _node_synthesize(self, state: DeepResearchState) -> DeepResearchState:
+        """Synthesize all findings into final answer."""
+        await self._emit(self._current_progress_cb, "synthesizing", "Synthesizing all findings...")
 
-            step_schema = '{"finding": "string", "key_files": ["string"], "graph_path": ["string"], "sufficient": true}'
-            step_result = await self._chat_json_typed(
-                provider_id,
-                model_id,
-                _STEP_SYSTEM,
-                user_prompt,
-                step_schema,
-                max_completion_tokens=800,
-            )
+        step_findings = state.get("step_findings", [])
+        all_evidences = state.get("all_evidences", [])
 
-            # Use graph_path_with_conf for storing in findings if it exists (includes confidence info)
-            stored_graph_path = graph_path_with_conf if "graph_path_with_conf" in locals() else graph_path
-            step_findings.append(
-                {
-                    "step_number": len(step_findings) + 1,
-                    "description": description,
-                    "files_involved": step_result.get("key_files") or new_files[:5],
-                    "finding": str(step_result.get("finding") or ""),
-                    "graph_path": step_result.get("graph_path") or stored_graph_path,
-                    "tentative_files": tentative_files,
-                    "tentative_confidence": tentative_confidence,
-                }
-            )
-
-            if step_result.get("sufficient"):
-                break
-
-        # Step 3: Synthesize — two-step: stream markdown first, then get metadata
-        await _emit("synthesizing", "Synthesizing all findings...")
         accumulated_evidence_block = render_bundle_subset(all_evidences, limit=25, excerpt_chars=700)
-
         findings_text = "\n".join(
             f"Step {f['step_number']}: {f['description']}\n"
             f"  Finding: {f['finding']}\n"
@@ -506,62 +772,85 @@ class DeepResearchAgent(BaseTypedAgent):
             for f in step_findings
         )
         synthesis_base = (
-            f"QUESTION: {question}\n\n"
+            f"QUESTION: {state['question']}\n\n"
             f"STEP FINDINGS:\n{findings_text}"
             f"\n\nACCUMULATED CODE EVIDENCE (all investigation steps):\n{accumulated_evidence_block}"
         )
 
-        # 3a. Stream the markdown answer
         async def _on_token(tok: str) -> None:
-            if progress_cb:
-                await progress_cb({"type": "token", "text": tok})
+            if self._current_progress_cb:
+                await self._current_progress_cb({"type": "token", "text": tok})
 
         summary_text = await self._call_stream(
-            provider_id,
-            model_id,
+            state["provider_id"],
+            state["model_id"],
             _SYNTHESIZE_ANSWER_SYSTEM,
             synthesis_base,
             max_completion_tokens=3000,
             on_token=_on_token,
         )
 
-        # 3b. Fast metadata call
         meta_user = (
-            f"QUESTION: {question}\n\n"
+            f"QUESTION: {state['question']}\n\n"
             f"STEP FINDINGS:\n{findings_text}\n\n"
             f"SYNTHESIZED ANSWER (abbreviated):\n{summary_text[:2000]}"
         )
         synthesis_meta = await self._chat_json_typed(
-            provider_id,
-            model_id,
+            state["provider_id"],
+            state["model_id"],
             _SYNTHESIZE_META_SYSTEM,
             meta_user,
             _SYNTHESIZE_META_SCHEMA,
             max_completion_tokens=800,
         )
 
-        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        state["summary"] = summary_text
+        state["reasoning_chain"] = synthesis_meta.get("reasoning_chain") or []
+        state["confidence"] = str(synthesis_meta.get("confidence") or "medium").lower()
+        state["unknowns"] = synthesis_meta.get("unknowns") or []
 
-        result: dict[str, Any] = {
-            "summary": summary_text,
-            "reasoning_chain": synthesis_meta.get("reasoning_chain") or [],
-            "files_explored": sorted(visited_files),
-            "confidence": str(synthesis_meta.get("confidence") or "medium").lower(),
-            "unknowns": synthesis_meta.get("unknowns") or [],
-            "elapsed_ms": elapsed_ms,
-            "research_debug": debug if include_debug else None,
-        }
-        if result["confidence"] not in ("high", "medium", "low"):
-            result["confidence"] = "medium"
+        return state
 
-        logger.info(
-            "[DeepResearchAgent] done in %dms, steps=%d, files_explored=%d, confidence=%s",
-            elapsed_ms,
-            len(step_findings),
-            len(visited_files),
-            result["confidence"],
-        )
-        return result
+    def _accumulate_evidence(
+        self,
+        state: DeepResearchState,
+        evidence: list[RetrievalEvidence],
+        new_files: list[str],
+        description: str,
+    ) -> DeepResearchState:
+        """Accumulate evidence and track visited files."""
+        del new_files, description
+        visited = set(state.get("visited_files", []))
+        visited.update(ev.rel_path for ev in evidence)
+        state["visited_files"] = sorted(visited)
+
+        accumulated_chunk_ids = set(state.get("accumulated_chunk_ids", []))
+        all_evidences = list(state.get("all_evidences", []))
+
+        for ev in evidence:
+            if ev.chunk_id not in accumulated_chunk_ids:
+                all_evidences.append(ev)
+                accumulated_chunk_ids.add(ev.chunk_id)
+
+        state["accumulated_chunk_ids"] = sorted(accumulated_chunk_ids)
+        state["all_evidences"] = all_evidences
+        state["current_evidence"] = evidence
+
+        return state
+
+    async def _emit(
+        self,
+        progress_cb: _ProgressCb | None,
+        phase: str,
+        detail: str = "",
+        step: int | None = None,
+    ) -> None:
+        """Emit a progress event."""
+        if progress_cb:
+            ev: dict = {"type": "status", "phase": phase, "detail": detail}
+            if step is not None:
+                ev["step"] = step
+            await progress_cb(ev)
 
     async def _validate_plan_step(
         self,
@@ -599,7 +888,6 @@ class DeepResearchAgent(BaseTypedAgent):
         """Ask LLM to produce an investigation plan. Falls back to single retrieve step."""
         plan_schema = '{"steps": [{"type": "retrieve|trace_forward|trace_backward|impact", "target": "string", "description": "string"}]}'
         plan_user = f"Question: {question}"
-        # Hint planner with top architectural files so it can suggest better trace targets
         if gctx and gctx.top_central:
             plan_user += (
                 f"\n\nTop architectural files in this codebase (high centrality): "
@@ -639,7 +927,6 @@ class DeepResearchAgent(BaseTypedAgent):
         """Retrieve code evidence for a query, optionally injecting specific files."""
         evidences: list[RetrievalEvidence] = []
 
-        # Standard retrieval
         try:
             bundle = await self._retrieval.retrieve(
                 RetrieveRequest(
@@ -654,7 +941,6 @@ class DeepResearchAgent(BaseTypedAgent):
         except Exception as exc:
             logger.warning("[DeepResearchAgent._retrieve_evidence] retrieval failed: %s", exc)
 
-        # Force-inject graph-discovered files not already in evidence
         if forced_files:
             existing_paths = {ev.rel_path for ev in evidences}
             db = get_db()
@@ -701,7 +987,6 @@ def render_bundle_subset(evidences: list[RetrievalEvidence], limit: int, excerpt
 
     if not evidences:
         return "(no evidence)"
-    # Build a minimal bundle and use the existing renderer
     bundle = RetrievalBundle(
         snapshot_id="",
         mode=RetrievalMode.HYBRID,

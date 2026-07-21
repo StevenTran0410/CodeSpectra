@@ -14,7 +14,7 @@ class CloudAdapterBase(StreamFallbackMixin):
     def __init__(self, config: ProviderConfig, base_url: str | None = None) -> None:
         self.config = config
         self._client = httpx.AsyncClient(
-            base_url=base_url or config.base_url,
+            base_url=config.base_url or base_url,
             timeout=httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0),
         )
 
