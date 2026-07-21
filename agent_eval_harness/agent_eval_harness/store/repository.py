@@ -137,6 +137,24 @@ async def get_traces_for_run(run_id: str) -> list[dict]:
     return [dict(row) for row in rows]
 
 
+async def list_ingested_runs_for_plan(eval_plan_id: str) -> list[dict]:
+    """Every ingested run under one eval plan, newest first, with case and scored-case counts —
+    the set Stage 5's run picker switches between so multiple runs of the same cases coexist."""
+    db = get_db()
+    query = """
+        SELECT r.id, r.started_at, r.status,
+            (SELECT COUNT(*) FROM traces t WHERE t.run_id = r.id) AS case_count,
+            (SELECT COUNT(DISTINCT e.trace_id) FROM evaluations e
+             WHERE e.run_id = r.id AND e.metric_name = 'semantic_match') AS scored_count
+        FROM runs r
+        WHERE r.eval_plan_id = ? AND r.source = 'ingested'
+        ORDER BY r.started_at DESC
+    """
+    async with db.execute(query, (eval_plan_id,)) as cur:
+        rows = await cur.fetchall()
+    return [dict(row) for row in rows]
+
+
 async def get_dataset_cases_by_ids(case_ids: list[str]) -> dict[str, dict]:
     """Batch-fetch dataset cases keyed by id, avoiding one query per case in a loop."""
     if not case_ids:

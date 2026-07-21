@@ -952,6 +952,15 @@ declare global {
           }>>
           agent_summaries: Record<string, { insight: string; case_count: number; avg_score: number | null }>
         }>
+        listEvalRuns: (sessionId: string) => Promise<{
+          runs: Array<{
+            id: string
+            started_at: string
+            status: string
+            case_count: number
+            scored_count: number
+          }>
+        }>
         judgeEvalRunCases: (
           runId: string,
           body: {

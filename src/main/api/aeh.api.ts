@@ -194,6 +194,10 @@ export function registerAEHHandlers(): void {
     aehClient().get(`/api/eval-runs/${runId}/cases`)
   )
 
+  ipcMain.handle('aeh:listEvalRuns', (_e, sessionId: string) =>
+    aehClient().get(`/api/discovery/expansion-sessions/${sessionId}/eval-runs`)
+  )
+
   ipcMain.handle('aeh:judgeEvalRunCases', (_e, runId: string, body: unknown) =>
     aehClient().post(`/api/eval-runs/${runId}/judge`, withBackendConnection(body), LONG_RUNNING_TIMEOUT_MS)
   )

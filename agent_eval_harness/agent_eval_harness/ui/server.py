@@ -2008,6 +2008,14 @@ async def load_eval_results(session_id: str, manifest_path: str | None = None):
     return {"run_id": run_id, "status": run["status"] if run else "unknown"}
 
 
+@app.get("/api/discovery/expansion-sessions/{session_id}/eval-runs")
+async def list_session_eval_runs(session_id: str):
+    """All ingested runs for this session so Stage 5 can switch between them; the manifest's
+    plan_id is the session id, so runs group under it with no schema change."""
+    await _get_expansion_session_or_404(session_id)
+    return {"runs": await repository.list_ingested_runs_for_plan(session_id)}
+
+
 @app.get("/api/eval-runs/{run_id}/cases")
 async def get_eval_run_cases(run_id: str):
     """Per-agent input/result/expected for an ingested run; agent_id comes from the dataset case's own labels_json."""

@@ -351,6 +351,8 @@ const api = {
       ipcRenderer.invoke('aeh:loadEvalResults', sessionId),
     getEvalRunCases: (runId: string) =>
       ipcRenderer.invoke('aeh:getEvalRunCases', runId),
+    listEvalRuns: (sessionId: string) =>
+      ipcRenderer.invoke('aeh:listEvalRuns', sessionId),
     judgeEvalRunCases: (runId: string, body: unknown) =>
       ipcRenderer.invoke('aeh:judgeEvalRunCases', runId, body),
     summarizeEvalRunAgent: (runId: string, body: unknown) =>

@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   Sparkles,
   BarChart3,
+  DownloadCloud,
 } from 'lucide-react'
 import { Button, useToastStore } from '../../components/ui'
 import { useProviderStore } from '../../store/provider.store'
@@ -26,6 +27,12 @@ type CaseRow = {
   result: string | null
   expected: unknown
   evaluations: CaseEvaluation[]
+}
+
+function _runLabel(r: { started_at: string; status: string; case_count: number; scored_count: number }): string {
+  const when = r.started_at ? new Date(r.started_at).toLocaleString([], { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '?'
+  const scored = r.scored_count > 0 ? `${r.scored_count}/${r.case_count} scored` : `${r.case_count} cases`
+  return `${when} · ${r.status} · ${scored}`
 }
 
 function _scoreColor(score: number | null): string {
@@ -105,6 +112,8 @@ export default function Stage5Screen(): React.ReactElement {
 
   const [casesLoading, setCasesLoading] = useState(false)
   const [agentCases, setAgentCases] = useState<Record<string, CaseRow[]> | null>(null)
+  type EvalRun = { id: string; started_at: string; status: string; case_count: number; scored_count: number }
+  const [runs, setRuns] = useState<EvalRun[]>([])
   const [viewingAgentId, setViewingAgentId] = useState<string | null>(null)
   const [showSummary, setShowSummary] = useState(false)
 
@@ -138,7 +147,32 @@ export default function Stage5Screen(): React.ReactElement {
     }
   }, [providers, providerId])
 
-  // Recall an existing run from a previous visit instead of forcing a fresh "Load Results" click.
+  async function viewRun(runId: string): Promise<void> {
+    setCasesLoading(true)
+    setError(null)
+    try {
+      const data = await window.api.aeh.getEvalRunCases(runId)
+      setResult({ run_id: data.run_id, status: data.status })
+      setAgentCases(data.agents)
+      setAgentSummaries(data.agent_summaries ?? {})
+      setViewingAgentId(null)
+    } catch (err: any) {
+      setError(err?.message ?? 'Failed to load this run')
+    } finally {
+      setCasesLoading(false)
+    }
+  }
+
+  async function refreshRuns(): Promise<EvalRun[]> {
+    try {
+      const data = await window.api.aeh.listEvalRuns(sessionId)
+      setRuns(data.runs)
+      return data.runs
+    } catch {
+      return []
+    }
+  }
+
   useEffect(() => {
     if (!sessionId) {
       setCheckingExisting(false)
@@ -147,15 +181,21 @@ export default function Stage5Screen(): React.ReactElement {
     let cancelled = false
     ;(async () => {
       try {
-        const sess = await window.api.aeh.getExpansionSession(sessionId)
-        if (cancelled || !sess.eval_run_id) return
-        const data = await window.api.aeh.getEvalRunCases(sess.eval_run_id)
+        const [sess, runList] = await Promise.all([
+          window.api.aeh.getExpansionSession(sessionId),
+          refreshRuns(),
+        ])
+        if (cancelled) return
+        // Prefer the session's last-viewed run; otherwise the newest ingested one.
+        const runId = sess.eval_run_id || runList[0]?.id
+        if (!runId) return
+        const data = await window.api.aeh.getEvalRunCases(runId)
         if (cancelled) return
         setResult({ run_id: data.run_id, status: data.status })
         setAgentCases(data.agents)
         setAgentSummaries(data.agent_summaries ?? {})
       } catch {
-        // No existing run, or it's no longer resolvable — fall through to the normal "Load Results" button.
+        // No existing run — fall through to the "Load Results" button.
       } finally {
         if (!cancelled) setCheckingExisting(false)
       }
@@ -170,8 +210,10 @@ export default function Stage5Screen(): React.ReactElement {
     setError(null)
     try {
       const data = await window.api.aeh.loadEvalResults(sessionId)
-      setResult(data)
-      toast.success('Eval results loaded successfully')
+      await refreshRuns()
+      // Show the run that was just ingested — from the grid this is a "load another run" action.
+      await viewRun(data.run_id)
+      toast.success('Eval results loaded')
     } catch (err: any) {
       if (err?.message?.includes('manifest not found')) {
         setError(
@@ -644,6 +686,30 @@ export default function Stage5Screen(): React.ReactElement {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            {runs.length > 1 && (
+              <select
+                value={result?.run_id ?? ''}
+                onChange={(e) => viewRun(e.target.value)}
+                disabled={casesLoading}
+                title="Switch between runs of this session"
+                className="text-xs h-8 px-2 rounded-md border border-slate-800 bg-slate-900/40 text-slate-300 hover:text-slate-100 max-w-[16rem]"
+              >
+                {runs.map((r) => (
+                  <option key={r.id} value={r.id}>{_runLabel(r)}</option>
+                ))}
+              </select>
+            )}
+            <Button
+              variant="ghost"
+              onClick={handleLoadResults}
+              loading={loading}
+              disabled={loading}
+              title="Ingest the latest run's manifest as a new run"
+              className="text-xs h-8 px-3 border border-slate-800 bg-slate-900/40 text-slate-300 hover:text-slate-100 font-medium flex items-center gap-1.5"
+            >
+              <DownloadCloud size={13} />
+              {loading ? 'Loading...' : 'Load new run'}
+            </Button>
             <Button
               variant="ghost"
               onClick={() => setShowSummary(true)}
