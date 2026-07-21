@@ -23,9 +23,9 @@ from typing import Any
 
 os.environ.setdefault("HAYSTACK_CONTENT_TRACING_ENABLED", "true")
 
-_HERE = Path(__file__).resolve().parent  # backend/.aeh/
-_BACKEND_ROOT = _HERE.parent  # backend/
-for _p in (str(_HERE), str(_BACKEND_ROOT)):
+_HERE = Path(__file__).resolve().parent  # <import_root>/.aeh/
+_IMPORT_ROOT = _HERE.parent  # the target's Python import root
+for _p in (str(_HERE), str(_IMPORT_ROOT)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
@@ -57,7 +57,7 @@ def _ensure_tracer_registered() -> None:
 def _git_sha() -> str | None:
     try:
         result = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=_BACKEND_ROOT, capture_output=True, text=True, check=False,
+            ["git", "rev-parse", "HEAD"], cwd=_IMPORT_ROOT, capture_output=True, text=True, check=False,
         )
     except OSError:
         return None

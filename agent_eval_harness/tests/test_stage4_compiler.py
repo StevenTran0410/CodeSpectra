@@ -260,6 +260,99 @@ class TestE2ERender:
             assert not re.search(pattern, blob), f"leaked literal {pattern}"
 
 
+class TestForeignTargetRender:
+    """AC#5: the plan must render on targets that are NOT CodeSpectra. Passing on CodeSpectra
+    is necessary but not sufficient — genericity is only proven on a foreign map."""
+
+    @pytest.mark.parametrize("target", ["multi_agent", "linear_rag"])
+    def test_render_on_foreign_target(self, target, tmp_path) -> None:
+        from agent_eval_harness.mapping.system_map import load_system_map
+        from agent_eval_harness.code_injection.wiring import build_wiring
+        from agent_eval_harness.code_injection.plan_renderer import render_eval_plan_files
+
+        map_path = Path(__file__).parent.parent / "test_targets" / target / "system_map.yaml"
+        system_map = load_system_map(map_path)
+        agent_ids = [c.id for c in system_map.components]
+        assert agent_ids, f"{target} map has no components"
+
+        dataset_summaries = [
+            {"dataset_id": f"ds_{cid}", "kind": "synthetic_agent_io",
+             "case_count": 2, "gate_ids": [], "example_case": None}
+            for cid in agent_ids
+        ]
+        wiring = build_wiring(system_map, f"sess-{target}")
+        wiring["aeh_db_path"] = str(tmp_path / "aeh.db")
+        wiring["dataset_ids"] = sorted(d["dataset_id"] for d in dataset_summaries)
+
+        files = render_eval_plan_files(
+            system_map, wiring, dataset_summaries, f"sess-{target}", f"aeh/eval-{target}",
+        )
+        assert set(files) == {"AGENTS.md", "TASKS.md", "REFERENCE.md", "CODE.md", "RECON.md"}
+
+        blob = "\n".join(files.values())
+        for bad in ("[UNKNOWN_SCALAR", "[UNKNOWN_TABLE", "[UNKNOWN_CODE",
+                    "BLOCK_NOT_FOUND", "Unknown block", "Unknown slot type"):
+            assert bad not in blob, f"{target}: engine placeholder {bad}"
+
+        for pattern in (r"RunDirectorAgent", r"AnalysisAgentPipeline", r"domain\.analysis",
+                        r"\bproject_identity\b", r"backend/"):
+            assert not re.search(pattern, blob), f"{target}: leaked CodeSpectra literal {pattern}"
+
+        for cid in agent_ids:
+            assert cid in files["TASKS.md"], f"{target}: {cid} missing from TASKS.md"
+            assert cid in files["REFERENCE.md"], f"{target}: {cid} missing from REFERENCE.md"
+        assert system_map.target_system_id in files["REFERENCE.md"]
+
+
+class TestTypedBindingSurfacing:
+    """§5.3: a case field bound to a kwarg annotated with a target type must be surfaced so the
+    coding agent converts it, instead of passing the raw dict the agent then dereferences."""
+
+    def test_typed_binding_flagged_plain_passes_through(self) -> None:
+        from agent_eval_harness.code_injection.facts import _annotation_needs_conversion
+
+        for plain in ("str", "int | None", "dict[str, Any]", "list[str]", "Optional[bool]", None, ""):
+            assert not _annotation_needs_conversion(plain), plain
+        for typed in ("RetrievalBundle", "RetrievalBundle | None", "models.Section",
+                      "list[Evidence]"):
+            assert _annotation_needs_conversion(typed), typed
+
+    def test_typed_binding_renders_a_warning_no_type_literal(self, tmp_path) -> None:
+        from agent_eval_harness.mapping.system_map import SystemMap, Component
+        from agent_eval_harness.planning.report import EvaluationPlanReport, AgentPlanReport
+        from agent_eval_harness.planning.contract import (
+            EvaluationContract, InvocationContract, KwargSpec,
+        )
+        from agent_eval_harness.code_injection.wiring import build_wiring
+        from agent_eval_harness.code_injection.plan_renderer import render_eval_plan_files
+
+        component = Component(id="a1", role="worker", entry_point="a1.run", file="src/a1.py")
+        system_map = SystemMap(target_system_id="tsys", components=[component])
+        inv = InvocationContract(
+            callable="a1", method="run", invocation_mode="in_harness",
+            case_binding={"bundle": "case:$.input.bundle", "name": "case:$.input.name"},
+            kwargs=[KwargSpec(name="bundle", annotation="EvidenceBundle | None"),
+                    KwargSpec(name="name", annotation="str")],
+        )
+        plan_report = EvaluationPlanReport(target_system_id="tsys", agents=[AgentPlanReport(
+            agent_id="a1", role="worker",
+            contract=EvaluationContract(agent_id="a1", invocation=inv),
+        )])
+        ds = [{"dataset_id": "ds_a1", "kind": "synthetic_agent_io", "case_count": 2,
+               "gate_ids": [], "example_case": {"labels": {"agent_id": "a1"},
+                                                "input": {"bundle": {}, "name": "x"}}}]
+        wiring = build_wiring(system_map, "s1")
+        wiring["aeh_db_path"] = str(tmp_path / "aeh.db")
+        wiring["dataset_ids"] = ["ds_a1"]
+
+        files = render_eval_plan_files(system_map, wiring, ds, "s1", "aeh/eval-s1",
+                                       plan_report=plan_report)
+        ref = files["REFERENCE.md"]
+        assert "EvidenceBundle | None" in ref, "typed kwarg annotation never surfaced"
+        assert "Typed kwarg" in ref, "no conversion warning for the typed binding"
+        assert "`name`: `str`" not in ref, "plain kwarg wrongly flagged as typed"
+
+
 class TestMarkerEmission:
     """Test marker emission for missing facts."""
 

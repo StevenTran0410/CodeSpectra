@@ -388,10 +388,19 @@ def _render_agent_card(a: AgentFacts, facts: PlanFacts) -> str:
 
     lines.append(f"\n**Invocation mode**: `{a.invocation_mode}`")
     if isinstance(a.case_binding, Resolved) and a.case_binding.value:
-        wire = ["\n**WIRE** (case field → kwarg):", "", "| case field | → kwarg |", "| --- | --- |"]
+        wire = ["\n**WIRE** (case field → kwarg):", "", "| case field | → kwarg | kwarg type |", "| --- | --- | --- |"]
         for kwarg, binding in a.case_binding.value.items():
-            wire.append(f"| `{binding}` | `{kwarg}` |")
+            annotation = a.typed_bindings.get(kwarg)
+            wire.append(f"| `{binding}` | `{kwarg}` | {f'`{annotation}`' if annotation else 'plain'} |")
         lines.append("\n".join(wire))
+        if a.typed_bindings:
+            typed = ", ".join(f"`{k}`: `{v}`" for k, v in a.typed_bindings.items())
+            lines.append(
+                f"\n⚠️ **Typed kwarg**: {typed} — the case supplies a raw JSON value, but the "
+                "entry method annotates a project type it dereferences by attribute. Build that "
+                "type from the raw value in your dispatch region instead of passing the dict "
+                "through; read the real constructor from the target's source."
+            )
     else:
         lines.append("\n**WIRE**: no case_binding harvested — dispatch module uses empty kwargs.")
 
@@ -456,6 +465,13 @@ def _render_skeleton_tasks(facts: PlanFacts) -> str:
     lines = [
         "## M1 — Skeleton: install the harness files",
         "> Điều kiện vào: [x] 🛑 GATE M0. These files are copied verbatim — do not edit them.",
+        "",
+        "- [ ] T004e Determine the target's Python import root — the directory on `sys.path` "
+        "when the app runs, from which its own package imports resolve — and create `.aeh/` "
+        "directly inside it. `run_eval.py` puts its own parent on `sys.path`, so if `.aeh/` "
+        "sits anywhere else the target's imports fail. Record the resolved path in `RECON.md`; "
+        "every `python .aeh/run_eval.py …` command below is relative to it.",
+        "      Verify: `python -c \"import <target_top_level_package>\"` succeeds from `.aeh/`'s parent",
         "",
         "- [ ] T005 If `.aeh/` already exists from an earlier plan, move it aside — "
         "`mv .aeh .aeh.bak-<timestamp>` — then start clean. Do not merge old and new installs, "

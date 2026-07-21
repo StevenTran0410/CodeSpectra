@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any, Literal
 
@@ -106,6 +107,9 @@ class AgentFacts(BaseModel):
     # Same, but optional: the call still runs, just with less context than intended.
     degraded_bindings: list[str] = Field(default_factory=list)
     required_kwargs: list[str] = Field(default_factory=list)
+    # Bound kwarg -> its harvested annotation, kept only when the annotation names a target
+    # type a raw case value would not satisfy without conversion.
+    typed_bindings: dict[str, str] = Field(default_factory=dict)
     transclude: dict[str, str] = Field(default_factory=dict)
     quirk_flags: dict[str, bool] = Field(default_factory=dict)
 
@@ -299,6 +303,12 @@ def compile_plan_facts(
                     agent_facts.required_kwargs = [
                         k.name for k in invocation.kwargs if k.required
                     ]
+                    bound = invocation.case_binding or {}
+                    agent_facts.typed_bindings = {
+                        k.name: k.annotation
+                        for k in invocation.kwargs
+                        if k.name in bound and _annotation_needs_conversion(k.annotation)
+                    }
                 agent_facts.has_retrieval_signal = plan_agent.contract.has_retrieval_signal
 
         facts.agents.append(agent_facts)
@@ -307,6 +317,24 @@ def compile_plan_facts(
     _compile_code_artifacts(facts, wiring)
 
     return facts
+
+
+_PLAIN_ANNOTATIONS = {
+    "str", "int", "float", "bool", "bytes", "none", "any", "object",
+    "dict", "list", "tuple", "set", "frozenset", "mapping", "sequence", "iterable",
+    "optional", "union", "literal",
+}
+
+
+def _annotation_needs_conversion(annotation: str | None) -> bool:
+    """True when the annotation names a project type a raw JSON case value would not satisfy —
+    a Pydantic/dataclass model the agent dereferences by attribute. An annotation is plain only
+    when every name in it is a builtin, typing wrapper, or container, so `Optional[bool]` passes
+    while `RetrievalBundle | None` and `list[Evidence]` do not."""
+    if not annotation:
+        return False
+    names = re.findall(r"[A-Za-z_][\w.]*", annotation)
+    return any(name.rsplit(".", 1)[-1].lower() not in _PLAIN_ANNOTATIONS for name in names)
 
 
 def _mark_unconsumed_case_fields(facts: PlanFacts) -> None:
