@@ -33,8 +33,10 @@ from agent_eval_harness.mapping.builder.contract_harvest import (
     _harvest_dep_call_sites,
     _resolve_class_schema,
     _SchemaResolveCtx,
+    ENTRY_METHOD_NAMES,
     harvest_component_contract,
 )
+from agent_eval_harness.discovery.wiring import parse_entry_suffix
 from agent_eval_harness.mapping.builder.prompts import ROLE_TAXONOMY
 from agent_eval_harness.mapping.builder.roles import (
     ROLE_CONFIDENCE_THRESHOLD,
@@ -118,9 +120,6 @@ def resolve_agent_knowledge_dir(session_id: str) -> Path | None:
 def aeh_data_root() -> Path:
     """Root directory for all AEH artifacts (db, plans, agent sidecars); uses AEH_DATA_DIR env var (set by Electron to userData/Roaming), falling back to cwd for CLI/testing."""
     return Path(os.getenv("AEH_DATA_DIR", "."))
-
-
-_ENTRY_METHOD_NAMES = ("run", "run_async", "__call__")
 
 
 def _parse_signature_kwargs(signature: str) -> list[tuple[str, str]]:
@@ -587,6 +586,7 @@ async def _gather_evidence(ctx: _EnrichmentContext) -> dict[str, Any]:
                     'role': comp.role,
                     'file': comp.file,
                     'entry_point': comp.entry_point,
+                    'entry_kind': comp.entry_kind,
                     'is_tool': comp.is_tool,
                     'constructor_fanout': comp.constructor_fanout,
                     'fan_in': len(comp.upstream),
@@ -1035,19 +1035,21 @@ async def _enrich_single_agent(
                 tree = asts[comp_file]
 
                 from agent_eval_harness.mapping.builder.contract_harvest import (
-                    _find_entry_method, _find_class
+                    _find_class, _find_entry_method, _find_function
                 )
-                import ast as ast_module
-                cls = None
-                for node in ast_module.walk(tree):
-                    if isinstance(node, ast_module.ClassDef) and node.name == comp.get('entry_point', '').split(':')[-1]:
-                        cls = node
-                        break
+                _, _, suffix = comp.get('entry_point', '').partition(':')
+                owner, name = parse_entry_suffix(suffix)
+                cls = entry = None
+                if comp.get('entry_kind') == 'function':
+                    entry = _find_function(tree, name)
+                else:  # class or bound-method (Owner.method) — resolve the owning class then the named method
+                    cls = _find_class(tree, owner or name)
+                    if cls is not None:
+                        entry = _find_entry_method(cls, name if owner else None)
 
-                if cls is None:
+                if cls is None and entry is None:
                     continue
 
-                entry = _find_entry_method(cls)
                 virtual_contracts = await _harvest_virtual_inputs_static(
                     ctx, cls, entry, tree, comp_file, asts
                 )
@@ -1298,50 +1300,74 @@ In that case, list those missing fields in virtual_input_fields with (file, line
                             symbols = symbols_response.get('symbols', [])
                             symbols_by_file[comp_file] = symbols
 
-                            if components_list[0].get('entry_point'):
-                                _, _, class_name = components_list[0]['entry_point'].partition(':')
-                                class_name = class_name.split('.')[0]
+                            # Resolve THIS comp_file's own component (not components_list[0]) so multi-file agents don't cross-wire.
+                            comp_for_harvest = next(
+                                (c for c in components_list if c.get('file') == comp_file), None
+                            )
+                            if comp_for_harvest and comp_for_harvest.get('entry_point'):
+                                _, _, suffix = comp_for_harvest['entry_point'].partition(':')
+                                owner, name = parse_entry_suffix(suffix)
+                                entry_kind = comp_for_harvest.get('entry_kind')
 
-                                class_row = None
-                                method_row = None
-                                for sym in symbols:
-                                    if sym.get('kind') == 'class' and sym.get('name') == class_name:
-                                        class_row = sym
-                                    elif (sym.get('parent_name') == class_name and
-                                          sym.get('kind') == 'method' and
-                                          sym.get('name') in _ENTRY_METHOD_NAMES):
-                                        if method_row is None or _ENTRY_METHOD_NAMES.index(sym.get('name')) < _ENTRY_METHOD_NAMES.index(method_row.get('name')):
-                                            method_row = sym
-
-                                if class_row and method_row:
-                                    llm_knowledge.location = LocationInfo(
-                                        file=comp_file,
-                                        line_start=class_row.get('line_start', 0),
-                                        line_end=class_row.get('line_end', 0),
-                                        entry_method=method_row.get('name', ''),
-                                        entry_line=method_row.get('line_start', 0),
+                                class_row = method_row = function_row = None
+                                if entry_kind == 'function':
+                                    function_row = next(
+                                        (s for s in symbols if s.get('kind') == 'function' and s.get('name') == name),
+                                        None,
                                     )
+                                else:
+                                    target_class = owner or name
+                                    explicit_method = name if owner else None
+                                    class_row = next(
+                                        (s for s in symbols if s.get('kind') == 'class' and s.get('name') == target_class),
+                                        None,
+                                    )
+                                    if explicit_method:
+                                        method_row = next(
+                                            (s for s in symbols if s.get('parent_name') == target_class
+                                             and s.get('kind') == 'method' and s.get('name') == explicit_method),
+                                            None,
+                                        )
+                                    else:
+                                        for sym in symbols:
+                                            if (sym.get('parent_name') == target_class and sym.get('kind') == 'method'
+                                                    and sym.get('name') in ENTRY_METHOD_NAMES):
+                                                if method_row is None or ENTRY_METHOD_NAMES.index(sym.get('name')) < ENTRY_METHOD_NAMES.index(method_row.get('name')):
+                                                    method_row = sym
+
+                                if (class_row and method_row) or function_row:
+                                    if function_row:
+                                        # Collapse class-span + method-span onto the function's own span (Decision #10).
+                                        llm_knowledge.location = LocationInfo(
+                                            file=comp_file,
+                                            line_start=function_row.get('line_start', 0),
+                                            line_end=function_row.get('line_end', 0),
+                                            entry_method=function_row.get('name', ''),
+                                            entry_line=function_row.get('line_start', 0),
+                                        )
+                                    else:
+                                        llm_knowledge.location = LocationInfo(
+                                            file=comp_file,
+                                            line_start=class_row.get('line_start', 0),
+                                            line_end=class_row.get('line_end', 0),
+                                            entry_method=method_row.get('name', ''),
+                                            entry_line=method_row.get('line_start', 0),
+                                        )
 
                                     # Harvest kwargs from the real source AST (not the symbol-index signature, which drops type hints) so nested field schemas can resolve.
                                     invocation_contract = None
                                     try:
-                                        comp_for_harvest = None
-                                        for comp in components_list:
-                                            if comp.get('file') == comp_file:
-                                                comp_for_harvest = comp
-                                                break
-                                        if comp_for_harvest:
-                                            comp_id = comp_for_harvest.get('id', agent_id)
-                                            entry_pt = comp_for_harvest.get('entry_point', '')
-                                            temp_component = Component(id=comp_id, role='unknown', entry_point=entry_pt, file=comp_file)
-                                            comp_path = (ctx.repo_root / comp_file) if ctx.repo_root else Path(comp_file)
-                                            if comp_path.exists():
-                                                parsed = parse_python_source(comp_path)
-                                                if parsed:
-                                                    asts = {comp_path: parsed[1]}
-                                                    invocation_contract, output, _, _, _ = harvest_component_contract(temp_component, asts, files_root=ctx.repo_root)
-                                                    if output:
-                                                        llm_knowledge.output_contract = output
+                                        comp_id = comp_for_harvest.get('id', agent_id)
+                                        entry_pt = comp_for_harvest.get('entry_point', '')
+                                        temp_component = Component(id=comp_id, role='unknown', entry_point=entry_pt, file=comp_file, entry_kind=entry_kind)
+                                        comp_path = (ctx.repo_root / comp_file) if ctx.repo_root else Path(comp_file)
+                                        if comp_path.exists():
+                                            parsed = parse_python_source(comp_path)
+                                            if parsed:
+                                                asts = {comp_path: parsed[1]}
+                                                invocation_contract, output, _, _, _ = harvest_component_contract(temp_component, asts, files_root=ctx.repo_root)
+                                                if output:
+                                                    llm_knowledge.output_contract = output
                                     except Exception as e:
                                         logger.debug(f"Failed to harvest contracts for {agent_id}: {e}")
 
@@ -1352,8 +1378,8 @@ In that case, list those missing fields in virtual_input_fields with (file, line
                                             for k in invocation_contract.kwargs
                                         ]
                                         llm_knowledge.input_schemas = await _resolve_input_kwarg_schemas(ctx, llm_knowledge.input_contract)
-                                    else:
-                                        # Fallback to truncated signature parsing (backward compat)
+                                    elif method_row is not None:
+                                        # Fallback to truncated signature parsing (backward compat; class/bound-method only).
                                         sig = method_row.get('signature', '')
                                         kwargs_with_hints = _parse_signature_kwargs(sig)
                                         if kwargs_with_hints:
@@ -1363,14 +1389,16 @@ In that case, list those missing fields in virtual_input_fields with (file, line
                                             ]
                                             llm_knowledge.input_schemas = await _resolve_input_kwarg_schemas(ctx, llm_knowledge.input_contract)
 
-                                for comp in components_list:
-                                    if class_row and comp.get('file') == comp_file:
-                                        llm_knowledge.components.append(ComponentRef(
-                                            id=comp['id'],
-                                            role=comp.get('role', 'unknown'),
-                                            file=comp_file,
-                                            line=class_row.get('line_start', 0),
-                                        ))
+                                anchor_row = class_row or function_row
+                                if anchor_row:
+                                    for comp in components_list:
+                                        if comp.get('file') == comp_file:
+                                            llm_knowledge.components.append(ComponentRef(
+                                                id=comp['id'],
+                                                role=comp.get('role', 'unknown'),
+                                                file=comp_file,
+                                                line=anchor_row.get('line_start', 0),
+                                            ))
                         except Exception as e:
                             logger.warning(f"Failed to fill structural fields for {agent_id} from {comp_file}: {e}")
             except Exception as e:

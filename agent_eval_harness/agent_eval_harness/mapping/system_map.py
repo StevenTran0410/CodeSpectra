@@ -33,6 +33,7 @@ class Component(BaseModel):
     constructor_downstream: list[str] | None = None  # WHICH siblings this constructs; fanout is its count
     model: str | None = None
     entry_point: str
+    entry_kind: str | None = None  # "class" | "function" | "bound_method"; None on legacy maps => treated as class
     file: str = ""
     span_match: list[SpanMatchBlock] = Field(default_factory=list)
     constraints: list[Constraint] = Field(default_factory=list)
@@ -43,6 +44,7 @@ class Component(BaseModel):
 class SystemMap(BaseModel):
     target_system_id: str
     components: list[Component]
+    framework: str | None = None  # the scanner that produced this map; None on legacy maps
     discrepancies: list[str] = Field(default_factory=list)
 
     def component_by_id(self, component_id: str) -> Component | None:

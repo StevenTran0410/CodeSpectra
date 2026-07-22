@@ -147,6 +147,8 @@ def test_reconcile_params_completion_and_feasibility() -> None:
     )
 
     contract = EvaluationContract(agent_id="agent1")
+    # harvest_contracts sets archetype at Stage 2 (CS-311); a signal-less contract classifies as unimplemented.
+    contract.archetype = "unimplemented"
     contract.observability.has_separable_context = False  # static fact
     contract.observability.input_kind = "structured"       # static fact
     contract.observability.has_tools = False              # static fact

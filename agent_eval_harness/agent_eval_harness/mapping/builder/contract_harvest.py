@@ -12,6 +12,8 @@ import yaml
 
 from agent_eval_harness.config import ContractConventions
 from agent_eval_harness.datasets.archetype_vocabulary import KWARG_CASE_KEY_MAPPING
+from agent_eval_harness.datasets.generator_utils import config_kwarg_names_from_case_binding
+from agent_eval_harness.discovery.wiring import parse_entry_suffix
 from agent_eval_harness.mapping.agent_flow import AgentFlowMap
 from agent_eval_harness.mapping.builder.types import parse_python_source
 from agent_eval_harness.mapping.system_map import Component, SystemMap
@@ -25,7 +27,7 @@ from agent_eval_harness.planning.contract import (
 
 logger = logging.getLogger("agent_eval_harness.contract_harvest")
 
-_ENTRY_METHOD_NAMES = ("run", "run_async", "__call__")
+ENTRY_METHOD_NAMES = ("run", "run_async", "__call__")
 _QUERYISH_PARAMS = frozenset({"query", "question", "prompt", "text", "message", "user_input"})
 _CONFIG_PARAMS = frozenset({"provider_id", "model_id"})
 _SCHEMA_NAME_RE = re.compile(r"SCHEMA", re.IGNORECASE)
@@ -98,15 +100,35 @@ def _find_class(tree: ast.Module, class_name: str) -> ast.ClassDef | None:
 
 def _resolve_component_class(
     component: Component, asts: dict[Path, ast.Module]
-) -> tuple[Path | None, str, ast.ClassDef | None]:
-    """Resolve a component's entry_point to (file, class name, class def); path/cls None on failure."""
+) -> tuple[Path | None, str, ast.ClassDef | None, str | None]:
+    """Resolve entry_point to (file, name, class def, explicit_method); path None on failure.
+
+    name is the class name (class/bound_method) or the function name (function entry). explicit_method
+    is the bound-method name when the suffix is `Owner.method`, else None.
+    """
     path = _resolve_component_file(component, asts)
     if path is None:
-        return None, "", None
-    _, _, class_name = component.entry_point.partition(":")
-    class_name = class_name.split(".")[0]
-    cls = _find_class(asts[path], class_name) if class_name else None
-    return path, class_name, cls
+        return None, "", None, None
+    _, _, suffix = component.entry_point.partition(":")
+    owner, name = parse_entry_suffix(suffix)
+    if owner is not None:  # 2-part suffix => bound_method by construction
+        return path, owner, _find_class(asts[path], owner), name
+    if component.entry_kind == "function":
+        return path, name, None, None
+    # Legacy/class path — identical behavior to pre-CS-311 (entry_kind None or "class").
+    return path, name, (_find_class(asts[path], name) if name else None), None
+
+
+def _resolve_entry(
+    component: Component, asts: dict[Path, ast.Module]
+) -> tuple[Path | None, ast.ClassDef | None, ast.FunctionDef | ast.AsyncFunctionDef | None]:
+    """Resolve a component to (file, class-or-None, entry function/method-or-None)."""
+    path, name, cls, explicit_method = _resolve_component_class(component, asts)
+    if path is None:
+        return None, None, None
+    if cls is not None:
+        return path, cls, _find_entry_method(cls, explicit_method)
+    return path, None, (_find_function(asts[path], name) if name else None)
 
 
 def _unparse(node: ast.AST | None) -> str | None:
@@ -161,19 +183,25 @@ def _harvest_kwargs(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[list[Kw
     return specs, notes
 
 
-def _find_entry_method(cls: ast.ClassDef) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
+def _find_entry_method(
+    cls: ast.ClassDef, explicit_method: str | None = None
+) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
     by_name = {
         node.name: node
         for node in cls.body
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
-    for name in _ENTRY_METHOD_NAMES:
+    if explicit_method is not None:  # bound-method entry: any method name, not just the allowlist
+        return by_name.get(explicit_method)
+    for name in ENTRY_METHOD_NAMES:
         if name in by_name:
             return by_name[name]
     return None
 
 
-def _harvest_constructor_deps(cls: ast.ClassDef) -> list[str]:
+def _harvest_constructor_deps(cls: ast.ClassDef | None) -> list[str]:
+    if cls is None:
+        return []
     for node in cls.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "__init__":
             deps = []
@@ -365,6 +393,31 @@ def _derive_input_kind(kwargs: list[KwargSpec]) -> str:
     return "unknown"
 
 
+def _archetype_for(contract: EvaluationContract) -> str:
+    """Deterministic archetype classifier from harvested contract signals only — never a guess."""
+    if contract.field_downstream_consumers:
+        return "fan_in_judge"
+    kwarg_names = {k.name for k in contract.invocation.kwargs} if contract.invocation else set()
+    if not contract.has_retrieval_signal:
+        # A non-retrieval agent with a real input contract still gets a dataset — "unimplemented" only when there's truly no usable input.
+        case_binding = contract.invocation.case_binding if contract.invocation else {}
+        config_names = config_kwarg_names_from_case_binding(case_binding)
+        if not (kwarg_names - config_names):
+            return "unimplemented"
+    has_query_planning = contract.query_planning_subcall
+    has_folder_tree = "folder_tree" in kwarg_names
+    if "mem_ctx" in kwarg_names:
+        return "rag_mem_ctx"
+    if has_folder_tree:
+        return "rag_query_planning_mem_ctx" if has_query_planning else "rag_mem_ctx_participant"
+    if has_query_planning:
+        return "rag_query_planning"
+    # Stage-2 truth: upstream_context_specs (populated in harvest_contracts pass 2) replaces the old hand-written kwarg blocklist.
+    if contract.upstream_context_specs:
+        return "rag_upstream"
+    return "rag_single_shot"
+
+
 def _rel_cite(path: Path, lineno: int, files_root: Path | None) -> str:
     p = path.as_posix()
     if files_root is not None:
@@ -375,8 +428,10 @@ def _rel_cite(path: Path, lineno: int, files_root: Path | None) -> str:
     return f"{p}:{lineno}"
 
 
-def _find_validator_letter(cls: ast.ClassDef) -> str | None:
+def _find_validator_letter(cls: ast.ClassDef | None) -> str | None:
     """First validate_*(<str-const>, ...) call inside the class body, e.g. validate_section("A", data)."""
+    if cls is None:
+        return None
     for node in ast.walk(cls):
         if not isinstance(node, ast.Call):
             continue
@@ -389,7 +444,9 @@ def _find_validator_letter(cls: ast.ClassDef) -> str | None:
     return None
 
 
-def _referenced_schema_names(cls: ast.ClassDef) -> list[str]:
+def _referenced_schema_names(cls: ast.ClassDef | None) -> list[str]:
+    if cls is None:
+        return []
     names = []
     for node in ast.walk(cls):
         if isinstance(node, ast.Name) and _SCHEMA_NAME_RE.search(node.id) and node.id.isupper():
@@ -693,7 +750,7 @@ def _find_pipeline_fallback_function(
 
 
 def _harvest_fallback(
-    cls: ast.ClassDef,
+    cls: ast.ClassDef | None,
     path: Path,
     files_root: Path | None,
     *,
@@ -703,7 +760,7 @@ def _harvest_fallback(
 ) -> tuple[dict | None, str | None, bool]:
     """Fallback method returning a dict literal; disambiguates candidates by entry-point call, then name match, then order. Returned bool flags genuine ambiguity for human review."""
     candidates = [
-        node for node in cls.body
+        node for node in (cls.body if cls is not None else [])
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and "fallback" in node.name.lower()
     ]
     if not candidates:
@@ -767,17 +824,15 @@ def harvest_component_contract(
     ctx = _SchemaResolveCtx(
         asts=asts, files_root=files_root, visited=set(), depth=0, conventions=conventions
     )
-    path, class_name, cls = _resolve_component_class(component, asts)
+    path, cls, entry = _resolve_entry(component, asts)
     if path is None:
         return None, None, {}, [f"{component.id}: source file not found for static harvest"], "unknown"
     tree = asts[path]
-    if cls is None:
-        return None, None, {}, [f"{component.id}: class {class_name!r} not found in {path.name}"], "unknown"
+    if cls is None and entry is None:
+        return None, None, {}, [f"{component.id}: entry point not resolvable in {path.name}"], "unknown"
 
     # A validator letter also identifies a per-agent-route invocation path, not just the output TypedDict.
-    letter = _find_validator_letter(cls)
-
-    entry = _find_entry_method(cls)
+    letter = _find_validator_letter(cls)  # None-tolerant for function entry
     invocation: InvocationContract | None = None
     input_kind = "unknown"
     if entry is not None:
@@ -806,7 +861,7 @@ def harvest_component_contract(
             citations=[_rel_cite(path, entry.lineno, files_root)],
         )
     else:
-        notes.append(f"{component.id}: no run/run_async/__call__ method found")
+        notes.append(f"{component.id}: no entry function/method found")
 
     # Output contract: validator letter -> Section{letter} TypedDict; else SCHEMA_STR-as-JSON.
     json_schema: dict | None = None
@@ -974,6 +1029,10 @@ def harvest_contracts(
         if specs:
             contracts[agent.id].upstream_context_specs = specs
 
+    # Third pass: archetype MUST run after upstream_context_specs (pass 2) — it reads that field.
+    for contract in contracts.values():
+        contract.archetype = _archetype_for(contract)
+
     return contracts
 
 
@@ -982,10 +1041,7 @@ def _detect_query_planning_subcall(
     conventions: ContractConventions | None = None,
 ) -> bool:
     """True if the entry method calls a module-level plan_queries-style helper (D/J/F's query-planning archetype)."""
-    _, _, cls = _resolve_component_class(component, asts)
-    if cls is None:
-        return False
-    entry = _find_entry_method(cls)
+    _, _cls, entry = _resolve_entry(component, asts)
     if entry is None:
         return False
     symbol = (conventions or ContractConventions()).plan_queries_symbol
@@ -1224,13 +1280,10 @@ def harvest_field_downstream_consumers(
         component = components_by_id.get(head_id)
         if component is None:
             continue
-        path, _, cls = _resolve_component_class(component, asts)
-        if path is None or cls is None:
+        path, _cls, entry = _resolve_entry(component, asts)
+        if path is None or entry is None:
             continue
         tree = asts[path]
-        entry = _find_entry_method(cls)
-        if entry is None:
-            continue
         fan_in_param = _seed_fan_in_param(entry)
         if fan_in_param is None:
             continue  # not a single-fan-in-param agent; out of scope for this harvest

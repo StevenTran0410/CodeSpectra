@@ -966,11 +966,9 @@ def reconcile(
             contract.needs_human.extend(conflict_notes)
             post_notes.extend(conflict_notes)
 
-        # Every agent _archetype_for can classify gets a synthetic_agent_io gate; eval_enabled only gates fulfillment, not gate existence.
+        # Every agent the archetype classifier can label gets a synthetic_agent_io gate; eval_enabled only gates fulfillment, not gate existence.
         if contract is not None:
-            from agent_eval_harness.datasets.fulfillment import _archetype_for
-
-            archetype = _archetype_for(contract)
+            archetype = contract.archetype  # set at Stage 2 by harvest_contracts
             if archetype != "unimplemented":
                 agent_gates.append(
                     EvaluationGate(

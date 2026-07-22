@@ -1086,6 +1086,7 @@ declare global {
     role_source?: string | null
     model: string | null
     entry_point: string | null
+    entry_kind?: string | null
     file?: string
     constraints: Array<{ name: string; value: any; source: string }>
     upstream: string[]
@@ -1094,6 +1095,7 @@ declare global {
 
   export interface AEHSystemMap {
     target_system_id: string
+    framework?: string | null
     discrepancies: string[]
     components: AEHSystemMapComponent[]
   }
@@ -1209,7 +1211,7 @@ declare global {
     cluster_files: string[]
     hub_paths: string[]
     wiring_block: {
-      nodes: Array<{ alias: string; class_name: string; source_hint_file: string }>
+      nodes: Array<{ alias: string; callee_name: string; source_hint_file: string; entry_kind: string; owner_class: string | null }>
       edges: Array<{ src: string; dst: string }>
       framework: string
       source: 'static' | 'llm_fallback'

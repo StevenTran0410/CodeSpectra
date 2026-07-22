@@ -16,7 +16,8 @@ from pathlib import Path
 import pytest
 
 from agent_eval_harness.datasets import fulfillment
-from agent_eval_harness.datasets.fulfillment import _archetype_for, _derive_config
+from agent_eval_harness.datasets.fulfillment import _derive_config
+from agent_eval_harness.mapping.builder.contract_harvest import _archetype_for
 from agent_eval_harness.datasets.generators import synthetic_agent_io
 from agent_eval_harness.llm.client import LLMResponse
 from agent_eval_harness.llm.fake_client import FakeLLMClient
@@ -35,21 +36,14 @@ _ELIGIBLE = {
         "guard_rule", "guard_llm", "planner", "worker",
         "case_law_search_tool", "decoy_tool", "judge", "writer",
     },
-    "linear_rag": {"writer"},
+    # CS-311 Slice 3: function-entry harvest now resolves `pipeline:run_retrieve` (a plain function),
+    # so `retriever` harvests real kwargs and becomes eligible — this is the dogfood proof of F5.
+    "linear_rag": {"writer", "retriever"},
 }
 # Exclusion reasons for agents NOT in _ELIGIBLE — every one must be "unimplemented" and the
 # reason must be "no harvestable input at all", never a leftover "no RetrievalService" guess.
 _EXCLUDED_REASONS = {
-    "linear_rag": {
-        "retriever": (
-            "entry_point is a plain function (pipeline:run_retrieve), not a class — contract "
-            "harvest only resolves class-based entry points (multi-framework function-entry "
-            "harvesting is an explicit roadmap item, out of CS-303 scope). Zero harvestable "
-            "kwargs AND no retrieval signal of its own (it IS the retrieval source, not a "
-            "consumer of one) => genuinely no usable input, the narrowed Slice 2a gate's own "
-            "definition of 'unimplemented'."
-        ),
-    },
+    "linear_rag": {},
 }
 
 

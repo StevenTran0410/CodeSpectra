@@ -4,13 +4,13 @@ import textwrap
 import pytest
 
 from agent_eval_harness.datasets.fulfillment import (
-    _archetype_for,
     _derive_config,
     _qa_testset_backend,
     _TOPO_ORDER,
     export_dataset,
     fulfill_plan,
 )
+from agent_eval_harness.mapping.builder.contract_harvest import _archetype_for
 from agent_eval_harness.datasets.types import DatasetCase
 from agent_eval_harness.llm.client import LLMResponse
 from agent_eval_harness.llm.fake_client import FakeLLMClient
@@ -374,6 +374,7 @@ def _write_plan_report(map_path, *, agent_id: str, eval_enabled: bool, with_cont
             agent_id=agent_id,
             output=OutputContract(json_schema=_SYNTH_SCHEMA),
             field_downstream_consumers={"A": ["confidence"]},
+            archetype="fan_in_judge",  # harvest_contracts populates this at Stage 2 (CS-311 relocate)
         )
     report = EvaluationPlanReport(
         target_system_id="t",
@@ -399,7 +400,8 @@ def test_archetype_for_unimplemented_when_no_field_downstream_consumers():
 
 
 def _contract_with_kwargs(
-    agent_id: str, kwarg_names: list[str], *, query_planning: bool = False
+    agent_id: str, kwarg_names: list[str], *, query_planning: bool = False,
+    upstream: list[str] | None = None,
 ) -> EvaluationContract:
     return EvaluationContract(
         agent_id=agent_id,
@@ -409,6 +411,8 @@ def _contract_with_kwargs(
         ),
         query_planning_subcall=query_planning,
         has_retrieval_signal=True,  # signal set by harvest; required for non-unimplemented archetypes
+        # rag_upstream is now decided by harvested upstream_context_specs, not a kwarg-name blocklist.
+        upstream_context_specs=[{"name": n, "description": ""} for n in (upstream or [])],
     )
 
 
@@ -454,12 +458,13 @@ def test_archetype_for_rag_mem_ctx_matches_project_identity():
 
 
 def test_archetype_for_rag_upstream_matches_violations_and_onboarding():
-    # E (violations): static_convention/static_risk/conventions_output are upstream signals
+    # E (violations): conventions_output is the upstream agent-output signal (harvest pass 2).
     assert _archetype_for(
         _contract_with_kwargs(
             "violations",
             ["provider_id", "model_id", "snapshot_id", "static_convention", "static_risk",
              "conventions_output", "profile"],
+            upstream=["conventions_output"],
         )
     ) == "rag_upstream"
     # H (onboarding): important_files_output
@@ -467,6 +472,7 @@ def test_archetype_for_rag_upstream_matches_violations_and_onboarding():
         _contract_with_kwargs(
             "onboarding",
             ["provider_id", "model_id", "snapshot_id", "important_files_output", "profile"],
+            upstream=["important_files_output"],
         )
     ) == "rag_upstream"
 
@@ -518,6 +524,7 @@ async def test_derive_config_synthetic_agent_io_returns_config_when_enabled_and_
     contract = EvaluationContract(
         agent_id="auditor", output=OutputContract(json_schema=_SYNTH_SCHEMA),
         field_downstream_consumers={"A": ["confidence"]},
+        archetype="fan_in_judge",  # harvest_contracts populates this at Stage 2 (CS-311 relocate)
     )
     entries = [SuiteEntry(id="e", component="auditor", agent_id="auditor", metric="schema_valid", metric_class="assertion")]
 

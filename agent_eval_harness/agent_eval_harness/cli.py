@@ -431,6 +431,7 @@ async def _map_command(args: argparse.Namespace) -> int:
 
     import yaml
 
+    from agent_eval_harness.discovery.wiring import detect_wiring_block_static
     from agent_eval_harness.mapping.builder.pipeline import SystemMapBuilder
 
     config = AEHConfig.load()
@@ -439,7 +440,20 @@ async def _map_command(args: argparse.Namespace) -> int:
     target_path = Path(args.target)
     docs_path = Path(args.docs_path) if args.docs_path else None
 
-    builder = SystemMapBuilder(llm_client, confidence_threshold=args.confidence_threshold)
+    # CLI/dir-mode has no Stage 1; self-detect the framework so non-Haystack targets get the right scanner.
+    scan_root = target_path if target_path.is_dir() else target_path.parent
+    file_contents: dict[str, str] = {}
+    for p in scan_root.glob("**/*.py"):
+        try:
+            file_contents[str(p)] = p.read_text(encoding="utf-8")
+        except OSError:
+            continue
+    detected = detect_wiring_block_static(file_contents)
+    framework = detected.framework if detected else None
+
+    builder = SystemMapBuilder(
+        llm_client, confidence_threshold=args.confidence_threshold, framework=framework
+    )
     system_map, summary = await builder.build(target_path, docs_path)
 
     output_path = Path(args.output_path) if args.output_path else target_path / "system_map.yaml"

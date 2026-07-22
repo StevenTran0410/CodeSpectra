@@ -25,7 +25,7 @@ pipeline.connect("prompt_builder.prompt", "llm.prompt")
     assert "prompt_builder" in aliases
     assert "llm" in aliases
     
-    classes = {n.class_name for n in wiring.nodes}
+    classes = {n.callee_name for n in wiring.nodes}
     assert "PromptBuilder" in classes
     assert "OpenAIGenerator" in classes
     
@@ -54,9 +54,9 @@ pipeline.connect("conventions.output", "risk.input")
     assert wiring is not None
 
     by_alias = {n.alias: n for n in wiring.nodes}
-    assert by_alias["conventions"].class_name == "ConventionsAgent"
+    assert by_alias["conventions"].callee_name == "ConventionsAgent"
     assert by_alias["conventions"].source_hint_file == "backend/domain/analysis/agents/agent_conventions.py"
-    assert by_alias["risk"].class_name == "RiskAgent"
+    assert by_alias["risk"].callee_name == "RiskAgent"
     assert by_alias["risk"].source_hint_file == "backend/domain/analysis/agents/agent_risk.py"
 
     # The two components must resolve to DIFFERENT files (regression: both used to collapse onto the orchestrator file).
@@ -92,9 +92,9 @@ class Pipeline:
     assert wiring is not None
 
     by_alias = {n.alias: n for n in wiring.nodes}
-    assert by_alias["conventions"].class_name == "ConventionsAgent"
+    assert by_alias["conventions"].callee_name == "ConventionsAgent"
     assert by_alias["conventions"].source_hint_file == "backend/domain/analysis/agents/agent_conventions.py"
-    assert by_alias["risk"].class_name == "RiskAgent"
+    assert by_alias["risk"].callee_name == "RiskAgent"
     assert by_alias["risk"].source_hint_file == "backend/domain/analysis/agents/agent_risk.py"
     assert by_alias["conventions"].source_hint_file != by_alias["risk"].source_hint_file
 
@@ -108,7 +108,7 @@ pipeline.add_component("writer", _SectionAgentComponent(agent=UnknownAgent()))
     wiring = _detect_haystack(file_contents)
     assert wiring is not None
     node = wiring.nodes[0]
-    assert node.class_name == "UnknownAgent"
+    assert node.callee_name == "UnknownAgent"
     assert node.source_hint_file == "main.py"
 
 
@@ -121,7 +121,7 @@ pipeline.add_component("retriever", RetrieverComponent(_load_corpus()))
     wiring = _detect_haystack(file_contents)
     assert wiring is not None
     node = wiring.nodes[0]
-    assert node.class_name == "RetrieverComponent"
+    assert node.callee_name == "RetrieverComponent"
     assert node.source_hint_file == "pipeline.py"
 
 

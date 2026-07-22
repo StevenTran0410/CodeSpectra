@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import pytest
 
-from agent_eval_harness.datasets.fulfillment import _archetype_for
 from agent_eval_harness.datasets.generator_utils import config_kwarg_names_from_case_binding
+from agent_eval_harness.mapping.builder.contract_harvest import _archetype_for
 from agent_eval_harness.planning.contract import EvaluationContract, InvocationContract, KwargSpec
 
 _CONFIG_KWARGS = frozenset({"provider_id", "model_id"})
@@ -67,7 +67,9 @@ def _builder_field_keys(shape_key: str, archetype: str) -> frozenset[str]:
     raise AssertionError(f"no builder-field mapping for archetype {archetype!r}")
 
 
-def _contract_for_shape(agent_id: str, archetype: str, kwarg_names: frozenset[str]) -> EvaluationContract:
+def _contract_for_shape(
+    agent_id: str, archetype: str, kwarg_names: frozenset[str], upstream: set[str] | None = None
+) -> EvaluationContract:
     kwargs = [KwargSpec(name=n, annotation="str") for n in sorted(kwarg_names)]
     case_binding = {
         n: (f"config:{n}" if n in _CONFIG_KWARGS else f"case:$.input.{n}")
@@ -80,6 +82,8 @@ def _contract_for_shape(agent_id: str, archetype: str, kwarg_names: frozenset[st
         ),
         has_retrieval_signal=True,
         query_planning_subcall=archetype.startswith("rag_query_planning"),
+        # Mirror harvest_contracts pass 2 — the archetype classifier now reads upstream_context_specs.
+        upstream_context_specs=[{"name": n, "description": ""} for n in sorted(upstream or set())],
     )
 
 
@@ -87,7 +91,9 @@ def _contract_for_shape(agent_id: str, archetype: str, kwarg_names: frozenset[st
 def test_codespectra_shape_archetype_and_generic_field_keys(shape_key):
     archetype, agent_id = shape_key.split(":", 1)
     kwarg_names = _KNOWN_SHAPE_KWARG_SETS[shape_key]
-    contract = _contract_for_shape(agent_id, archetype, kwarg_names)
+    contract = _contract_for_shape(
+        agent_id, archetype, kwarg_names, _UPSTREAM_KWARGS_BY_SHAPE.get(shape_key)
+    )
 
     # (1) archetype classification snapshot — must stay stable.
     assert _archetype_for(contract) == archetype

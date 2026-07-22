@@ -25,11 +25,15 @@ _SNIPPET_LINE_COUNT = 30  # first N lines of a class/function body kept as its s
 class FrameworkScanner(Protocol):
     """Interface for framework-specific component scanners."""
 
+    framework: str
+
     def scan(self, source_files: list[Path]) -> list[CandidateComponent]: ...
 
 
 class HaystackScanner:
     """Scans a Haystack-based target for component candidates."""
+
+    framework = "haystack"
 
     def scan(self, source_files: list[Path]) -> list[CandidateComponent]:
         """Scan source files and return deduplicated, sorted component candidates."""
@@ -346,6 +350,7 @@ class HaystackScanner:
                 is_tool=True,
                 registered_name=registered_name,
                 owner_class_name=owner_class_name,
+                entry_kind="function",
                 source_snippet=source_snippet,
             )
             candidates.append(candidate)
@@ -400,6 +405,8 @@ class HaystackScanner:
                             haystack_name=candidate.haystack_name,
                             is_tool=candidate.is_tool,
                             registered_name=candidate.registered_name,
+                            owner_class_name=candidate.owner_class_name,
+                            entry_kind=candidate.entry_kind,
                             source_snippet=candidate.source_snippet,
                             model_hints=candidate.model_hints,
                             manual_span_hints=hints_for_value,
@@ -423,3 +430,16 @@ class HaystackScanner:
         deduped.sort(key=lambda c: (str(c.file), c.line))
 
         return deduped
+
+
+# Tuple of classes (not a dict) so the lookup key IS the class's own `framework` attr — no
+# second source of truth to drift. CS-312/313 append their scanner class here.
+_REGISTERED_SCANNERS: tuple[type[FrameworkScanner], ...] = (HaystackScanner,)
+
+
+def get_scanner(framework: str | None) -> FrameworkScanner:
+    """Return the scanner whose `framework` matches; falls back to HaystackScanner (never raises)."""
+    for cls in _REGISTERED_SCANNERS:
+        if cls.framework == framework:
+            return cls()
+    return HaystackScanner()

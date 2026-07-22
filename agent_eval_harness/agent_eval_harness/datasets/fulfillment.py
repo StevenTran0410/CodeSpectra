@@ -10,10 +10,7 @@ from typing import Any
 import yaml
 
 from agent_eval_harness.config import DEFAULT_CASES_PER_AGENT
-from agent_eval_harness.datasets.generator_utils import (
-    config_kwarg_names_from_case_binding,
-    seed_cases_to_dataset_cases,
-)
+from agent_eval_harness.datasets.generator_utils import seed_cases_to_dataset_cases
 from agent_eval_harness.datasets.registry import get_generator
 from agent_eval_harness.datasets.types import TRUSTED_PROVENANCE
 from agent_eval_harness.datasets.versioning import next_version
@@ -101,35 +98,6 @@ def _qa_testset_backend(group_entries: list[SuiteEntry]) -> str:
     return "deepeval"
 
 
-_NON_UPSTREAM_KWARGS = frozenset({
-    "provider_id", "model_id", "snapshot_id", "profile", "repo_name", "graph_summary",
-})
-
-
-def _archetype_for(contract: EvaluationContract) -> str:
-    """Deterministic archetype classifier from harvested contract signals only — never a guess."""
-    if contract.field_downstream_consumers:
-        return "fan_in_judge"
-    kwarg_names = {k.name for k in contract.invocation.kwargs} if contract.invocation else set()
-    if not contract.has_retrieval_signal:
-        # A non-retrieval agent with a real input contract still gets a dataset — "unimplemented" only when there's truly no usable input.
-        case_binding = contract.invocation.case_binding if contract.invocation else {}
-        config_names = config_kwarg_names_from_case_binding(case_binding)
-        if not (kwarg_names - config_names):
-            return "unimplemented"
-    has_query_planning = contract.query_planning_subcall
-    has_folder_tree = "folder_tree" in kwarg_names
-    if "mem_ctx" in kwarg_names:
-        return "rag_mem_ctx"
-    if has_folder_tree:
-        return "rag_query_planning_mem_ctx" if has_query_planning else "rag_mem_ctx_participant"
-    if has_query_planning:
-        return "rag_query_planning"
-    if kwarg_names - _NON_UPSTREAM_KWARGS:
-        return "rag_upstream"
-    return "rag_single_shot"
-
-
 async def _derive_config(
     kind: str,
     dataset_id: str,
@@ -171,7 +139,7 @@ async def _derive_config(
             base_profile["purpose"] = resolved_purpose
         return {
             "dataset_name": dataset_id, "agent_id": agent_id,
-            "archetype": _archetype_for(contract),
+            "archetype": contract.archetype,
             "contract": contract.model_dump(),
             "profile": base_profile,
             "failure_modes": knowledge.get("failure_modes") or [],

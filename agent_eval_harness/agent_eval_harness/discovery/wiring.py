@@ -25,11 +25,34 @@ def strip_json_code_fence(content: str) -> str:
     return content
 
 
+def wiring_identity(owner: str | None, callee: str) -> str:
+    """Topology/entry key: `Owner.callee` for a bound method, bare `callee` for a class/function."""
+    return f"{owner}.{callee}" if owner else callee
+
+
+def parse_entry_suffix(suffix: str) -> tuple[str | None, str]:
+    """Inverse of wiring_identity: `Owner.method` -> (Owner, method); bare -> (None, bare)."""
+    if "." in suffix:
+        owner, _, name = suffix.partition(".")
+        return owner, name
+    return None, suffix
+
+
+def enclosing_class_name(target: ast.AST, tree: ast.Module) -> str | None:
+    """Name of the ClassDef whose subtree contains `target`, or None — a parent-pointer pass without mutating ast. Helper for CS-312; not wired here."""
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and any(sub is target for sub in ast.walk(node)):
+            return node.name
+    return None
+
+
 @dataclass
 class WiringNode:
     alias: str
-    class_name: str
+    callee_name: str
     source_hint_file: str
+    entry_kind: str = "class"  # "class" | "function" | "bound_method"
+    owner_class: str | None = None
 
 
 @dataclass
@@ -52,6 +75,15 @@ class WiringBlock:
             "framework": self.framework,
             "source": self.source,
         }
+
+    @staticmethod
+    def from_dict(data: dict) -> "WiringBlock":
+        return WiringBlock(
+            nodes=[WiringNode(**n) for n in data.get("nodes", [])],
+            edges=[WiringEdge(**e) for e in data.get("edges", [])],
+            framework=data.get("framework", "llm_inferred"),
+            source=data.get("source", "static"),
+        )
 
 
 def _iter_parsed_files(
@@ -200,7 +232,7 @@ def _detect_haystack(
                         if alias:
                             nodes[alias] = WiringNode(
                                 alias=alias,
-                                class_name=class_name,
+                                callee_name=class_name,
                                 source_hint_file=source_hint_file
                             )
 
@@ -257,7 +289,7 @@ def _detect_langgraph(
                         if alias:
                             nodes[alias] = WiringNode(
                                 alias=alias,
-                                class_name=class_name,
+                                callee_name=class_name,
                                 source_hint_file=source_hint_file
                             )
 
@@ -336,13 +368,13 @@ def _detect_langchain_lcel(
 
                         unique_alias = alias
                         suffix = 1
-                        while unique_alias in nodes and nodes[unique_alias].class_name != class_name:
+                        while unique_alias in nodes and nodes[unique_alias].callee_name != class_name:
                             unique_alias = f"{alias}_{suffix}"
                             suffix += 1
 
                         node_obj = WiringNode(
                             alias=unique_alias,
-                            class_name=class_name,
+                            callee_name=class_name,
                             source_hint_file=file
                         )
                         nodes[unique_alias] = node_obj
@@ -427,7 +459,7 @@ async def _detect_via_llm(file_contents: dict[str, str], llm_client: Any) -> Wir
         for n in nodes_raw:
             nodes.append(WiringNode(
                 alias=n.get("alias") or "",
-                class_name=n.get("class_name") or "",
+                callee_name=n.get("class_name") or "",
                 source_hint_file=n.get("source_hint_file") or "",
             ))
         edges = []

@@ -9,9 +9,11 @@ from pathlib import Path
 from agent_eval_harness.llm.client import LLMClient
 from agent_eval_harness.mapping.system_map import Component, SpanMatchBlock, SystemMap
 
+from agent_eval_harness.discovery.wiring import WiringBlock, wiring_identity
+
 from .constraints import mine_constraints, mine_constraints_llm_phase
 from .roles import ROLE_CONFIDENCE_THRESHOLD
-from .scanners import FrameworkScanner, HaystackScanner
+from .scanners import FrameworkScanner, get_scanner
 from .topology import extract_topology
 from .types import CandidateComponent, TopologyEdges, parse_python_source
 
@@ -22,11 +24,12 @@ class SystemMapBuilder:
     """Build a system_map.yaml from a target's source code."""
 
     def __init__(
-        self, llm_client: LLMClient, *, confidence_threshold: float = ROLE_CONFIDENCE_THRESHOLD
+        self, llm_client: LLMClient, *, confidence_threshold: float = ROLE_CONFIDENCE_THRESHOLD,
+        framework: str | None = None,
     ) -> None:
         self._llm_client = llm_client
         self._threshold = confidence_threshold
-        self._scanner: FrameworkScanner = HaystackScanner()
+        self._scanner: FrameworkScanner = get_scanner(framework)
 
     async def build(
         self, target_path: Path, docs_path: Path | None = None
@@ -53,12 +56,13 @@ class SystemMapBuilder:
         )
 
     async def build_from_files(
-        self, files: list[Path], package_root: Path, target_system_id: str, docs_path: Path | None = None
+        self, files: list[Path], package_root: Path, target_system_id: str,
+        docs_path: Path | None = None, wiring_block: WiringBlock | None = None,
     ) -> tuple[SystemMap, str]:
         """Same as build(), but the caller supplies the exact file set directly instead of a directory glob."""
         all_candidates = self._scanner.scan(files)
         return await self._build_from_candidates(
-            all_candidates, files, package_root, target_system_id, docs_path
+            all_candidates, files, package_root, target_system_id, docs_path, wiring_block
         )
 
     async def _build_from_candidates(
@@ -68,12 +72,13 @@ class SystemMapBuilder:
         package_root: Path,
         target_system_id: str,
         docs_path: Path | None,
+        wiring_block: WiringBlock | None = None,
     ) -> tuple[SystemMap, str]:
         """Passes 2-6: structural mining through system map assembly, shared by build() and
         build_from_files(). Role classification moved to Stage 2.5 enrichment — every component
         leaves Stage 2 with role='unknown'; is_tool/constructor_fanout are persisted as data for
         Stage 2.5's hard gate."""
-        topology_map = extract_topology(files, candidates)
+        topology_map = extract_topology(files, candidates, wiring_block=wiring_block)
         constraint_map = mine_constraints(files, candidates, package_root)
         constraint_map = await mine_constraints_llm_phase(
             candidates, self._llm_client, constraint_map
@@ -85,6 +90,7 @@ class SystemMapBuilder:
         system_map = SystemMap.model_validate({
             "target_system_id": target_system_id,
             "components": [c.model_dump() for c in components],
+            "framework": self._scanner.framework,
             "discrepancies": discrepancies,
         })
         summary = self._build_summary(system_map)
@@ -167,7 +173,12 @@ class SystemMapBuilder:
             rel_path = candidate.file
 
         module_path = rel_path.with_suffix("").as_posix().replace("/", ".")
-        return f"{module_path}:{candidate.class_name}"
+        suffix = (
+            wiring_identity(candidate.owner_class_name, candidate.class_name)
+            if candidate.entry_kind == "bound_method"
+            else candidate.class_name
+        )
+        return f"{module_path}:{suffix}"
 
     def _generate_span_match(
         self, candidate: CandidateComponent, all_candidates: list[CandidateComponent]
@@ -264,6 +275,7 @@ class SystemMapBuilder:
                 constructor_downstream=list(topology.constructor_downstream),
                 model=model,
                 entry_point=entry_point,
+                entry_kind=candidate.entry_kind,
                 file=rel_file,
                 span_match=span_match,
                 constraints=constraints,

@@ -72,3 +72,5 @@ class EvaluationContract(BaseModel):
     has_retrieval_signal: bool = False
     # Harvested upstream output specs — [{name, description}, ...] — for generic dataset builders (D3).
     upstream_context_specs: list[dict] = Field(default_factory=list)
+    # Deterministic archetype computed at Stage 2 after upstream_context_specs is filled (CS-311 relocate).
+    archetype: str = ""

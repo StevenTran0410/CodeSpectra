@@ -1000,11 +1000,17 @@ async def run_expansion_background(
         # accepted entries are dicts with file, role_hint, key_symbols, follow fields
         abs_files = [local_path / (p["file"] if isinstance(p, dict) else p) for p in res["accepted"]]
 
-        builder = SystemMapBuilder(llm_client)
+        from agent_eval_harness.discovery.wiring import WiringBlock
+
+        wb_dict = candidate.get("wiring_block")
+        detected_framework = wb_dict.get("framework") if wb_dict else None
+
+        builder = SystemMapBuilder(llm_client, framework=detected_framework)
         system_map, _summary = await builder.build_from_files(
             abs_files,
             package_root=local_path,
             target_system_id=candidate["name"],
+            wiring_block=WiringBlock.from_dict(wb_dict) if wb_dict else None,
         )
 
         data_dir = os.getenv("AEH_DATA_DIR", ".")

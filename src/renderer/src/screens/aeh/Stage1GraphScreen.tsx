@@ -132,7 +132,7 @@ function WiringBlockPanel({
                   <div className="min-w-0">
                     <div className="font-semibold text-slate-200 truncate">{node.alias}</div>
                     <div className="font-mono text-[9px] text-indigo-400 truncate mt-0.5">
-                      {node.class_name || 'Component'}
+                      {node.callee_name || 'Component'}
                     </div>
                   </div>
                   <div className="text-[9px] text-slate-500 font-mono truncate max-w-[140px]" title={node.source_hint_file}>

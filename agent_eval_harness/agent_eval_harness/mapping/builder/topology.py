@@ -5,6 +5,7 @@ import ast
 import logging
 from pathlib import Path
 
+from agent_eval_harness.discovery.wiring import WiringBlock, wiring_identity
 from agent_eval_harness.mapping.builder.types import (
     CandidateComponent,
     TopologyEdges,
@@ -17,16 +18,21 @@ logger = logging.getLogger("agent_eval_harness.mapping.builder.topology")
 def extract_topology(
     source_files: list[Path],
     candidates: list[CandidateComponent],
+    wiring_block: WiringBlock | None = None,
 ) -> dict[str, TopologyEdges]:
-    """Extract topology edges from source code."""
+    """Extract topology edges from source code. A wiring_block persisted at Stage 1 is reused as-is;
+    otherwise it is re-detected statically (CLI/dir-mode has no Stage 1 to supply one)."""
     connect_edges: dict[str, set[str]] = {}
     constructor_edges: dict[str, set[str]] = {}
 
     class_to_candidate_ids: dict[str, list[str]] = {}
     for candidate in candidates:
-        if candidate.class_name not in class_to_candidate_ids:
-            class_to_candidate_ids[candidate.class_name] = []
-        class_to_candidate_ids[candidate.class_name].append(candidate.candidate_id)
+        key = (
+            wiring_identity(candidate.owner_class_name, candidate.class_name)
+            if candidate.entry_kind == "bound_method"
+            else candidate.class_name
+        )
+        class_to_candidate_ids.setdefault(key, []).append(candidate.candidate_id)
 
     # Cache ASTs to avoid re-parsing files multiple times across three passes
     asts: dict[Path, ast.Module] = {}
@@ -45,13 +51,18 @@ def extract_topology(
             logger.warning("skipping unreadable file %s: %s", file, exc)
             continue
 
-    from agent_eval_harness.discovery.wiring import detect_wiring_block_static
-    wiring_block = detect_wiring_block_static(file_contents)
+    if wiring_block is None:
+        from agent_eval_harness.discovery.wiring import detect_wiring_block_static
+        wiring_block = detect_wiring_block_static(file_contents)
 
     add_component_names: dict[str, str] = {}
     if wiring_block:
         for w_node in wiring_block.nodes:
-            add_component_names[w_node.alias] = w_node.class_name
+            add_component_names[w_node.alias] = (
+                wiring_identity(w_node.owner_class, w_node.callee_name)
+                if w_node.entry_kind == "bound_method"
+                else w_node.callee_name
+            )
 
         for w_edge in wiring_block.edges:
             source_class_name = add_component_names.get(w_edge.src)
