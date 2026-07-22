@@ -172,3 +172,44 @@ def test_ac2_legacy_override_dict_removed():
     proved the generic/harvested path (CS-303 Slice 3b) — import-absence, not a spy."""
     assert not hasattr(synthetic_agent_io, "_LEGACY_OVERRIDE")
     assert not hasattr(fulfillment, "_LEGACY_OVERRIDE")
+
+
+async def test_langgraph_agent_scanner_to_case():
+    """Scanner-driven map -> contract -> case for langgraph_agent, WITHOUT a hand-written
+    system_map.yaml (unlike _harvest above) — proves LangGraphScanner + topology + harvest are
+    self-sufficient for a bound-method LangGraph target. Calls _build_from_candidates directly
+    (Design #7), so it does not depend on the app's framework dispatch being wired."""
+    from agent_eval_harness.mapping.builder.pipeline import SystemMapBuilder
+    from agent_eval_harness.mapping.builder.scanners import LangGraphScanner
+
+    files = sorted((_TARGETS_DIR / "langgraph_agent").glob("*.py"))
+    candidates = LangGraphScanner().scan(files)
+    assert len(candidates) == 4, f"expected 4 candidates, got {[c.class_name for c in candidates]}"
+
+    builder = SystemMapBuilder(FakeLLMClient(LLMResponse(content="[]", model="fake")))
+    system_map, _summary = await builder._build_from_candidates(
+        candidates, files, _ROOT, "langgraph_agent", None
+    )
+
+    plan_step = next(c for c in system_map.components if "plan_step" in c.entry_point)
+    conditional_dests = {
+        c.id for c in system_map.components
+        if "investigate" in c.entry_point or "synthesize" in c.entry_point
+    }
+    assert conditional_dests <= set(plan_step.downstream), (
+        "add_conditional_edges destinations must appear in downstream"
+    )
+
+    agent_flow_map = _build_agent_flow_map(system_map)
+    contracts = harvest_contracts(system_map, agent_flow_map, files, _ROOT)
+    assert contracts, "harvest empty — F5 (CS-311) gate not open for bound-method/function entry"
+
+    produced_case = False
+    for agent_id, contract in contracts.items():
+        if _archetype_for(contract) == "unimplemented":
+            continue
+        _archetype, cases, _client = await _run_agent(agent_id, contract)
+        if cases:
+            produced_case = True
+            assert cases[0].input.get("shape") == "generic"
+    assert produced_case, "0 agents produced a case — scanner/harvest not rich enough for LangGraph"

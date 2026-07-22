@@ -39,11 +39,9 @@ def parse_entry_suffix(suffix: str) -> tuple[str | None, str]:
 
 
 def enclosing_class_name(target: ast.AST, tree: ast.Module) -> str | None:
-    """Name of the ClassDef whose subtree contains `target`, or None — a parent-pointer pass without mutating ast. Helper for CS-312; not wired here."""
-    for node in tree.body:
-        if isinstance(node, ast.ClassDef) and any(sub is target for sub in ast.walk(node)):
-            return node.name
-    return None
+    """Name of the ClassDef whose subtree contains `target`, or None. Thin lookup over
+    `_build_enclosing_class_map` so there is one enclosing-class traversal, not two."""
+    return _build_enclosing_class_map(tree).get(id(target))
 
 
 @dataclass
@@ -207,6 +205,134 @@ def _resolve_component_class_and_file(
     return outer_name, file
 
 
+def _build_enclosing_class_map(tree: ast.AST) -> dict[int, str]:
+    """id(node) -> name of the innermost enclosing ClassDef, for every node inside a class body.
+    ast has no parent pointer, so this is one explicit ordered pass via ast.iter_child_nodes
+    (ast.walk loses nesting order). Lets a bare self.<method> reference recover its owner class."""
+    owner: dict[int, str] = {}
+
+    def _walk(node: ast.AST, current: str | None) -> None:
+        if isinstance(node, ast.ClassDef):
+            current = node.name
+        if current is not None:
+            owner[id(node)] = current
+        for child in ast.iter_child_nodes(node):
+            _walk(child, current)
+
+    _walk(tree, None)
+    return owner
+
+
+def _build_stategraph_var_names(tree: ast.AST) -> set[str]:
+    """Names (local `graph` or `self.<attr>` encoded as "self.<attr>") assigned from a StateGraph(...)
+    constructor. Receiver-guard for add_node/add_edge/add_conditional_edges: trust <name>.add_node(...)
+    only when <name> traces back to a StateGraph() construction, not any object with a same-named method."""
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.value, ast.Call)
+            and _call_func_name(node.value) == "StateGraph"
+        ):
+            target = node.targets[0]
+            if isinstance(target, ast.Name):
+                names.add(target.id)
+            elif (
+                isinstance(target, ast.Attribute)
+                and isinstance(target.value, ast.Name)
+                and target.value.id == "self"
+            ):
+                names.add(f"self.{target.attr}")
+    return names
+
+
+def _receiver_name(func_value: ast.expr) -> str | None:
+    """Receiver of a `<name>.method(...)` call in the same encoding as _build_stategraph_var_names
+    ("graph" or "self.<attr>"); None if it isn't a plain name or self-attribute."""
+    if isinstance(func_value, ast.Name):
+        return func_value.id
+    if (
+        isinstance(func_value, ast.Attribute)
+        and isinstance(func_value.value, ast.Name)
+        and func_value.value.id == "self"
+    ):
+        return f"self.{func_value.attr}"
+    return None
+
+
+def _imports_langgraph(tree: ast.AST) -> bool:
+    """True if the file imports anything from the langgraph package — a cheap guard for
+    create_react_agent/@task/@entrypoint, which have no receiver to track and names generic
+    enough (especially @task) to need an import gate."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module and node.module.split(".")[0] == "langgraph":
+            return True
+        if isinstance(node, ast.Import) and any(a.name.split(".")[0] == "langgraph" for a in node.names):
+            return True
+    return False
+
+
+def _decorator_effective_name(decorator: ast.expr) -> str | None:
+    """Callee name of a decorator whether bare (@task) or Call-wrapped (@entrypoint(checkpointer=...));
+    the Haystack decorator helper only unwraps Name/Attribute, not Call."""
+    if isinstance(decorator, ast.Call):
+        return _call_func_name(decorator)
+    if isinstance(decorator, ast.Name):
+        return decorator.id
+    if isinstance(decorator, ast.Attribute):
+        return decorator.attr
+    return None
+
+
+def _const_str_or_sentinel(node: ast.expr) -> str | None:
+    """_const_str plus the ast.Name sentinels START/END -> "__start__"/"__end__" (the string names
+    the Pregel runtime uses for the virtual start/end nodes)."""
+    s = _const_str(node)
+    if s is not None:
+        return s
+    if isinstance(node, ast.Name):
+        if node.id == "START":
+            return "__start__"
+        if node.id == "END":
+            return "__end__"
+    return None
+
+
+def _resolve_node_target(
+    arg1: ast.expr,
+    enclosing_class_map: dict[int, str],
+    self_attr_classes: dict[str, str],
+    known_class_names: set[str],
+    file: str,
+    file_contents: dict[str, str],
+    cache: dict[str, ast.AST | None] | None = None,
+) -> tuple[str, str, str | None]:
+    """Resolve add_node()'s second arg to (callee_name, entry_kind, owner_class). Single source of
+    truth shared by Stage-1 `_detect_langgraph` and Stage-2 `LangGraphScanner` so the bound-method
+    owner resolution can never drift between the two."""
+    # self.<method> — a bound method; recover its owner class from the enclosing-class map.
+    if (
+        isinstance(arg1, ast.Attribute)
+        and isinstance(arg1.value, ast.Name)
+        and arg1.value.id == "self"
+    ):
+        return arg1.attr, "bound_method", enclosing_class_map.get(id(arg1))
+    if isinstance(arg1, ast.Name):
+        if arg1.id in known_class_names:
+            return arg1.id, "class", None
+        return arg1.id, "function", None
+    if isinstance(arg1, ast.Attribute):
+        # Non-self attribute (e.g. mod.fn) — best effort, owner unknown.
+        return arg1.attr, "function", None
+    if isinstance(arg1, ast.Call):
+        callee, _resolved_file = _resolve_component_class_and_file(
+            arg1, file, self_attr_classes, file_contents, cache
+        )
+        return callee, "class", None
+    return "", "function", None
+
+
 def _detect_haystack(
     file_contents: dict[str, str], cache: dict[str, ast.AST | None] | None = None
 ) -> WiringBlock | None:
@@ -257,49 +383,126 @@ def _detect_haystack(
     return None
 
 
+def _langgraph_conditional_edges(node: ast.Call) -> list[WiringEdge]:
+    """Edges from an add_conditional_edges(src, router, {path: dst}) call: over-approximate to an
+    edge into every dict destination (router itself is not a node). List-form path_map and non-dict
+    forms yield nothing (clean degrade). Same deliberate over-approximation as the BitOr LCEL path."""
+    src = _const_str_or_sentinel(node.args[0]) if node.args else None
+    if not src:
+        return []
+    path_map = node.args[2] if len(node.args) >= 3 else next(
+        (kw.value for kw in node.keywords if kw.arg == "path_map"), None
+    )
+    if not isinstance(path_map, ast.Dict):
+        return []
+    out = []
+    for value in path_map.values:
+        dst = _const_str_or_sentinel(value)
+        if dst:
+            out.append(WiringEdge(src=src, dst=dst))
+    return out
+
+
+def _langgraph_react_agent(
+    tree: ast.AST, file: str, nodes: dict[str, WiringNode], edges: list[WiringEdge]
+) -> None:
+    """create_react_agent(...) call site -> one function-entry node named after the assigned var,
+    plus an edge to each literal tool in tools=[...]. Import-gated (no receiver to track)."""
+    if not _imports_langgraph(tree):
+        return
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and isinstance(node.value, ast.Call)
+            and _call_func_name(node.value) == "create_react_agent"
+        ):
+            var = node.targets[0].id
+            nodes[var] = WiringNode(
+                alias=var, callee_name="create_react_agent",
+                source_hint_file=file, entry_kind="function", owner_class=None,
+            )
+            tools = next((kw.value for kw in node.value.keywords if kw.arg == "tools"), None)
+            if isinstance(tools, ast.List):
+                for elt in tools.elts:
+                    tool = elt.id if isinstance(elt, ast.Name) else (
+                        elt.attr if isinstance(elt, ast.Attribute) else None
+                    )
+                    if tool:
+                        edges.append(WiringEdge(src=var, dst=tool))
+
+
+def _langgraph_functional_api(
+    tree: ast.AST, file: str, nodes: dict[str, WiringNode], edges: list[WiringEdge]
+) -> None:
+    """@task / @entrypoint functional API -> one function-entry node per decorated top-level def,
+    plus an edge from each entrypoint to every @task it calls. Import-gated (@task is generic)."""
+    if not _imports_langgraph(tree):
+        return
+    task_names: set[str] = set()
+    entrypoint_names: set[str] = set()
+    for node in getattr(tree, "body", []):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            names = {_decorator_effective_name(d) for d in node.decorator_list}
+            if "task" in names:
+                task_names.add(node.name)
+            if "entrypoint" in names:
+                entrypoint_names.add(node.name)
+    for name in task_names | entrypoint_names:
+        nodes[name] = WiringNode(
+            alias=name, callee_name=name, source_hint_file=file,
+            entry_kind="function", owner_class=None,
+        )
+    for node in getattr(tree, "body", []):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in entrypoint_names:
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Call) and _call_func_name(sub) in task_names:
+                    edges.append(WiringEdge(src=node.name, dst=_call_func_name(sub)))
+
+
 def _detect_langgraph(
     file_contents: dict[str, str], cache: dict[str, ast.AST | None] | None = None
 ) -> WiringBlock | None:
-    nodes = {}
-    edges = []
+    nodes: dict[str, WiringNode] = {}
+    edges: list[WiringEdge] = []
 
     for file, tree in _iter_parsed_files(file_contents, cache):
         self_attr_classes = _build_self_attr_classes(tree)
+        stategraph_names = _build_stategraph_var_names(tree)
+        enclosing_class_map = _build_enclosing_class_map(tree)
+        known_class_names = {n.name for n in ast.walk(tree) if isinstance(n, ast.ClassDef)}
 
         for node in ast.walk(tree):
-            if isinstance(node, ast.Call):
-                if isinstance(node.func, ast.Attribute) and node.func.attr == "add_node":
-                    if len(node.args) >= 2:
-                        arg0 = node.args[0]
-                        arg1 = node.args[1]
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+                continue
+            attr = node.func.attr
+            # Receiver-guard: only trust a call whose receiver traces to a StateGraph() construction.
+            if attr in ("add_node", "add_edge", "add_conditional_edges"):
+                if _receiver_name(node.func.value) not in stategraph_names:
+                    continue
+            if attr == "add_node" and len(node.args) >= 2:
+                alias = _const_str(node.args[0])
+                if not alias:
+                    continue
+                callee, entry_kind, owner = _resolve_node_target(
+                    node.args[1], enclosing_class_map, self_attr_classes,
+                    known_class_names, file, file_contents, cache,
+                )
+                nodes[alias] = WiringNode(
+                    alias=alias, callee_name=callee, source_hint_file=file,
+                    entry_kind=entry_kind, owner_class=owner,
+                )
+            elif attr == "add_edge" and len(node.args) >= 2:
+                src = _const_str_or_sentinel(node.args[0])
+                dst = _const_str_or_sentinel(node.args[1])
+                if src and dst:
+                    edges.append(WiringEdge(src=src, dst=dst))
+            elif attr == "add_conditional_edges":
+                edges.extend(_langgraph_conditional_edges(node))
 
-                        alias = _const_str(arg0)
-
-                        class_name = ""
-                        source_hint_file = file
-                        if isinstance(arg1, ast.Name):
-                            class_name = arg1.id
-                        elif isinstance(arg1, ast.Attribute):
-                            class_name = arg1.attr
-                        elif isinstance(arg1, ast.Call):
-                            class_name, source_hint_file = _resolve_component_class_and_file(
-                                arg1, file, self_attr_classes, file_contents, cache
-                            )
-
-                        if alias:
-                            nodes[alias] = WiringNode(
-                                alias=alias,
-                                callee_name=class_name,
-                                source_hint_file=source_hint_file
-                            )
-
-                elif isinstance(node.func, ast.Attribute) and node.func.attr == "add_edge":
-                    if len(node.args) >= 2:
-                        src = _const_str(node.args[0])
-                        dst = _const_str(node.args[1])
-
-                        if src and dst:
-                            edges.append(WiringEdge(src=src, dst=dst))
+        _langgraph_react_agent(tree, file, nodes, edges)
+        _langgraph_functional_api(tree, file, nodes, edges)
 
     if nodes or edges:
         return WiringBlock(nodes=list(nodes.values()), edges=edges, framework="langgraph", source="static")

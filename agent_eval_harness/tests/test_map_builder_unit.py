@@ -8,7 +8,7 @@ import pytest
 from agent_eval_harness.mapping.builder.constraints import mine_constraints
 from agent_eval_harness.mapping.builder.pipeline import SystemMapBuilder
 from agent_eval_harness.mapping.builder.prompts import ROLE_TAXONOMY
-from agent_eval_harness.mapping.builder.scanners import HaystackScanner
+from agent_eval_harness.mapping.builder.scanners import HaystackScanner, LangGraphScanner
 from agent_eval_harness.mapping.builder.topology import extract_topology
 
 
@@ -205,42 +205,101 @@ class TestHaystackScanner:
             assert cls is not None
             assert cls.__name__ == candidate.class_name
 
-    def test_langgraph_and_lcel_admission(self):
-        """Verify that LangGraph add_node and LangChain LCEL chain nodes are admitted as CandidateComponents."""
+    def test_lcel_admission(self):
+        """LangChain LCEL chain nodes are admitted by HaystackScanner's BitOr pass. (LangGraph
+        add_node moved to LangGraphScanner in CS-312 — see TestLangGraphScanner.)"""
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
-            
-            # File defining the classes and registering via LangGraph and LCEL
+
             file_a = tmp_path / "app.py"
             file_a.write_text(
-                "class MyAgent:\n"
-                "    pass\n"
-                "class MyTool:\n"
-                "    pass\n"
                 "class LCELStep1:\n"
                 "    pass\n"
                 "class LCELStep2:\n"
                 "    pass\n\n"
-                "builder.add_node('agent', MyAgent())\n"
-                "builder.add_node('tool', MyTool)\n"
                 "chain = LCELStep1() | LCELStep2()\n"
             )
 
             scanner = HaystackScanner()
-            files = [file_a]
-            candidates = scanner.scan(files)
+            candidates = scanner.scan([file_a])
 
             class_names = {c.class_name for c in candidates}
-            assert "MyAgent" in class_names
-            assert "MyTool" in class_names
             assert "LCELStep1" in class_names
             assert "LCELStep2" in class_names
 
             by_class = {c.class_name: c for c in candidates}
-            assert by_class["MyAgent"].haystack_name == "agent"
-            assert by_class["MyTool"].haystack_name == "tool"
             assert by_class["LCELStep1"].haystack_name == "LCELStep1"
             assert by_class["LCELStep2"].haystack_name == "LCELStep2"
+
+
+class TestLangGraphScanner:
+    def test_function_class_and_bound_method_admission(self):
+        """add_node resolves function / class / bound-method targets, keeping the owner class."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            file_a = tmp_path / "app.py"
+            file_a.write_text(
+                "from langgraph.graph import StateGraph\n\n"
+                "class MyAgent:\n    pass\n"
+                "class MyTool:\n    pass\n"
+                "def some_fn(state):\n    return state\n\n"
+                "class Orchestrator:\n"
+                "    def build(self):\n"
+                "        graph = StateGraph(dict)\n"
+                "        graph.add_node('agent', MyAgent())\n"
+                "        graph.add_node('tool', MyTool)\n"
+                "        graph.add_node('fn', some_fn)\n"
+                "        graph.add_node('m', self._m)\n"
+                "        return graph\n"
+                "    def _m(self, state):\n        return state\n"
+            )
+
+            candidates = LangGraphScanner().scan([file_a])
+            by_name = {c.class_name: c for c in candidates}
+
+            assert set(by_name) == {"MyAgent", "MyTool", "some_fn", "_m"}
+            assert by_name["MyAgent"].entry_kind == "class"
+            assert by_name["MyTool"].entry_kind == "class"
+            assert by_name["some_fn"].entry_kind == "function"
+            assert by_name["_m"].entry_kind == "bound_method"
+            assert by_name["_m"].owner_class_name == "Orchestrator"
+
+    def test_add_node_without_stategraph_construction_yields_zero_candidates(self):
+        """A plain object with an .add_node method (no StateGraph()) is not a LangGraph graph."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            file_a = tmp_path / "app.py"
+            file_a.write_text(
+                "class Foo:\n"
+                "    def add_node(self, a, b):\n        pass\n"
+                "f = Foo()\n"
+                "f.add_node('x', 'y')\n"
+            )
+            assert LangGraphScanner().scan([file_a]) == []
+
+    def test_langgraph_agent_fixture_admission(self, target_root: Path):
+        """Real fixture: 2 function nodes + 2 bound-method nodes with owner class."""
+        files = sorted((target_root / "langgraph_agent").glob("*.py"))
+        candidates = LangGraphScanner().scan(files)
+        by_name = {c.class_name: c for c in candidates}
+
+        assert set(by_name) == {"load_context", "plan_step", "_node_investigate", "_node_synthesize"}
+        assert by_name["load_context"].entry_kind == "function"
+        assert by_name["plan_step"].entry_kind == "function"
+        assert by_name["_node_investigate"].entry_kind == "bound_method"
+        assert by_name["_node_investigate"].owner_class_name == "ResearchAgent"
+        assert by_name["_node_synthesize"].entry_kind == "bound_method"
+        assert by_name["_node_synthesize"].owner_class_name == "ResearchAgent"
+
+    def test_haystack_fixture_candidate_count_unchanged_after_add_node_removal(
+        self, target_root: Path
+    ):
+        """Invariant: removing the add_node block from HaystackScanner does not change any Haystack
+        fixture's candidate count (no fixture uses add_node/StateGraph). Hard numbers, pinned."""
+        expected = {"linear_rag": 2, "multi_agent": 7, "t3_reranker": 3}
+        for tgt, count in expected.items():
+            files = sorted((target_root / tgt).glob("**/*.py"))
+            assert len(HaystackScanner().scan(files)) == count, tgt
 
 
 class TestTopology:

@@ -1,12 +1,120 @@
+import ast
+
 import pytest
 from unittest.mock import AsyncMock
 from agent_eval_harness.discovery.wiring import (
+    _build_enclosing_class_map,
+    _build_stategraph_var_names,
+    _const_str_or_sentinel,
+    _decorator_effective_name,
     _detect_haystack,
     _detect_langgraph,
     _detect_langchain_lcel,
     _detect_via_llm,
+    _imports_langgraph,
     detect_wiring_block,
 )
+
+
+# ---- CS-312 Slice 1: low-level helper truth tables -----------------------------------------
+
+def test_build_enclosing_class_map_owner_and_free():
+    tree = ast.parse("class Agent:\n    def node(self):\n        helper()\ndef free():\n    other()\n")
+    helper = next(n for n in ast.walk(tree) if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "helper")
+    other = next(n for n in ast.walk(tree) if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "other")
+    m = _build_enclosing_class_map(tree)
+    assert m[id(helper)] == "Agent"
+    assert id(other) not in m
+
+
+def test_build_stategraph_var_names_local_and_self():
+    tree = ast.parse("g = StateGraph(S)\nself.flow = StateGraph(S)\nother = Foo()\n")
+    assert _build_stategraph_var_names(tree) == {"g", "self.flow"}
+
+
+def test_imports_langgraph_true_and_false():
+    assert _imports_langgraph(ast.parse("from langgraph.graph import StateGraph\n")) is True
+    assert _imports_langgraph(ast.parse("import langgraph.func\n")) is True
+    assert _imports_langgraph(ast.parse("import os\n")) is False
+
+
+def test_decorator_effective_name_bare_and_call_wrapped():
+    tree = ast.parse("@task\ndef a(): ...\n@entrypoint(checkpointer=x)\ndef b(): ...\n")
+    decs = {f.name: f.decorator_list[0] for f in tree.body}
+    assert _decorator_effective_name(decs["a"]) == "task"
+    assert _decorator_effective_name(decs["b"]) == "entrypoint"
+
+
+def test_const_str_or_sentinel_maps_start_end():
+    assert _const_str_or_sentinel(ast.parse("'x'", mode="eval").body) == "x"
+    assert _const_str_or_sentinel(ast.parse("START", mode="eval").body) == "__start__"
+    assert _const_str_or_sentinel(ast.parse("END", mode="eval").body) == "__end__"
+    assert _const_str_or_sentinel(ast.parse("other", mode="eval").body) is None
+
+
+# ---- CS-312 Slice 2: extended _detect_langgraph -------------------------------------------
+
+def test_detect_langgraph_conditional_edges_and_sentinels():
+    code = (
+        "graph = StateGraph(S)\n"
+        "graph.add_edge(START, 'a')\n"
+        "graph.add_conditional_edges('a', route, {'b': 'b', 'c': 'c'})\n"
+        "graph.add_edge('c', END)\n"
+    )
+    wiring = _detect_langgraph({"g.py": code})
+    assert wiring is not None
+    pairs = {(e.src, e.dst) for e in wiring.edges}
+    assert {("__start__", "a"), ("a", "b"), ("a", "c"), ("c", "__end__")} <= pairs
+
+
+def test_detect_langgraph_bound_method_owner():
+    code = (
+        "class Agent:\n"
+        "    def build(self):\n"
+        "        g = StateGraph(S)\n"
+        "        g.add_node('x', self.foo)\n"
+        "    def foo(self, state):\n        return state\n"
+    )
+    wiring = _detect_langgraph({"g.py": code})
+    node = next(n for n in wiring.nodes if n.alias == "x")
+    assert node.entry_kind == "bound_method"
+    assert node.owner_class == "Agent"
+    assert node.callee_name == "foo"
+
+
+def test_detect_langgraph_receiver_guard_rejects_unrelated_add_node():
+    code = (
+        "class Foo:\n"
+        "    def add_node(self, a, b):\n        pass\n"
+        "f = Foo()\n"
+        "f.add_node('x', 'y')\n"
+    )
+    assert _detect_langgraph({"g.py": code}) is None
+
+
+def test_detect_langgraph_create_react_agent():
+    code = (
+        "from langgraph.prebuilt import create_react_agent\n"
+        "agent = create_react_agent(model=m, tools=[tool_a, tool_b])\n"
+    )
+    wiring = _detect_langgraph({"g.py": code})
+    aliases = {n.alias for n in wiring.nodes}
+    assert "agent" in aliases
+    pairs = {(e.src, e.dst) for e in wiring.edges}
+    assert {("agent", "tool_a"), ("agent", "tool_b")} <= pairs
+
+
+def test_detect_langgraph_task_entrypoint():
+    code = (
+        "from langgraph.func import task, entrypoint\n"
+        "@task\ndef step(x):\n    return x\n"
+        "@entrypoint()\ndef flow(x):\n    return step(x)\n"
+    )
+    wiring = _detect_langgraph({"g.py": code})
+    aliases = {n.alias for n in wiring.nodes}
+    assert {"step", "flow"} <= aliases
+    pairs = {(e.src, e.dst) for e in wiring.edges}
+    assert ("flow", "step") in pairs
 
 def test_detect_haystack():
     haystack_code = """
