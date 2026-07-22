@@ -1,16 +1,9 @@
-# Keyword-tier signals for retrieval-agent detection in Stage 3 contract harvest.
-#
-# WHY: The role-tier (role=='retrieval_agent', derived by Stage 1 LLM classifier and
-# serialized to system_map.yaml) is the authoritative, framework-agnostic signal —
-# it fires without any keyword configuration from the existing role field.
-# This keyword tier is an ADDITIVE ACCELERANT only: it fires for constructor-dep
-# string matches, providing a zero-LLM-call fast-path on the known CodeSpectra
-# `RetrievalService` injected dependency.  Any agent whose role is already classified
-# as retrieval_agent by Stage 1 does NOT need a keyword entry here.
-#
-# Empirically: CodeSpectra agents A–J all inject RetrievalService via constructor;
-# linear_rag's RetrieverComponent (role=retrieval_agent) has no RetrievalService dep —
-# confirmed that the keyword tier alone would MISS it, while the role tier catches it.
-# Therefore role-tier OR keyword-tier (any-true-wins) is the correct combine mode.
+# Keyword-tier signal for retrieval-agent detection (Stage 3 harvest): an ADDITIVE fast-path for constructor-dep string matches (e.g. RetrievalService), combined with the authoritative role=='retrieval_agent' tier via OR — needed because some retrieval agents (e.g. linear_rag's RetrieverComponent) have no matching dep and would be missed by the keyword tier alone.
 keywords:
   - RetrievalService
+
+# OPTIONAL per-target override for virtual-input dep-role classification; detection is structural/framework-agnostic by default (see discovery/enrichment.py) — add a class name here only to force-classify a dep whose evidence type doesn't resolve to a structured schema.
+dep_role_keywords:
+  retrieval: []
+  llm_provider: []
+  storage: []

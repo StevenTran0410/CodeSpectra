@@ -689,3 +689,44 @@ def test_derive_case_binding_v2_known_mapping() -> None:
         "repo_name should map to itself"
     assert binding.get("mem_ctx") == "case:$.input.mem_ctx", \
         "mem_ctx should map to itself"
+
+
+def test_harvest_preserves_complex_type_annotations_from_ast(tmp_path: Path) -> None:
+    """CS-310 Slice 4 regression: harvested kwargs must preserve real type annotations from AST (not empty from truncated signature)."""
+    # Create a fixture with complex type kwargs (like StructuralGraphSummary, RetrievalBundle, etc.)
+    (tmp_path / "complex_types.py").write_text(
+        """
+from typing import TypedDict, Optional
+
+class GraphSummary(TypedDict):
+    nodes: int
+    edges: int
+
+class ComplexAgent:
+    async def run(self, provider_id: str, graph_summary: GraphSummary, threshold: Optional[float] = None) -> dict:
+        return {"result": "ok"}
+""",
+        encoding="utf-8",
+    )
+    asts = _parse_files([tmp_path / "complex_types.py"])
+    comp = Component(
+        id="complex",
+        role="unknown",
+        entry_point="complex_types:ComplexAgent",
+        file="complex_types.py",
+    )
+    invocation, _, _, _, _ = harvest_component_contract(comp, asts, tmp_path)
+
+    assert invocation is not None
+    assert invocation.method == "run"
+    by_name = {k.name: k for k in invocation.kwargs}
+
+    # Verify annotations are NOT empty (this is the regression test for CS-310)
+    assert by_name["provider_id"].annotation == "str", "Primitive type should have annotation"
+    assert by_name["graph_summary"].annotation == "GraphSummary", (
+        "Complex type annotation must be preserved (not empty), "
+        "so _resolve_input_kwarg_schemas can resolve nested schema"
+    )
+    assert "Optional" in by_name["threshold"].annotation, (
+        "Optional wrapper must be preserved in annotation"
+    )

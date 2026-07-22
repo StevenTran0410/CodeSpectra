@@ -1238,12 +1238,27 @@ async def generate_plan_route(session_id: str, body: GeneratePlanRequest):
             except Exception as e:
                 logger.warning(f"generate_plan: could not load previous plan report for incremental reuse: {e}")
 
-        # Load project context once, shared across all analyst prompts
         _plan_project_ctx = None
         try:
             _plan_project_ctx = await load_project_context(client, sess["snapshot_id"])
         except Exception as _pce:
             logger.warning(f"generate_plan: could not load project context: {_pce}")
+
+        # Load AgentKnowledge (including virtual_inputs) per agent for the plan merge
+        agent_knowledge_by_id: dict[str, Any] = {}
+        if session_id:
+            for agent in agent_flow_map.agents:
+                try:
+                    row = await repository.get_agent_knowledge(session_id, agent.id)
+                    if not row:
+                        continue
+                    json_path = row.get("json_path")
+                    if not json_path or not Path(json_path).exists():
+                        continue
+                    raw = json.loads(Path(json_path).read_text(encoding="utf-8"))
+                    agent_knowledge_by_id[agent.id] = raw
+                except Exception as e:
+                    logger.warning(f"generate_plan: could not load knowledge for {agent.id}: {e}")
 
         suite, plan_report = await generate_plan_agentic(
             system_map, agent_flow_map, source_by_component, sess["accepted_edges"], llm_client,
@@ -1251,6 +1266,7 @@ async def generate_plan_route(session_id: str, body: GeneratePlanRequest):
             previous_report=previous_report,
             project_context=_plan_project_ctx,
             conventions=config.contract_conventions,
+            agent_knowledge_by_id=agent_knowledge_by_id,
         )
 
         plan_path.write_text(
@@ -1792,8 +1808,7 @@ def _plan_dir_for(session_id: str) -> Path:
 
 
 def _reharvest_contracts(sess: dict, system_map) -> dict:
-    """Re-run the contract harvest at render time (pure AST, costs nothing) — the plan_report's frozen copy goes stale as soon as the target changes, sending the coding agent at a call shape that no longer exists.
-    Returns {} on any problem so the caller keeps the stored copy."""
+    """Re-run the contract harvest at render time so a stale plan_report copy can't send the coding agent at a call shape that no longer exists; returns {} on any problem so the caller keeps the stored copy."""
     try:
         flows_path = sess.get("agent_flows_path")
         if not flows_path or not Path(flows_path).exists():
@@ -1834,7 +1849,7 @@ async def get_eval_plan(session_id: str):
 
 @app.delete("/api/discovery/expansion-sessions/{session_id}/eval-plan")
 async def delete_eval_plan(session_id: str):
-    """Delete this session's rendered plan files and clear the idempotency pointer. Files the coding agent authors are kept — Regenerate routes through here, so deleting them would defeat the point of preserving them on re-render."""
+    """Delete this session's rendered plan files and clear the idempotency pointer; files the coding agent authors are kept since Regenerate routes through here."""
     await _get_expansion_session_or_404(session_id)
     plan_dir = _plan_dir_for(session_id)
     removed = 0
@@ -2010,8 +2025,7 @@ async def load_eval_results(session_id: str, manifest_path: str | None = None):
 
 @app.get("/api/discovery/expansion-sessions/{session_id}/eval-runs")
 async def list_session_eval_runs(session_id: str):
-    """All ingested runs for this session so Stage 5 can switch between them; the manifest's
-    plan_id is the session id, so runs group under it with no schema change."""
+    """All ingested runs for this session so Stage 5 can switch between them; the manifest's plan_id is the session id, so runs group under it with no schema change."""
     await _get_expansion_session_or_404(session_id)
     return {"runs": await repository.list_ingested_runs_for_plan(session_id)}
 
@@ -2078,8 +2092,7 @@ _JUDGE_BATCH_SIZE = 4  # concurrent LLM calls per batch — this is a dev-only t
 
 @app.post("/api/eval-runs/{run_id}/judge")
 async def judge_eval_run_agent_cases(run_id: str, body: JudgeAgentCasesRequest):
-    """Ad-hoc per-agent semantic-match + field precision/recall scoring; idempotent per case
-    (existing 'semantic_match' eval is skipped) unless `force`, which re-scores every case."""
+    """Ad-hoc per-agent semantic-match + field precision/recall scoring; idempotent per case unless `force`, which re-scores every case."""
     run = await repository.get_run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Run not found.")

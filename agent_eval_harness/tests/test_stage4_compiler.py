@@ -250,7 +250,10 @@ class TestE2ERender:
                    if "make_retrieval_stub" in d["code"]]
         assert stubbed, "no dispatch wires the retrieval stub"
         for d in stubbed:
-            assert 'make_retrieval_stub(case["input"].get(' in d["code"], (
+            assert 'make_retrieval_stub(' in d["code"], (
+                f"{d['agent_id']} builds a stub without the make_retrieval_stub call"
+            )
+            assert 'case["input"].get(' in d["code"], (
                 f"{d['agent_id']} builds a stub without the case's evidence"
             )
 
@@ -501,3 +504,50 @@ class TestGrepGatePermanent:
             f"Grep gate FAIL: Found {len(found_issues)} forbidden pattern(s):\n" +
             "\n".join(f"  {f}: {p} ({c} match)" for f, p, c in found_issues)
         )
+
+
+def test_slice31_merge_virtual_input_bindings() -> None:
+    """Verify Slice 3.1 merge flows end-to-end: virtual_inputs in AgentKnowledge reach contract.case_binding."""
+    from agent_eval_harness.planning.agentic_planner import _merge_virtual_input_bindings
+    from agent_eval_harness.planning.contract import EvaluationContract, InvocationContract
+
+    # Create a contract with empty case_binding
+    contract = EvaluationContract(
+        agent_id="test_agent",
+        invocation=InvocationContract(
+            invocation_mode="in_harness",
+            kwargs=[],
+            case_binding={"existing_kwarg": "case:$.input.query"},
+        ),
+    )
+    contracts = {"test_agent": contract}
+
+    # Create mock AgentKnowledge with virtual_inputs
+    agent_knowledge = {
+        "test_agent": {
+            "virtual_inputs": [
+                {
+                    "name": "bundle",
+                    "dep_attr": "_retriever",
+                    "dep_param": "retriever",
+                    "dep_annotation": "RetrievalService",
+                    "dep_role": "retrieval",
+                    "methods_called": ["search"],
+                    "call_sites": ["agents.py:15"],
+                    "fields": [],
+                }
+            ]
+        }
+    }
+
+    # Call merge
+    _merge_virtual_input_bindings(contracts, agent_knowledge)
+
+    # Assert virtual: binding was added
+    assert "virtual:bundle" in contracts["test_agent"].invocation.case_binding.values(), (
+        f"Expected 'virtual:bundle' in case_binding values, got {contracts['test_agent'].invocation.case_binding}"
+    )
+    # Assert existing bindings preserved
+    assert contracts["test_agent"].invocation.case_binding["existing_kwarg"] == "case:$.input.query", (
+        "Existing case_binding entry should not be modified"
+    )

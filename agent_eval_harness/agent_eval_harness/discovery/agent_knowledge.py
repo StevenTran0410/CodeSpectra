@@ -16,8 +16,7 @@ _MD_TITLE_TRUNCATE_LEN = 50
 
 
 class Citation(BaseModel):
-    """A reference to a location in source code. file/line optional — the LLM doesn't
-    always have one to cite; verify_citations treats a missing one as unclaimed, not phantom."""
+    """A reference to a location in source code; file/line optional (verify_citations treats a missing one as unclaimed, not phantom)."""
     file: str | None = None
     line: int | None = None
     symbol: str = ''
@@ -71,9 +70,7 @@ class PromptSiteRef(BaseModel):
 
 
 class ComponentRoleVerdict(BaseModel):
-    """One component's role verdict from Stage 2.5 enrichment, post structural hard-gate.
-    Raw LLM-derived output — NEVER read for gating; see Component.role on the persisted
-    system_map, which is the authoritative value this same verdict was written onto."""
+    """One component's role verdict from Stage 2.5 enrichment; raw LLM output, NEVER read for gating — see Component.role on the persisted system_map (the authoritative value this verdict was written onto)."""
     id: str
     role: str = 'unknown'
     confidence: float = 0.0
@@ -82,14 +79,12 @@ class ComponentRoleVerdict(BaseModel):
     @field_validator('role')
     @classmethod
     def validate_role(cls, v: str) -> str:
-        """A malformed cached sidecar must never crash the cache path — an empty/falsy
-        role coerces to 'unknown' rather than raising."""
+        """A malformed cached sidecar must never crash the cache path — empty/falsy role coerces to 'unknown' rather than raising."""
         return v if v else 'unknown'
 
 
 class DepRoleVerdict(BaseModel):
-    """One constructor dependency's role verdict from Stage 2.5 enrichment.
-    Mirroring ComponentRoleVerdict, but for dependencies rather than components."""
+    """One constructor dependency's role verdict from Stage 2.5 enrichment — mirrors ComponentRoleVerdict, but for dependencies."""
     dep: str  # dependency name from constructor_deps
     role: str = 'unknown'  # e.g., 'llm_provider', 'retrieval', 'storage'
     confidence: float = 0.0
@@ -101,6 +96,28 @@ class DepRoleVerdict(BaseModel):
         return v if v else 'unknown'
 
 
+class VirtualFieldSpec(BaseModel):
+    """A field within a virtual input's schema."""
+    name: str
+    schema: dict = Field(default_factory=dict)
+    provenance: Literal["annotation", "usage", "prompt", "human"] = "usage"
+    example: str | None = None
+    needs_human: bool = False
+    confidence: float = 0.0
+
+
+class VirtualInputContract(BaseModel):
+    """Evidence/dependency injection contract discovered via static harvest."""
+    name: str
+    dep_param: str
+    dep_attr: str
+    dep_annotation: str = ""
+    dep_role: str = "unknown"
+    methods_called: list[str] = Field(default_factory=list)
+    call_sites: list[str] = Field(default_factory=list)
+    fields: list[VirtualFieldSpec] = Field(default_factory=list)
+
+
 class ContextBuilderRef(BaseModel):
     """A helper that builds context for this agent. file/line optional — see Citation."""
     name: str
@@ -110,8 +127,7 @@ class ContextBuilderRef(BaseModel):
 
 
 class ConsumerRef(BaseModel):
-    """A downstream service that consumes output from this agent. file/line optional —
-    see Citation."""
+    """A downstream service that consumes output from this agent. file/line optional — see Citation."""
     name: str
     file: str | None = None
     line: int | None = None
@@ -132,12 +148,14 @@ class AgentKnowledge(BaseModel):
     location: LocationInfo | None = None
     components: list[ComponentRef] = Field(default_factory=list)
     input_contract: list[ContractArg] = Field(default_factory=list)
+    input_schemas: dict[str, dict] = Field(default_factory=dict)
     output_contract: OutputContract | None = None
     prompt_sites: list[PromptSiteRef] = Field(default_factory=list)
 
     # Role verdicts — first conclusion of the LLM round, post hard-gate; NEVER authoritative, see Component.role on the system_map.
     component_roles: list[ComponentRoleVerdict] = Field(default_factory=list)
     constructor_dep_roles: list[DepRoleVerdict] = Field(default_factory=list)
+    virtual_inputs: list[VirtualInputContract] = Field(default_factory=list)
 
     functionality: str = ''
     functionality_citations: list[Citation] = Field(default_factory=list)
@@ -291,8 +309,7 @@ def verify_citations(
     repo_root: Path,
     symbols_by_file: dict[str, list[dict]] | None = None,
 ) -> VerificationReport:
-    """Verify semantic-field citations against the real repo; a citation is valid if the symbol text is on the line, the line falls inside/near an indexed symbol span, or it coincides with a detected prompt site — only citations resolving to nothing are flagged.
-    Structural fields are never re-verified; symbols_by_file (from code_symbols) enables the span check and is optional."""
+    """Verify semantic-field citations against the real repo — valid if symbol text is on the line, near an indexed symbol span, or matches a prompt site; only unresolved citations are flagged. Structural fields are never re-verified; symbols_by_file (from code_symbols) is optional."""
     report = VerificationReport(agent_id='', claims=[])
     symbols_by_file = symbols_by_file or {}
     prompt_site_locs = {
@@ -326,6 +343,12 @@ def verify_citations(
         if cit.file and cit.line and cit.line > 0:
             semantic_citations.append((cit.file, cit.line, cit.symbol))
 
+    for vi in knowledge.virtual_inputs:
+        for cite in vi.call_sites:
+            file, _, line_s = cite.rpartition(":")
+            if file and line_s.isdigit():
+                semantic_citations.append((file, int(line_s), ""))
+
     for file, line, symbol in semantic_citations:
         file_path = repo_root / file
 
@@ -355,7 +378,6 @@ def verify_citations(
                 continue
 
             actual_line = lines[line - 1]
-            # Resolved if symbol text is on the line, OR falls inside/near a symbol span, OR lands on a prompt site.
             resolved = (
                 (not symbol or symbol in actual_line)
                 or _resolves_to_symbol(file, line)

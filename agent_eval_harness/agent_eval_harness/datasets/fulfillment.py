@@ -176,6 +176,8 @@ async def _derive_config(
             "profile": base_profile,
             "failure_modes": knowledge.get("failure_modes") or [],
             "input_contract": knowledge.get("input_contract") or [],
+            "input_schemas": knowledge.get("input_schemas") or {},
+            "virtual_inputs": knowledge.get("virtual_inputs") or [],
             "context_builders": knowledge.get("context_builders") or [],
             "count": min_cases, "painpoint": painpoint,
         }
@@ -364,7 +366,6 @@ async def fulfill_plan(
         except Exception as e:
             logger.warning(f"fulfillment: could not load plan report for synthetic_agent_io wiring: {e}")
 
-    # load AgentKnowledge per agent from the DB when session_id is available
     knowledge_by_agent: dict[str, dict[str, Any]] = {}
     if session_id and plan_report is not None:
         for agent_report in plan_report.agents:
@@ -386,6 +387,8 @@ async def fulfill_plan(
                     "functionality": functionality,
                     "failure_modes": failure_modes,
                     "input_contract": raw.get("input_contract") or [],
+                    "input_schemas": raw.get("input_schemas") or {},
+                    "virtual_inputs": raw.get("virtual_inputs") or [],
                     "context_builders": raw.get("context_builders") or [],
                 }
             except Exception as e:

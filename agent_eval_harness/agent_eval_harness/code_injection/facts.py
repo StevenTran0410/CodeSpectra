@@ -1,7 +1,4 @@
-"""Facts compiler: gathers resolved facts and missing-fact markers for plan rendering.
-
-Compile-once barrier between harvesters and renderers — every render-critical field is Resolved (w/ citation) or Missing (w/ reason), never bare falsy.
-"""
+"""Facts compiler: gathers resolved facts and missing-fact markers for plan rendering; every render-critical field is Resolved (w/ citation) or Missing (w/ reason), never bare falsy."""
 from __future__ import annotations
 
 import json
@@ -107,8 +104,7 @@ class AgentFacts(BaseModel):
     # Same, but optional: the call still runs, just with less context than intended.
     degraded_bindings: list[str] = Field(default_factory=list)
     required_kwargs: list[str] = Field(default_factory=list)
-    # Bound kwarg -> its harvested annotation, kept only when the annotation names a target
-    # type a raw case value would not satisfy without conversion.
+    # Bound kwarg -> harvested annotation, kept only when the annotation names a type a raw case value wouldn't satisfy without conversion.
     typed_bindings: dict[str, str] = Field(default_factory=dict)
     transclude: dict[str, str] = Field(default_factory=dict)
     quirk_flags: dict[str, bool] = Field(default_factory=dict)
@@ -282,6 +278,7 @@ def compile_plan_facts(
                 )
 
         if plan_report:
+            # Note: this reads the frozen plan_report; virtual: bindings depend on _merge_virtual_input_bindings having run upstream
             plan_agent = next(
                 (a for a in plan_report.agents if a.agent_id == agent_id), None
             )
@@ -327,10 +324,7 @@ _PLAIN_ANNOTATIONS = {
 
 
 def _annotation_needs_conversion(annotation: str | None) -> bool:
-    """True when the annotation names a project type a raw JSON case value would not satisfy —
-    a Pydantic/dataclass model the agent dereferences by attribute. An annotation is plain only
-    when every name in it is a builtin, typing wrapper, or container, so `Optional[bool]` passes
-    while `RetrievalBundle | None` and `list[Evidence]` do not."""
+    """True when the annotation names a project type (not a builtin/typing/container name) that a raw JSON case value wouldn't satisfy, e.g. `RetrievalBundle | None` or `list[Evidence]`, but not `Optional[bool]`."""
     if not annotation:
         return False
     names = re.findall(r"[A-Za-z_][\w.]*", annotation)
@@ -338,11 +332,8 @@ def _annotation_needs_conversion(annotation: str | None) -> bool:
 
 
 def _mark_unconsumed_case_fields(facts: PlanFacts) -> None:
-    """Flag case fields no kwarg can carry, so the plan can say so instead of dropping them.
-
-    A generator can emit context an entry method never accepts; silence would look like the data was used.
-    """
-    from agent_eval_harness.datasets.archetype_vocabulary import EVIDENCE_CASE_KEY
+    """Flag case fields no kwarg can carry, so the plan surfaces them instead of silently dropping them (a generator can emit context the entry method never accepts)."""
+    from agent_eval_harness.datasets.archetype_vocabulary import EVIDENCE_CASE_KEY, VIRTUAL_BINDING_PREFIX
 
     by_agent: dict[str, set[str]] = {}
     for ds in facts.dataset_summaries:
@@ -362,17 +353,22 @@ def _mark_unconsumed_case_fields(facts: PlanFacts) -> None:
         missing_optional: set[str] = set()
         if isinstance(agent.case_binding, Resolved) and agent.case_binding.value:
             for kwarg, expr in agent.case_binding.value.items():
-                if not isinstance(expr, str) or not expr.startswith("case:"):
+                if not isinstance(expr, str):
                     continue
-                field = expr.rsplit(".", 1)[-1]
-                bound.add(field)
-                if field in present:
-                    continue
-                # A required kwarg bound to a missing field arrives as None and can fail silently if swallowed; optional ones just degrade quietly.
-                if kwarg in agent.required_kwargs:
-                    missing_required.add(field)
-                else:
-                    missing_optional.add(field)
+                if expr.startswith("case:"):
+                    field = expr.rsplit(".", 1)[-1]
+                    bound.add(field)
+                    if field in present:
+                        continue
+                    # A required kwarg bound to a missing field arrives as None and can fail silently if swallowed; optional ones just degrade quietly.
+                    if kwarg in agent.required_kwargs:
+                        missing_required.add(field)
+                    else:
+                        missing_optional.add(field)
+                elif expr.startswith(VIRTUAL_BINDING_PREFIX):
+                    # Virtual input field: extract the case key name from "virtual:bundle"
+                    field = expr[len(VIRTUAL_BINDING_PREFIX):]
+                    bound.add(field)
         if agent.has_retrieval_signal:
             bound.add(EVIDENCE_CASE_KEY)  # reaches the agent through the retrieval stub
         agent.unconsumed_case_fields = sorted(present - bound)

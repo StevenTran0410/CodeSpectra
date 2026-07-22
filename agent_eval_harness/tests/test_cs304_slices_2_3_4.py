@@ -40,10 +40,11 @@ class TestSlice2OutputContract:
         assert knowledge.output_contract is None
 
     def test_version_bump_cache_lever_forces_producer_rerun(self):
-        """Version bump to 2 makes cached sidecars with version=1 not short-circuit (hash won't match semantically)."""
+        """Bumping the version makes cached sidecars from an older producer not short-circuit (hash won't match semantically). v3: CS-310 added virtual_inputs + input_schemas to the output shape."""
         from agent_eval_harness.discovery.enrichment import _STRUCTURAL_PRODUCER_VERSION
-        # Verify version is bumped
-        assert _STRUCTURAL_PRODUCER_VERSION == 2, "STRUCTURAL_PRODUCER_VERSION must be 2 for cache lever"
+        # Verify version was bumped past the pre-CS-310 baseline (>=3: virtual_inputs + input_schemas;
+        # 4: cross-file nested type resolution). Kept as >= so schema-shape bumps don't churn this test.
+        assert _STRUCTURAL_PRODUCER_VERSION >= 3, "STRUCTURAL_PRODUCER_VERSION must be bumped for the CS-310 cache lever"
 
     def test_gold_gen_reads_fresh_canonical_contract_not_stale_sidecar(self):
         """Gold-gen validation reads the fresh EvaluationContract.output, not a stale AgentKnowledge sidecar.

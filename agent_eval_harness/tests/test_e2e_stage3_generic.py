@@ -122,25 +122,8 @@ async def _run_agent(agent_id: str, contract: EvaluationContract) -> tuple[str, 
     return config["archetype"], cases, llm_client
 
 
-class _MatchSpy:
-    """Wraps a frozenset[frozenset[str]] to record whether `in` ever matched — the runtime
-    proof that _KNOWN_KWARG_SET_VALUES never fires for a foreign agent's kwarg shape."""
-
-    def __init__(self, real: frozenset) -> None:
-        self._real = real
-        self.matched_any = False
-
-    def __contains__(self, item) -> bool:
-        hit = item in self._real
-        if hit:
-            self.matched_any = True
-        return hit
-
-
 @pytest.mark.parametrize("target", ["multi_agent", "linear_rag"])
 async def test_ac1_eligible_set_equality_and_unimplemented_for_right_reason(target, monkeypatch):
-    spy = _MatchSpy(synthetic_agent_io._KNOWN_KWARG_SET_VALUES)
-    monkeypatch.setattr(synthetic_agent_io, "_KNOWN_KWARG_SET_VALUES", spy)
 
     contracts = _harvest(target)
     assert contracts, f"{target}: harvest produced no contracts at all — fixture drifted"
@@ -187,10 +170,7 @@ async def test_ac1_eligible_set_equality_and_unimplemented_for_right_reason(targ
         )
         assert not contract.has_retrieval_signal
 
-    # AC2 (spy half): _KNOWN_SHAPE_KWARG_SETS is retained (CS-303 Slice 3c PAUSE — parity
-    # fails, see test_stage3_codespectra_parity.py) but must never MATCH a foreign agent's
-    # kwarg shape — i.e. it never actually influences a foreign agent's routing.
-    assert not spy.matched_any, f"{target}: a foreign agent's kwarg shape matched a CodeSpectra shape"
+    # CS-310 Slice 4: All archetype builders deleted; foreign agents use the generic path.
 
 
 def test_ac2_legacy_override_dict_removed():

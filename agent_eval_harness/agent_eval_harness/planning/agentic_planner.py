@@ -165,7 +165,7 @@ class AgentEvidence:
     agent: AgentFlow
     owned: list[dict] = field(default_factory=list)  # per-component evidence dicts
     supporting_files: list[str] = field(default_factory=list)
-    project_context_block: str = ""  # B6: project context prepended to each analyst prompt
+    project_context_block: str = ""  # project context prepended to each analyst prompt
 
 
 def _owned_component_dict(component: Component, snippet: str) -> dict:
@@ -226,7 +226,7 @@ async def gather_evidence(
     supporting = _supporting_files_by_agent(agent_flow_map, system_map, accepted_edges)
     components_by_id = {c.id: c for c in system_map.components}
 
-    # B6: build project context block once; shared across all agents in this run
+    # build project context block once; shared across all agents in this run
     _ctx_block = ""
     if project_context is not None:
         if getattr(project_context, "identity", None):
@@ -576,14 +576,12 @@ async def _run_handoff_gates(
 
 
 def _gate_to_suite_entry(gate: EvaluationGate) -> SuiteEntry:
-    # Prefer the explicit gate.dataset; fall back to dataset_kind-based required block.
     if gate.dataset is not None:
         dataset_ref = gate.dataset
     elif gate.dataset_kind:
         dataset_ref = DatasetRef(required={"kind": gate.dataset_kind, "min_cases": DEFAULT_MIN_CASES})
     else:
         dataset_ref = None
-    # classifier gates run in entrypoint mode.
     execution = "entrypoint" if gate.metric_class == "classifier" else "harness"
     return SuiteEntry(
         id=gate.id,
@@ -643,8 +641,7 @@ def _complete_params(
     contract: EvaluationContract | None,
     report_notes: list[str],
 ) -> EvaluationGate:
-    """Fill registry-required params from the contract / system map.
-    Returns a (possibly new) gate. Sets status='needs_human' when underivable."""
+    """Fills registry-required params from the contract/system map; returns a (possibly new) gate, marking status='needs_human' when underivable."""
     if system_map is None and contract is None:
         return gate
 
@@ -665,7 +662,7 @@ def _complete_params(
             if downstream:
                 params["allowed"] = downstream
         elif component_obj and system_map:
-            params["allowed"] = component_obj.downstream  # system_map fallback
+            params["allowed"] = component_obj.downstream
 
     # tool_correctness.expected_tools ← downstream tool components
     if gate.metric == "tool_correctness" and "expected_tools" not in params:
@@ -689,7 +686,6 @@ def _complete_params(
             )
             return gate
 
-    # Check required_params still missing — mark needs_human
     if spec:
         for rp in spec.required_params:
             val = params.get(rp)
@@ -740,7 +736,6 @@ def _apply_feasibility(
                     f"{gate.id}: {gate.metric} replaced by referential_integrity + "
                     "grounding_judge_span_prompt (has_separable_context=False, static)"
                 )
-                # Replace
                 ri_id = f"{gate.component}.referential_integrity.feasibility"
                 gj_id = f"{gate.component}.grounding_judge_span_prompt.feasibility"
                 if (gate.component, "referential_integrity") not in seen_metrics:
@@ -778,7 +773,7 @@ def _apply_feasibility(
                 report_notes.append(
                     f"{gate.id}: ragas.answer_relevancy dropped (input_kind={obs.input_kind}, static)"
                 )
-                continue  # drop
+                continue
             elif llm_non_query:
                 report_notes.append(
                     f"{gate.id}: ragas.answer_relevancy demoted to needs_human (input_kind={obs.input_kind}, LLM-only)"
@@ -944,7 +939,7 @@ def reconcile(
                         else "assertion"
                     ),
                     params=gate.params,
-                    dataset=gate.dataset,  # preserve baseline dataset ref
+                    dataset=gate.dataset,
                     rationale=gate.rationale,
                     provenance="rule",
                 )
@@ -966,7 +961,6 @@ def reconcile(
                 if note:
                     post_notes.append(note)
 
-        # Merge observability
         if contract is not None:
             conflict_notes = _merge_observability(contract, profiles_by_agent.get(agent.id))
             contract.needs_human.extend(conflict_notes)
@@ -997,16 +991,13 @@ def reconcile(
                     )
                 )
 
-        # Params completion
         agent_gates = [
             _complete_params(g, system_map, contract, post_notes)
             for g in agent_gates
         ]
 
-        # Feasibility pass
         agent_gates = _apply_feasibility(agent_gates, contract, post_notes)
 
-        # Rebalance
         agent_gates = _rebalance_gates(agent_gates, post_notes)
 
         all_suite_entries.extend(_gate_to_suite_entry(g) for g in agent_gates)
@@ -1057,6 +1048,30 @@ async def run_critic(
     return [n for n in notes if isinstance(n, str)] if isinstance(notes, list) else []
 
 
+def _merge_virtual_input_bindings(
+    contracts: dict[str, EvaluationContract],
+    agent_knowledge_by_id: dict[str, Any],
+) -> None:
+    """Merges virtual input bindings from AgentKnowledge into contract case_binding in-place, prefixed "virtual:" so Stage 4 codegen can wire stubs."""
+    from agent_eval_harness.datasets.archetype_vocabulary import VIRTUAL_BINDING_PREFIX
+
+    for agent_id, knowledge in agent_knowledge_by_id.items():
+        contract = contracts.get(agent_id)
+        if not contract or not contract.invocation or not knowledge.get("virtual_inputs"):
+            continue
+
+        for vi in knowledge.get("virtual_inputs", []):
+            if isinstance(vi, dict):
+                dep_attr = vi.get("dep_attr", "")
+                name = vi.get("name", "")
+            else:
+                dep_attr = getattr(vi, "dep_attr", "")
+                name = getattr(vi, "name", "")
+
+            if dep_attr and name:
+                contract.invocation.case_binding[dep_attr] = f"{VIRTUAL_BINDING_PREFIX}{name}"
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Top-level entry point — assembles and runs the DAG
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1075,6 +1090,7 @@ async def generate_plan_agentic(
     previous_report: EvaluationPlanReport | None = None,
     project_context: Any | None = None,
     conventions: ContractConventions | None = None,
+    agent_knowledge_by_id: dict[str, Any] | None = None,
 ) -> tuple[Suite, EvaluationPlanReport]:
     """Builds and executes the Stage-3 DAG per agent; when `previous_report` is given, an agent whose prior run already produced a data profile and gates reuses them and skips the analyst/gate_designer LLM calls, while contracts, baseline gates, handoff_gates, reconcile, and critic always run fresh."""
     agents = agent_flow_map.agents
@@ -1092,6 +1108,10 @@ async def generate_plan_agentic(
         from agent_eval_harness.mapping.builder.contract_harvest import harvest_contracts
 
         contracts = harvest_contracts(system_map, agent_flow_map, files, files_root, conventions)
+
+    # Merge virtual inputs into case_binding before reconcile consumes contracts
+    if agent_knowledge_by_id:
+        _merge_virtual_input_bindings(contracts, agent_knowledge_by_id)
 
     nodes: list[DagNode] = [DagNode("gather", [], _gather)]
 

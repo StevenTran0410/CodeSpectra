@@ -4,7 +4,6 @@ import json
 import pytest
 
 from agent_eval_harness.datasets.generators.synthetic_agent_io import (
-    _KNOWN_SHAPE_KWARG_SETS,
     _extract_text_values,
     generate,
     is_dataset_stale,
@@ -12,6 +11,20 @@ from agent_eval_harness.datasets.generators.synthetic_agent_io import (
 )
 from agent_eval_harness.llm.client import LLMResponse
 from agent_eval_harness.llm.fake_client import FakeLLMClient
+
+# Local copy of CodeSpectra shapes (original was in synthetic_agent_io.py, deleted in Slice 4)
+_KNOWN_SHAPE_KWARG_SETS: dict[str, frozenset[str]] = {
+    "rag_single_shot:glossary": frozenset({"provider_id", "model_id", "snapshot_id", "profile"}),
+    "rag_single_shot:important_files": frozenset({"provider_id", "model_id", "snapshot_id", "graph_summary", "profile"}),
+    "rag_mem_ctx:project_identity": frozenset({"provider_id", "model_id", "snapshot_id", "repo_name", "mem_ctx", "profile"}),
+    "rag_mem_ctx_participant:architecture": frozenset({"provider_id", "model_id", "snapshot_id", "graph_summary", "arch_bundle", "identity_output", "profile", "folder_tree"}),
+    "rag_mem_ctx_participant:structure": frozenset({"provider_id", "model_id", "snapshot_id", "arch_bundle", "folder_tree", "identity_output", "profile"}),
+    "rag_query_planning:conventions": frozenset({"provider_id", "model_id", "snapshot_id", "static_convention", "structure_output", "profile"}),
+    "rag_query_planning:risk": frozenset({"provider_id", "model_id", "snapshot_id", "static_risk", "profile"}),
+    "rag_upstream:violations": frozenset({"provider_id", "model_id", "snapshot_id", "static_convention", "static_risk", "conventions_output", "profile"}),
+    "rag_upstream:onboarding": frozenset({"provider_id", "model_id", "snapshot_id", "important_files_output", "profile"}),
+    "rag_query_planning_mem_ctx:feature_map": frozenset({"provider_id", "model_id", "snapshot_id", "graph_summary", "identity_output", "architecture_output", "profile", "folder_tree"}),
+}
 
 _SCHEMA = {
     "type": "object",
@@ -182,7 +195,7 @@ async def test_generate_rag_single_shot_shape():
     cases = await generate(_rag_config("important_files", "rag_single_shot"), llm_client)
 
     assert len(cases) == 1
-    assert cases[0].input["shape"] == "retrieval_only"
+    assert cases[0].input["shape"] == "generic"
     assert "bundle" in cases[0].input
     assert cases[0].labels["archetype"] == "rag_single_shot"
 
@@ -197,7 +210,7 @@ async def test_generate_rag_upstream_shape_includes_upstream_field():
     cases = await generate(_rag_config("onboarding", "rag_upstream"), llm_client)
 
     assert len(cases) == 1
-    assert cases[0].input["shape"] == "retrieval_and_upstream"
+    assert cases[0].input["shape"] == "generic"
     assert cases[0].input["important_files_output"]["entrypoint"]["file"] == "a.py"
 
 
@@ -214,7 +227,7 @@ async def test_generate_rag_mem_ctx_shape_includes_four_artifacts():
     cases = await generate(_rag_config("project_identity", "rag_mem_ctx"), llm_client)
 
     assert len(cases) == 1
-    assert cases[0].input["shape"] == "mem_ctx_and_retrieval"
+    assert cases[0].input["shape"] == "generic"
     assert cases[0].input["repo_name"] == "myrepo"
     assert cases[0].input["doc_ctx"] == "readme"
 
@@ -232,7 +245,7 @@ async def test_generate_rag_mem_ctx_participant_shape():
     cases = await generate(_rag_config("architecture", "rag_mem_ctx_participant"), llm_client)
 
     assert len(cases) == 1
-    assert cases[0].input["shape"] == "mem_ctx_participant"
+    assert cases[0].input["shape"] == "generic"
     assert cases[0].input["identity_output"]["domain"] == "web"
 
 
@@ -256,7 +269,7 @@ async def test_generate_rag_query_planning_shape():
     cases = await generate(_rag_config("conventions", "rag_query_planning"), llm_client)
 
     assert len(cases) == 1
-    assert cases[0].input["shape"] == "query_planning"
+    assert cases[0].input["shape"] == "generic"
     assert cases[0].input["structure_output"] == {"folders": []}
 
 
@@ -284,7 +297,7 @@ async def test_generate_rag_query_planning_mem_ctx_shape():
     cases = await generate(_rag_config("feature_map", "rag_query_planning_mem_ctx"), llm_client)
 
     assert len(cases) == 1
-    assert cases[0].input["shape"] == "query_planning_mem_ctx"
+    assert cases[0].input["shape"] == "generic"
     assert cases[0].input["architecture_output"] == {"main_layers": []}
 
 
@@ -400,10 +413,10 @@ async def test_d9_generic_builder_tags_schema_source_none_when_no_output_schema(
     assert "needs_human" in cases[0].labels
 
 
-async def test_d9_known_kwarg_set_still_uses_fast_path():
-    """Inverse case: a CodeSpectra-shaped kwarg set still routes through the archetype builder."""
+async def test_d9_known_kwarg_set_routes_through_generic():
+    """CS-310 Slice 4: CodeSpectra-shaped kwarg sets now route through the generic path (all archetype builders deleted)."""
     config = _rag_config("glossary", "rag_single_shot")
-    # glossary's exact kwarg set is in _KNOWN_SHAPE_KWARG_SETS
+    # glossary's exact kwarg set was in _KNOWN_SHAPE_KWARG_SETS; now all retrieval agents use generic
     config["contract"]["invocation"] = {
         "kwargs": [
             {"name": "provider_id"}, {"name": "model_id"},
@@ -416,7 +429,7 @@ async def test_d9_known_kwarg_set_still_uses_fast_path():
     cases = await generate(config, llm_client)
 
     assert len(cases) == 1
-    assert cases[0].input["shape"] == "retrieval_only"  # fast-path builder shape, not "generic"
+    assert cases[0].input["shape"] == "generic"  # All retrieval agents use generic path now
 
 
 async def test_dispatch_fan_in_judge_routes_by_shape_not_agent_id():

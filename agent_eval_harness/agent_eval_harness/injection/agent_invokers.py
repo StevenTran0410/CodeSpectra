@@ -120,7 +120,7 @@ async def invoke_architecture(
     return await agent.run(
         provider_id, model_id, _SNAPSHOT_ID,
         arch_bundle=(bundle if case_input.get("inherit_bundle", True) else None),
-        identity_output=case_input.get("identity_output"),
+        identity_output=case_input.get("project_identity_output"),
         folder_tree=case_input.get("folder_tree", ""),
         profile=neutral_profile(),
     )
@@ -137,7 +137,7 @@ async def invoke_structure(
             provider_id, model_id, _SNAPSHOT_ID,
             arch_bundle=(bundle if case_input.get("inherit_bundle", True) else None),
             folder_tree=case_input.get("folder_tree", ""),
-            identity_output=case_input.get("identity_output"),
+            identity_output=case_input.get("project_identity_output"),
             profile=neutral_profile(),
         )
 
@@ -171,7 +171,7 @@ async def invoke_feature_map(
     agent = FeatureMapAgent(provider_service, make_mock_retrieval(bundle))
     return await agent.run(
         provider_id, model_id, _SNAPSHOT_ID,
-        identity_output=case_input.get("identity_output"),
+        identity_output=case_input.get("project_identity_output"),
         architecture_output=case_input.get("architecture_output"),
         folder_tree=case_input.get("folder_tree", ""),
         profile=neutral_profile(),

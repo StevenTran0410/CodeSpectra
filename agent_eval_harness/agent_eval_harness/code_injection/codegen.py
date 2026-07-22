@@ -1,7 +1,4 @@
-"""Codegen: generates per-agent dispatch modules and retrieval stubs from CompileFacts.
-
-All generated code is deterministic and auditable (grep-clean for target literals).
-"""
+"""Codegen: generates per-agent dispatch modules and retrieval stubs from CompileFacts; all generated code is deterministic and auditable (grep-clean for target literals)."""
 from __future__ import annotations
 
 import hashlib
@@ -10,7 +7,7 @@ import textwrap
 from typing import Any
 
 from agent_eval_harness.code_injection.facts import AgentFacts, Resolved
-from agent_eval_harness.datasets.archetype_vocabulary import EVIDENCE_CASE_KEY
+from agent_eval_harness.datasets.archetype_vocabulary import EVIDENCE_CASE_KEY, VIRTUAL_BINDING_PREFIX
 
 logger = logging.getLogger("agent_eval_harness.code_injection.codegen")
 
@@ -53,12 +50,7 @@ def _generate_in_harness_dispatch(agent_facts: AgentFacts) -> str:
         "        #      live client, or the agent reads the real repo instead of this case.\n"
         if agent_facts.has_retrieval_signal else ""
     )
-    stub_setup = (
-        "\n        # This agent retrieves internally, so the case's evidence reaches it only here.\n"
-        "        from retrieval_stub import make_retrieval_stub\n"
-        f'        retrieval = make_retrieval_stub(case["input"].get("{EVIDENCE_CASE_KEY}"))\n'
-        if agent_facts.has_retrieval_signal else ""
-    )
+    stub_setup = _build_stub_setup_code(agent_facts)
     unusable_note = (
         "\n        # Ignored by design — the entry method has no parameter for these, so the agent\n"
         f"        # builds that context itself: {', '.join(agent_facts.unconsumed_case_fields)}"
@@ -180,6 +172,41 @@ def _constructor_deps(agent_facts: AgentFacts) -> list[str]:
     return list(agent_facts.constructor_deps)
 
 
+def _build_stub_setup_code(agent_facts: AgentFacts) -> str:
+    """Generate Python code to set up retrieval stub(s) from virtual inputs (single-dep output matches the legacy shape); falls back to EVIDENCE_CASE_KEY when none were harvested."""
+    if not agent_facts.has_retrieval_signal:
+        return ""
+
+    virtual = []
+    if isinstance(agent_facts.case_binding, Resolved) and agent_facts.case_binding.value:
+        virtual = [
+            (dep_attr, expr[len(VIRTUAL_BINDING_PREFIX):])
+            for dep_attr, expr in agent_facts.case_binding.value.items()
+            if expr.startswith(VIRTUAL_BINDING_PREFIX)
+        ]
+
+    if not virtual:
+        # Degrade path: no virtual inputs harvested — fall back to the default evidence key, but log since retrieval signal is true with an empty virtual list.
+        if agent_facts.has_retrieval_signal:
+            agent_id = agent_facts.agent_id
+            logger.warning(
+                f"retrieval agent {agent_id} produced no virtual_inputs — falling back to default bundle key; "
+                f"harvester may not cover this dependency-injection pattern"
+            )
+        return (
+            "\n        # This agent retrieves internally, so the case's evidence reaches it only here.\n"
+            "        from retrieval_stub import make_retrieval_stub\n"
+            f'        retrieval = make_retrieval_stub(case["input"].get("{EVIDENCE_CASE_KEY}"))\n'
+        )
+
+    # Virtual inputs exist: build stubs for each, using dep_attr names
+    lines = ["\n        from retrieval_stub import make_retrieval_stub"]
+    for dep_attr, case_key in virtual:
+        var = dep_attr.lstrip("_") or dep_attr
+        lines.append(f'        {var} = make_retrieval_stub(case["input"].get("{case_key}"))')
+    return "\n".join(lines) + "\n"
+
+
 def _build_kwargs_code(case_binding: Any, agent_facts: AgentFacts) -> str:
     """Generate Python code to build kwargs dict from case_binding.
 
@@ -213,6 +240,10 @@ def _build_kwargs_code(case_binding: Any, agent_facts: AgentFacts) -> str:
             lit = binding_expr[6:]
             lines.append(f'kwargs["{kwarg_name}"] = "{lit}"')
 
+        elif binding_expr.startswith(VIRTUAL_BINDING_PREFIX):
+            # Virtual inputs are handled separately in _build_stub_setup_code, not here
+            continue
+
         else:
             logger.warning(f"Unknown binding prefix in {kwarg_name}={binding_expr}")
 
@@ -227,10 +258,7 @@ def _json_path_parts(path: str) -> list[str]:
 
 
 def generate_retrieval_stub(agent_facts: AgentFacts) -> str:
-    """Skeleton for the retrieval stub; its interface is the target's, so it is not invented.
-
-    Guessing the method shape here once left agents running on zero evidence while still reporting success.
-    """
+    """Skeleton for the retrieval stub; its interface is the target's so it's never invented here — guessing the method shape once left agents running on zero evidence while still reporting success."""
     if not agent_facts.has_retrieval_signal:
         return ""
 

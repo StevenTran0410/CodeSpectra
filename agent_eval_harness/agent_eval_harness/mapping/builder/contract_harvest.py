@@ -45,6 +45,23 @@ class _SchemaResolveCtx:
     conventions: ContractConventions | None
 
 
+@dataclass
+class ConstructorDepBinding:
+    """Mapping from constructor parameter to self attribute and usage site."""
+    param: str
+    attr: str
+    annotation: str | None = None
+
+
+@dataclass
+class DepCallSite:
+    """A call to a dependency method or free-function reference."""
+    dep_attr: str
+    method: str
+    citation: str
+    via: str
+
+
 def _parse_files(files: list[Path]) -> dict[Path, ast.Module]:
     asts: dict[Path, ast.Module] = {}
     for file in files:
@@ -166,6 +183,164 @@ def _harvest_constructor_deps(cls: ast.ClassDef) -> list[str]:
     return []
 
 
+def _harvest_constructor_dep_bindings(cls: ast.ClassDef) -> list[ConstructorDepBinding]:
+    """Extract param->attr bindings from __init__ body."""
+    init_node = None
+    for node in cls.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "__init__":
+            init_node = node
+            break
+    if init_node is None:
+        return []
+
+    param_annot = {}
+    for arg in init_node.args.args[1:]:
+        param_annot[arg.arg] = _unparse(arg.annotation) if arg.annotation else None
+
+    bindings = []
+    for stmt in init_node.body:
+        if not isinstance(stmt, ast.Assign):
+            continue
+        if not (len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Attribute)):
+            continue
+        attr_node = stmt.targets[0]
+        if not (isinstance(attr_node.value, ast.Name) and attr_node.value.id == "self"):
+            continue
+        if not isinstance(stmt.value, ast.Name):
+            continue
+
+        param_name = stmt.value.id
+        attr_name = attr_node.attr
+        if param_name in param_annot:
+            bindings.append(ConstructorDepBinding(
+                param=param_name,
+                attr=attr_name,
+                annotation=param_annot[param_name]
+            ))
+    return bindings
+
+
+def _harvest_dep_call_sites(
+    entry: ast.FunctionDef | ast.AsyncFunctionDef | None,
+    dep_bindings: list[ConstructorDepBinding],
+    own_tree: ast.Module,
+    own_file: Path,
+    asts: dict[Path, ast.Module],
+    files_root: Path | None,
+) -> list[DepCallSite]:
+    """Find direct and free-function call sites referencing deps."""
+    if entry is None or not dep_bindings:
+        return []
+
+    dep_attrs = {b.attr for b in dep_bindings}
+    call_sites = []
+
+    for node in ast.walk(entry):
+        if not isinstance(node, ast.Call):
+            continue
+
+        # Pattern (a): Direct method call: self.<dep_attr>.<method>(...)
+        if (isinstance(node.func, ast.Attribute) and
+            isinstance(node.func.value, ast.Attribute) and
+            isinstance(node.func.value.value, ast.Name) and
+            node.func.value.value.id == "self" and
+            node.func.value.attr in dep_attrs):
+
+            method_name = node.func.attr
+            dep_attr = node.func.value.attr
+            citation = _rel_cite(own_file, node.lineno, files_root)
+            call_sites.append(DepCallSite(
+                dep_attr=dep_attr,
+                method=method_name,
+                citation=citation,
+                via="direct"
+            ))
+
+        # Pattern (b): Free-function with dep as keyword arg: func(dep_attr=self.<dep_attr>, ...)
+        elif isinstance(node.func, ast.Name):
+            func_name = node.func.id
+            resolved_func = _resolve_callable(func_name, own_tree, own_file, asts)
+            if resolved_func is None:
+                # The free function may live in a file not yet parsed (e.g. imported from a sibling module) — load it and retry once.
+                if _load_import_target_from_disk(own_tree, func_name, own_file, files_root, asts):
+                    resolved_func = _resolve_callable(func_name, own_tree, own_file, asts)
+            if resolved_func is None:
+                continue
+
+            func_def, func_file = resolved_func
+
+            # Check if any keyword arg references one of our deps
+            for keyword in node.keywords:
+                if (isinstance(keyword.value, ast.Attribute) and
+                    isinstance(keyword.value.value, ast.Name) and
+                    keyword.value.value.id == "self" and
+                    keyword.value.attr in dep_attrs):
+
+                    dep_attr = keyword.value.attr
+                    param_name = keyword.arg
+
+                    for func_stmt in ast.walk(func_def):
+                        if (isinstance(func_stmt, ast.Call) and
+                            isinstance(func_stmt.func, ast.Attribute) and
+                            isinstance(func_stmt.func.value, ast.Name) and
+                            func_stmt.func.value.id == param_name):
+
+                            method_name = func_stmt.func.attr
+                            citation = _rel_cite(own_file, node.lineno, files_root)
+                            call_sites.append(DepCallSite(
+                                dep_attr=dep_attr,
+                                method=method_name,
+                                citation=citation,
+                                via=f"free_function:{func_name}"
+                            ))
+                            break
+
+    return call_sites
+
+
+def _harvest_dep_usage_fields(
+    entry: ast.FunctionDef | ast.AsyncFunctionDef | None,
+    call_site_vars: dict[tuple[str, str], str],
+) -> set[str]:
+    """Extract field names accessed via .get() or subscript on dep result variables."""
+    if entry is None or not call_site_vars:
+        return set()
+
+    fields = set()
+    target_vars = set(call_site_vars.values())
+
+    for node in ast.walk(entry):
+        if isinstance(node, ast.Call):
+            if (isinstance(node.func, ast.Attribute) and
+                node.func.attr == "get" and
+                isinstance(node.func.value, ast.Name) and
+                node.func.value.id in target_vars and
+                node.args and
+                isinstance(node.args[0], ast.Constant) and
+                isinstance(node.args[0].value, str)):
+                fields.add(node.args[0].value)
+
+        elif isinstance(node, ast.Subscript):
+            if (isinstance(node.value, ast.Name) and
+                node.value.id in target_vars and
+                isinstance(node.slice, ast.Constant) and
+                isinstance(node.slice.value, str)):
+                fields.add(node.slice.value)
+
+    return fields
+
+
+def _dep_role_for_annotation(annotation: str | None, keywords_by_role: dict[str, list[str]]) -> str:
+    """Match annotation against role keywords."""
+    if not annotation:
+        return "unknown"
+    for role, keywords in keywords_by_role.items():
+        for keyword in keywords:
+            if keyword in annotation:
+                return role
+    return "unknown"
+
+
 def _derive_case_binding(kwargs: list[KwargSpec]) -> dict[str, str]:
     """Derive case→kwarg bindings from archetype field-vocabulary (KWARG_CASE_KEY_MAPPING in archetype_vocabulary.py — the one canonical source), falling back to a same-name guess only when the vocabulary has no mapping."""
     binding: dict[str, str] = {}
@@ -239,6 +414,52 @@ def _import_source_file(
     return None
 
 
+def _load_import_target_from_disk(
+    own_tree: ast.Module, name: str, own_file: Path | None,
+    files_root: Path | None, asts: dict[Path, ast.Module],
+) -> bool:
+    """Best-effort: resolves `from [.]mod import name` to a .py on disk and adds it to `asts` so `_resolve_callable` can follow into an imported free function. Returns True if newly added."""
+    if files_root is None or own_file is None:
+        return False
+    for node in own_tree.body:
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        if not any((a.asname or a.name) == name for a in node.names):
+            continue
+        mod = node.module or ""
+        level = node.level or 0
+        candidates: list[Path] = []
+        if level > 0:  # relative import — resolve against own_file's package
+            base = (files_root / own_file).parent
+            for _ in range(level - 1):
+                base = base.parent
+            parts = mod.split(".") if mod else []
+            candidates.append(base.joinpath(*parts).with_suffix(".py") if parts else base / f"{name}.py")
+        elif mod:  # absolute import — the module's source root may be the repo root or any
+            # top-level source directory (src, app, lib, server, ...). Try each generically —
+            # no framework/layout-specific name is assumed.
+            rel = Path(*mod.split(".")).with_suffix(".py")
+            candidates.append(files_root / rel)
+            try:
+                for child in sorted(files_root.iterdir()):
+                    if (child.is_dir() and not child.name.startswith(".")
+                            and child.name not in ("node_modules", "__pycache__", "venv")):
+                        candidates.append(child / rel)
+            except Exception:
+                pass
+        for disk in candidates:
+            try:
+                if disk.exists():
+                    tree_mod = ast.parse(disk.read_text(encoding="utf-8"))
+                    key = Path("/".join(mod.split("."))).with_suffix(".py") if mod else Path(f"{name}.py")
+                    if key not in asts:
+                        asts[key] = tree_mod
+                    return True
+            except Exception:
+                continue
+    return False
+
+
 def _find_name_assignment(tree: ast.Module, name: str) -> tuple[ast.expr, int] | None:
     """Returns (value_node, lineno) for a module-level `NAME = ...` / `NAME: T = ...`."""
     for node in tree.body:
@@ -257,9 +478,7 @@ def _find_name_assignment(tree: ast.Module, name: str) -> tuple[ast.expr, int] |
 def _name_search_order(
     asts: dict[Path, ast.Module], name: str, own_file: Path | None
 ) -> list[Path]:
-    """File search order for resolving a module-level NAME: own_file's import source, then
-    own_file itself, then every other parsed file — shared by the str-constant and dict-literal
-    resolvers below since they both need "prefer where NAME was imported from."""
+    """File search order for resolving a module-level NAME: own_file's import source, then own_file, then every other parsed file — shared by the str-constant/dict-literal resolvers below."""
     search_order: list[Path] = []
     if own_file is not None and own_file in asts:
         imported_from = _import_source_file(asts[own_file], name, asts)
@@ -381,8 +600,7 @@ def _is_required(node: ast.expr) -> bool:
 
 
 def _resolve_class_schema(name: str, ctx: _SchemaResolveCtx) -> tuple[dict, str] | None:
-    """Resolve a class schema by name, dispatching by kind (TypedDict, Pydantic, dataclass).
-    Returns (schema, source) or None if unresolvable. Cycle-guarded by visited set, depth-capped."""
+    """Resolve a class schema by name (TypedDict/Pydantic/dataclass); returns (schema, source) or None if unresolvable. Cycle-guarded by visited set, depth-capped."""
     if ctx.depth >= _MAX_SCHEMA_DEPTH or name in ctx.visited:
         return None
     ctx.visited.add(name)
@@ -738,8 +956,19 @@ def harvest_contracts(
                 schema_snippet = json.dumps(
                     up_contract.output.json_schema, ensure_ascii=False
                 )[:_SCHEMA_SNIPPET_MAX_CHARS]
+
+                # Look up actual kwarg name from downstream agent's case_binding instead of guessing
+                spec_name = f"{up_agent_id}_output"  # fallback
+                down_contract = contracts.get(agent.id)
+                if down_contract and down_contract.invocation and down_contract.invocation.case_binding:
+                    target_value = f"case:$.input.{up_agent_id}_output"
+                    for kwarg_name, binding_value in down_contract.invocation.case_binding.items():
+                        if binding_value == target_value:
+                            spec_name = kwarg_name
+                            break
+
                 specs.append({
-                    "name": f"{up_agent_id}_output",
+                    "name": spec_name,
                     "description": f"the {up_agent_id} agent's output — JSON schema: {schema_snippet}",
                 })
         if specs:

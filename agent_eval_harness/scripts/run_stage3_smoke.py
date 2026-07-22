@@ -30,6 +30,7 @@ import random
 import sqlite3
 import sys
 from pathlib import Path
+from typing import Any
 
 # --- paths + env (must be set before AEH/backend DB modules read them) ---
 _REPO = Path(__file__).resolve().parents[2]  # scripts -> agent_eval_harness -> <repo>
@@ -288,10 +289,27 @@ async def run(args) -> None:
         # --- STAGE 3a: plan generation (in-memory, no writes) ---
         from agent_eval_harness.planning.agentic_planner import generate_plan_agentic
         print("[stage 3a] generating plan (analyst + gate design + reconcile + critic)...")
+
+        # Load AgentKnowledge (including virtual_inputs) per agent for Slice 3.1 merge
+        agent_knowledge_by_id: dict[str, Any] = {}
+        for agent in sub_flow.agents:
+            try:
+                row = await repository.get_agent_knowledge(session_id, agent.id)
+                if not row:
+                    continue
+                json_path = row.get("json_path")
+                if not json_path or not Path(json_path).exists():
+                    continue
+                raw = json.loads(Path(json_path).read_text(encoding="utf-8"))
+                agent_knowledge_by_id[agent.id] = raw
+            except Exception as e:
+                print(f"[warn] could not load knowledge for {agent.id}: {e}")
+
         suite, report = await generate_plan_agentic(
             system_map, sub_flow, source_by_component, sess["accepted_edges"], llm,
             files=harvest_files, files_root=local_path,
             project_context=None, conventions=conventions,
+            agent_knowledge_by_id=agent_knowledge_by_id,
         )
         for ar in report.agents:
             if ar.agent_id in chosen_ids:

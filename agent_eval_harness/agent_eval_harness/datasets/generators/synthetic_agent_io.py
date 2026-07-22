@@ -4,7 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from typing import Any
 
 import json_repair
@@ -32,9 +32,9 @@ _CONFIDENCE_ENUM = ("low", "medium", "high")
 _CONFIDENCE_FIELD_RULE = f"Any field literally named 'confidence' must be one of: {', '.join(_CONFIDENCE_ENUM)}."
 _AVOID_LIMIT_CHARS = 2000
 _MAX_FAILURE_MODES_IN_PROMPT = 5
-# D6 embedding dedup: >= this cosine-sim auto-drops a candidate as a near-exact repeat.
+# Embedding dedup: >= this cosine-sim auto-drops a candidate as a near-exact repeat.
 _DEDUP_AUTO_DROP_THRESHOLD = 0.93
-# D6 embedding dedup: >= this cosine-sim (but below the drop threshold) flags near_duplicate=True.
+# Embedding dedup: >= this cosine-sim (but below the drop threshold) flags near_duplicate=True.
 _DEDUP_NEAR_DUPLICATE_THRESHOLD = 0.80
 
 _GENERIC_PURPOSE_BY_ARCHETYPE: dict[str, str] = {
@@ -93,6 +93,8 @@ class SyntheticAgentIOConfig(BaseModel):
     profile: dict[str, Any] = {}
     failure_modes: list[str] = []
     input_contract: list[dict[str, Any]] = []
+    input_schemas: dict[str, dict[str, Any]] = {}
+    virtual_inputs: list[dict[str, Any]] = []
     context_builders: list[dict[str, Any]] = []
     count: int = 20
     painpoint: str | None = None
@@ -453,8 +455,7 @@ async def _generate_validated_cases(
         )
 
     def _with_required_ids(case_input: dict[str, Any]) -> dict[str, Any]:
-        """Fill required string kwargs an archetype shape drops, so the call still type-checks.
-        Omitting them made the agent reject its own request before any stub could answer."""
+        """Fills required string kwargs an archetype shape drops so the call still type-checks — omitting them made the agent reject its own request before any stub could answer."""
         invocation = parsed.contract.get("invocation") or {}
         config_names = config_kwarg_names_from_case_binding(invocation.get("case_binding"))
         for kwarg in invocation.get("kwargs") or []:
@@ -608,34 +609,6 @@ async def _generate_rag_query_planning_mem_ctx(
     )
 
 
-# RETAINED: these builders semantically expand a kwarg set the generic path can't reproduce, so removing this table regresses dataset quality; a foreign kwarg set never matches these 10 shapes and falls through to _generate_generic anyway.
-_KNOWN_SHAPE_KWARG_SETS: dict[str, frozenset[str]] = {
-    "rag_single_shot:glossary": frozenset({"provider_id", "model_id", "snapshot_id", "profile"}),
-    "rag_single_shot:important_files": frozenset({"provider_id", "model_id", "snapshot_id", "graph_summary", "profile"}),
-    "rag_mem_ctx:project_identity": frozenset({"provider_id", "model_id", "snapshot_id", "repo_name", "mem_ctx", "profile"}),
-    "rag_mem_ctx_participant:architecture": frozenset({"provider_id", "model_id", "snapshot_id", "graph_summary", "arch_bundle", "identity_output", "profile", "folder_tree"}),
-    "rag_mem_ctx_participant:structure": frozenset({"provider_id", "model_id", "snapshot_id", "arch_bundle", "folder_tree", "identity_output", "profile"}),
-    "rag_query_planning:conventions": frozenset({"provider_id", "model_id", "snapshot_id", "static_convention", "structure_output", "profile"}),
-    "rag_query_planning:risk": frozenset({"provider_id", "model_id", "snapshot_id", "static_risk", "profile"}),
-    "rag_upstream:violations": frozenset({"provider_id", "model_id", "snapshot_id", "static_convention", "static_risk", "conventions_output", "profile"}),
-    "rag_upstream:onboarding": frozenset({"provider_id", "model_id", "snapshot_id", "important_files_output", "profile"}),
-    "rag_query_planning_mem_ctx:feature_map": frozenset({"provider_id", "model_id", "snapshot_id", "graph_summary", "identity_output", "architecture_output", "profile", "folder_tree"}),
-}
-
-_KNOWN_KWARG_SET_VALUES: frozenset[frozenset[str]] = frozenset(_KNOWN_SHAPE_KWARG_SETS.values())
-
-_ARCHETYPE_BUILDERS: dict[
-    str,
-    Callable[[SyntheticAgentIOConfig, LLMClient, EmbeddingClient | None], Awaitable[list[DatasetCase]]],
-] = {
-    "fan_in_judge": _generate_fan_in_judge,
-    "rag_single_shot": _generate_rag_single_shot,
-    "rag_upstream": _generate_rag_upstream,
-    "rag_mem_ctx": _generate_rag_mem_ctx,
-    "rag_mem_ctx_participant": _generate_rag_mem_ctx_participant,
-    "rag_query_planning": _generate_rag_query_planning,
-    "rag_query_planning_mem_ctx": _generate_rag_query_planning_mem_ctx,
-}
 
 async def _generate_generic(
     parsed: SyntheticAgentIOConfig, llm_client: LLMClient,
@@ -687,6 +660,80 @@ async def _generate_generic(
                 desc += f", e.g. {example}"
             field_descs[name] = desc
 
+    # Recursively summarizes a resolved JSON schema to a nested type shape so the prompt constrains complex types at every level, not just the top.
+    def _summarize_schema(schema: Any, _depth: int = 0) -> Any:
+        if not isinstance(schema, dict) or _depth > 6:
+            return "any"
+        if schema.get("type") == "object" or "properties" in schema:
+            props = schema.get("properties") or {}
+            return {k: _summarize_schema(v, _depth + 1) for k, v in props.items()} or "object"
+        if schema.get("type") == "array":
+            items = schema.get("items")
+            return [_summarize_schema(items, _depth + 1)] if isinstance(items, dict) else "array"
+        return schema.get("type", "any")
+
+    def _coerce_to_schema(value: Any, schema: Any, _depth: int = 0) -> Any:
+        """Deterministically forces a generated value to structurally match its resolved schema at every level (object/array/scalar), guaranteeing faithful structure regardless of LLM drift; callers skip None so an absent Optional field stays absent."""
+        if not isinstance(schema, dict) or _depth > 8:
+            return value
+        stype = schema.get("type")
+        if stype == "object" or "properties" in schema:
+            props = schema.get("properties") or {}
+            if not props:
+                return value
+            src = value if isinstance(value, dict) else {}
+            return {k: _coerce_to_schema(src.get(k), sub, _depth + 1) for k, sub in props.items()}
+        if stype == "array":
+            item_schema = schema.get("items") if isinstance(schema.get("items"), dict) else {}
+            if isinstance(value, list):
+                return [_coerce_to_schema(v, item_schema, _depth + 1) for v in value]
+            if isinstance(value, str) and value.strip():
+                parts = [p.strip() for p in value.replace(",", "\n").splitlines() if p.strip()]
+                return [_coerce_to_schema(p, item_schema, _depth + 1) for p in parts]
+            return []
+        return value
+
+    field_schemas: dict[str, Any] = {}
+
+    # Overwrites the generic kwarg desc with the resolved nested schema so complex typed kwargs generate faithful structures; must not skip kwargs already in field_descs.
+    for kwarg_name, kwarg_schema in (parsed.input_schemas or {}).items():
+        schema_summary = _summarize_schema(kwarg_schema)
+        if not isinstance(schema_summary, dict) or not schema_summary:
+            continue  # type resolved to nothing usable — leave the existing desc
+        desc = (
+            f"a JSON object that MUST use EXACTLY the keys shown here at EVERY level — no renaming, "
+            f"no omissions, no extra keys — matching this nested structure (values are the types): "
+            f"{json.dumps(schema_summary)}"
+        )
+        if isinstance(kwarg_schema, dict) and kwarg_schema.get("description"):
+            desc = kwarg_schema["description"] + " — " + desc
+        field_descs[kwarg_name] = desc
+        field_schemas[kwarg_name] = kwarg_schema
+
+    # Process virtual_inputs (harvested retrieval bundles) — same strict-keys treatment.
+    for vi in (parsed.virtual_inputs or []):
+        name = vi.get("name")
+        if not name:
+            continue
+        fields = vi.get("fields") or []
+        schema_summary = {f["name"]: _summarize_schema(f.get("schema") or {}) for f in fields if f.get("name")}
+        if not schema_summary:
+            field_descs.setdefault(name, "the agent's internally-retrieved evidence object")
+            continue
+        example = next((f.get("example") for f in fields if f.get("example")), None)
+        desc = (
+            f"the agent's internally-retrieved evidence object; it MUST use EXACTLY the keys shown here "
+            f"at EVERY level — no renaming, no omissions, no extra keys — matching this nested structure "
+            f"(values are the types): {json.dumps(schema_summary)}"
+        )
+        if example:
+            desc += f", e.g. {example}"
+        field_descs[name] = desc
+        field_schemas[name] = {
+            "type": "object",
+            "properties": {f["name"]: (f.get("schema") or {}) for f in fields if f.get("name")},
+        }
+
     purpose = (parsed.profile or {}).get("purpose") or _generic_purpose_for_archetype(parsed.archetype)
     fields_block = json.dumps(field_descs, indent=2, ensure_ascii=False) if field_descs else "{}"
 
@@ -699,6 +746,11 @@ async def _generate_generic(
             f"Generate exactly {n} DISTINCT cases. Each case is an object with two keys: "
             f"'input' (matching the shape above) and 'gold' (the expected output, strictly "
             f"matching the schema).\n\n"
+            f"CRITICAL (faithfulness guard): keep every case internally consistent — every file "
+            f"path appearing anywhere in the input (evidence rel_paths, paths named in any context "
+            f"field) MUST also appear in any folder-tree / file-listing field present in that same "
+            f"input; never reference a file absent from the folder tree you generate. Every claim "
+            f"in 'gold' must be traceable to the input evidence you created.\n\n"
             f"Respond ONLY with a JSON array of {n} such objects. No markdown, no explanation."
         )
         if parsed.failure_modes:
@@ -707,14 +759,22 @@ async def _generate_generic(
             prompt += _avoid_addendum(avoid, detailed=False)
         return apply_painpoint(prompt, parsed.painpoint)
 
-    return await _generate_validated_cases(
+    cases = await _generate_validated_cases(
         parsed, llm_client, build_prompt, build_case_input=_shape_case_input("generic"),
         embedding_client=embedding_client,
     )
+    # Enforces faithful structure (keys/types/nesting) on every schema-typed field after generation so nested fields match the resolved type even when the LLM drifts; None stays untouched.
+    if field_schemas:
+        for case in cases:
+            if isinstance(case.input, dict):
+                for fname, fschema in field_schemas.items():
+                    if case.input.get(fname) is not None:
+                        case.input[fname] = _coerce_to_schema(case.input[fname], fschema)
+    return cases
 
 
 def _flag_schema_unvalidated(cases: list[DatasetCase], contract: dict[str, Any]) -> None:
-    """Stamp needs_human on every case when the agent's output schema wasn't statically harvestable — applied centrally so all archetype paths (fan_in_judge, known-kwarg fast-path, generic) are covered, not just generic."""
+    """Stamps needs_human on every case when the agent's output schema wasn't statically harvestable — applied centrally so both archetype paths (fan_in_judge, generic) are covered."""
     note = next(
         (n for n in (contract.get("needs_human") or []) if "no output schema statically harvestable" in n),
         "output schema unavailable — gold was not schema-validated",
@@ -729,16 +789,9 @@ async def _dispatch_builder(
     parsed: SyntheticAgentIOConfig, llm_client: LLMClient,
     embedding_client: EmbeddingClient | None,
 ) -> list[DatasetCase]:
+    # Only fan_in_judge has a specialized path; all retrieval agents use generic path with resolved schemas
     if parsed.archetype == "fan_in_judge":
         return await _generate_fan_in_judge(parsed, llm_client, embedding_client)
-    # An EMPTY kwarg set is NOT a known shape — it must degrade to the generic path, never the fast-path.
-    kwarg_names = frozenset(
-        k["name"] for k in ((parsed.contract.get("invocation") or {}).get("kwargs") or []) if k.get("name")
-    )
-    if kwarg_names and kwarg_names in _KNOWN_KWARG_SET_VALUES:
-        builder = _ARCHETYPE_BUILDERS.get(parsed.archetype)
-        if builder is not None:
-            return await builder(parsed, llm_client, embedding_client)
     return await _generate_generic(parsed, llm_client, embedding_client)
 
 
