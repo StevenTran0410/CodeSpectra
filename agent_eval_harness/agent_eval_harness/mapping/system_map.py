@@ -29,6 +29,7 @@ class Component(BaseModel):
     role_confidence: float | None = None
     role_source: str | None = None
     is_tool: bool | None = None
+    is_library_object: bool | None = None  # True for a framework/library link surfaced in a chain (LCEL): explicit degrade, never harvestable
     constructor_fanout: int | None = None
     constructor_downstream: list[str] | None = None  # WHICH siblings this constructs; fanout is its count
     model: str | None = None

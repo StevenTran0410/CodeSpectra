@@ -131,3 +131,17 @@ fingerprints:
     pattern: "@\\w+\\.list_tools\\("
     framework: "mcp"
     weight: 0.9
+
+  - id: tools_list_literal
+    type: retrieval
+    query: "tools"
+    pattern: "tools\\s*=\\s*\\["
+    framework: "unknown"
+    weight: 0.6
+
+  - id: tool_dispatch_loop
+    type: retrieval
+    query: "tool_calls"
+    pattern: "for\\s+\\w+\\s+in\\s+[\\w\\.]*tool_calls"
+    framework: "unknown"
+    weight: 0.7

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from agent_eval_harness.discovery.wiring import (
+    WiringBlock,
     _build_enclosing_class_map,
     _build_self_attr_classes,
     _build_stategraph_var_names,
@@ -507,9 +508,14 @@ class LangGraphScanner:
         return candidates
 
 
+from agent_eval_harness.mapping.builder.lcel_scanner import LCELScanner
+from agent_eval_harness.mapping.builder.plain_python_scanner import PlainPythonScanner
+
 # Tuple of classes (not a dict) so the lookup key IS the class's own `framework` attr — no
 # second source of truth to drift. CS-312/313 append their scanner class here.
-_REGISTERED_SCANNERS: tuple[type[FrameworkScanner], ...] = (HaystackScanner, LangGraphScanner)
+_REGISTERED_SCANNERS: tuple[type[FrameworkScanner], ...] = (
+    HaystackScanner, LangGraphScanner, LCELScanner, PlainPythonScanner,
+)
 
 
 def get_scanner(framework: str | None) -> FrameworkScanner:
@@ -520,7 +526,18 @@ def get_scanner(framework: str | None) -> FrameworkScanner:
     return HaystackScanner()
 
 
-def scan_all(source_files: list[Path]) -> tuple[list[CandidateComponent], str]:
+def _scan_one(scanner: FrameworkScanner, source_files: list[Path], wiring_block: "WiringBlock | None"):
+    """Call scanner.scan, passing wiring_block only to scanners whose signature accepts it (additive-safe:
+    Haystack/LangGraph keep scan(files); LCEL/PlainPython accept the optional llm_fallback block)."""
+    import inspect
+    if "wiring_block" in inspect.signature(scanner.scan).parameters:
+        return scanner.scan(source_files, wiring_block=wiring_block)
+    return scanner.scan(source_files)
+
+
+def scan_all(
+    source_files: list[Path], wiring_block: "WiringBlock | None" = None
+) -> tuple[list[CandidateComponent], str]:
     """Run every registered scanner over the same file set and merge, so a mixed cluster is
     covered by whichever scanner matches each file — a single first-hit-wins framework label can
     no longer starve the others. Each scanner self-gates per file (LangGraphScanner skips files
@@ -532,7 +549,7 @@ def scan_all(source_files: list[Path]) -> tuple[list[CandidateComponent], str]:
     merged: list[CandidateComponent] = []
     contributed: list[str] = []
     for cls in _REGISTERED_SCANNERS:
-        found = cls().scan(source_files)
+        found = _scan_one(cls(), source_files, wiring_block)
         if found:
             contributed.append(cls.framework)
         merged.extend(found)

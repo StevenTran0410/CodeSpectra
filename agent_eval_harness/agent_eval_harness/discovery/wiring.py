@@ -521,17 +521,93 @@ _BUILTIN_TYPE_NAMES = frozenset({
     "bytes", "bytearray", "complex", "object", "frozenset", "type", "Any", "None",
 })
 
+_NUMPY_DTYPE_ATTRS = frozenset({
+    "float16", "float32", "float64", "int8", "int16", "int32", "int64",
+    "uint8", "uint16", "uint32", "uint64", "bool_", "complex64", "complex128",
+})
+
 
 def _looks_like_type_union(operands: list) -> bool:
     """PEP 604 unions (`str | None`) parse to the same BinOp/BitOr AST shape as a
     LangChain LCEL chain — reject anything containing a bare constant (the `None`
-    in `X | None`) or a builtin type name, since a real pipe chain never does."""
+    in `X | None`), a builtin type name, a numpy-dtype union (`np.float32 | np.int64`),
+    or a flag-enum OR (`Flags.RED | Flags.BLUE`, by ALL-CAPS attr convention), since a
+    real pipe chain never does."""
     for op in operands:
         if isinstance(op, ast.Constant):
             return True
         if isinstance(op, ast.Name) and op.id in _BUILTIN_TYPE_NAMES:
             return True
+        if isinstance(op, ast.Attribute) and (
+            op.attr in _NUMPY_DTYPE_ATTRS or op.attr.isupper()
+        ):
+            return True
     return False
+
+
+# LangChain chain/runnable factory + wrapper constructors: each RETURNS a Runnable and takes prior
+# Runnables/retrievers/llms as args, so the composed graph is built by nested calls, not `|`. This is
+# the dominant production LCEL idiom. The set is LangChain-idiom-generic (not any one target's names).
+_LANGCHAIN_CHAIN_FACTORIES = frozenset({
+    "create_retrieval_chain", "create_history_aware_retriever", "create_stuff_documents_chain",
+    "create_sql_query_chain", "create_openai_tools_agent", "create_openai_functions_agent",
+    "create_tool_calling_agent", "create_react_agent",
+    "RunnableWithMessageHistory", "RunnableParallel", "RunnablePassthrough", "RunnableLambda",
+    "RunnableBranch", "RunnableSequence", "RunnableMap", "RunnableAssign",
+})
+# A `<vectorstore>.as_retriever(...)` call also produces a Runnable (a retriever) that later factories
+# consume; matched by method name (attribute call), import-gated below.
+_RETRIEVER_FACTORY_METHOD = "as_retriever"
+
+
+def _imports_langchain(tree: ast.AST) -> bool:
+    """True if the file imports from any langchain* package — a cheap gate so the factory idiom
+    (esp. the generic `.as_retriever()` method) never false-positives on non-LangChain code."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module and node.module.split(".")[0].startswith("langchain"):
+            return True
+        if isinstance(node, ast.Import) and any(a.name.split(".")[0].startswith("langchain") for a in node.names):
+            return True
+    return False
+
+
+def _langchain_chain_factories(
+    tree: ast.AST, file: str, nodes: dict, edges: list
+) -> None:
+    """Factory-function LCEL idiom: `V = create_retrieval_chain(a, b)` / `V = x.as_retriever(...)`.
+    Each produced variable is a Runnable node; edges come from call ARGS that name a prior produced
+    Runnable (linkage is by argument, not `|`). Walks module AND function bodies, so chains built
+    inside a `build_chain()`-style factory function and returned are seen. Import-gated."""
+    if not _imports_langchain(tree):
+        return
+
+    def _produced_var(node: ast.AST) -> tuple[str, ast.Call] | None:
+        if (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and isinstance(node.value, ast.Call)
+        ):
+            callee = _call_func_name(node.value)
+            if callee in _LANGCHAIN_CHAIN_FACTORIES or callee == _RETRIEVER_FACTORY_METHOD:
+                return node.targets[0].id, node.value
+        return None
+
+    produced: dict[str, ast.Call] = {}
+    for node in ast.walk(tree):
+        pv = _produced_var(node)
+        if pv is not None:
+            produced[pv[0]] = pv[1]
+
+    for var, call in produced.items():
+        nodes.setdefault(var, WiringNode(
+            alias=var, callee_name=var, source_hint_file=file,
+            entry_kind="function", owner_class=None,
+        ))
+        arg_exprs = list(call.args) + [kw.value for kw in call.keywords]
+        for arg in arg_exprs:
+            if isinstance(arg, ast.Name) and arg.id in produced and arg.id != var:
+                edges.append(WiringEdge(src=var, dst=arg.id))
 
 
 def _detect_langchain_lcel(
@@ -541,6 +617,7 @@ def _detect_langchain_lcel(
     edges = []
 
     for file, tree in _iter_parsed_files(file_contents, cache):
+        _langchain_chain_factories(tree, file, nodes, edges)
         processed_binops = set()
 
         for node in ast.walk(tree):

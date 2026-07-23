@@ -62,7 +62,7 @@ class SystemMapBuilder:
         docs_path: Path | None = None, wiring_block: WiringBlock | None = None,
     ) -> tuple[SystemMap, str]:
         """Same as build(), but the caller supplies the exact file set directly instead of a directory glob."""
-        all_candidates, framework_label = scan_all(files)
+        all_candidates, framework_label = scan_all(files, wiring_block=wiring_block)
         return await self._build_from_candidates(
             all_candidates, files, package_root, target_system_id, docs_path, wiring_block,
             framework_label=framework_label,
@@ -276,6 +276,7 @@ class SystemMapBuilder:
                 role_confidence=None,
                 role_source=None,
                 is_tool=candidate.is_tool,
+                is_library_object=candidate.is_library_object,
                 constructor_fanout=len(topology.constructor_downstream),
                 constructor_downstream=list(topology.constructor_downstream),
                 model=model,
@@ -303,12 +304,14 @@ class SystemMapBuilder:
 
         total = len(system_map.components)
         unknown_count = sum(1 for c in system_map.components if c.role == "unknown")
+        library_object_count = sum(1 for c in system_map.components if c.is_library_object)
 
         summary = "=== AEH System Map Summary ===\n"
         summary += f"target:           {system_map.target_system_id}\n"
         summary += f"components_found: {total}\n"
         summary += "role:             pending Stage 2.5 enrichment\n"
         summary += f"unknown:          {unknown_count}  (role classification happens in Stage 2.5, not here)\n"
+        summary += f"library_objects:  {library_object_count}  (explicit degrade - framework/library links in a chain, never harvestable)\n"
         summary += f"discrepancies:    {len(system_map.discrepancies)}\n"
 
         return summary

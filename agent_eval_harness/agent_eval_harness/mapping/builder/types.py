@@ -44,6 +44,7 @@ class CandidateComponent:
     registered_name: str | None = None  # dict key for tool candidates
     owner_class_name: str | None = None  # class owning this tool OR bound-method; entry_kind disambiguates, the two never co-occur
     entry_kind: str = "class"  # "class" | "function" | "bound_method"
+    is_library_object: bool = False  # LCEL library/framework link (ChatOpenAI, StrOutputParser) — surfaced then degraded, never harvestable
     source_snippet: str = ""  # first ~30 lines of the class/function body
     model_hints: list[str] = field(default_factory=list)
     manual_span_hints: list[ManualSpanHint] = field(default_factory=list)

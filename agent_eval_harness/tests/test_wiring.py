@@ -298,6 +298,67 @@ class StaticRiskConfig:
     assert wiring is None, f"type-union annotations must not produce a fake wiring block, got: {wiring}"
 
 
+def test_detect_langchain_lcel_ignores_numpy_dtype_union():
+    """`np.float32 | np.int64` is a numpy dtype union, not an LCEL chain — Attribute operands whose
+    attr is a known dtype must be rejected by the operand guard."""
+    code = """
+import numpy as np
+mixed_dtype = np.float32 | np.int64
+"""
+    assert _detect_langchain_lcel({"dtypes.py": code}) is None
+
+
+def test_detect_langchain_lcel_ignores_flag_enum_union():
+    """`LogLevel.DEBUG | LogLevel.INFO` is a flag-enum OR, not an LCEL chain — ALL-CAPS Attribute
+    operands must be rejected by the operand guard."""
+    code = """
+level = LogLevel.DEBUG | LogLevel.INFO
+"""
+    assert _detect_langchain_lcel({"flags.py": code}) is None
+
+
+def test_detect_langchain_lcel_factory_idiom():
+    """The dominant production LCEL idiom composes chains with factory functions (no `|`), inside a
+    function body, linked by call arguments. The detector must map the full node+edge graph."""
+    code = """
+from langchain.chains import create_history_aware_retriever, create_retrieval_chain
+from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain_openai import ChatOpenAI
+
+retriever = vectorstore.as_retriever(search_kwargs={"k": 2})
+
+def get_rag_chain(model="gpt-4o-mini"):
+    llm = ChatOpenAI(model=model)
+    history_aware_retriever = create_history_aware_retriever(llm, retriever, contextualize_q_prompt)
+    question_answer_chain = create_stuff_documents_chain(llm, qa_prompt)
+    rag_chain = create_retrieval_chain(history_aware_retriever, question_answer_chain)
+    return rag_chain
+"""
+    wiring = _detect_langchain_lcel({"langchain_utils.py": code})
+    assert wiring is not None
+    assert wiring.framework == "langchain"
+
+    callees = {n.callee_name for n in wiring.nodes}
+    assert callees == {"retriever", "history_aware_retriever", "question_answer_chain", "rag_chain"}
+
+    edges = {(e.src, e.dst) for e in wiring.edges}
+    assert edges == {
+        ("history_aware_retriever", "retriever"),
+        ("rag_chain", "history_aware_retriever"),
+        ("rag_chain", "question_answer_chain"),
+    }
+
+
+def test_detect_langchain_factory_idiom_import_gated():
+    """The factory idiom is import-gated: the same call shapes without a langchain import must NOT
+    produce a wiring block (keeps `.as_retriever()` from false-positiving on non-LangChain code)."""
+    code = """
+retriever = store.as_retriever(k=2)
+chain = create_retrieval_chain(a, b)
+"""
+    assert _detect_langchain_lcel({"not_langchain.py": code}) is None
+
+
 @pytest.mark.anyio
 async def test_detect_via_llm():
     custom_code = """
