@@ -518,3 +518,23 @@ def get_scanner(framework: str | None) -> FrameworkScanner:
         if cls.framework == framework:
             return cls()
     return HaystackScanner()
+
+
+def scan_all(source_files: list[Path]) -> tuple[list[CandidateComponent], str]:
+    """Run every registered scanner over the same file set and merge, so a mixed cluster is
+    covered by whichever scanner matches each file — a single first-hit-wins framework label can
+    no longer starve the others. Each scanner self-gates per file (LangGraphScanner skips files
+    with no langgraph import and no StateGraph var; HaystackScanner yields nothing without a
+    @component/add_component), so union over disjoint idioms adds no false positives. Cross-scanner
+    duplicates (a file+symbol claimed twice) collapse via _dedup_and_sort's (file, class_name,
+    tag_suffix) key; registry order decides the survivor on a genuine tie. The returned label is the
+    '+'-joined sorted names of the frameworks that actually contributed >=1 candidate ('' if none)."""
+    merged: list[CandidateComponent] = []
+    contributed: list[str] = []
+    for cls in _REGISTERED_SCANNERS:
+        found = cls().scan(source_files)
+        if found:
+            contributed.append(cls.framework)
+        merged.extend(found)
+    label = "+".join(sorted(set(contributed)))
+    return _dedup_and_sort(merged), label

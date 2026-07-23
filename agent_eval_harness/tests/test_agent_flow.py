@@ -222,6 +222,41 @@ def test_build_source_by_component_recovers_snippet_via_rescan(tmp_path: Path) -
     assert "Does widget things" in result["widget"]
 
 
+def test_build_source_by_component_recovers_langgraph_snippet_in_mixed_map(tmp_path: Path) -> None:
+    """CS-316 second-consumer fix: a langgraph component in a 'haystack+langgraph' map must have its
+    snippet re-derived via the union scan. Under the old get_scanner(framework) path, the joined
+    label fell back to HaystackScanner, which self-gates to 0 on a langgraph file, so the snippet
+    vanished. file='' removes the fallback, so a non-empty snippet PROVES the union scan found it."""
+    source_file = tmp_path / "agent.py"
+    source_file.write_text(
+        "from langgraph.graph import StateGraph\n\n"
+        "class Agent:\n"
+        "    def build(self):\n"
+        "        graph = StateGraph(dict)\n"
+        "        graph.add_node('investigate', self._node_investigate)\n"
+        "        return graph\n"
+        "    def _node_investigate(self, state):\n"
+        "        return 'DISTINCTIVE_BODY_TOKEN'\n"
+    )
+    system_map = SystemMap(
+        target_system_id="mixed_system",
+        framework="haystack+langgraph",
+        components=[
+            Component(
+                id="_node_investigate",
+                role="unknown",
+                entry_point="agent:Agent._node_investigate",
+                file="",
+            )
+        ],
+    )
+
+    result = build_source_by_component([source_file], system_map)
+
+    assert result["_node_investigate"], "union scan should re-derive the langgraph snippet"
+    assert "DISTINCTIVE_BODY_TOKEN" in result["_node_investigate"]
+
+
 def test_build_source_by_component_falls_back_gracefully_when_unmatched() -> None:
     """A component the re-scan can't find must degrade to an empty/fallback string, never raise."""
     system_map = SystemMap(

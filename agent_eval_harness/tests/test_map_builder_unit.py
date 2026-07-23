@@ -8,7 +8,11 @@ import pytest
 from agent_eval_harness.mapping.builder.constraints import mine_constraints
 from agent_eval_harness.mapping.builder.pipeline import SystemMapBuilder
 from agent_eval_harness.mapping.builder.prompts import ROLE_TAXONOMY
-from agent_eval_harness.mapping.builder.scanners import HaystackScanner, LangGraphScanner
+from agent_eval_harness.mapping.builder.scanners import (
+    HaystackScanner,
+    LangGraphScanner,
+    scan_all,
+)
 from agent_eval_harness.mapping.builder.topology import extract_topology
 
 
@@ -300,6 +304,60 @@ class TestLangGraphScanner:
         for tgt, count in expected.items():
             files = sorted((target_root / tgt).glob("**/*.py"))
             assert len(HaystackScanner().scan(files)) == count, tgt
+
+
+class TestScanAll:
+    """CS-316: run every registered scanner over one file set and merge (mixed-cluster dispatch)."""
+
+    def test_haystack_fixtures_equal_haystack_only_counts_and_label(self, target_root: Path):
+        """Highest-risk invariant: over a pure-Haystack fixture, scan_all == HaystackScanner-only
+        (LangGraphScanner self-gates to 0), and the contributed label is exactly 'haystack'."""
+        expected = {"linear_rag": 2, "multi_agent": 7, "t3_reranker": 3}
+        for tgt, count in expected.items():
+            files = sorted((target_root / tgt).glob("**/*.py"))
+            candidates, label = scan_all(files)
+            assert len(candidates) == count, tgt
+            assert len(candidates) == len(HaystackScanner().scan(files)), tgt
+            assert label == "haystack", tgt
+
+    def test_langgraph_fixture_labels_langgraph(self, target_root: Path):
+        files = sorted((target_root / "langgraph_agent").glob("*.py"))
+        candidates, label = scan_all(files)
+        assert len(candidates) == 4
+        assert label == "langgraph"
+
+    def test_mixed_set_unions_both_scanners_and_joins_label(self, target_root: Path):
+        """A mixed cluster (Haystack files + a LangGraph file) yields BOTH scanners' candidates and
+        a '+'-joined sorted label — the exact scenario that produced 0 langgraph nodes before."""
+        files = sorted((target_root / "linear_rag").glob("**/*.py"))
+        files += sorted((target_root / "langgraph_agent").glob("*.py"))
+        candidates, label = scan_all(files)
+        names = {c.class_name for c in candidates}
+        assert len(candidates) == 6  # 2 haystack + 4 langgraph
+        assert {"RetrieverComponent", "WriterComponent"} <= names
+        assert {"_node_investigate", "_node_synthesize"} <= names
+        assert label == "haystack+langgraph"
+
+    def test_dedups_file_claimed_by_two_scanners(self):
+        """A single file matched by BOTH scanners (a @component class also used as an add_node
+        target) must not double-count: _dedup_and_sort's (file, class_name, tag_suffix) key
+        collapses it to one, registry order (haystack first) keeping the survivor."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            file_a = Path(tmp_dir) / "app.py"
+            file_a.write_text(
+                "from haystack import component\n"
+                "from langgraph.graph import StateGraph\n\n"
+                "@component\n"
+                "class Foo:\n    pass\n\n"
+                "def build():\n"
+                "    graph = StateGraph(dict)\n"
+                "    graph.add_node('x', Foo)\n"
+                "    return graph\n"
+            )
+            candidates, label = scan_all([file_a])
+            foo = [c for c in candidates if c.class_name == "Foo"]
+            assert len(foo) == 1, [c.class_name for c in candidates]
+            assert label == "haystack+langgraph"
 
 
 class TestTopology:

@@ -13,7 +13,7 @@ from agent_eval_harness.discovery.wiring import WiringBlock, wiring_identity
 
 from .constraints import mine_constraints, mine_constraints_llm_phase
 from .roles import ROLE_CONFIDENCE_THRESHOLD
-from .scanners import FrameworkScanner, get_scanner
+from .scanners import FrameworkScanner, get_scanner, scan_all
 from .topology import extract_topology
 from .types import CandidateComponent, TopologyEdges, parse_python_source
 
@@ -43,8 +43,9 @@ class SystemMapBuilder:
 
         files, composed_import_names = self._discover_source_files(target_path)
 
-        # Pass 1: Scan, keeping only candidates defined inside target dir or referenced compositionally
-        all_candidates = self._scanner.scan(files)
+        # Pass 1: Scan with every registered scanner (mixed clusters), keeping only candidates
+        # defined inside target dir or referenced compositionally.
+        all_candidates, framework_label = scan_all(files)
         candidates = [
             c for c in all_candidates
             if c.file in original_target_files or c.class_name in composed_import_names
@@ -52,7 +53,8 @@ class SystemMapBuilder:
 
         package_root = self._find_package_root(target_path)
         return await self._build_from_candidates(
-            candidates, files, package_root, target_path.name, docs_path
+            candidates, files, package_root, target_path.name, docs_path,
+            framework_label=framework_label,
         )
 
     async def build_from_files(
@@ -60,9 +62,10 @@ class SystemMapBuilder:
         docs_path: Path | None = None, wiring_block: WiringBlock | None = None,
     ) -> tuple[SystemMap, str]:
         """Same as build(), but the caller supplies the exact file set directly instead of a directory glob."""
-        all_candidates = self._scanner.scan(files)
+        all_candidates, framework_label = scan_all(files)
         return await self._build_from_candidates(
-            all_candidates, files, package_root, target_system_id, docs_path, wiring_block
+            all_candidates, files, package_root, target_system_id, docs_path, wiring_block,
+            framework_label=framework_label,
         )
 
     async def _build_from_candidates(
@@ -73,11 +76,13 @@ class SystemMapBuilder:
         target_system_id: str,
         docs_path: Path | None,
         wiring_block: WiringBlock | None = None,
+        framework_label: str | None = None,
     ) -> tuple[SystemMap, str]:
         """Passes 2-6: structural mining through system map assembly, shared by build() and
         build_from_files(). Role classification moved to Stage 2.5 enrichment — every component
         leaves Stage 2 with role='unknown'; is_tool/constructor_fanout are persisted as data for
-        Stage 2.5's hard gate."""
+        Stage 2.5's hard gate. framework_label is the union-scan's contributed-frameworks string;
+        when absent (direct callers), fall back to the advisory single-scanner framework."""
         topology_map = extract_topology(files, candidates, wiring_block=wiring_block)
         constraint_map = mine_constraints(files, candidates, package_root)
         constraint_map = await mine_constraints_llm_phase(
@@ -90,7 +95,7 @@ class SystemMapBuilder:
         system_map = SystemMap.model_validate({
             "target_system_id": target_system_id,
             "components": [c.model_dump() for c in components],
-            "framework": self._scanner.framework,
+            "framework": framework_label if framework_label else self._scanner.framework,
             "discrepancies": discrepancies,
         })
         summary = self._build_summary(system_map)

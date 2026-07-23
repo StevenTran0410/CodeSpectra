@@ -13,7 +13,7 @@ from agent_eval_harness.discovery.expansion import extract_symbol_snippet
 from agent_eval_harness.llm.client import LLMClient, LLMMessage
 from agent_eval_harness.mapping.builder.prompts import AGENT_FLOW_SYSTEM
 from agent_eval_harness.mapping.builder.roles import VALID_ROLES
-from agent_eval_harness.mapping.builder.scanners import get_scanner
+from agent_eval_harness.mapping.builder.scanners import scan_all
 
 from .system_map import Component, SystemMap
 
@@ -54,7 +54,10 @@ def save_agent_flow_map(agent_flow_map: AgentFlowMap, path: str | Path) -> None:
 
 def build_source_by_component(files: list[Path], system_map: SystemMap) -> dict[str, str]:
     """Re-derive a source snippet per component — the persisted map has no snippet field."""
-    candidates = get_scanner(system_map.framework).scan(files)
+    # Union scan: a mixed-framework map (e.g. "haystack+langgraph") must re-derive snippets from
+    # every scanner, not just the one named in system_map.framework, or non-primary-framework
+    # components silently fall back to _fallback_snippet.
+    candidates, _framework_label = scan_all(files)
     snippet_by_candidate_id = {c.candidate_id: c.source_snippet for c in candidates}
 
     result: dict[str, str] = {}
