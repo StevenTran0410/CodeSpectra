@@ -179,3 +179,44 @@ async def test_consolidation_propagates_rate_limit() -> None:
 
     with pytest.raises(RateLimitExceeded):
         await consolidate_candidates(candidates, client, "snap", llm_client)
+
+
+@pytest.mark.anyio
+async def test_consolidation_split_siblings_same_community_id_do_not_clobber() -> None:
+    """Two per-system candidates split from one community share community_id but have distinct
+    system_id. Consolidation must key on system_id (via _cand_key) so their matched_files/provenance
+    never collide."""
+    candidates = [
+        {
+            "community_id": 10, "system_id": "10#haystack-aaaa", "name": "S — haystack",
+            "frameworks": ["haystack"],
+            "cluster_files": ["hay1.py", "hay2.py", "shared.py"], "hub_paths": ["hay1.py"],
+            "wiring_block": {"nodes": [{"source_hint_file": "hay1.py"},
+                                        {"source_hint_file": "hay2.py"}], "edges": []},
+        },
+        {
+            "community_id": 10, "system_id": "10#langgraph-bbbb", "name": "S — langgraph",
+            "frameworks": ["langgraph"],
+            "cluster_files": ["lg1.py", "lg2.py", "shared.py"], "hub_paths": ["lg1.py"],
+            "wiring_block": {"nodes": [{"source_hint_file": "lg1.py"},
+                                        {"source_hint_file": "lg2.py"}], "edges": []},
+        },
+    ]
+    # shared.py imports into the langgraph seed (lg2.py) -> must land ONLY on the langgraph sibling.
+    edges_map = {
+        "shared.py": {
+            "outgoing": [{"src_symbol": "shared.py::h", "dst_symbol": "lg2.py::run"}],
+            "incoming": [],
+        }
+    }
+    client = _StubClient(edges_map=edges_map)
+    res = await consolidate_candidates(candidates, client, "snap", AsyncMock())
+
+    hay = next(c for c in res if c["system_id"] == "10#haystack-aaaa")
+    lg = next(c for c in res if c["system_id"] == "10#langgraph-bbbb")
+    # Each keeps its OWN core seed intact — no clobber.
+    assert set(hay["matched_files"]) >= {"hay1.py", "hay2.py"}
+    assert set(lg["matched_files"]) >= {"lg1.py", "lg2.py"}
+    # shared.py resolves to the langgraph sibling only.
+    assert "shared.py" in lg["matched_files"]
+    assert "shared.py" not in hay["matched_files"]

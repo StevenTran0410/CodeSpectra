@@ -552,6 +552,8 @@ def scan_all(
         found = _scan_one(cls(), source_files, wiring_block)
         if found:
             contributed.append(cls.framework)
+        for c in found:
+            c.framework = cls.framework  # membership tag: lets a split map keep only its own framework's components
         merged.extend(found)
     label = "+".join(sorted(set(contributed)))
     return _dedup_and_sort(merged), label

@@ -65,7 +65,12 @@ export default function LLMConfigModal({
   const handleModelChange = (newModelId: string): void => {
     const style = modelInfos.find((m) => m.id === newModelId)?.reasoning_style ?? 'none'
     // Drop reasoning fields that don't apply to the newly selected model's style.
-    const nextEffort = style === 'effort' ? (reasoningEffort ?? 'medium') : null
+    const nextEffort =
+      style === 'effort'
+        ? (reasoningEffort ?? 'medium')
+        : style === 'effort_toggle'
+          ? (reasoningEffort ?? 'disable')
+          : null
     const nextBudget = style === 'budget_tokens' || style === 'thinking_budget' ? thinkingBudget : null
     onChange(providerId, newModelId, nextEffort, nextBudget)
   }
@@ -136,6 +141,18 @@ export default function LLMConfigModal({
               <option value="medium">Medium</option>
               <option value="high">High</option>
               <option value="xhigh">X-High</option>
+            </Select>
+          </FormGroup>
+        )}
+        {reasoningStyle === 'effort_toggle' && (
+          <FormGroup label="Thinking">
+            <Select
+              value={reasoningEffort ?? 'disable'}
+              onChange={(e) => onChange(providerId, modelId, e.target.value, null)}
+            >
+              <option value="disable">Disable</option>
+              <option value="high">High</option>
+              <option value="max">Max</option>
             </Select>
           </FormGroup>
         )}

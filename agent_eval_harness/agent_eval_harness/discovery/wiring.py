@@ -51,6 +51,9 @@ class WiringNode:
     source_hint_file: str
     entry_kind: str = "class"  # "class" | "function" | "bound_method"
     owner_class: str | None = None
+    # Which detector produced this node. Defaulted so pre-union wiring_block_json rows (whose nodes
+    # lack the key) still deserialize via WiringNode(**n); the union stamps the real framework.
+    framework: str = "unknown"
 
 
 @dataclass
@@ -618,6 +621,10 @@ def _detect_langchain_lcel(
 
     for file, tree in _iter_parsed_files(file_contents, cache):
         _langchain_chain_factories(tree, file, nodes, edges)
+        # The pipe idiom (a | b) is only LCEL when the file imports langchain — otherwise a plain
+        # `set(...) | set(...)` / bitwise-or is a false positive (factory path already self-gates).
+        if not _imports_langchain(tree):
+            continue
         processed_binops = set()
 
         for node in ast.walk(tree):
@@ -671,14 +678,246 @@ def _detect_langchain_lcel(
     return None
 
 
+# Pure-python agents use no framework DSL — the entry method orchestrates a sequence of collaborator
+# calls (planning, retrieval, LLM, tools). The wiring IS that call flow.
+_PLAIN_ENTRY_METHODS = (
+    "run", "run_async", "arun", "__call__", "answer", "ask", "execute", "invoke", "chat", "respond",
+)
+# Core agentic operations only — data-prep/formatting verbs (load, match, render, extract, inject,
+# fetch) are deliberately excluded so the flow shows the agentic components, not internal plumbing.
+_AGENTIC_CALL_VERBS = frozenset({
+    "plan", "retrieve", "search", "query", "call", "chat", "complete", "generate", "answer",
+    "synthesize", "classify", "rank", "rerank", "embed", "route", "dispatch", "invoke", "decompose",
+    "summarize", "analyze", "stream", "reason", "act", "observe", "think", "critique", "reflect",
+    "score", "judge",
+})
+
+
+def _imports_recognized_framework(tree: ast.AST) -> bool:
+    """A file importing Haystack/LangGraph/LangChain is owned by that framework's detector — the
+    plain-python detector skips it so the two never compete on the same file."""
+    if _imports_langgraph(tree) or _imports_langchain(tree):
+        return True
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module and node.module.split(".")[0] == "haystack":
+            return True
+        if isinstance(node, ast.Import) and any(a.name.split(".")[0] == "haystack" for a in node.names):
+            return True
+    return False
+
+
+def _is_agentic_call_name(name: str) -> bool:
+    # Token-exact (split on _) — substring matching mis-fires (e.g. "extract" contains "act").
+    return any(tok in _AGENTIC_CALL_VERBS for tok in name.lower().lstrip("_").split("_"))
+
+
+def _detect_plain_python(
+    file_contents: dict[str, str],
+    cache: dict[str, ast.AST | None] | None = None,
+    claimed_files: set[str] | None = None,
+    claimed_classes: set[str] | None = None,
+) -> WiringBlock | None:
+    """Framework-free ('pure python') agent: a *Agent class whose entry method orchestrates a
+    sequence of collaborator calls. The wiring graph IS that flow — the agent node feeds a linear
+    chain of the agentic-verb calls it makes, in source order. Generic (verb + shape based); never
+    keys on a target-specific symbol name.
+
+    `claimed_files`/`claimed_classes` are the source files and component class names already owned by
+    a framework detector (e.g. a Haystack agent wired via `add_component` in a pipeline file). Those
+    are Haystack/LangGraph components, NOT standalone plain-python agents, so they're excluded — this
+    is the real Haystack-vs-plain-python distinction: a plain agent is orchestrated by nothing."""
+    claimed_files = claimed_files or set()
+    claimed_classes = claimed_classes or set()
+    nodes: dict[str, WiringNode] = {}
+    edges: list[WiringEdge] = []
+    for file, tree in _iter_parsed_files(file_contents, cache):
+        if _imports_recognized_framework(tree) or file in claimed_files:
+            continue
+        for cls in [n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)]:
+            if not cls.name.endswith("Agent") or cls.name in claimed_classes:
+                continue
+            entry = next(
+                (m for m in cls.body
+                 if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))
+                 and m.name in _PLAIN_ENTRY_METHODS),
+                None,
+            )
+            if entry is None:
+                continue
+            seen: set[str] = set()
+            steps: list[str] = []
+            for sub in sorted(
+                (n for n in ast.walk(entry) if isinstance(n, ast.Call)),
+                key=lambda n: (getattr(n, "lineno", 0), getattr(n, "col_offset", 0)),
+            ):
+                name = _call_func_name(sub)
+                if not name or not _is_agentic_call_name(name):
+                    continue
+                key = name.lstrip("_")
+                if key in seen:
+                    continue
+                seen.add(key)
+                steps.append(name)
+            if len(steps) < 2:  # too few calls to be a real orchestration — skip base/abstract classes
+                continue
+            agent_alias = cls.name
+            nodes[agent_alias] = WiringNode(
+                alias=agent_alias, callee_name=cls.name, source_hint_file=file,
+                entry_kind="class", framework="plain_python",
+            )
+            prev = agent_alias
+            for step in steps:
+                alias = step.lstrip("_")
+                nodes.setdefault(alias, WiringNode(
+                    alias=alias, callee_name=step, source_hint_file=file,
+                    entry_kind="function", framework="plain_python",
+                ))
+                edges.append(WiringEdge(src=prev, dst=alias))
+                prev = alias
+    if nodes:
+        return WiringBlock(nodes=list(nodes.values()), edges=edges, framework="plain_python", source="static")
+    return None
+
+
 def detect_wiring_block_static(file_contents: dict[str, str]) -> WiringBlock | None:
-    # Shared across all 3 detectors so a file isn't re-parsed for each one.
+    # Run EVERY static detector and UNION the results (per-node framework tag) rather than
+    # first-hit-wins: a mixed-framework cluster (e.g. Haystack + LangGraph in one system) must not
+    # let one detector's block starve the others. Shared cache so a file isn't re-parsed per detector.
     cache: dict[str, ast.AST | None] = {}
+    blocks: list[WiringBlock] = []
+    claimed_files: set[str] = set()
+    claimed_classes: set[str] = set()
     for detector in (_detect_haystack, _detect_langgraph, _detect_langchain_lcel):
         result = detector(file_contents, cache)
         if result is not None:
-            return result
-    return None
+            blocks.append(result)
+            for n in result.nodes:
+                if n.source_hint_file:
+                    claimed_files.add(n.source_hint_file)
+                if n.callee_name:
+                    claimed_classes.add(n.callee_name)
+    # Plain-python runs LAST with what the framework detectors already claimed, so a Haystack agent
+    # (wired via add_component from another file) is never mis-detected as a standalone plain agent.
+    pp = _detect_plain_python(file_contents, cache, claimed_files, claimed_classes)
+    if pp is not None:
+        blocks.append(pp)
+    return union_wiring_blocks(blocks)
+
+
+def union_wiring_blocks(blocks: list[WiringBlock]) -> WiringBlock | None:
+    """Merge per-detector blocks into one, stamping each node with its producing detector's framework.
+    A single contributor is returned with its own framework preserved (keeps single-framework behavior
+    identical). Genuine mixes get framework='a+b' and, on a cross-framework alias collision, the later
+    alias is namespaced ('alias@framework') with that block's edges rewritten so topology still joins."""
+    if not blocks:
+        return None
+    if len(blocks) == 1:
+        only = blocks[0]
+        for n in only.nodes:
+            n.framework = only.framework
+        return only
+
+    merged_nodes: list[WiringNode] = []
+    merged_edges: list[WiringEdge] = []
+    alias_owner: dict[str, str] = {}  # alias -> framework currently owning it
+    for blk in blocks:
+        remap: dict[str, str] = {}
+        for n in blk.nodes:
+            n.framework = blk.framework
+            if n.alias in alias_owner and alias_owner[n.alias] != blk.framework:
+                new_alias = f"{n.alias}@{blk.framework}"
+                remap[n.alias] = new_alias
+                n.alias = new_alias
+            alias_owner[n.alias] = blk.framework
+            merged_nodes.append(n)
+        for e in blk.edges:
+            merged_edges.append(WiringEdge(src=remap.get(e.src, e.src), dst=remap.get(e.dst, e.dst)))
+
+    framework = "+".join(sorted({blk.framework for blk in blocks}))
+    return WiringBlock(nodes=merged_nodes, edges=merged_edges, framework=framework, source="static")
+
+
+def _split_block_components(block: WiringBlock) -> list[WiringBlock]:
+    """Split one PURE-framework block into its connected components (union-find over edges; a node
+    touched by no edge is its own singleton). Each component is a distinct system, so a community
+    holding two independent same-framework pipelines splits correctly — not merged, and not special-
+    cased to one-per-framework. Node objects are preserved (framework tag / entry_kind / owner_class
+    / source_hint_file). Edges whose endpoints reference no harvested node (e.g. START/END sentinels
+    alone) carry no component and are dropped."""
+    parent: dict[str, str] = {}
+
+    def find(x: str) -> str:
+        parent.setdefault(x, x)
+        root = x
+        while parent[root] != root:
+            root = parent[root]
+        while parent[x] != root:
+            parent[x], x = root, parent[x]
+        return root
+
+    def union(a: str, b: str) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    nodes_by_alias = {n.alias: n for n in block.nodes}
+    for alias in nodes_by_alias:
+        find(alias)
+    # Sentinels (START/END) and dangling aliases legitimately bridge real nodes of the SAME block,
+    # keeping one graph as one component; they never merge across blocks (each framework is a
+    # separate block already).
+    for e in block.edges:
+        union(e.src, e.dst)
+
+    comp_nodes: dict[str, list[WiringNode]] = {}
+    for alias, node in nodes_by_alias.items():
+        comp_nodes.setdefault(find(alias), []).append(node)
+
+    comp_edges: dict[str, list[WiringEdge]] = {}
+    for e in block.edges:
+        anchor = e.src if e.src in nodes_by_alias else (e.dst if e.dst in nodes_by_alias else None)
+        if anchor is not None:
+            comp_edges.setdefault(find(anchor), []).append(e)
+
+    return [
+        WiringBlock(nodes=ns, edges=comp_edges.get(root, []),
+                    framework=block.framework, source=block.source)
+        for root, ns in comp_nodes.items()
+    ]
+
+
+def detect_wiring_systems(
+    file_contents: dict[str, str], cache: dict[str, ast.AST | None] | None = None
+) -> list[WiringBlock]:
+    """Partition a (possibly mixed) file set into one PURE-framework WiringBlock per distinct agentic
+    system = (framework) x (connected wiring component). Runs every static detector over a shared
+    parse cache, then splits each detector's pure block into connected components. Returns [] when no
+    static wiring exists (caller falls back to the single-candidate / LLM path). Partitions strictly
+    by framework + wiring connectivity — never by any target-specific symbol name."""
+    if cache is None:
+        cache = {}
+    systems: list[WiringBlock] = []
+    claimed_files: set[str] = set()
+    claimed_classes: set[str] = set()
+    for detector in (_detect_haystack, _detect_langgraph, _detect_langchain_lcel):
+        block = detector(file_contents, cache)
+        if block is None:
+            continue
+        for n in block.nodes:
+            n.framework = block.framework
+            if n.source_hint_file:
+                claimed_files.add(n.source_hint_file)
+            if n.callee_name:
+                claimed_classes.add(n.callee_name)
+        systems.extend(_split_block_components(block))
+    # Plain-python LAST, excluding framework-claimed files/classes (a Haystack agent wired via
+    # add_component is not a standalone plain agent).
+    pp = _detect_plain_python(file_contents, cache, claimed_files, claimed_classes)
+    if pp is not None:
+        for n in pp.nodes:
+            n.framework = pp.framework
+        systems.extend(_split_block_components(pp))
+    return systems
 
 
 async def detect_wiring_block(

@@ -98,8 +98,12 @@ class DepRoleVerdict(BaseModel):
 
 class VirtualFieldSpec(BaseModel):
     """A field within a virtual input's schema."""
+    # Named `field_schema` because a plain `schema` shadows BaseModel.schema (pydantic UserWarning);
+    # the "schema" alias keeps the wire/JSON key and existing `schema=` call sites working.
+    model_config = ConfigDict(populate_by_name=True)
+
     name: str
-    schema: dict = Field(default_factory=dict)
+    field_schema: dict = Field(default_factory=dict, alias="schema", serialization_alias="schema")
     provenance: Literal["annotation", "usage", "prompt", "human"] = "usage"
     example: str | None = None
     needs_human: bool = False

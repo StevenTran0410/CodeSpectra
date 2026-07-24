@@ -22,6 +22,7 @@ class ReasoningStyle(str, Enum):
     BUDGET_TOKENS = "budget_tokens"       # Anthropic extended thinking — budget_tokens, no temperature
     THINKING_BUDGET = "thinking_budget"   # Gemini 2.5+ — thinkingConfig.thinkingBudget, temperature OK
     TOGGLE = "toggle"                     # DeepSeek-reasoner / local reasoning models — no tunable budget
+    EFFORT_TOGGLE = "effort_toggle"       # DeepSeek V4 — thinking on/off + reasoning_effort (disable/high/max)
 
 
 class ModelInfo(BaseModel):
@@ -44,6 +45,10 @@ def classify(kind: ProviderKind, model_id: str) -> ReasoningStyle:
     mid = (model_id or "").lower()
 
     if kind == ProviderKind.OPENAI:
+        # DeepSeek V4 served over its OpenAI-compatible endpoint (base_url api.deepseek.com,
+        # kind=openai): thinking toggle + reasoning_effort high/max.
+        if "deepseek" in mid:
+            return ReasoningStyle.EFFORT_TOGGLE
         if any(mid.startswith(p) for p in _OPENAI_EFFORT_PREFIXES):
             return ReasoningStyle.EFFORT
         return ReasoningStyle.NONE
@@ -61,6 +66,8 @@ def classify(kind: ProviderKind, model_id: str) -> ReasoningStyle:
         return ReasoningStyle.NONE
 
     if kind == ProviderKind.DEEPSEEK:
+        if "deepseek" in mid and "v4" in mid:
+            return ReasoningStyle.EFFORT_TOGGLE
         if "reasoner" in mid:
             return ReasoningStyle.TOGGLE
         return ReasoningStyle.NONE

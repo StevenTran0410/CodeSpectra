@@ -508,7 +508,13 @@ export interface ProviderConfig {
 }
 
 /** How a model's reasoning/thinking parameters must be shaped for its provider's request. */
-export type ReasoningStyle = 'none' | 'effort' | 'budget_tokens' | 'thinking_budget' | 'toggle'
+export type ReasoningStyle =
+  | 'none'
+  | 'effort'
+  | 'budget_tokens'
+  | 'thinking_budget'
+  | 'toggle'
+  | 'effort_toggle'
 
 export interface ModelInfo {
   id: string
@@ -1211,7 +1217,7 @@ declare global {
     cluster_files: string[]
     hub_paths: string[]
     wiring_block: {
-      nodes: Array<{ alias: string; callee_name: string; source_hint_file: string; entry_kind: string; owner_class: string | null }>
+      nodes: Array<{ alias: string; callee_name: string; source_hint_file: string; entry_kind: string; owner_class: string | null; framework?: string }>
       edges: Array<{ src: string; dst: string }>
       framework: string
       source: 'static' | 'llm_fallback'

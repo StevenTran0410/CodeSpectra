@@ -1,8 +1,11 @@
 """AEH Discovery Engine implementing Three-Pass agentic pipeline auto-discovery."""
 from __future__ import annotations
 
+import copy
+import hashlib
 import json
 import logging
+import posixpath
 import re
 import traceback
 from pathlib import Path
@@ -13,7 +16,11 @@ import yaml
 from agent_eval_harness.discovery.analysis_context import ProjectContext, load_project_context
 from agent_eval_harness.discovery.client import CodeSpectraClient
 from agent_eval_harness.discovery.consolidation import consolidate_candidates
-from agent_eval_harness.discovery.wiring import detect_wiring_block, strip_json_code_fence
+from agent_eval_harness.discovery.wiring import (
+    detect_wiring_block,
+    detect_wiring_systems,
+    strip_json_code_fence,
+)
 from agent_eval_harness.llm.client import LLMClient, LLMMessage, RateLimitExceeded
 from agent_eval_harness.store import repository
 
@@ -28,6 +35,8 @@ MAX_WIRING_LLM_FALLBACK_CALLS = 5
 
 MAX_HITS_PER_CLUSTER_PROMPT = 15  # top-N highest-weight hits shown to the synthesis LLM
 MAX_LISTED_FILES = 30             # cap on community file paths listed verbatim in the prompt
+MAX_LISTED_COMPONENTS = 20        # cap on component aliases listed per detected system
+MAX_FLOW_EDGES_PROMPT = 25        # cap on call-flow edges listed per detected system
 SYNTHESIS_MAX_TOKENS = 1024
 
 
@@ -52,6 +61,123 @@ def _encode_hits_toon(hits: list[dict[str, Any]]) -> str:
             f"{h.get('token_estimate', 0)},{snippet}"
         )
     return "\n".join(lines)
+
+
+def _system_signature(framework: str, aliases: list[str]) -> str:
+    """Order-independent, run-stable hash of a system's (framework + node aliases) so a split
+    candidate's system_id is deterministic across re-runs and pause/resume — never an iteration
+    counter."""
+    raw = framework + "|" + ",".join(sorted(aliases))
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:8]
+
+
+def _entry_aliases(nodes: list[dict], edges: list[dict]) -> list[str]:
+    """Roots of a wiring subgraph = nodes that are never an edge destination; fall back to all
+    aliases when everything is a destination (a cycle)."""
+    dsts = {e["dst"] for e in edges}
+    roots = sorted(n["alias"] for n in nodes if n["alias"] not in dsts)
+    return roots or sorted(n["alias"] for n in nodes)
+
+
+def _system_descriptor(idx: int, block: Any) -> str:
+    """Compact description of one detected system for the synthesis prompt — framework, entry
+    symbols, components, folders and call flow: enough for the LLM to name it by what it DOES."""
+    wb = block.to_dict()
+    nodes, edges = wb["nodes"], wb["edges"]
+    files = sorted({n["source_hint_file"] for n in nodes if n.get("source_hint_file")})
+    dirs = sorted({posixpath.dirname(f) or "." for f in files})
+    lines = [
+        f"System #{idx}:",
+        f"  framework: {block.framework}",
+        f"  entry symbols: {', '.join(_entry_aliases(nodes, edges)[:4]) or 'n/a'}",
+        f"  components ({len(nodes)}): {', '.join(n['alias'] for n in nodes[:MAX_LISTED_COMPONENTS])}",
+        f"  folders: {', '.join(dirs)}",
+        f"  files: {', '.join(files[:MAX_LISTED_FILES])}",
+    ]
+    if edges:
+        flow = ", ".join(f"{e['src']} -> {e['dst']}" for e in edges[:MAX_FLOW_EDGES_PROMPT])
+        lines.append(f"  call flow: {flow}")
+    return "\n".join(lines)
+
+
+def _dedupe_system_names(names: dict[int, str], systems: list[Any]) -> dict[int, str]:
+    """Guard against the LLM handing two systems the same name — collisions get their framework
+    appended so every block in a community still shows a distinct label."""
+    out: dict[int, str] = {}
+    seen: set[str] = set()
+    for i, block in enumerate(systems):
+        nm = names.get(i + 1)
+        if not nm:
+            continue
+        if nm.lower() in seen:
+            nm = f"{nm} ({block.framework})"
+        seen.add(nm.lower())
+        out[i + 1] = nm
+    return out
+
+
+def _build_system_candidate(
+    base_profile: dict, cluster: dict, block: Any, name_override: str | None = None
+) -> dict:
+    """One candidate for one wired system: its OWN pure sub-block, pure framework, tight core seed
+    (the block's source files), deterministic system_id + name. cluster_files stays the FULL
+    community pool so consolidation's global match still assigns every file to the nearest seed."""
+    wb = block.to_dict()
+    fw = block.framework
+    prof = copy.deepcopy(base_profile)
+    system_files = sorted({n["source_hint_file"] for n in wb["nodes"] if n.get("source_hint_file")})
+    prof["system_id"] = f"{cluster['community_id']}#{fw}-{_system_signature(fw, [n['alias'] for n in wb['nodes']])}"
+    prof["frameworks"] = [fw]
+    prof["wiring_block"] = wb
+    # Scope this split candidate's built map to only its own framework's components.
+    prof["map_scope_framework"] = fw
+    prof["hub_paths"] = system_files or base_profile.get("hub_paths", [])
+    prof["entry_points"] = _entry_aliases(wb["nodes"], wb["edges"])[:2] or base_profile.get("entry_points", [])
+    base_name = base_profile.get("name") or "unknown"
+    # The synthesis LLM names each detected system individually (it sees this block's entry symbols,
+    # components, folders and call flow); the community-name + framework suffix is only the fallback.
+    prof["name"] = name_override or (
+        f"{base_name} — {fw}" if base_name != "unknown" else f"{fw} system"
+    )
+    sysfiles = set(system_files)
+    filtered_ev = [h for h in base_profile.get("evidence", []) if h.get("file") in sysfiles]
+    if filtered_ev:
+        prof["evidence"] = filtered_ev
+    return prof
+
+
+def _build_residual_candidate(base_profile: dict, cluster: dict, systems: list[Any]) -> dict | None:
+    """A plain-python system has no wiring edges and appears in no detector output. After carving the
+    wired systems, emit ONE residual candidate for the community's remaining agentic signal (hub /
+    fingerprint-hit files not claimed by any wired system's source seed). Tight hub/hit seed only —
+    never the full community pool — so its expansion stays bounded. Returns None when nothing is left."""
+    wired_seed_files = {
+        n["source_hint_file"]
+        for b in systems for n in b.to_dict()["nodes"] if n.get("source_hint_file")
+    }
+    residual_hubs = [p for p in cluster.get("hub_paths", []) if p not in wired_seed_files]
+    residual_hits = sorted({h["file"] for h in cluster.get("hits", [])} - wired_seed_files)
+    seed = sorted(set(residual_hubs) | set(residual_hits))
+    if not seed:
+        return None
+    prof = copy.deepcopy(base_profile)
+    prof["system_id"] = f"{cluster['community_id']}#plain_python-{_system_signature('plain_python', seed)}"
+    prof["frameworks"] = ["plain_python"]
+    prof["wiring_block"] = None
+    prof["hub_paths"] = seed
+    prof["entry_points"] = seed[:2]
+    # Scope the residual map to plain-python components, minus any class a wired sibling already owns
+    # (e.g. a StateGraph node's owner class), so a sibling's agent class never bleeds into this map.
+    prof["map_scope_framework"] = "plain_python"
+    sibling_owned = {
+        cls
+        for b in systems for n in b.to_dict()["nodes"]
+        for cls in (n.get("owner_class"), n.get("callee_name")) if cls
+    }
+    prof["excluded_component_classes"] = sorted(sibling_owned)
+    base_name = base_profile.get("name") or "unknown"
+    prof["name"] = f"{base_name} — plain_python" if base_name != "unknown" else "plain_python system"
+    return prof
 
 
 class DiscoveryPaused(Exception):
@@ -186,6 +312,16 @@ async def discover_agentic_systems(
     candidate_clusters.sort(key=lambda x: x["density"], reverse=True)
     logger.info(f"Clustered into {len(candidate_clusters)} candidates. Starting Pass C: LLM Synthesis...")
 
+    # Project context is identical for every cluster in a run, so it belongs in the shared prompt
+    # prefix (system message) rather than after each cluster's data — otherwise it sits behind
+    # variable text and never lands in the provider's prompt cache.
+    project_ctx_block = ""
+    if project_context:
+        if project_context.identity:
+            project_ctx_block += "\n" + project_context.identity.as_context_block()
+        if project_context.synthesis:
+            project_ctx_block += project_context.synthesis.as_context_block()
+
     candidates = []
     wiring_llm_fallback_used = 0
     for rank, cluster in enumerate(candidate_clusters):
@@ -217,6 +353,24 @@ async def discover_agentic_systems(
 
         evidence_bundle_str = _encode_hits_toon(top_hits)
 
+        file_contents = {}
+        for path in cluster["files"]:
+            try:
+                file_resp = await client.read_file(snapshot_id, path)
+                file_contents[path] = file_resp.get("content", "")
+            except Exception as e:
+                logger.warning(f"Failed to read {path} for wiring detection: {e}")
+
+        # Partition the community into one candidate per distinct agentic system =
+        # (framework) x (connected wiring component). Static + free, and run BEFORE synthesis so the
+        # single LLM call can name every system from its own components/folders/call flow.
+        systems = detect_wiring_systems(file_contents)
+        systems_block = (
+            "\nDetected agentic systems in this community — each is a SEPARATE system needing its "
+            "own name:\n" + "\n".join(_system_descriptor(i + 1, b) for i, b in enumerate(systems))
+            + "\n"
+        ) if systems else ""
+
         system_prompt = (
             "You are an expert AI software architect. Analyze the provided codebase evidence cluster "
             "and determine if it represents a candidate agentic system in the codebase.\n"
@@ -231,21 +385,26 @@ async def discover_agentic_systems(
             '  "frameworks": ["string (e.g. \'haystack\', \'openai\', etc.)"],\n'
             '  "entry_points": ["string (key files/interfaces that entry into the system)"],\n'
             '  "component_count_estimate": integer,\n'
-            '  "confidence": "string (\'high\', \'medium\', \'low\')"\n'
-            "}"
+            '  "confidence": "string (\'high\', \'medium\', \'low\')",\n'
+            '  "systems": [{"index": integer, "name": "string"}]\n'
+            "}\n"
+            "When the evidence lists detected agentic systems, return one entry per system in "
+            '"systems", with "index" matching its "System #N" and a name that describes what THAT '
+            "system does — its functionality and domain, inferred from its entry symbols, component "
+            "names, call flow and folder path. Each name must be distinct from the other systems' "
+            "names, must not be a framework name, and must not be the community name with a "
+            'framework suffix. The top-level "name" still names the community as a whole.'
+            + project_ctx_block
         )
 
         user_prompt = (
             f"Community/Cluster ID: {cid}\n"
             f"Hub Paths (potential entry points): {', '.join(cluster['hub_paths'])}\n"
-            f"All community files: {', '.join(cluster['files'][:MAX_LISTED_FILES])}\n\n"
+            f"All community files: {', '.join(cluster['files'][:MAX_LISTED_FILES])}\n"
+            f"{systems_block}\n"
             f"Evidence Hits:\n{evidence_bundle_str}\n\n"
         )
         if project_context:
-            if project_context.identity:
-                user_prompt += project_context.identity.as_context_block()
-            if project_context.synthesis:
-                user_prompt += project_context.synthesis.as_context_block()
             if project_context.important_files:
                 hub_set = set(cluster["hub_paths"])
                 tagged = [p for p in project_context.important_files if p in hub_set]
@@ -266,6 +425,7 @@ async def discover_agentic_systems(
             "hub_paths": cluster["hub_paths"],
         }
 
+        system_names: dict[int, str] = {}
         try:
             messages = [
                 LLMMessage(role="system", content=system_prompt),
@@ -285,6 +445,15 @@ async def discover_agentic_systems(
                 candidate_profile["frameworks"] = parsed.get("frameworks") or cluster["frameworks"] or ["unknown"]
                 candidate_profile["entry_points"] = parsed.get("entry_points") or cluster["hub_paths"][:2]
                 candidate_profile["confidence"] = parsed.get("confidence") or "low"
+                for item in parsed.get("systems") or []:
+                    try:
+                        idx = int(item.get("index"))
+                    except (TypeError, ValueError):
+                        continue
+                    name = (item.get("name") or "").strip()
+                    if name:
+                        system_names[idx] = name
+                system_names = _dedupe_system_names(system_names, systems)
         except RateLimitExceeded as rle:
             raise DiscoveryPaused(
                 candidates, rle.provider_id, rle.model_id, rle.reasoning_effort, rle.thinking_budget
@@ -304,33 +473,53 @@ async def discover_agentic_systems(
                     candidate_profile.setdefault("risk_flags", []).append(finding)
                     candidate_profile["needs_human"] = True
 
-        file_contents = {}
-        for path in candidate_profile.get("cluster_files", []):
-            try:
-                file_resp = await client.read_file(snapshot_id, path)
-                file_contents[path] = file_resp.get("content", "")
-            except Exception as e:
-                logger.warning(f"Failed to read {path} for wiring detection: {e}")
-
-        # Static detection is always attempted (free); LLM fallback is only allowed for candidates worth naming.
-        allow_wiring_llm_fallback = (
-            not candidate_profile["needs_human"]
-            and wiring_llm_fallback_used < MAX_WIRING_LLM_FALLBACK_CALLS
+        # The residual candidate is the fallback for a plain-python agent that produced NO wiring.
+        # Now that _detect_plain_python gives such agents a real call-flow block, skip the residual
+        # when a plain_python system already exists — otherwise the community emits two plain_python
+        # candidates (one wired QAAgent-style, one wireless leftover bucket).
+        has_plain_python = any(s.framework == "plain_python" for s in systems)
+        residual = (
+            _build_residual_candidate(candidate_profile, cluster, systems)
+            if (systems and not has_plain_python)
+            else None
         )
-        try:
-            wiring_block = await detect_wiring_block(
-                file_contents, llm_client if allow_wiring_llm_fallback else None
+        n_systems = len(systems) + (1 if residual else 0)
+        if n_systems > 1:
+            # Genuine multi-system community: split into one candidate per system.
+            for i, block in enumerate(systems):
+                candidates.append(
+                    _build_system_candidate(
+                        candidate_profile, cluster, block, system_names.get(i + 1)
+                    )
+                )
+            if residual is not None:
+                candidates.append(residual)
+        elif systems:
+            # Exactly one static system, no residual: behave IDENTICALLY to the pre-split single
+            # candidate — base name/profile kept, no system_id, just its own pure wiring_block.
+            candidate_profile["wiring_block"] = systems[0].to_dict()
+            candidates.append(candidate_profile)
+        else:
+            # No static wiring in this community — preserve today's EXACT single-candidate path,
+            # including the LLM wiring fallback for candidates worth naming.
+            allow_wiring_llm_fallback = (
+                not candidate_profile["needs_human"]
+                and wiring_llm_fallback_used < MAX_WIRING_LLM_FALLBACK_CALLS
             )
-        except RateLimitExceeded as rle:
-            raise DiscoveryPaused(
-                candidates, rle.provider_id, rle.model_id, rle.reasoning_effort, rle.thinking_budget
-            ) from rle
+            try:
+                wiring_block = await detect_wiring_block(
+                    file_contents, llm_client if allow_wiring_llm_fallback else None
+                )
+            except RateLimitExceeded as rle:
+                raise DiscoveryPaused(
+                    candidates, rle.provider_id, rle.model_id, rle.reasoning_effort, rle.thinking_budget
+                ) from rle
 
-        if wiring_block and wiring_block.source == "llm_fallback":
-            wiring_llm_fallback_used += 1
-        candidate_profile["wiring_block"] = wiring_block.to_dict() if wiring_block else None
+            if wiring_block and wiring_block.source == "llm_fallback":
+                wiring_llm_fallback_used += 1
+            candidate_profile["wiring_block"] = wiring_block.to_dict() if wiring_block else None
 
-        candidates.append(candidate_profile)
+            candidates.append(candidate_profile)
 
     try:
         candidates = await consolidate_candidates(candidates, client, snapshot_id, llm_client)

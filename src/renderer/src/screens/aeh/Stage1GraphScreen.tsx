@@ -20,7 +20,7 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { getDagreGraphLayout } from './graphLayout'
-import { Button, useToastStore } from '../../components/ui'
+import { Button, ErrorBoundary, useToastStore } from '../../components/ui'
 import { useAEHStore } from '../../store/aeh.store'
 import { useProviderStore } from '../../store/provider.store'
 import LLMConfigModal, { LLMModelButton } from './LLMConfigModal'
@@ -72,14 +72,23 @@ const CANDIDATE_COLORS = [
 
 function WiringBlockPanel({
   selectedNode,
+  selectedCandidateId,
   discoveryFileSet,
   candidates,
+  onVerdict,
 }: {
   selectedNode: string | null
+  selectedCandidateId: string | null
   discoveryFileSet: Map<string, AEHDiscoveryCandidate>
   candidates: AEHDiscoveryCandidate[]
+  onVerdict: (candidateId: string, verdict: 'confirmed' | 'rejected') => Promise<void>
 }): React.ReactElement {
-  const candidate = selectedNode ? discoveryFileSet.get(selectedNode) : candidates[0] ?? null
+  // Show the block the user is focused on (the candidate group they clicked into) — NOT the
+  // file's global owner. Split candidates share files, so a file's global owner is ambiguous.
+  const candidate =
+    (selectedCandidateId ? candidates.find((c) => c.id === selectedCandidateId) : null) ??
+    (selectedNode ? discoveryFileSet.get(selectedNode) : candidates[0]) ??
+    null
 
   if (!candidate) {
     return (
@@ -93,20 +102,59 @@ function WiringBlockPanel({
 
   return (
     <div className="p-4 flex flex-col h-full bg-[#090d16]/30 overflow-y-auto">
-      <div className="flex items-center justify-between mb-4 border-b border-slate-800 pb-2 shrink-0">
-        <h3 className="text-xs font-semibold text-slate-200">Wiring Block Detection</h3>
-        {wb && (
-          <div className="flex items-center gap-1.5">
-            <span className="text-[9px] uppercase tracking-wider font-mono font-bold px-1.5 py-0.5 rounded bg-indigo-950/50 border border-indigo-900/30 text-indigo-300">
-              {wb.framework}
-            </span>
-            {wb.source === 'llm_fallback' && (
-              <span className="text-[9px] bg-amber-950/40 text-amber-400 border border-amber-800/40 px-1 py-0.5 rounded font-semibold">
-                LLM Inferred (Triage)
+      <div className="mb-4 border-b border-slate-800 pb-2 shrink-0 space-y-2">
+        <div className="flex items-center justify-between">
+          <h3 className="text-xs font-semibold text-slate-200 truncate" title={candidate.name}>
+            {candidate.name}
+          </h3>
+          {wb && (
+            <div className="flex items-center gap-1.5 shrink-0">
+              <span className="text-[9px] uppercase tracking-wider font-mono font-bold px-1.5 py-0.5 rounded bg-indigo-950/50 border border-indigo-900/30 text-indigo-300">
+                {wb.framework}
               </span>
-            )}
+              {wb.source === 'llm_fallback' && (
+                <span className="text-[9px] bg-amber-950/40 text-amber-400 border border-amber-800/40 px-1 py-0.5 rounded font-semibold">
+                  LLM Inferred (Triage)
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+        {/* Per-block verdict: only confirmed blocks are offered to Stage 2. */}
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[10px] text-slate-500">
+            {candidate.verdict === 'confirmed'
+              ? 'Confirmed — available in Stage 2'
+              : candidate.verdict === 'rejected'
+                ? 'Rejected — hidden from Stage 2'
+                : 'Not reviewed — hidden from Stage 2'}
+          </span>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <Button
+              title="Confirm this block"
+              onClick={() => onVerdict(candidate.id, 'confirmed')}
+              className={`px-2 py-1 rounded-lg border text-[10px] font-semibold flex items-center gap-1 transition-colors ${
+                candidate.verdict === 'confirmed'
+                  ? 'bg-emerald-950/50 border-emerald-700/60 text-emerald-400'
+                  : 'bg-slate-900/30 border-slate-800 text-slate-500 hover:border-emerald-800 hover:text-emerald-400'
+              }`}
+            >
+              <ThumbsUp className="w-3 h-3" />
+              <span>Confirm</span>
+            </Button>
+            <Button
+              title="Reject this block"
+              onClick={() => onVerdict(candidate.id, 'rejected')}
+              className={`p-1.5 rounded-lg border transition-colors ${
+                candidate.verdict === 'rejected'
+                  ? 'bg-red-950/50 border-red-700/60 text-red-400'
+                  : 'bg-slate-900/30 border-slate-800 text-slate-500 hover:border-red-800 hover:text-red-400'
+              }`}
+            >
+              <ThumbsDown className="w-3 h-3" />
+            </Button>
           </div>
-        )}
+        </div>
       </div>
 
       {!wb ? (
@@ -156,14 +204,21 @@ function WiringBlockPanel({
 
 function WiringGraphPanel({
   selectedNode,
+  selectedCandidateId,
   discoveryFileSet,
   candidates,
 }: {
   selectedNode: string | null
+  selectedCandidateId: string | null
   discoveryFileSet: Map<string, AEHDiscoveryCandidate>
   candidates: AEHDiscoveryCandidate[]
 }): React.ReactElement {
-  const candidate = selectedNode ? discoveryFileSet.get(selectedNode) : candidates[0] ?? null
+  // Follow the focused block (candidate), not the file's global owner — split candidates share
+  // files, so the same file lives under several blocks; the graph must reflect the block clicked.
+  const candidate =
+    (selectedCandidateId ? candidates.find((c) => c.id === selectedCandidateId) : null) ??
+    (selectedNode ? discoveryFileSet.get(selectedNode) : candidates[0]) ??
+    null
 
   const graphData = useMemo(() => {
     if (!candidate || !candidate.wiring_block) return { layoutNodes: [], layoutEdges: [] }
@@ -171,10 +226,15 @@ function WiringGraphPanel({
       id: n.alias,
       label: n.alias,
     }))
-    const edges = candidate.wiring_block.edges.map((e) => ({
-      src: e.src,
-      dst: e.dst,
-    }))
+    // Drop LangGraph's __start__/__end__ sentinel edges — they're graph terminals, not real
+    // components, and clutter the view (the real entry/exit nodes keep their other edges).
+    const SENTINELS = new Set(['__start__', '__end__'])
+    const edges = candidate.wiring_block.edges
+      .filter((e) => !SENTINELS.has(e.src) && !SENTINELS.has(e.dst))
+      .map((e) => ({
+        src: e.src,
+        dst: e.dst,
+      }))
     return getDagreGraphLayout(nodes, edges)
   }, [candidate])
 
@@ -558,18 +618,22 @@ function SeedFileListPanel({
   candidateColors,
   selectedNode,
   onSelectFile,
+  onSelectCandidate,
   markedWrongIds,
   onToggleWrong,
   onExcludeFile,
+  onVerdict,
 }: {
   discoveryFileSet: Map<string, AEHDiscoveryCandidate>
   candidates: AEHDiscoveryCandidate[]
   candidateColors: Record<string, string>
   selectedNode: string | null
-  onSelectFile: (path: string) => void
+  onSelectFile: (path: string, candidateId: string) => void
+  onSelectCandidate: (candidateId: string) => void
   markedWrongIds: Set<string>
   onToggleWrong: (candidateId: string) => void
   onExcludeFile: (candidateId: string, path: string, excluded: boolean) => void
+  onVerdict: (candidateId: string, verdict: 'confirmed' | 'rejected') => Promise<void>
 }): React.ReactElement {
   const [filterText, setFilterText] = useState('')
 
@@ -577,9 +641,13 @@ function SeedFileListPanel({
     return candidates
       .map((cand) => ({
         candidate: cand,
-        files: cand.cluster_files.filter((f) =>
-          filterText.trim() === '' || f.toLowerCase().includes(filterText.toLowerCase())
-        ),
+        // Show each system's OWN files (consolidation-scoped matched_files), not the shared
+        // community cluster_files — split candidates share the full pool, so cluster_files would
+        // list every other system's files under this block too.
+        files: (cand.matched_files && cand.matched_files.length > 0
+          ? cand.matched_files
+          : cand.cluster_files
+        ).filter((f) => filterText.trim() === '' || f.toLowerCase().includes(filterText.toLowerCase())),
       }))
       .filter((g) => g.files.length > 0)
   }, [candidates, filterText])
@@ -621,13 +689,38 @@ function SeedFileListPanel({
               ) : (
                 <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: candidateColors[cand.id] }} />
               )}
-              <span className="truncate flex-1">{cand.name}</span>
-              {cand.verdict === 'confirmed' && (
-                <span className="text-[8px] text-emerald-400 font-semibold shrink-0">confirmed</span>
-              )}
-              {cand.verdict === 'rejected' && (
-                <span className="text-[8px] text-red-400 font-semibold shrink-0 line-through">rejected</span>
-              )}
+              <button
+                type="button"
+                onClick={() => onSelectCandidate(cand.id)}
+                title="Show this block's wiring graph"
+                className="truncate flex-1 text-left hover:text-indigo-300 transition-colors"
+              >
+                {cand.name}
+              </button>
+              {/* Per-block verdict — only confirmed blocks reach Stage 2. */}
+              <Button
+                title={cand.verdict === 'confirmed' ? 'Confirmed — available in Stage 2' : 'Confirm this block (required for Stage 2)'}
+                onClick={() => onVerdict(cand.id, 'confirmed')}
+                className={`shrink-0 px-1.5 py-0.5 rounded border text-[9px] font-semibold flex items-center gap-1 transition-colors ${
+                  cand.verdict === 'confirmed'
+                    ? 'bg-emerald-950/50 border-emerald-700/60 text-emerald-400'
+                    : 'bg-slate-900/40 border-slate-800 text-slate-500 hover:border-emerald-800 hover:text-emerald-400'
+                }`}
+              >
+                <ThumbsUp className="w-2.5 h-2.5" />
+                <span>{cand.verdict === 'confirmed' ? 'Confirmed' : 'Confirm'}</span>
+              </Button>
+              <Button
+                title={cand.verdict === 'rejected' ? 'Rejected — hidden from Stage 2' : 'Reject this block'}
+                onClick={() => onVerdict(cand.id, 'rejected')}
+                className={`shrink-0 p-1 rounded border transition-colors ${
+                  cand.verdict === 'rejected'
+                    ? 'bg-red-950/50 border-red-700/60 text-red-400'
+                    : 'bg-slate-900/40 border-slate-800 text-slate-500 hover:border-red-800 hover:text-red-400'
+                }`}
+              >
+                <ThumbsDown className="w-2.5 h-2.5" />
+              </Button>
               <span className="text-slate-500 font-mono text-[9px]">({files.length})</span>
             </div>
             <div className="divide-y divide-slate-900/40">
@@ -638,7 +731,7 @@ function SeedFileListPanel({
                 return (
                   <button
                     key={path}
-                    onClick={() => onSelectFile(path)}
+                    onClick={() => onSelectFile(path, cand.id)}
                     className={`w-full text-left px-3 py-2.5 hover:bg-slate-900/30 transition-colors flex flex-col gap-0.5 border-l-2 ${
                       isSelected
                         ? 'bg-indigo-950/20 border-l-amber-400'
@@ -706,6 +799,7 @@ export default function Stage1GraphScreen(): React.ReactElement {
   const [rebuilding, setRebuilding] = useState(false)
 
   const [selectedNode, setSelectedNode] = useState<string | null>(null)
+  const [selectedCandidateId, setSelectedCandidateId] = useState<string | null>(null)
 
   // Discovery's Pass A requires a built retrieval index to scan fingerprints.
   const [retrievalStatus, setRetrievalStatus] = useState<'loading' | 'built' | 'missing'>('loading')
@@ -1006,9 +1100,27 @@ export default function Stage1GraphScreen(): React.ReactElement {
   // Candidate mapping: file path -> candidate
   const discoveryFileSet = useMemo(() => {
     const map = new Map<string, AEHDiscoveryCandidate>()
+    // Per-system candidates split from one community share identical cluster_files, so a plain
+    // last-write would collapse every file onto whichever split candidate is last (often the
+    // wiring-less plain_python one → no graph). Attribute in strength order: cluster (weakest,
+    // first-wins for stability) < has-a-wiring-block < the file is actually one of the candidate's
+    // wiring nodes (authoritative — that file's graph IS this system's graph).
     for (const cand of candidates) {
       for (const file of cand.cluster_files) {
-        map.set(file, cand)
+        if (!map.has(file)) map.set(file, cand)
+      }
+    }
+    for (const cand of candidates) {
+      if (cand.wiring_block) {
+        for (const file of cand.cluster_files) {
+          const owner = map.get(file)
+          if (!owner?.wiring_block) map.set(file, cand)
+        }
+      }
+    }
+    for (const cand of candidates) {
+      for (const node of cand.wiring_block?.nodes ?? []) {
+        if (node.source_hint_file) map.set(node.source_hint_file, cand)
       }
     }
     return map
@@ -1243,16 +1355,30 @@ export default function Stage1GraphScreen(): React.ReactElement {
             <div className="flex-1 min-h-0 overflow-y-auto">
               <WiringBlockPanel
                 selectedNode={selectedNode}
+                selectedCandidateId={selectedCandidateId}
                 discoveryFileSet={discoveryFileSet}
                 candidates={candidates}
+                onVerdict={handleVerdict}
               />
             </div>
             <div className="flex-1 min-h-0 relative">
-              <WiringGraphPanel
-                selectedNode={selectedNode}
-                discoveryFileSet={discoveryFileSet}
-                candidates={candidates}
-              />
+              {/* Keyed so switching block/file remounts the boundary — a crash on one
+                  graph must never leave the panel stuck blank when switching to another. */}
+              <ErrorBoundary
+                key={selectedCandidateId ?? selectedNode ?? 'default'}
+                fallback={
+                  <div className="h-full flex items-center justify-center p-6 text-center text-[10px] text-slate-600 select-none bg-[#090d16]/10">
+                    Could not render this wiring graph.
+                  </div>
+                }
+              >
+                <WiringGraphPanel
+                  selectedNode={selectedNode}
+                  selectedCandidateId={selectedCandidateId}
+                  discoveryFileSet={discoveryFileSet}
+                  candidates={candidates}
+                />
+              </ErrorBoundary>
             </div>
           </div>
 
@@ -1263,8 +1389,16 @@ export default function Stage1GraphScreen(): React.ReactElement {
               candidates={candidates}
               candidateColors={candidateColors}
               selectedNode={selectedNode}
-              onSelectFile={setSelectedNode}
+              onSelectFile={(path, candId) => {
+                setSelectedNode(path)
+                setSelectedCandidateId(candId)
+              }}
+              onSelectCandidate={(candId) => {
+                setSelectedCandidateId(candId)
+                setSelectedNode(null)
+              }}
               markedWrongIds={markedWrongIds}
+              onVerdict={handleVerdict}
               onToggleWrong={toggleMarkedWrong}
               onExcludeFile={handleExcludeFile}
             />

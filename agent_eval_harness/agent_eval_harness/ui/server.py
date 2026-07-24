@@ -1005,12 +1005,17 @@ async def run_expansion_background(
         wb_dict = candidate.get("wiring_block")
         detected_framework = wb_dict.get("framework") if wb_dict else None
 
-        builder = SystemMapBuilder(llm_client, framework=detected_framework)
+        # A wireless plain-python candidate has no wiring_block framework — fall back to its declared
+        # framework so its map is scoped/labeled to plain_python, not the co-location scan union.
+        declared_framework = detected_framework or (candidate.get("frameworks") or [None])[0]
+        builder = SystemMapBuilder(llm_client, framework=declared_framework)
         system_map, _summary = await builder.build_from_files(
             abs_files,
             package_root=local_path,
             target_system_id=candidate["name"],
             wiring_block=WiringBlock.from_dict(wb_dict) if wb_dict else None,
+            scope_framework=candidate.get("map_scope_framework"),
+            exclude_component_classes=set(candidate.get("excluded_component_classes") or []),
         )
 
         data_dir = os.getenv("AEH_DATA_DIR", ".")

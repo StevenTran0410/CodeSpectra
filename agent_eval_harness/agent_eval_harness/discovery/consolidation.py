@@ -20,6 +20,13 @@ MAX_CONSOLIDATION_LLM_JUDGE_CALLS = 15  # bounded, but generous
 JUDGE_FILE_CONTENT_CHAR_BUDGET = 4000
 
 
+def _cand_key(candidate: dict) -> str:
+    """Per-candidate identity key. system_id is set (in-memory) when a multi-system community was
+    split into per-system candidates that share one community_id; un-split candidates have no
+    system_id, so the key falls back to community_id — byte-identical to the pre-split behavior."""
+    return candidate.get("system_id") or str(candidate["community_id"])
+
+
 def _core_seed_for(candidate: dict) -> tuple[set[str], str]:
     """Returns (core_seed_files, anchor_kind). anchor_kind is 'wiring' (strong) or 'hub' (weak,
     today's fallback behavior — used when there's no trustworthy wiring block)."""
@@ -48,22 +55,22 @@ async def consolidate_candidates(
     )
 
     # 2. Global pool: every file across every cluster, minus files already claimed as a core seed.
-    already_claimed: dict[str, str] = {}  # file -> candidate community_id
+    already_claimed: dict[str, str] = {}  # file -> candidate key
     for c, seed, _kind in anchors:
         for f in seed:
-            already_claimed[f] = str(c["community_id"])
+            already_claimed[f] = _cand_key(c)
 
     pool = set()
     for c in candidates:
         pool |= set(c.get("cluster_files", []))
     pool -= set(already_claimed.keys())
 
-    file_provenance: dict[str, dict[str, str]] = {str(c["community_id"]): {} for c in candidates}
-    matched: dict[str, set[str]] = {str(c["community_id"]): set(seed) for c, seed, _ in anchors}
+    file_provenance: dict[str, dict[str, str]] = {_cand_key(c): {} for c in candidates}
+    matched: dict[str, set[str]] = {_cand_key(c): set(seed) for c, seed, _ in anchors}
 
     llm_judge_calls_used = 0
     for f in sorted(pool):
-        scores: dict[str, int] = {str(c["community_id"]): 0 for c in candidates}
+        scores: dict[str, int] = {_cand_key(c): 0 for c in candidates}
         try:
             edges = await client.get_symbol_edges(snapshot_id, f)
         except Exception as e:
@@ -79,7 +86,7 @@ async def consolidate_candidates(
                         neighbor_files.add(nf)
 
         for c, seed, _kind in anchors:
-            cid = str(c["community_id"])
+            cid = _cand_key(c)
             scores[cid] = len(neighbor_files & seed)
 
         # Path-proximity tiebreaker only when symbol-edge signal is absent or tied.
@@ -90,7 +97,7 @@ async def consolidate_candidates(
             def _path_overlap(cid: str) -> int:
                 # Exact-same-directory only — a shared-top-level-segment tier was tried and
                 # dropped: it over-matches with only one candidate in the run.
-                seed = next(s for cand, s, kind in anchors if str(cand["community_id"]) == cid)
+                seed = next(s for cand, s, kind in anchors if _cand_key(cand) == cid)
                 best = 0
                 for sf in seed:
                     sf_dir = sf.rsplit("/", 1)[0] if "/" in sf else ""
@@ -132,6 +139,11 @@ async def consolidate_candidates(
             llm_judge_calls_used += 1
         except RateLimitExceeded:
             raise  # let the caller turn this into DiscoveryPaused, same as Pass C/D
+        except Exception as e:
+            # The LLM judge is a best-effort tiebreaker; a transient provider error (e.g. 503) must
+            # degrade this one file to 'unresolved', never crash the whole consolidation.
+            logger.warning(f"Consolidation LLM judge failed for {f}: {e}; leaving unresolved.")
+            winner_cid = None
         if winner_cid:
             matched[winner_cid].add(f)
             file_provenance[winner_cid][f] = "llm_linked"
@@ -140,7 +152,7 @@ async def consolidate_candidates(
                 file_provenance[cid][f] = "needs_human"
 
     for c, seed, kind in anchors:
-        cid = str(c["community_id"])
+        cid = _cand_key(c)
         c["matched_files"] = sorted(matched[cid])
         c["file_provenance"] = {
             **{f: "core_seed" for f in seed},
@@ -161,7 +173,7 @@ async def _llm_judge_file_membership(
 ) -> str | None:
     """Ask the LLM which of the (at most 2) shortlisted candidates this file actually belongs
     to. Returns None (not a forced guess) if the LLM isn't confident either."""
-    by_cid = {str(c["community_id"]): c for c in candidates}
+    by_cid = {_cand_key(c): c for c in candidates}
     try:
         content = (await client.read_file(snapshot_id, file_path)).get("content", "")
     except Exception as e:

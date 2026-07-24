@@ -8,6 +8,7 @@ import httpx
 
 from domain.model_connector._cloud_base import CloudAdapterBase
 from domain.model_connector.errors import ProviderError
+from domain.model_connector.reasoning import ReasoningStyle, classify
 from domain.model_connector.types import ChatRequest, ChatResponse, EmbedRequest, EmbedResponse, ProviderConfig
 from shared.logger import logger
 
@@ -74,6 +75,16 @@ class OpenAIAdapter(CloudAdapterBase):
             payload["temperature"] = request.temperature
         if model_rejects_temp and request.reasoning_effort:
             payload["reasoning_effort"] = request.reasoning_effort
+
+        # DeepSeek V4 over the OpenAI-compatible endpoint: an explicit thinking toggle plus
+        # reasoning_effort. "disable" (or unset) turns thinking off; "high"/"max" turns it on.
+        if classify(self.config.kind, self.config.model_id or "") == ReasoningStyle.EFFORT_TOGGLE:
+            effort = (request.reasoning_effort or "").lower()
+            if effort in ("high", "max"):
+                payload["thinking"] = {"type": "enabled"}
+                payload["reasoning_effort"] = effort
+            else:
+                payload["thinking"] = {"type": "disabled"}
         # json_object mode is supported by gpt-4o, gpt-4-turbo, gpt-3.5-turbo-1106+
         # but NOT by o1/o3/o4/gpt-5 reasoning models.
         if request.json_mode and not model_rejects_temp:

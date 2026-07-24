@@ -15,6 +15,25 @@ from agent_eval_harness.mapping.builder.types import (
 logger = logging.getLogger("agent_eval_harness.mapping.builder.topology")
 
 
+def _merge_missing_wiring(base: WiringBlock, fresh: WiringBlock) -> WiringBlock:
+    """Additively merge into `base` only the nodes (by alias) and edges (by src/dst) that `fresh`
+    detection found and `base` lacks — so a stale/partial persisted block can't orphan scanned nodes.
+    Returns `base` unchanged when nothing is missing."""
+    base_aliases = {n.alias for n in base.nodes}
+    base_edges = {(e.src, e.dst) for e in base.edges}
+    extra_nodes = [n for n in fresh.nodes if n.alias not in base_aliases]
+    extra_edges = [e for e in fresh.edges if (e.src, e.dst) not in base_edges]
+    if not extra_nodes and not extra_edges:
+        return base
+    frameworks = sorted(set(base.framework.split("+")) | set(fresh.framework.split("+")))
+    return WiringBlock(
+        nodes=list(base.nodes) + extra_nodes,
+        edges=list(base.edges) + extra_edges,
+        framework="+".join(frameworks),
+        source=base.source,
+    )
+
+
 def extract_topology(
     source_files: list[Path],
     candidates: list[CandidateComponent],
@@ -51,9 +70,18 @@ def extract_topology(
             logger.warning("skipping unreadable file %s: %s", file, exc)
             continue
 
+    from agent_eval_harness.discovery.wiring import detect_wiring_block_static
     if wiring_block is None:
-        from agent_eval_harness.discovery.wiring import detect_wiring_block_static
         wiring_block = detect_wiring_block_static(file_contents)
+    elif file_contents:
+        # Safety-net (Gate D defense-in-depth): a wiring_block persisted before union detection can
+        # be missing an entire framework's wiring even though scan_all harvested those components,
+        # which would orphan the scanned nodes. Re-detect from source and merge any nodes/edges the
+        # passed block lacks. No-op when the passed block is already complete, or when there are no
+        # source files to re-scan (the supplied block, incl. an llm_fallback one, is used as-is).
+        fresh = detect_wiring_block_static(file_contents)
+        if fresh is not None:
+            wiring_block = _merge_missing_wiring(wiring_block, fresh)
 
     add_component_names: dict[str, str] = {}
     if wiring_block:

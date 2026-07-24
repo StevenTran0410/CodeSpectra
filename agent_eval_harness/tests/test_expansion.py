@@ -320,3 +320,36 @@ async def test_expansion_batch_classification_missing_degrades_to_boundary() -> 
     assert "file_c.py" in accepted_files
     assert "file_b.py" not in accepted_files
     assert "file_b.py" in res["boundary"]
+
+
+@pytest.mark.anyio
+async def test_split_candidate_seed_accepted_despite_boundary_verdict() -> None:
+    """CS-317 scoping: a SPLIT per-system candidate's own hub_paths seed is authoritative membership
+    (decided structurally at partition time), so it is accepted even when the classifier returns
+    'boundary' — this is what stops a wireless plain-python system's entrypoint from being dropped
+    when the LLM classifier errors or hits a budget cap."""
+    files = {"qa/agent.py": "class QAAgent:\n    def run(self):\n        return 1\n"}
+    client = _StubClient(files, {})
+    llm_client = _StubLLMClient({"qa/agent.py": "boundary"})  # classifier would reject it
+    candidate = {
+        "map_scope_framework": "plain_python",  # marks this a split candidate
+        "wiring_block": None,
+        "cluster_files": ["qa/agent.py"],
+        "hub_paths": ["qa/agent.py"],
+    }
+    res = await expand_candidate("snap", candidate, client, llm_client, node_budget=5, hop_cap=3)
+    accepted_files = [item["file"] for item in res["accepted"]]
+    assert "qa/agent.py" in accepted_files
+
+
+@pytest.mark.anyio
+async def test_non_split_candidate_seed_still_classified() -> None:
+    """Regression guard: a NON-split candidate (no map_scope_framework) keeps today's behavior — a
+    'boundary' verdict on its seed still drops it. Seed-skip must not leak to non-split candidates."""
+    files = {"x.py": "class Thing:\n    pass\n"}
+    client = _StubClient(files, {})
+    llm_client = _StubLLMClient({"x.py": "boundary"})
+    candidate = {"cluster_files": ["x.py"], "hub_paths": ["x.py"]}  # no map_scope_framework
+    res = await expand_candidate("snap", candidate, client, llm_client, node_budget=5, hop_cap=3)
+    accepted_files = [item["file"] for item in res["accepted"]]
+    assert "x.py" not in accepted_files

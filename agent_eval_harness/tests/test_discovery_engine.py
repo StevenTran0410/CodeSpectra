@@ -397,9 +397,11 @@ async def test_pass_c_prompt_includes_identity_context() -> None:
 
         async def complete(self, messages, **kwargs):
             self.call_count += 1
-            # Capture the user prompt for inspection
-            user_msg = [m for m in messages if m.role == "user"][0]
-            captured_prompts.append(user_msg.content)
+            # Project context lives in the system prompt (shared cache prefix), cluster data in the
+            # user prompt — capture both.
+            captured_prompts.append(
+                [m for m in messages if m.role == "system"][0].content
+            )
             return LLMResponse(
                 content='{"is_agentic_system": true, "name": "Test Agent", '
                 '"frameworks": ["haystack"], "entry_points": [], "confidence": "high"}',
@@ -427,3 +429,189 @@ async def test_pass_c_prompt_includes_identity_context() -> None:
     first_prompt = captured_prompts[0]
     assert "- purpose: Process documents" in first_prompt
     assert "- domain: NLP" in first_prompt
+    # Constant across the run => stays in the cacheable prefix, never re-sent per cluster.
+    synthesis_prompts = {p for p in captured_prompts if "is_agentic_system" in p}
+    assert len(synthesis_prompts) == 1
+
+
+# ---- CS-317 revision: multi-system community splits into per-system candidates ----
+
+_MIXED_HAYSTACK = (
+    "from haystack import Pipeline\n"
+    "p = Pipeline()\n"
+    "p.add_component('embedder', TextEmbedder())\n"
+    "p.add_component('retriever', Retriever())\n"
+    "p.connect('embedder', 'retriever')\n"
+)
+_MIXED_LANGGRAPH = (
+    "from langgraph.graph import StateGraph\n"
+    "class Orchestrator:\n"
+    "    def build(self):\n"
+    "        g = StateGraph(dict)\n"
+    "        g.add_node('plan', self._plan)\n"
+    "        g.add_node('act', self._act)\n"
+    "        g.add_edge('plan', 'act')\n"
+    "    def _plan(self, s): ...\n"
+    "    def _act(self, s): ...\n"
+)
+_MIXED_PLAIN = (
+    "class AskAgent:\n"
+    "    def run(self, q):\n"
+    "        return self._llm(q)\n"
+    "    def _llm(self, q):\n"
+    "        return q\n"
+)
+
+
+def _mixed_community_client() -> _StubClient:
+    """One import-community holding THREE distinct systems: a Haystack pipeline, a LangGraph
+    StateGraph, and a plain-python agent — all in community 42."""
+    evidences = [
+        {"rel_path": "svc/pipeline.py", "excerpt": _MIXED_HAYSTACK},
+        {"rel_path": "svc/graph.py", "excerpt": _MIXED_LANGGRAPH},
+        {"rel_path": "svc/ask.py", "excerpt": _MIXED_PLAIN},
+    ]
+    node_index = {"svc/pipeline.py": 42, "svc/graph.py": 42, "svc/ask.py": 42}
+    communities = [{"community_id": 42, "hub_paths": ["svc/pipeline.py", "svc/graph.py", "svc/ask.py"]}]
+    return _StubClient(evidences, node_index, communities)
+
+
+def _mixed_llm() -> FakeLLMClient:
+    return FakeLLMClient([
+        LLMResponse(
+            content='{"is_agentic_system": true, "name": "QA System", "frameworks": '
+            '["haystack", "langgraph"], "entry_points": ["svc/pipeline.py"], "confidence": "high"}',
+            model="fake",
+        )
+    ] * 6)
+
+
+@pytest.mark.asyncio
+async def test_mixed_community_splits_into_three_pure_candidates() -> None:
+    candidates = await discover_agentic_systems("snap-mixed", "repo-mixed", _mixed_community_client(), _mixed_llm())
+
+    # No candidate may carry a blended framework.
+    for c in candidates:
+        wb_fw = (c.get("wiring_block") or {}).get("framework")
+        assert not (wb_fw and "+" in wb_fw), f"blended wiring_block framework: {wb_fw!r}"
+        assert "+" not in "".join(c.get("frameworks") or [])
+
+    hay = next((c for c in candidates if (c.get("wiring_block") or {}).get("framework") == "haystack"), None)
+    lg = next((c for c in candidates if (c.get("wiring_block") or {}).get("framework") == "langgraph"), None)
+    plain = next((c for c in candidates if (c.get("frameworks") or []) == ["plain_python"]), None)
+
+    assert hay is not None and lg is not None and plain is not None, [
+        (c.get("name"), c.get("frameworks"), (c.get("wiring_block") or {}).get("framework")) for c in candidates
+    ]
+
+    # Pure frameworks, distinct in-memory system_ids, same provenance community.
+    assert hay["frameworks"] == ["haystack"]
+    assert {n["alias"] for n in hay["wiring_block"]["nodes"]} == {"embedder", "retriever"}
+    assert lg["frameworks"] == ["langgraph"]
+    assert {n["alias"] for n in lg["wiring_block"]["nodes"]} == {"plan", "act"}
+    assert lg["wiring_block"]["edges"], "LangGraph candidate must keep its StateGraph edges (non-orphaned)"
+    assert plain["wiring_block"] is None
+    assert all(c["community_id"] == "42" for c in (hay, lg, plain))
+    system_ids = {hay.get("system_id"), lg.get("system_id"), plain.get("system_id")}
+    assert len(system_ids) == 3 and None not in system_ids
+
+
+@pytest.mark.asyncio
+async def test_mixed_split_system_ids_are_deterministic_across_runs() -> None:
+    """system_id must be a stable hash (survives re-run / pause-resume), never an iteration counter."""
+    run1 = await discover_agentic_systems("snap-a", "repo-a", _mixed_community_client(), _mixed_llm())
+    run2 = await discover_agentic_systems("snap-b", "repo-b", _mixed_community_client(), _mixed_llm())
+    ids1 = sorted(c["system_id"] for c in run1 if c.get("system_id"))
+    ids2 = sorted(c["system_id"] for c in run2 if c.get("system_id"))
+    assert ids1 == ids2 and len(ids1) == 3
+
+
+@pytest.mark.asyncio
+async def test_single_framework_community_unchanged_no_split() -> None:
+    """A single-system community keeps today's EXACT single-candidate shape: base name, no system_id,
+    no residual — regression guard for single-framework repos."""
+    evidences = [{"rel_path": "svc/pipeline.py", "excerpt": _MIXED_HAYSTACK}]
+    client = _StubClient(evidences, {"svc/pipeline.py": 7},
+                         [{"community_id": 7, "hub_paths": ["svc/pipeline.py"]}])
+    llm = FakeLLMClient([
+        LLMResponse(content='{"is_agentic_system": true, "name": "Only Pipeline", '
+                    '"frameworks": ["haystack"], "entry_points": ["svc/pipeline.py"], '
+                    '"confidence": "high"}', model="fake")
+    ] * 4)
+    candidates = await discover_agentic_systems("snap-single", "repo-single", client, llm)
+    assert len(candidates) == 1
+    c = candidates[0]
+    assert c["name"] == "Only Pipeline"          # base name unchanged (no framework suffix)
+    assert c.get("system_id") is None            # no split => no system_id
+    assert c["wiring_block"]["framework"] == "haystack"
+
+
+# ---- per-system naming: the synthesis LLM sees each detected system and names it ----
+
+
+class _CapturingLLM:
+    """Captures every (system, user) prompt pair and replays a caller-supplied response."""
+
+    def __init__(self, content: str) -> None:
+        self.content = content
+        self.prompts: list[tuple[str, str]] = []
+
+    async def complete(self, messages, **kwargs):
+        sys_msg = next(m.content for m in messages if m.role == "system")
+        user_msg = next(m.content for m in messages if m.role == "user")
+        self.prompts.append((sys_msg, user_msg))
+        return LLMResponse(content=self.content, model="fake")
+
+
+@pytest.mark.asyncio
+async def test_synthesis_prompt_describes_each_detected_system() -> None:
+    """Wiring detection runs BEFORE synthesis so the single LLM call can name each system from its
+    own framework / components / folders / call flow."""
+    llm = _CapturingLLM('{"is_agentic_system": true, "name": "C", "frameworks": ["haystack"], '
+                        '"entry_points": [], "confidence": "high"}')
+    await discover_agentic_systems("snap-desc", "repo-desc", _mixed_community_client(), llm)
+
+    user_prompt = next(u for _, u in llm.prompts if "Detected agentic systems" in u)
+    assert "System #1:" in user_prompt and "System #2:" in user_prompt
+    assert "framework: haystack" in user_prompt and "framework: langgraph" in user_prompt
+    assert "components (2): embedder, retriever" in user_prompt
+    assert "folders: svc" in user_prompt
+    assert "call flow: plan -> act" in user_prompt
+    # The schema/instructions live in the system prompt, which stays byte-identical across calls
+    # (prompt-cache prefix); only the per-cluster data varies.
+    assert '"systems": [{"index": integer, "name": "string"}]' in llm.prompts[0][0]
+    assert len({s for s, _ in llm.prompts}) == 1
+
+
+@pytest.mark.asyncio
+async def test_split_candidates_use_llm_per_system_names() -> None:
+    llm = _CapturingLLM(
+        '{"is_agentic_system": true, "name": "Community", "frameworks": ["haystack"], '
+        '"entry_points": [], "confidence": "high", "systems": ['
+        '{"index": 1, "name": "Document Retrieval Pipeline"}, '
+        '{"index": 2, "name": "Task Planning Orchestrator"}]}'
+    )
+    candidates = await discover_agentic_systems("snap-name", "repo-name", _mixed_community_client(), llm)
+    names = {(c.get("wiring_block") or {}).get("framework"): c["name"] for c in candidates}
+    assert names["haystack"] == "Document Retrieval Pipeline"
+    assert names["langgraph"] == "Task Planning Orchestrator"
+
+
+@pytest.mark.asyncio
+async def test_duplicate_llm_system_names_are_disambiguated() -> None:
+    llm = _CapturingLLM(
+        '{"is_agentic_system": true, "name": "Community", "frameworks": ["haystack"], '
+        '"entry_points": [], "confidence": "high", "systems": ['
+        '{"index": 1, "name": "Agent"}, {"index": 2, "name": "Agent"}]}'
+    )
+    candidates = await discover_agentic_systems("snap-dup", "repo-dup", _mixed_community_client(), llm)
+    split_names = [c["name"] for c in candidates if (c.get("wiring_block") or {}).get("framework")]
+    assert len(split_names) == len(set(split_names)), split_names
+
+
+@pytest.mark.asyncio
+async def test_missing_systems_key_falls_back_to_framework_suffix() -> None:
+    """Old/short LLM responses without a "systems" array keep the previous naming behaviour."""
+    candidates = await discover_agentic_systems("snap-fb", "repo-fb", _mixed_community_client(), _mixed_llm())
+    hay = next(c for c in candidates if (c.get("wiring_block") or {}).get("framework") == "haystack")
+    assert hay["name"] == "QA System — haystack"

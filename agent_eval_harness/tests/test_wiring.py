@@ -258,6 +258,7 @@ workflow.add_edge("action", "agent")
 
 def test_detect_langchain_lcel():
     lcel_code = """
+from langchain_core.runnables import RunnableSequence
 chain = prompt_template | chat_model | output_parser
 """
     file_contents = {"chain.py": lcel_code}
@@ -277,6 +278,18 @@ chain = prompt_template | chat_model | output_parser
     assert wiring.edges[0].dst == "chat_model"
     assert wiring.edges[1].src == "chat_model"
     assert wiring.edges[1].dst == "output_parser"
+
+
+def test_detect_langchain_lcel_ignores_pipe_without_langchain_import():
+    """A plain `set(...) | set(...)` (or any bitwise-or) in a file that never imports
+    langchain must NOT be mistaken for an LCEL pipe chain — the pipe idiom is only trusted
+    when the file imports langchain (mirrors the factory-path gate)."""
+    set_union_code = """
+def merge(indeg, outdeg):
+    seen = set(indeg.keys()) | set(outdeg.keys())
+    return seen
+"""
+    assert _detect_langchain_lcel({"graph_service.py": set_union_code}) is None
 
 
 def test_detect_langchain_lcel_ignores_pep604_type_unions():
@@ -405,3 +418,196 @@ async def test_detect_via_llm_propagates_rate_limit():
     
     with pytest.raises(RateLimitExceeded):
         await _detect_via_llm({"custom.py": "pass"}, mock_llm_client)
+
+
+# ---- CS-317: mixed-framework union + per-node framework tag + back-compat -----------------
+
+def test_detect_wiring_block_static_unions_haystack_and_langgraph():
+    """A cluster mixing a Haystack pipeline and a LangGraph StateGraph must yield ONE union block
+    containing BOTH frameworks' nodes, each node tagged with its producing framework — not one
+    detector starving the other (first-hit-wins regression guard)."""
+    from agent_eval_harness.discovery.wiring import detect_wiring_block_static
+    haystack_file = (
+        "from haystack import Pipeline\n"
+        "p = Pipeline()\n"
+        "p.add_component('embedder', TextEmbedder())\n"
+        "p.add_component('retriever', Retriever())\n"
+        "p.connect('embedder', 'retriever')\n"
+    )
+    langgraph_file = (
+        "from langgraph.graph import StateGraph\n"
+        "class Orchestrator:\n"
+        "    def build(self):\n"
+        "        g = StateGraph(dict)\n"
+        "        g.add_node('plan', self._plan)\n"
+        "        g.add_node('act', self._act)\n"
+        "        g.add_edge('plan', 'act')\n"
+        "    def _plan(self, s): ...\n"
+        "    def _act(self, s): ...\n"
+    )
+    block = detect_wiring_block_static({"pipe.py": haystack_file, "graph.py": langgraph_file})
+    assert block is not None
+    frameworks = {n.framework for n in block.nodes}
+    assert "haystack" in frameworks and "langgraph" in frameworks
+    assert "haystack" in block.framework and "langgraph" in block.framework
+    aliases = {n.alias for n in block.nodes}
+    assert {"embedder", "retriever", "plan", "act"} <= aliases
+    edge_pairs = {(e.src, e.dst) for e in block.edges}
+    assert ("embedder", "retriever") in edge_pairs  # haystack edge survives
+    assert ("plan", "act") in edge_pairs            # langgraph edge survives
+
+
+def test_detect_wiring_block_static_single_framework_preserves_label():
+    """A single-framework cluster returns its own framework label unchanged (no 'mixed'), so existing
+    single-framework behavior and the Haystack golden invariant are untouched."""
+    from agent_eval_harness.discovery.wiring import detect_wiring_block_static
+    haystack_file = (
+        "from haystack import Pipeline\n"
+        "p = Pipeline()\n"
+        "p.add_component('embedder', TextEmbedder())\n"
+        "p.connect('embedder', 'embedder')\n"
+    )
+    block = detect_wiring_block_static({"pipe.py": haystack_file})
+    assert block is not None
+    assert block.framework == "haystack"
+    assert all(n.framework == "haystack" for n in block.nodes)
+
+
+def test_union_namespaces_cross_framework_alias_collision():
+    """Two frameworks emitting the same alias must not collapse into one node; the later one is
+    namespaced and its edges rewritten so topology still joins (union precision floor)."""
+    from agent_eval_harness.discovery.wiring import union_wiring_blocks, WiringBlock, WiringNode, WiringEdge
+    a = WiringBlock(
+        nodes=[WiringNode(alias="agent", callee_name="A", source_hint_file="a.py"),
+               WiringNode(alias="tail", callee_name="TailA", source_hint_file="a.py")],
+        edges=[WiringEdge(src="agent", dst="tail")], framework="haystack", source="static",
+    )
+    b = WiringBlock(
+        nodes=[WiringNode(alias="agent", callee_name="B", source_hint_file="b.py"),
+               WiringNode(alias="head", callee_name="HeadB", source_hint_file="b.py")],
+        edges=[WiringEdge(src="agent", dst="head")], framework="langgraph", source="static",
+    )
+    u = union_wiring_blocks([a, b])
+    aliases = [n.alias for n in u.nodes]
+    assert aliases.count("agent") == 1                 # haystack 'agent' kept
+    assert "agent@langgraph" in aliases                # langgraph 'agent' namespaced
+    edge_pairs = {(e.src, e.dst) for e in u.edges}
+    assert ("agent", "tail") in edge_pairs             # haystack edge intact
+    assert ("agent@langgraph", "head") in edge_pairs   # langgraph edge rewritten to namespaced alias
+
+
+def test_wiringnode_backcompat_old_row_without_framework():
+    """An old wiring_block_json row whose nodes predate the framework field must deserialize cleanly,
+    defaulting framework to 'unknown' (no corruption / no KeyError)."""
+    from agent_eval_harness.discovery.wiring import WiringBlock
+    old_row = {
+        "nodes": [{"alias": "n1", "callee_name": "C1", "source_hint_file": "x.py",
+                   "entry_kind": "class", "owner_class": None}],  # no 'framework' key
+        "edges": [{"src": "n1", "dst": "n1"}],
+        "framework": "haystack", "source": "static",
+    }
+    block = WiringBlock.from_dict(old_row)
+    assert block.nodes[0].framework == "unknown"
+    assert block.to_dict()["nodes"][0]["framework"] == "unknown"  # round-trips forward
+
+
+# ---- CS-317 revision: partition into per-system candidates ----
+
+
+def test_split_block_components_single_chain_is_one_system():
+    """A connected chain of nodes is ONE system (one component)."""
+    from agent_eval_harness.discovery.wiring import _split_block_components, WiringBlock, WiringNode, WiringEdge
+    block = WiringBlock(
+        nodes=[WiringNode(alias=a, callee_name=a, source_hint_file="f.py") for a in ("a", "b", "c")],
+        edges=[WiringEdge(src="a", dst="b"), WiringEdge(src="b", dst="c")],
+        framework="haystack", source="static",
+    )
+    comps = _split_block_components(block)
+    assert len(comps) == 1
+    assert {n.alias for n in comps[0].nodes} == {"a", "b", "c"}
+
+
+def test_split_block_components_two_disjoint_same_framework_pipelines_split():
+    """Two INDEPENDENT same-framework pipelines in one block are two systems — partition is by wiring
+    connectivity, not hardcoded one-per-framework."""
+    from agent_eval_harness.discovery.wiring import _split_block_components, WiringBlock, WiringNode, WiringEdge
+    block = WiringBlock(
+        nodes=[WiringNode(alias=a, callee_name=a, source_hint_file="f.py")
+               for a in ("a1", "a2", "b1", "b2")],
+        edges=[WiringEdge(src="a1", dst="a2"), WiringEdge(src="b1", dst="b2")],
+        framework="haystack", source="static",
+    )
+    comps = _split_block_components(block)
+    assert len(comps) == 2
+    alias_sets = sorted((frozenset(n.alias for n in c.nodes) for c in comps), key=sorted)
+    assert alias_sets == [frozenset({"a1", "a2"}), frozenset({"b1", "b2"})]
+    assert all(c.framework == "haystack" for c in comps)
+
+
+def test_split_block_components_isolated_node_is_own_singleton():
+    """A wiring node touched by no edge is its own single-node system."""
+    from agent_eval_harness.discovery.wiring import _split_block_components, WiringBlock, WiringNode, WiringEdge
+    block = WiringBlock(
+        nodes=[WiringNode(alias="a", callee_name="a", source_hint_file="f.py"),
+               WiringNode(alias="b", callee_name="b", source_hint_file="f.py"),
+               WiringNode(alias="lonely", callee_name="lonely", source_hint_file="f.py")],
+        edges=[WiringEdge(src="a", dst="b")],
+        framework="langgraph", source="static",
+    )
+    comps = _split_block_components(block)
+    assert len(comps) == 2
+    assert any({n.alias for n in c.nodes} == {"lonely"} for c in comps)
+
+
+def test_split_block_components_start_end_sentinels_keep_graph_together():
+    """START/END sentinel edges bridge real nodes of the SAME graph (one component), and sentinel-only
+    edges never leak into another component."""
+    from agent_eval_harness.discovery.wiring import _split_block_components, WiringBlock, WiringNode, WiringEdge
+    block = WiringBlock(
+        nodes=[WiringNode(alias=a, callee_name=a, source_hint_file="g.py") for a in ("plan", "act")],
+        edges=[WiringEdge(src="__start__", dst="plan"), WiringEdge(src="plan", dst="act"),
+               WiringEdge(src="act", dst="__end__")],
+        framework="langgraph", source="static",
+    )
+    comps = _split_block_components(block)
+    assert len(comps) == 1
+    assert {n.alias for n in comps[0].nodes} == {"plan", "act"}
+
+
+def test_detect_wiring_systems_splits_mixed_into_pure_blocks():
+    """A mixed Haystack + LangGraph file set yields TWO PURE blocks (no '+'), one per framework — the
+    partition primitive that replaces union-into-one-candidate."""
+    from agent_eval_harness.discovery.wiring import detect_wiring_systems
+    haystack_file = (
+        "from haystack import Pipeline\n"
+        "p = Pipeline()\n"
+        "p.add_component('embedder', TextEmbedder())\n"
+        "p.add_component('retriever', Retriever())\n"
+        "p.connect('embedder', 'retriever')\n"
+    )
+    langgraph_file = (
+        "from langgraph.graph import StateGraph\n"
+        "class Orchestrator:\n"
+        "    def build(self):\n"
+        "        g = StateGraph(dict)\n"
+        "        g.add_node('plan', self._plan)\n"
+        "        g.add_node('act', self._act)\n"
+        "        g.add_edge('plan', 'act')\n"
+        "    def _plan(self, s): ...\n"
+        "    def _act(self, s): ...\n"
+    )
+    systems = detect_wiring_systems({"pipe.py": haystack_file, "graph.py": langgraph_file})
+    frameworks = sorted(b.framework for b in systems)
+    assert frameworks == ["haystack", "langgraph"]
+    assert all("+" not in b.framework for b in systems)  # each block is PURE
+    hay = next(b for b in systems if b.framework == "haystack")
+    lg = next(b for b in systems if b.framework == "langgraph")
+    assert {n.alias for n in hay.nodes} == {"embedder", "retriever"}
+    assert {n.alias for n in lg.nodes} == {"plan", "act"}
+    assert lg.edges  # StateGraph edges preserved, not orphaned
+
+
+def test_detect_wiring_systems_empty_when_no_static_wiring():
+    """No static wiring => [] so the engine falls back to its single-candidate / LLM path unchanged."""
+    from agent_eval_harness.discovery.wiring import detect_wiring_systems
+    assert detect_wiring_systems({"plain.py": "x = 1\ndef f():\n    return x\n"}) == []

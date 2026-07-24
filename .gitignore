@@ -54,6 +54,7 @@ agent_eval_harness/.pytest_cache/
 agent_eval_harness/.ruff_cache/
 agent_eval_harness/.aeh_data/
 agent_eval_harness/.deepeval/
+.deepeval/
 .aeh/
 agent_eval_harness/scripts/*.preview.md
 

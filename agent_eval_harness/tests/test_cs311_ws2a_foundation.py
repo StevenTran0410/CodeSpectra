@@ -126,3 +126,44 @@ def test_extract_topology_detects_when_no_block_supplied():
     with patch("agent_eval_harness.discovery.wiring.detect_wiring_block_static", return_value=None) as spy:
         extract_topology([], [])
         spy.assert_called_once()
+
+
+# ---- CS-317: topology safety-net (Gate D defense-in-depth) ---------------------------------
+def test_extract_topology_safetynet_reattaches_missing_framework_edges(tmp_path):
+    """A STALE haystack-only wiring_block (as an old persisted row would be) passed alongside
+    source files that ALSO contain a LangGraph graph must NOT orphan the scanned LangGraph nodes:
+    the safety-net re-detects and merges the missing framework's edges. Reproduces Gate D."""
+    from agent_eval_harness.mapping.builder.types import CandidateComponent
+
+    graph_src = textwrap.dedent(
+        """
+        from langgraph.graph import StateGraph
+        class Orchestrator:
+            def build(self):
+                g = StateGraph(dict)
+                g.add_node('plan', self._plan)
+                g.add_node('act', self._act)
+                g.add_edge('plan', 'act')
+            def _plan(self, s): ...
+            def _act(self, s): ...
+        """
+    )
+    graph_file = tmp_path / "graph.py"
+    graph_file.write_text(graph_src, encoding="utf-8")
+
+    # candidates as scan_all would harvest the two bound-method nodes (owner Orchestrator)
+    candidates = [
+        CandidateComponent(file=graph_file, line=1, class_name="_plan",
+                           owner_class_name="Orchestrator", entry_kind="bound_method"),
+        CandidateComponent(file=graph_file, line=1, class_name="_act",
+                           owner_class_name="Orchestrator", entry_kind="bound_method"),
+    ]
+    # STALE block: haystack-only, knows NOTHING about the langgraph graph.
+    stale = WiringBlock(nodes=[], edges=[], framework="haystack", source="static")
+
+    topo = extract_topology([graph_file], candidates, wiring_block=stale)
+    plan_id = candidates[0].candidate_id
+    act_id = candidates[1].candidate_id
+    # Without the safety-net the langgraph edge is orphaned (both empty); with it, plan->act exists.
+    assert act_id in topo[plan_id].downstream, "safety-net failed to re-attach the LangGraph edge"
+    assert plan_id in topo[act_id].upstream

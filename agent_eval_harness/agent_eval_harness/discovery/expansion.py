@@ -98,13 +98,15 @@ async def _classify_nodes_batch(
     name = candidate.get("name", "unknown")
     frameworks = ", ".join(candidate.get("frameworks", []))
 
+    # Keep the system prompt byte-identical across every classify call in a run (candidate name /
+    # frameworks go in the user message below, not here) so the whole instruction block + feature
+    # map is one stable cacheable prefix — otherwise a per-candidate string mid-prompt breaks prompt
+    # caching and every one of the many expansion calls is a full cache miss.
     system_prompt = (
         "You are an expert AI software architect. You will be given several independent Python "
         "source code chunks from a target codebase, each from a different file. Classify EACH ONE "
         "separately and carefully — a verdict on one chunk must never be influenced by the content "
         "of another chunk in this batch. Judge every chunk purely on its own content.\n"
-        f"The candidate agentic system we are expanding is named \"{name}\" and uses frameworks: "
-        f"[{frameworks}].\n"
         "For each chunk, determine if it is:\n"
         "1. \"accept\" - a core agentic component (agent loops, tool orchestrators, custom agents, "
         "prompt templates, main entry points).\n"
@@ -125,8 +127,14 @@ async def _classify_nodes_batch(
     if project_context and project_context.feature_map:
         system_prompt += "\n\nProject feature map:\n" + project_context.feature_map.as_context_block()
 
-    user_prompt = "\n\n".join(
-        f"=== ID: {path}::{chunk_id} ===\n{content}" for path, content, chunk_id in items
+    # Variable context (candidate name/frameworks) leads the user message so the cached system
+    # prefix above stays identical across candidates; the chunks follow.
+    user_prompt = (
+        f"The candidate agentic system we are expanding is named \"{name}\" and uses frameworks: "
+        f"[{frameworks}].\n\n"
+        + "\n\n".join(
+            f"=== ID: {path}::{chunk_id} ===\n{content}" for path, content, chunk_id in items
+        )
     )
 
     result: dict[str, dict] = {
@@ -301,6 +309,19 @@ async def expand_candidate(
                     if n.get("source_hint_file") == file_path:
                         skip_classify = True
                         break
+
+            # A split per-system candidate's own seed (its hub_paths) is authoritative membership,
+            # decided structurally at partition time. Trust it directly instead of re-classifying —
+            # this is the wireless (plain-python) candidate's analogue of the wiring source_hint_file
+            # skip above, and it stops the system's entrypoint from being dropped when the classifier
+            # errors or hits a budget cap. Gated on map_scope_framework so non-split candidates are
+            # unchanged.
+            if (
+                not skip_classify
+                and candidate.get("map_scope_framework")
+                and file_path in set(candidate.get("hub_paths", []))
+            ):
+                skip_classify = True
 
             resolved[(file_path, chunk_id)] = (content, skip_classify)
             if not skip_classify:

@@ -29,6 +29,10 @@ class SystemMapBuilder:
     ) -> None:
         self._llm_client = llm_client
         self._threshold = confidence_threshold
+        # A caller-declared pure framework (from a per-system candidate) is authoritative for the map
+        # label — it must win over scan_all's union of frameworks that merely CO-LOCATE in the file
+        # set, so a per-system map is never mislabeled 'a+b'. None => fall back to the scan union.
+        self._explicit_framework = framework if framework and "+" not in framework else None
         self._scanner: FrameworkScanner = get_scanner(framework)
 
     async def build(
@@ -60,9 +64,19 @@ class SystemMapBuilder:
     async def build_from_files(
         self, files: list[Path], package_root: Path, target_system_id: str,
         docs_path: Path | None = None, wiring_block: WiringBlock | None = None,
+        scope_framework: str | None = None, exclude_component_classes: set[str] | None = None,
     ) -> tuple[SystemMap, str]:
-        """Same as build(), but the caller supplies the exact file set directly instead of a directory glob."""
+        """Same as build(), but the caller supplies the exact file set directly instead of a directory
+        glob. When a community was split into per-system candidates, `scope_framework` keeps only the
+        components produced by that system's scanner (so co-located sibling classes don't bleed in),
+        and `exclude_component_classes` drops any class a sibling's wiring_block already claims (for the
+        wireless plain-python candidate). Both default off => a non-split candidate keeps every
+        component, unchanged."""
         all_candidates, framework_label = scan_all(files, wiring_block=wiring_block)
+        if scope_framework:
+            all_candidates = [c for c in all_candidates if c.framework == scope_framework]
+        if exclude_component_classes:
+            all_candidates = [c for c in all_candidates if c.class_name not in exclude_component_classes]
         return await self._build_from_candidates(
             all_candidates, files, package_root, target_system_id, docs_path, wiring_block,
             framework_label=framework_label,
@@ -92,10 +106,19 @@ class SystemMapBuilder:
             candidates, topology_map, constraint_map, package_root
         )
         discrepancies = await self._reconcile_docs(docs_path, components) if docs_path else []
+        # Framework precedence: a supplied pure wiring_block (the system's ground truth) > a caller-
+        # declared pure framework > scan_all's co-location union > the advisory single scanner. This
+        # keeps each per-system map single-framework even when other systems' classes co-locate.
+        if wiring_block is not None and wiring_block.framework and "+" not in wiring_block.framework:
+            resolved_framework = wiring_block.framework
+        elif self._explicit_framework:
+            resolved_framework = self._explicit_framework
+        else:
+            resolved_framework = framework_label if framework_label else self._scanner.framework
         system_map = SystemMap.model_validate({
             "target_system_id": target_system_id,
             "components": [c.model_dump() for c in components],
-            "framework": framework_label if framework_label else self._scanner.framework,
+            "framework": resolved_framework,
             "discrepancies": discrepancies,
         })
         summary = self._build_summary(system_map)

@@ -598,3 +598,88 @@ class SyntheticComponent:
                                     assert "at most 3 retries" in c.source
 
         asyncio.run(run_test())
+
+
+class TestPerSystemComponentScoping:
+    """CS-317 revision: a split per-system map keeps ONLY its own framework's components; sibling
+    classes co-located in the accepted file set must not bleed in."""
+
+    def _noop_llm(self):
+        from agent_eval_harness.llm.client import LLMResponse
+
+        class _NoOpLLM:
+            async def complete(self, messages, **_kw):
+                return LLMResponse(content="[]", model="fake")
+
+        return _NoOpLLM()
+
+    def _mixed_files(self, root: Path):
+        (root / "pipe.py").write_text(
+            "from haystack import component\n"
+            "@component\n"
+            "class Retriever:\n"
+            "    def run(self):\n"
+            "        return 1\n",
+            encoding="utf-8",
+        )
+        (root / "graph.py").write_text(
+            "from langgraph.graph import StateGraph\n"
+            "g = StateGraph(dict)\n"
+            "g.add_node('act', do_act)\n",
+            encoding="utf-8",
+        )
+        return [root / "pipe.py", root / "graph.py"]
+
+    def test_scope_framework_keeps_only_that_frameworks_components(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            files = self._mixed_files(root)
+
+            async def run_it(scope):
+                builder = SystemMapBuilder(self._noop_llm(), framework=scope)
+                m, _ = await builder.build_from_files(
+                    files, package_root=root, target_system_id="t", scope_framework=scope
+                )
+                return m
+
+            hay = asyncio.run(run_it("haystack"))
+            hay_ids = {c.id for c in hay.components}
+            assert "retriever" in hay_ids and "do_act" not in hay_ids
+            assert hay.framework == "haystack"
+
+            lg = asyncio.run(run_it("langgraph"))
+            lg_ids = {c.id for c in lg.components}
+            assert "do_act" in lg_ids and "retriever" not in lg_ids
+            assert lg.framework == "langgraph"
+
+    def test_no_scope_keeps_all_components_unchanged(self):
+        """A non-split candidate passes scope_framework=None => every component is kept (both
+        frameworks), preserving today's behavior for single/non-split candidates."""
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            files = self._mixed_files(root)
+
+            async def run_it():
+                builder = SystemMapBuilder(self._noop_llm())
+                m, _ = await builder.build_from_files(files, package_root=root, target_system_id="t")
+                return m
+
+            m = asyncio.run(run_it())
+            ids = {c.id for c in m.components}
+            assert {"retriever", "do_act"} <= ids
+
+    def test_exclude_component_classes_drops_named_class(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            files = self._mixed_files(root)
+
+            async def run_it():
+                builder = SystemMapBuilder(self._noop_llm(), framework="langgraph")
+                m, _ = await builder.build_from_files(
+                    files, package_root=root, target_system_id="t",
+                    scope_framework="langgraph", exclude_component_classes={"do_act"},
+                )
+                return m
+
+            m = asyncio.run(run_it())
+            assert "do_act" not in {c.id for c in m.components}  # class_name do_act excluded
