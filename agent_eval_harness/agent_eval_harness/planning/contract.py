@@ -13,6 +13,12 @@ class KwargSpec(BaseModel):
     annotation: str | None = None
     default_repr: str | None = None
     required: bool = True
+    # Field-level schema when annotation names an in-repo type (or was resolved via an unambiguous
+    # upstream agent output); None = unresolved. Mirrors agent_knowledge.ContractArg's input_schemas entry.
+    resolved_schema: dict[str, Any] | None = None
+    # Provenance tag mirroring agent_knowledge.ContractArg.source_kind (config-static /
+    # upstream-agent-output / runtime-state / internally-retrieved); None = unclassified.
+    source_kind: str | None = None
 
 
 class InvocationContract(BaseModel):
@@ -37,8 +43,15 @@ class OutputContract(BaseModel):
     fallback_literal: dict[str, Any] | None = None
     fallback_source: str | None = None
     validated_in_target: bool = False
+    section_letter: str | None = None
     # field -> allowed literal values, e.g. {"confidence": ["low","medium","high"]}; empty until harvested.
     schema_enum_values: dict[str, list[str]] = Field(default_factory=dict)
+    # Set when the AST-derived json_schema disagreed with a prompt-derived key-set (see contract_harvest cross-validation).
+    schema_discrepancy: str | None = None
+    # Which return branch produced json_schema; None when undeterminable.
+    cardinality: Literal["object", "array"] | None = None
+    # True when a yield/stream co-exists with the return dict this schema was harvested from (e.g. streamed markdown + a returned meta-JSON) — the json_schema stays the sole scorable gold.
+    has_streamed_output: bool = False
 
 
 class ObservabilityContract(BaseModel):

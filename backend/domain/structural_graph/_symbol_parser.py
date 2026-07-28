@@ -76,6 +76,9 @@ class AttributeAssign:
     attr_name: str
     assigned_type: str
     line: int
+    method_name: str | None = None
+    # True only for self.attr = Type() (real construction); False for type annotations / param-aliases, which type the attribute for call-resolution but do not instantiate.
+    is_construction: bool = True
 
 
 @dataclass
@@ -140,8 +143,9 @@ def parse_file(filename: str, source: str) -> ParsedFile | None:
         lower = filename.lower()
         if lower.endswith(".py"):
             return _parse_python(filename, source)
-        if lower.endswith((".ts", ".tsx")):
-            return _parse_typescript(filename, source)
+        if lower.endswith((".ts", ".tsx", ".js", ".jsx")):
+            lang_name = "javascript" if lower.endswith((".js", ".jsx")) else "typescript"
+            return _parse_typescript(filename, source, lang_name=lang_name)
         return None
     except Exception:
         logger.exception("parse_file failed for %s", filename)
@@ -273,27 +277,67 @@ class _PythonVisitor(ast.NodeVisitor):
 
     def _visit_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
         self._func_stack.append(node.name)
-        # Scan for self.attr = Type() assignments
-        if self._class_stack:
+        # Scan for self.attr = Type(), self.attr: Type, or self.attr = annotated_param assignments
+        if self._class_stack and len(self._func_stack) == 1:
+            current_class = self._class_stack[-1]
+            current_method = self._func_stack[-1]
+
+            param_annotations: dict[str, str] = {}
+            for arg in node.args.args + node.args.posonlyargs + node.args.kwonlyargs:
+                if arg.annotation:
+                    ann_str = _ast_expr_str(arg.annotation)
+                    if ann_str:
+                        param_annotations[arg.arg] = ann_str
+
+            nested_func_stmts = {
+                child_stmt
+                for child in ast.walk(node)
+                if child is not node and isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+                for child_stmt in ast.walk(child)
+            }
+
             for stmt in ast.walk(node):
+                if stmt in nested_func_stmts:
+                    continue
+
                 if isinstance(stmt, ast.Assign):
                     for target in stmt.targets:
-                        if (
-                            isinstance(target, ast.Attribute)
-                            and isinstance(target.value, ast.Name)
-                            and target.value.id == "self"
-                            and isinstance(stmt.value, ast.Call)
-                        ):
-                            ctor_name = _ast_call_name(stmt.value)
-                            if ctor_name:
+                        if isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name) and target.value.id == "self":
+                            assigned_type: str | None = None
+                            is_ctor = False
+                            if isinstance(stmt.value, ast.Call):
+                                assigned_type = _ast_call_name(stmt.value)
+                                is_ctor = True
+                            elif isinstance(stmt.value, ast.Name) and stmt.value.id in param_annotations:
+                                assigned_type = param_annotations[stmt.value.id]
+
+                            if assigned_type:
                                 self.attribute_assignments.append(
                                     AttributeAssign(
-                                        class_name=self._class_stack[-1],
+                                        class_name=current_class,
                                         attr_name=target.attr,
-                                        assigned_type=ctor_name,
+                                        assigned_type=assigned_type,
                                         line=stmt.lineno,
+                                        method_name=current_method,
+                                        is_construction=is_ctor,
                                     )
                                 )
+
+                elif isinstance(stmt, ast.AnnAssign):
+                    target = stmt.target
+                    if isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name) and target.value.id == "self":
+                        ann_type = _ast_expr_str(stmt.annotation)
+                        if ann_type:
+                            self.attribute_assignments.append(
+                                AttributeAssign(
+                                    class_name=current_class,
+                                    attr_name=target.attr,
+                                    assigned_type=ann_type,
+                                    line=stmt.lineno,
+                                    method_name=current_method,
+                                    is_construction=False,
+                                )
+                            )
         self.generic_visit(node)
         self._func_stack.pop()
 
@@ -340,15 +384,15 @@ class _PythonVisitor(ast.NodeVisitor):
 # TypeScript parser (tree-sitter)
 # ---------------------------------------------------------------------------
 
-def _parse_typescript(filename: str, source: str) -> ParsedFile:
-    result = ParsedFile(filename=filename, language="typescript")
+def _parse_typescript(filename: str, source: str, lang_name: str = "typescript") -> ParsedFile:
+    result = ParsedFile(filename=filename, language=lang_name)
     try:
         from domain.repo_map._loaders import _load_ts_language, _ts_parse, _node_text
     except ImportError:
         logger.warning("tree-sitter not available; skipping TS parse for %s", filename)
         return result
 
-    lang = _load_ts_language("typescript")
+    lang = _load_ts_language(lang_name)
     if lang is None:
         return result
 

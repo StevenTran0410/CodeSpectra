@@ -49,27 +49,35 @@ export default function DatasetReviewScreen(): React.ReactElement {
   }, [providers, selectedProviderId])
 
   useEffect(() => {
-    if (providers.length > 0 && !selectedEmbedProviderId && !selectedUseLocalEmbedding) {
-      const openAi = providers.find((p) => p.kind === 'openai')
-      if (openAi) {
-        setSelectedEmbedProviderId(openAi.id)
-        setSelectedEmbedModelId('text-embedding-3-small')
-      } else {
-        const gemini = providers.find((p) => p.kind === 'gemini')
-        if (gemini) {
-          setSelectedEmbedProviderId(gemini.id)
-          setSelectedEmbedModelId('gemini-embedding-001')
-        } else {
-          window.api.localEmbedding
-            .status()
-            .then((status) => {
-              if (status.gpu_available) {
-                setSelectedUseLocalEmbedding(true)
-              }
-            })
-            .catch(() => {})
+    if (providers.length === 0 || selectedEmbedProviderId || selectedUseLocalEmbedding) return
+    let cancelled = false
+    ;(async () => {
+      // Default to the first cloud provider whose endpoint ACTUALLY serves embeddings, using a real
+      // model it exposes — never a hardcoded name that the endpoint may not have.
+      const candidates = providers.filter((p) => p.kind === 'openai' || p.kind === 'gemini')
+      for (const p of candidates) {
+        try {
+          const { models } = await window.api.provider.embeddingModels(p.id)
+          if (cancelled) return
+          if (models.length > 0) {
+            setSelectedEmbedProviderId(p.id)
+            setSelectedEmbedModelId(models.find((m) => m === 'text-embedding-3-small') || models[0])
+            return
+          }
+        } catch {
+          /* endpoint has no embeddings — try the next provider */
         }
       }
+      // No cloud embedding endpoint — fall back to the local GPU model if one is available.
+      try {
+        const status = await window.api.localEmbedding.status()
+        if (!cancelled && status.gpu_available) setSelectedUseLocalEmbedding(true)
+      } catch {
+        /* leave unset — the modal will show the no-embeddings state */
+      }
+    })()
+    return () => {
+      cancelled = true
     }
   }, [providers, selectedEmbedProviderId, selectedUseLocalEmbedding])
 
@@ -94,13 +102,13 @@ export default function DatasetReviewScreen(): React.ReactElement {
   const loadDatasets = useCallback(async () => {
     setLoadingDatasets(true)
     try {
-      setDatasets(await window.api.aeh.listDatasets())
+      setDatasets(await window.api.aeh.listDatasets(sessionId ?? undefined))
     } catch (err: any) {
       toast.error(err?.message ?? 'Failed to load datasets.')
     } finally {
       setLoadingDatasets(false)
     }
-  }, [toast])
+  }, [toast, sessionId])
 
   useEffect(() => {
     loadDatasets()
@@ -243,7 +251,7 @@ export default function DatasetReviewScreen(): React.ReactElement {
     setFulfilling(true)
     // Poll the dataset list while the long fulfill runs so each agent's dataset shows up live as it lands.
     const pollId = setInterval(() => {
-      window.api.aeh.listDatasets().then(setDatasets).catch(() => {})
+      window.api.aeh.listDatasets(sessionId).then(setDatasets).catch(() => {})
     }, 2000)
     try {
       const report = await window.api.aeh.fulfillDatasets(sessionId, {

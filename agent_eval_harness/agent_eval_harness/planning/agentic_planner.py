@@ -34,6 +34,7 @@ from agent_eval_harness.planning.report import (
 
 logger = logging.getLogger("agent_eval_harness.planning.agentic_planner")
 
+_PLAN_SCHEMA_VERSION = 1  # Manual bump on output-schema shape change (e.g., new report fields); invalidates stale report reuse.
 _BASELINE_HANDOFF_METRICS = {
     "allowed_downstream", "max_items_per_call", "max_retries", "retry_on_reject_required",
 }
@@ -221,6 +222,7 @@ async def gather_evidence(
     accepted_edges: list[dict],
     llm_client: LLMClient,
     project_context: Any | None = None,
+    agent_knowledge_by_id: dict[str, Any] | None = None,
 ) -> tuple[dict[str, AgentEvidence], dict[str, list[SuiteEntry]]]:
     """Root DAG node: deterministic evidence assembly + the rule-based baseline."""
     supporting = _supporting_files_by_agent(agent_flow_map, system_map, accepted_edges)
@@ -250,7 +252,8 @@ async def gather_evidence(
             project_context_block=_ctx_block,
         )
         baseline_by_agent[agent.id] = await baseline_gates_for_agent(
-            agent.component_ids, system_map, llm_client, agent_id=agent.id
+            agent.component_ids, system_map, llm_client, agent_id=agent.id,
+            agent_knowledge_by_id=agent_knowledge_by_id,
         )
 
     return evidence_by_agent, baseline_by_agent
@@ -316,8 +319,28 @@ async def complete_json(
     label: str,
     dag_notes: list[str] | None = None,
     reasoning_effort: str = "low",
+    history: list[LLMMessage] | None = None,
 ) -> dict | None:
-    """Calls the LLM in json_mode, retrying once at a larger token budget and forced "low" effort (a higher effort can silently burn the budget on hidden reasoning) if the first response is unparseable; never raises — appends a note to `dag_notes` on repeated failure so the degraded round stays visible in the plan report."""
+    """Parsed-only wrapper over `complete_json_with_raw`."""
+    parsed, _ = await complete_json_with_raw(
+        llm_client, system, user_prompt, max_tokens=max_tokens, label=label,
+        dag_notes=dag_notes, reasoning_effort=reasoning_effort, history=history,
+    )
+    return parsed
+
+
+async def complete_json_with_raw(
+    llm_client: LLMClient,
+    system: str,
+    user_prompt: str,
+    *,
+    max_tokens: int,
+    label: str,
+    dag_notes: list[str] | None = None,
+    reasoning_effort: str = "low",
+    history: list[LLMMessage] | None = None,
+) -> tuple[dict | None, str]:
+    """Calls the LLM in json_mode, retrying once at a larger token budget and forced "low" effort (a higher effort can silently burn the budget on hidden reasoning) if the first response is unparseable; never raises — appends a note to `dag_notes` on repeated failure so the degraded round stays visible in the plan report. `history` carries prior turns verbatim so a follow-up round both SEES its own earlier answer and reuses the provider's cached prefix; the raw text is returned so the caller can replay it byte-identically."""
     last_error: Exception | None = None
     for attempt, tokens in enumerate((max_tokens, max_tokens * _RETRY_TOKEN_MULTIPLIER)):
         effort = reasoning_effort if attempt == 0 else "low"
@@ -325,6 +348,7 @@ async def complete_json(
             response = await llm_client.complete(
                 [
                     LLMMessage(role="system", content=system),
+                    *(history or []),
                     LLMMessage(role="user", content=user_prompt),
                 ],
                 max_tokens=tokens,
@@ -334,7 +358,7 @@ async def complete_json(
             parsed = json.loads(response.content)
             if not isinstance(parsed, dict):
                 raise ValueError(f"{label} response was not a JSON object")
-            return parsed
+            return parsed, response.content
         except (json.JSONDecodeError, TypeError, ValueError) as e:
             last_error = e
             logger.warning(
@@ -346,7 +370,7 @@ async def complete_json(
             f"{label}: LLM response unparseable after retry ({last_error}) — this round "
             "produced nothing; review manually or regenerate the plan."
         )
-    return None
+    return None, ""
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -588,6 +612,7 @@ def _gate_to_suite_entry(gate: EvaluationGate) -> SuiteEntry:
         component=gate.component,
         metric=gate.metric,
         metric_class=gate.metric_class,
+        level=gate.level,
         execution=execution,
         dataset=dataset_ref,
         params=gate.params,
@@ -672,6 +697,22 @@ def _complete_params(
                 component_obj, components_by_id, system_map
             )
 
+    # guard_classification → populate categories from contract schema_enum_values or mark needs_human
+    if gate.dataset_kind == "guard_classification" and "categories" not in params:
+        cat_list = None
+        if contract and contract.output and contract.output.schema_enum_values:
+            for enum_vals in contract.output.schema_enum_values.values():
+                if enum_vals:
+                    cat_list = [{"name": v, "description": f"Category: {v}"} for v in enum_vals]
+                    break
+        if cat_list:
+            params["categories"] = cat_list
+        else:
+            needs_human = True
+            report_notes.append(
+                f"{gate.id}: guard_classification categories could not be derived from contract — needs_human"
+            )
+
     # arg_schema → replace with schema_valid seeded from contract output schema
     if gate.metric == "arg_schema" and contract is not None:
         if contract.output and contract.output.json_schema:
@@ -685,6 +726,7 @@ def _complete_params(
                 f"(contract schema: {contract.output.schema_source})"
             )
             return gate
+
 
     if spec:
         for rp in spec.required_params:
@@ -708,6 +750,7 @@ def _apply_feasibility(
     gates: list[EvaluationGate],
     contract: EvaluationContract | None,
     report_notes: list[str],
+    system_map: SystemMap | None = None,
 ) -> list[EvaluationGate]:
     """Evaluate meaningless_when against the contract, replacing/dropping/demoting gates; baseline gates are immune except metrics gated on the "input_kind_is_query" precondition, and LLM-only observability flags demote to needs_human while static flags execute the drop/replace."""
     if contract is None:
@@ -717,6 +760,7 @@ def _apply_feasibility(
     llm_fields = set(obs.llm_fields)
     result: list[EvaluationGate] = []
     seen_metrics: set[tuple[str, str]] = {(g.component, g.metric) for g in gates}
+    components_by_id = {c.id: c for c in system_map.components} if system_map else {}
 
     for gate in gates:
         spec = get_spec(gate.metric)
@@ -789,9 +833,19 @@ def _apply_feasibility(
                 pass  # no evidence to act on
             elif static_non_query:
                 report_notes.append(
-                    f"{gate.id}: geval.decomposition_coverage dropped (input_kind={obs.input_kind}, "
-                    "static) — fixed-fan-out step, no decomposition artifact to grade"
+                    f"{gate.id}: geval.decomposition_coverage replaced by allowed_downstream "
+                    f"(input_kind={obs.input_kind}, static) — fixed-fan-out step, no decomposition artifact"
                 )
+                ad_id = f"{gate.component}.allowed_downstream.feasibility"
+                if (gate.component, "allowed_downstream") not in seen_metrics:
+                    seen_metrics.add((gate.component, "allowed_downstream"))
+                    result.append(gate.model_copy(update={
+                        "id": ad_id, "metric": "allowed_downstream",
+                        "metric_class": "assertion", "toolkit": "assertion",
+                        "params": {"allowed": components_by_id.get(gate.component, Component()).downstream if gate.component in components_by_id else []},
+                        "rationale": f"Replaced geval.decomposition_coverage: fixed-fan-out routing correctness",
+                        "status": None,
+                    }))
                 continue
             elif llm_non_query:
                 report_notes.append(
@@ -940,6 +994,7 @@ def reconcile(
                     ),
                     params=gate.params,
                     dataset=gate.dataset,
+                    level=gate.level,
                     rationale=gate.rationale,
                     provenance="rule",
                 )
@@ -994,7 +1049,7 @@ def reconcile(
             for g in agent_gates
         ]
 
-        agent_gates = _apply_feasibility(agent_gates, contract, post_notes)
+        agent_gates = _apply_feasibility(agent_gates, contract, post_notes, system_map)
 
         agent_gates = _rebalance_gates(agent_gates, post_notes)
 
@@ -1016,6 +1071,7 @@ def reconcile(
     report = EvaluationPlanReport(
         target_system_id=agent_flow_map.target_system_id,
         agents=agent_reports,
+        schema_version=_PLAN_SCHEMA_VERSION,
     )
     return suite, report
 
@@ -1046,28 +1102,36 @@ async def run_critic(
     return [n for n in notes if isinstance(n, str)] if isinstance(notes, list) else []
 
 
+def _apply_virtual_bindings(contract: EvaluationContract, virtual_inputs: list[Any]) -> None:
+    """Merge ONE agent's virtual input bindings into its contract's case_binding in-place, prefixed
+    "virtual:" so Stage 4 codegen can wire stubs. Each entry may be a VirtualInputContract (Stage 2,
+    fresh) or a dict (Stage 3, from a persisted/loaded sidecar) -- both shapes reach here."""
+    from agent_eval_harness.datasets.archetype_vocabulary import VIRTUAL_BINDING_PREFIX
+
+    if not contract.invocation:
+        return
+    for vi in virtual_inputs:
+        if isinstance(vi, dict):
+            dep_attr = vi.get("dep_attr", "")
+            name = vi.get("name", "")
+        else:
+            dep_attr = getattr(vi, "dep_attr", "")
+            name = getattr(vi, "name", "")
+
+        if dep_attr and name:
+            contract.invocation.case_binding[dep_attr] = f"{VIRTUAL_BINDING_PREFIX}{name}"
+
+
 def _merge_virtual_input_bindings(
     contracts: dict[str, EvaluationContract],
     agent_knowledge_by_id: dict[str, Any],
 ) -> None:
     """Merges virtual input bindings from AgentKnowledge into contract case_binding in-place, prefixed "virtual:" so Stage 4 codegen can wire stubs."""
-    from agent_eval_harness.datasets.archetype_vocabulary import VIRTUAL_BINDING_PREFIX
-
     for agent_id, knowledge in agent_knowledge_by_id.items():
         contract = contracts.get(agent_id)
         if not contract or not contract.invocation or not knowledge.get("virtual_inputs"):
             continue
-
-        for vi in knowledge.get("virtual_inputs", []):
-            if isinstance(vi, dict):
-                dep_attr = vi.get("dep_attr", "")
-                name = vi.get("name", "")
-            else:
-                dep_attr = getattr(vi, "dep_attr", "")
-                name = getattr(vi, "name", "")
-
-            if dep_attr and name:
-                contract.invocation.case_binding[dep_attr] = f"{VIRTUAL_BINDING_PREFIX}{name}"
+        _apply_virtual_bindings(contract, knowledge.get("virtual_inputs", []))
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1098,20 +1162,44 @@ async def generate_plan_agentic(
     reused_agent_ids: list[str] = []
 
     async def _gather(_: dict[str, Any]) -> tuple[dict[str, AgentEvidence], dict[str, list[SuiteEntry]]]:
-        return await gather_evidence(system_map, agent_flow_map, source_by_component, accepted_edges, llm_client, project_context)
+        return await gather_evidence(system_map, agent_flow_map, source_by_component, accepted_edges, llm_client, project_context, agent_knowledge_by_id)
 
-    # Contract harvest is pure AST, no LLM — runs inline and always fresh (gold-gen reads this fresh value, never a cached sidecar).
+    def _sidecar_contract(agent_id: str) -> Any:
+        knowledge = (agent_knowledge_by_id or {}).get(agent_id)
+        if isinstance(knowledge, dict):
+            return knowledge.get("evaluation_contract")
+        return getattr(knowledge, "evaluation_contract", None)
+
+    # All-or-nothing: every agent's sidecar already carries a Stage-2-harvested contract -> read it
+    # back instead of re-harvesting. A single missing/older sidecar falls through to a full fresh
+    # harvest (never a per-agent partial mix, which would silently combine two harvest generations).
     contracts: dict[str, EvaluationContract] = {}
-    if files:
-        from agent_eval_harness.mapping.builder.contract_harvest import harvest_contracts
+    sidecar_contracts_complete = (
+        bool(agent_flow_map.agents)
+        and agent_knowledge_by_id is not None
+        and all(_sidecar_contract(a.id) for a in agent_flow_map.agents)
+    )
+    if sidecar_contracts_complete:
+        for agent in agent_flow_map.agents:
+            contracts[agent.id] = EvaluationContract.model_validate(_sidecar_contract(agent.id))
+    else:
+        # Contract harvest is pure AST, no LLM — runs inline and fresh when the sidecar doesn't have it yet.
+        if files:
+            from agent_eval_harness.mapping.builder.contract_harvest import harvest_contracts
 
-        contracts = harvest_contracts(system_map, agent_flow_map, files, files_root, conventions)
+            contracts = harvest_contracts(system_map, agent_flow_map, files, files_root, conventions)
 
-    # Merge virtual inputs into case_binding before reconcile consumes contracts
-    if agent_knowledge_by_id:
-        _merge_virtual_input_bindings(contracts, agent_knowledge_by_id)
+        # Merge virtual inputs into case_binding before reconcile consumes contracts
+        if agent_knowledge_by_id:
+            _merge_virtual_input_bindings(contracts, agent_knowledge_by_id)
 
     nodes: list[DagNode] = [DagNode("gather", [], _gather)]
+
+    # Check if the previous report is stale (from an older schema version)
+    invalidated_count = 0
+    if previous_report and (previous_report.schema_version is None or previous_report.schema_version != _PLAN_SCHEMA_VERSION):
+        invalidated_count = len(previous_by_agent)
+        previous_by_agent = {}  # Invalidate all agents
 
     for agent in agents:
         prev = previous_by_agent.get(agent.id)
@@ -1151,6 +1239,8 @@ async def generate_plan_agentic(
 
         nodes.append(DagNode(gates_name, ["gather", analyst_name], _gates))
 
+    if invalidated_count:
+        logger.info(f"Invalidated {invalidated_count} stale agent(s) from prior report (schema version mismatch).")
     if reused_agent_ids:
         dag_notes.append(
             f"Reused prior analysis for {len(reused_agent_ids)} agent(s) unchanged since the "
@@ -1191,4 +1281,5 @@ async def generate_plan_agentic(
     suite, report = results["reconcile"]
     critic_notes = results["critic"] if run_critic_pass else []
     report = report.model_copy(update={"advisory_notes": dag_notes + critic_notes})
+
     return suite, report

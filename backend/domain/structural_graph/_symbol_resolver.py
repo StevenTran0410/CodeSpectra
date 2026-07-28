@@ -425,8 +425,17 @@ def _resolve_module_call(
 # Public resolve_edges entry point
 # ---------------------------------------------------------------------------
 
+def _find_class_fqn(name: str, def_index: dict[str, SymbolInfo]) -> str | None:
+    """Find the class/interface symbol FQN for name. Returns FQN if EXACTLY ONE matching class exists, else None (unique-or-drop)."""
+    matches = [
+        fqn for fqn, sym in def_index.items()
+        if sym.method_name == name and sym.kind in ("class", "interface") and sym.class_name is None
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
 def resolve_edges(parsed_files: dict[str, ParsedFile]) -> list[SymbolEdge]:
-    """Resolve all call sites in all files to SymbolEdge objects.
+    """Resolve all call sites, inheritance (extends), and instantiation (instantiates) in all files to SymbolEdge objects.
 
     Args:
         parsed_files: All parsed files keyed by filename.
@@ -440,6 +449,12 @@ def resolve_edges(parsed_files: dict[str, ParsedFile]) -> list[SymbolEdge]:
 
     seen: set[tuple[str, str, str, str]] = set()
     edges: list[SymbolEdge] = []
+
+    def _add_edge(edge: SymbolEdge) -> None:
+        key = (edge.src_symbol, edge.dst_symbol, edge.edge_type, edge.confidence)
+        if key not in seen:
+            seen.add(key)
+            edges.append(edge)
 
     for pf in parsed_files.values():
         for call in pf.call_sites:
@@ -458,6 +473,44 @@ def resolve_edges(parsed_files: dict[str, ParsedFile]) -> list[SymbolEdge]:
                     call.method_name,
                     pf.filename,
                 )
+
+        # Resolve extends edges
+        for cls, bases in pf.inheritance.items():
+            src = f"{pf.filename}::{cls}"
+            for base in bases:
+                res_name = _resolve_type_name(base, pf, def_index)
+                if res_name:
+                    base_fqn = _find_class_fqn(res_name, def_index)
+                    if base_fqn:
+                        _add_edge(
+                            SymbolEdge(
+                                src_symbol=src,
+                                dst_symbol=base_fqn,
+                                edge_type="extends",
+                                confidence_score=1.0,
+                                resolution_method="inheritance",
+                            )
+                        )
+
+        # Resolve instantiates edges — only real constructions (self.attr = Type()); annotations/param-aliases type the attr for call-resolution but do not instantiate.
+        for assign in pf.attribute_assignments:
+            if not assign.is_construction:
+                continue
+            res_type = _resolve_type_name(assign.assigned_type, pf, def_index)
+            if res_type:
+                class_fqn = _find_class_fqn(res_type, def_index)
+                if class_fqn:
+                    m_name = assign.method_name or "__init__"
+                    src = f"{pf.filename}::{assign.class_name}.{m_name}"
+                    _add_edge(
+                        SymbolEdge(
+                            src_symbol=src,
+                            dst_symbol=class_fqn,
+                            edge_type="instantiates",
+                            confidence_score=1.0,
+                            resolution_method="constructor_type_trace",
+                        )
+                    )
 
     return edges
 

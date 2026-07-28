@@ -60,12 +60,23 @@ AGENT_FLOW_SYSTEM = """You are given every component of ONE agentic system: its 
 facts, file, entry point, upstream/downstream component-id edges, mined constraints, and a \
 source code snippet. Group these components into AGENTS.
 
-An agent is a unit whose input comes from another agent and whose output is consumed by \
-another agent — the backbone of the system (e.g. orchestrator -> retrieval_agent -> \
-validator -> writer). A component that only serves ONE agent (a tool it calls, a prompt \
-template, a helper function/class) is that agent's INTERNAL component, not an agent of its \
-own — attach it to the agent that owns it via component_ids, do not list it as a separate \
-agent.
+An agent is a unit that (a) makes its OWN model-driven decision — it sends a prompt to a \
+language model and acts on the result — and (b) sits on the backbone: its input comes from \
+another agent and its output is consumed by another agent (e.g. orchestrator -> \
+retrieval_agent -> validator -> writer). BOTH conditions are required.
+
+A component that only serves ONE agent (a tool it calls, a prompt template, a helper \
+function/class) is that agent's INTERNAL component, not an agent of its own — attach it to \
+the agent that owns it via component_ids, do not list it as a separate agent.
+
+Being on the backbone is NOT enough. A step that is purely DETERMINISTIC — it queries a \
+database or a graph, traverses/filters/reshapes data, computes a value, formats a string — \
+with no prompt and no model call of its own is NOT an agent, even when the flow routes into \
+it and out of it. Attach such a step to the agent that dispatches or consumes it, or leave it \
+in unassigned_component_ids. Judge this from the code: look for a prompt being built and a \
+completion/chat call being made, directly or through a helper the component calls. A wrapper \
+whose body only delegates to its own helper still counts as an agent if that helper makes the \
+model call.
 
 Judge each component carefully and independently based on the evidence given (edges, code, \
 structural facts) — do not force a component into a grouping the evidence does not support. \

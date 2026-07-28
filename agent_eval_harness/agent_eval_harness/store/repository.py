@@ -245,11 +245,11 @@ async def get_dataset_case_by_id(case_id: str) -> dict | None:
     return dict(row) if row else None
 
 
-async def list_dataset_ids() -> list[dict]:
-    """Per-dataset case counts, left-joined with `datasets` metadata (a missing row means legacy/unknown-kind)."""
+async def list_dataset_ids(expansion_session_id: str | None = None) -> list[dict]:
+    """Per-dataset case counts, left-joined with `datasets` metadata (a missing row means legacy/unknown-kind).
+    `expansion_session_id`, when given, scopes to datasets created by that expansion session only."""
     db = get_db()
-    async with db.execute(
-        """
+    query = """
         SELECT
             c.dataset_id,
             COUNT(*) as total_count,
@@ -260,9 +260,14 @@ async def list_dataset_ids() -> list[dict]:
             COALESCE(d.min_cases, 1) as min_cases
         FROM dataset_cases c
         LEFT JOIN datasets d ON d.dataset_id = c.dataset_id
-        GROUP BY c.dataset_id
-        """
-    ) as cur:
+    """
+    params: tuple = ()
+    if expansion_session_id is not None:
+        query += " WHERE d.expansion_session_id = ?"
+        params = (expansion_session_id,)
+    query += " GROUP BY c.dataset_id"
+
+    async with db.execute(query, params) as cur:
         rows = await cur.fetchall()
     results = [dict(row) for row in rows]
     for r in results:
@@ -278,6 +283,7 @@ async def insert_dataset_metadata(
     source_gate_ids: list[str] | None = None,
     min_cases: int = 1,
     metrics: dict | None = None,
+    expansion_session_id: str | None = None,
 ) -> None:
     stored = dict(instructions or {})
     if metrics:
@@ -285,8 +291,8 @@ async def insert_dataset_metadata(
     db = get_db()
     await db.execute(
         "INSERT OR REPLACE INTO datasets "
-        "(dataset_id, kind, instructions_json, source_gate_ids_json, min_cases, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
+        "(dataset_id, kind, instructions_json, source_gate_ids_json, min_cases, created_at, expansion_session_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
         (
             dataset_id,
             kind,
@@ -294,6 +300,7 @@ async def insert_dataset_metadata(
             json.dumps(source_gate_ids or []),
             min_cases,
             utc_now_iso(),
+            expansion_session_id,
         ),
     )
     await db.commit()
@@ -534,6 +541,10 @@ async def insert_discovery_candidates_bulk(
             json.dumps(c.get("matched_files", [])),
             json.dumps(c.get("file_provenance", {})),
             json.dumps(c.get("risk_flags", [])),
+            c.get("map_scope_framework"),
+            json.dumps(c.get("excluded_component_classes", [])),
+            c.get("system_type"),
+            json.dumps(c.get("system_type_signals", {})),
         )
         for c in candidates
     ]
@@ -542,8 +553,10 @@ async def insert_discovery_candidates_bulk(
             "INSERT INTO discovery_candidates (id, session_id, name, frameworks_json, "
             "entry_points_json, evidence_json, confidence, verdict, needs_human, "
             "community_id, cluster_files_json, hub_paths_json, wiring_block_json, "
-            "excluded_files_json, matched_files_json, file_provenance_json, risk_flags_json) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "excluded_files_json, matched_files_json, file_provenance_json, risk_flags_json, "
+            "map_scope_framework, excluded_component_classes_json, system_type, "
+            "system_type_signals_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             rows,
         )
         await db.commit()
@@ -570,6 +583,10 @@ def _decode_discovery_candidate_row(d: dict) -> dict:
     d["matched_files"] = json.loads(d.get("matched_files_json") or "[]")
     d["file_provenance"] = json.loads(d.get("file_provenance_json") or "{}")
     d["risk_flags"] = json.loads(d.get("risk_flags_json") or "[]")
+    d["map_scope_framework"] = d.get("map_scope_framework")
+    d["excluded_component_classes"] = json.loads(d.get("excluded_component_classes_json") or "[]")
+    d["system_type"] = d.get("system_type")
+    d["system_type_signals"] = json.loads(d.get("system_type_signals_json") or "{}")
     return d
 
 
@@ -693,10 +710,21 @@ async def resume_discovery_session(session_id: str) -> None:
 
 
 async def replace_discovery_candidates(session_id: str, candidates: list[dict]) -> None:
+    """Re-derive a session's candidates (on completion, and on rate-limit pause/resume) without
+    wiping a verdict the user already set -- insert_discovery_candidates_bulk defaults verdict to
+    'proposed', so a naive replace silently un-confirms/un-rejects every candidate on resume."""
     db = get_db()
+    async with db.execute(
+        "SELECT name, verdict FROM discovery_candidates WHERE session_id = ?", (session_id,),
+    ) as cur:
+        existing_verdicts = {row["name"]: row["verdict"] for row in await cur.fetchall()}
     await db.execute("DELETE FROM discovery_candidates WHERE session_id = ?", (session_id,))
     await db.commit()
-    await insert_discovery_candidates_bulk(session_id, candidates)
+    carried = [
+        {**c, "verdict": existing_verdicts.get(c["name"], c.get("verdict", "proposed"))}
+        for c in candidates
+    ]
+    await insert_discovery_candidates_bulk(session_id, carried)
 
 
 async def get_discovery_candidates(session_id: str) -> list[dict]:
@@ -960,3 +988,27 @@ async def list_agent_knowledge(session_id: str) -> list[dict]:
     ) as cur:
         rows = await cur.fetchall()
     return [dict(r) for r in rows]
+
+
+async def get_model_call_verdict(cache_key: str) -> dict | None:
+    """Retrieve a cached LLM residue-pass verdict, keyed on evidence content, not run identity."""
+    db = get_db()
+    async with db.execute(
+        "SELECT * FROM model_call_verdicts WHERE cache_key = ?", (cache_key,),
+    ) as cur:
+        row = await cur.fetchone()
+    return dict(row) if row else None
+
+
+async def upsert_model_call_verdict(
+    cache_key: str, makes_model_call: bool, source: str, citation: str | None, evidence_kind: str | None,
+) -> None:
+    """Insert or replace a cited-and-verified LLM residue-pass verdict."""
+    db = get_db()
+    await db.execute(
+        "INSERT OR REPLACE INTO model_call_verdicts "
+        "(cache_key, makes_model_call, source, citation, evidence_kind, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (cache_key, int(makes_model_call), source, citation, evidence_kind, utc_now_iso()),
+    )
+    await db.commit()

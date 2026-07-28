@@ -422,8 +422,8 @@ async def retrieve_rrf_fusion_as_bundle(
         top_ids = [e.chunk_id for e in top]
         placeholders = ",".join("?" for _ in top_ids)
         async with db.execute(
-            f"SELECT id, chunk_index, split_part, split_of, rel_path FROM retrieval_chunks "
-            f"WHERE snapshot_id=? AND id IN ({placeholders})",
+            f"SELECT id, chunk_index, split_part, split_of, rel_path, content, start_line, end_line, token_estimate "
+            f"FROM retrieval_chunks WHERE snapshot_id=? AND id IN ({placeholders})",
             (snapshot_id, *top_ids),
         ) as cur:
             meta_by_id = {r["id"]: dict(r) for r in await cur.fetchall()}
@@ -472,17 +472,22 @@ async def retrieve_rrf_fusion_as_bundle(
             ))
             used_tokens += tok
 
+    # Vector-only chunks (BM25 matched no term) arrive with empty rel_path/excerpt/lines -- backfill from the rows fetched above.
+    def _hydrate(e, attr, col, empty):
+        val = getattr(e, attr)
+        return val if val not in (empty, None) else (meta_by_id.get(e.chunk_id, {}).get(col) or empty)
+
     evidences = [
         RetrievalEvidence(
             chunk_id=e.chunk_id,
-            rel_path=e.rel_path,
+            rel_path=_hydrate(e, "rel_path", "rel_path", ""),
             chunk_index=chunk_index_by_id.get(e.chunk_id, 0),
             reason_codes=[f"rrf-{name}" for name in e.per_signal_ranks] or ["rrf-fusion"],
             score=e.fused_score,
-            token_estimate=e.token_estimate,
-            excerpt=e.excerpt,
-            start_line=e.start_line,
-            end_line=e.end_line,
+            token_estimate=_hydrate(e, "token_estimate", "token_estimate", 0),
+            excerpt=_hydrate(e, "excerpt", "content", ""),
+            start_line=_hydrate(e, "start_line", "start_line", 0),
+            end_line=_hydrate(e, "end_line", "end_line", 0),
         )
         for e in top
     ] + extra_evidences
@@ -495,7 +500,7 @@ async def retrieve_rrf_fusion_as_bundle(
         ranked_chunks = [
             RankedChunk(
                 chunk_id=e.chunk_id,
-                rel_path=e.rel_path,
+                rel_path=_hydrate(e, "rel_path", "rel_path", ""),
                 chunk_index=chunk_index_by_id.get(e.chunk_id, 0),
                 score=e.fused_score,
                 chunk_type="block",
@@ -503,8 +508,8 @@ async def retrieve_rrf_fusion_as_bundle(
                 symbol_bonus=0.0,
                 module_bonus=0.0,
                 centrality_bonus=0.0,
-                token_estimate=e.token_estimate,
-                excerpt=e.excerpt,
+                token_estimate=_hydrate(e, "token_estimate", "token_estimate", 0),
+                excerpt=_hydrate(e, "excerpt", "content", ""),
             )
             for e in top
         ]

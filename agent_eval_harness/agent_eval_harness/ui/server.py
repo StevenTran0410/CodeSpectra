@@ -28,7 +28,7 @@ from agent_eval_harness.datasets.fulfillment import export_dataset
 from agent_eval_harness.discovery.analysis_context import load_project_context
 from agent_eval_harness.discovery.client import CodeSpectraClient
 from agent_eval_harness.discovery.engine import run_discovery_background
-from agent_eval_harness.discovery.expansion import expand_candidate
+from agent_eval_harness.discovery.expansion import expand_candidate, reconcile_scope
 from agent_eval_harness.judging.case_judge import judge_case_semantic_match, summarize_agent_judgments
 from agent_eval_harness.llm.client import LLMResponse
 from agent_eval_harness.llm.fake_client import FakeLLMClient
@@ -334,8 +334,8 @@ async def get_dataset_cases(dataset_id: str):
 
 
 @app.get("/api/datasets")
-async def list_datasets_route():
-    return await repository.list_dataset_ids()
+async def list_datasets_route(session_id: str | None = None):
+    return await repository.list_dataset_ids(session_id)
 
 
 class CaseVerdictRequest(BaseModel):
@@ -359,14 +359,6 @@ async def case_verdict_route(case_id: str, body: CaseVerdictRequest):
         return {"success": True, "remaining": len(remaining), "shortfall": max(0, min_cases - len(remaining))}
 
     if body.verdict in ("accept", "edit"):
-        metadata = await repository.get_dataset_metadata(case["dataset_id"])
-        if metadata and metadata["kind"] == "snapshot_regression_baseline":
-            labels = json.loads(case["labels_json"]) if case["labels_json"] else {}
-            if not (labels.get("schema_valid_passed") and labels.get("fallback_sentinel_passed")):
-                raise HTTPException(
-                    status_code=400,
-                    detail="schema_valid and fallback_sentinel must both pass before approving a baseline case.",
-                )
         await repository.update_case_provenance(
             case_id,
             "generated+reviewed",
@@ -693,6 +685,8 @@ class DiscoveryCandidateResponse(BaseModel):
     excluded_files: list[str] = []
     matched_files: list[str] = []
     file_provenance: dict[str, str] = {}
+    system_type: str | None = None
+    system_type_signals: dict = {}
 
 
 class UpdateVerdictRequest(BaseModel):
@@ -866,6 +860,8 @@ async def list_discovery_candidates(session_id: str):
             excluded_files=c.get("excluded_files", []),
             matched_files=c.get("matched_files", []),
             file_provenance=c.get("file_provenance", {}),
+            system_type=c.get("system_type"),
+            system_type_signals=c.get("system_type_signals", {}),
         )
         for c in candidates
     ]
@@ -1016,7 +1012,23 @@ async def run_expansion_background(
             wiring_block=WiringBlock.from_dict(wb_dict) if wb_dict else None,
             scope_framework=candidate.get("map_scope_framework"),
             exclude_component_classes=set(candidate.get("excluded_component_classes") or []),
+            retrieval_client=client,
+            snapshot_id=snapshot_id,
+            system_type=candidate.get("system_type"),
         )
+
+        # Scanner call-closure resolvers can mint components in files the frontier never visited —
+        # reconcile before persisting, so a later re-derivation sees the widened scope.
+        accepted_file_set = {p["file"] if isinstance(p, dict) else p for p in res["accepted"]}
+        boundary_file_set = set(res.get("boundary", []))
+        excluded_file_set = set(candidate.get("excluded_files") or [])
+        widened_files = reconcile_scope(system_map, accepted_file_set, boundary_file_set, excluded_file_set)
+        newly_accepted = sorted(widened_files - accepted_file_set)
+        if newly_accepted:
+            res["accepted"] = res["accepted"] + [
+                {"file": f, "role_hint": None, "key_symbols": [], "follow": False}
+                for f in newly_accepted
+            ]
 
         data_dir = os.getenv("AEH_DATA_DIR", ".")
         map_dir = Path(data_dir) / "maps"
@@ -1673,7 +1685,9 @@ async def generate_agent_flows_route(session_id: str, body: AgentFlowRequest):
             else None
         )
         agent_flow_map = await separate_agent_flows(
-            system_map, source_by_component, llm_client, feature_map_hint=feature_map_hint
+            system_map, source_by_component, llm_client,
+            feature_map_hint=feature_map_hint, files=abs_files,
+            retrieval_client=client, snapshot_id=sess["snapshot_id"],
         )
 
         map_path = Path(sess["map_path"])
@@ -1732,6 +1746,9 @@ async def enrich_agents_route(session_id: str, body: EnrichAgentsRequest):
         if not local_path_str:
             raise HTTPException(status_code=400, detail="Snapshot is missing local_path context.")
 
+        candidate = await repository.get_discovery_candidate(sess["candidate_id"])
+        system_type = (candidate or {}).get("system_type") if candidate else None
+
         from agent_eval_harness.discovery.enrichment import enrich_agents
 
         knowledge_list = await enrich_agents(
@@ -1749,6 +1766,8 @@ async def enrich_agents_route(session_id: str, body: EnrichAgentsRequest):
             map_path=sess["map_path"],
             agent_flows_path=agent_flows_path_str,
             repo_root=Path(local_path_str),
+            system_type=system_type,
+            conventions=config.contract_conventions,
         )
 
         enriched_count = sum(1 for k in knowledge_list if not k.degraded)

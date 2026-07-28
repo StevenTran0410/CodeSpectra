@@ -1,0 +1,49 @@
+{
+  "agent_id": "architecture",
+  "archetype": "rag_upstream",
+  "target_count": 5,
+  "batch_n": 3,
+  "json_schema": {
+    "main_layers": [
+      "string"
+    ],
+    "frameworks": [
+      "string"
+    ],
+    "entrypoints": [
+      "string"
+    ],
+    "main_services": [
+      {
+        "name": "string",
+        "path": "string",
+        "role": "string"
+      }
+    ],
+    "external_integrations": [
+      "string"
+    ],
+    "config_sources": [
+      "string"
+    ],
+    "database_hints": [
+      "string"
+    ],
+    "confidence": "high|medium|low",
+    "evidence_files": [
+      "string"
+    ],
+    "blind_spots": [
+      "string"
+    ]
+  },
+  "schema_present": true,
+  "system_prompt": "You are generating synthetic test cases for evaluating an agent.\n\nEach case is an object with two keys: 'input' (matching the input shape provided) and 'gold' (the expected output, strictly matching the output schema provided).\n\nCRITICAL (faithfulness guard): keep every case internally consistent — every file path appearing anywhere in the input (evidence rel_paths, paths named in any context field) MUST also appear in any folder-tree / file-listing field present in that same input; never reference a file absent from the folder tree you generate. Every claim in 'gold' must be traceable to the input evidence you created.\n\nRespond ONLY with a JSON array of such objects. No markdown, no explanation.",
+  "prompt": "INPUT SHAPE — each case's 'input' must have exactly these fields:\n{\n  \"snapshot_id\": \"(str)\",\n  \"graph_summary\": \"a JSON object that MUST use EXACTLY the keys shown here at EVERY level — no renaming, no omissions, no extra keys — matching this nested structure (values are the types): {\\\"snapshot_id\\\": \\\"string\\\", \\\"total_nodes\\\": \\\"integer\\\", \\\"total_edges\\\": \\\"integer\\\", \\\"external_edges\\\": \\\"integer\\\", \\\"entrypoints\\\": [\\\"string\\\"], \\\"top_central_files\\\": [{\\\"rel_path\\\": \\\"string\\\", \\\"indegree\\\": \\\"integer\\\", \\\"outdegree\\\": \\\"integer\\\", \\\"score\\\": \\\"integer\\\"}], \\\"generated_at\\\": \\\"string\\\", \\\"native_toolchain\\\": \\\"any\\\"}\",\n  \"arch_bundle\": \"a JSON object that MUST use EXACTLY the keys shown here at EVERY level — no renaming, no omissions, no extra keys — matching this nested structure (values are the types): {\\\"snapshot_id\\\": \\\"string\\\", \\\"mode\\\": \\\"any\\\", \\\"section\\\": \\\"any\\\", \\\"query\\\": \\\"string\\\", \\\"budget_tokens\\\": \\\"integer\\\", \\\"used_tokens\\\": \\\"integer\\\", \\\"evidences\\\": [{\\\"chunk_id\\\": \\\"string\\\", \\\"rel_path\\\": \\\"string\\\", \\\"chunk_index\\\": \\\"integer\\\", \\\"reason_codes\\\": [\\\"string\\\"], \\\"score\\\": \\\"number\\\", \\\"token_estimate\\\": \\\"integer\\\", \\\"excerpt\\\": \\\"string\\\"}], \\\"quality\\\": \\\"any\\\"}\",\n  \"identity_output\": \"the project_identity agent's output — JSON schema: {\\\"repo_name\\\": \\\"string\\\", \\\"domain\\\": \\\"string\\\", \\\"purpose\\\": \\\"string\\\", \\\"runtime_type\\\": \\\"web_app|backend_service|monolith|monorepo|library|cli|worker|cron|unknown\\\", \\\"tech_stack\\\": [\\\"string\\\"], \\\"business_contex\",\n  \"profile\": \"a JSON object that MUST use EXACTLY the keys shown here at EVERY level — no renaming, no omissions, no extra keys — matching this nested structure (values are the types): {\\\"mode\\\": \\\"string\\\", \\\"retrieval_max_results\\\": \\\"integer\\\", \\\"retrieval_doc_char_limit\\\": \\\"integer\\\", \\\"retrieval_manifest_char_limit\\\": \\\"integer\\\", \\\"retrieval_arch_max_results\\\": \\\"integer\\\", \\\"tokens_project_identity\\\": \\\"integer\\\", \\\"tokens_architecture\\\": \\\"integer\\\", \\\"tokens_structure\\\": \\\"integer\\\", \\\"tokens_conventions\\\": \\\"integer\\\", \\\"tokens_violations\\\": \\\"integer\\\", \\\"tokens_feature_map\\\": \\\"integer\\\", \\\"tokens_important_files\\\": \\\"integer\\\", \\\"tokens_onboarding\\\": \\\"integer\\\", \\\"tokens_glossary\\\": \\\"integer\\\", \\\"tokens_risk\\\": \\\"integer\\\", \\\"tokens_auditor\\\": \\\"integer\\\", \\\"tokens_synthesizer\\\": \\\"integer\\\", \\\"concurrency_scale\\\": \\\"number\\\", \\\"retrieval_augment_rounds\\\": \\\"integer\\\"}\",\n  \"folder_tree\": \"(str)\"\n}\n\nAGENT PURPOSE: Analyzes retrieved evidence combined with an upstream agent's output.\n\nOUTPUT SCHEMA (for 'gold'):\n{\"main_layers\": [\"string\"], \"frameworks\": [\"string\"], \"entrypoints\": [\"string\"], \"main_services\": [{\"name\": \"string\", \"path\": \"string\", \"role\": \"string\"}], \"external_integrations\": [\"string\"], \"config_sources\": [\"string\"], \"database_hints\": [\"string\"], \"confidence\": \"high|medium|low\", \"evidence_files\": [\"string\"], \"blind_spots\": [\"string\"]}\n\nADDITIONALLY, include 1-2 extra cases covering EDGE-CASE or NEGATIVE scenarios based on the agent's known failure modes:\n- All retrieval sub-queries fail, causing the agent to fall back to a low-confidence minimal output.\n- LLM output is invalid JSON or fails schema validation after retries, resulting in a fallback dict.\n- An unexpected exception during processing is caught and a fallback with the error reason is returned.\n\nINPUT STRATEGY: Structured data parameters matching exact harvested schemas.\n\nALLOWED ENUM DOMAINS FOR OUTPUT FIELDS (gold must use ONLY these values):\n  \"confidence\": [\"high\", \"low\", \"medium\"]\n\nGenerate exactly 3 DISTINCT cases.",
+  "raw_content": "[]",
+  "candidates_parsed": 0,
+  "newly_accepted": 0,
+  "rejected_this_round": 0,
+  "accepted_total": 0,
+  "sample_rejection_errors": []
+}

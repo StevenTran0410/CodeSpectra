@@ -468,9 +468,38 @@ async def test_build_idempotent_rerun_no_unique_constraint_crash(
         row2 = await cur.fetchone()
         count2 = row2["cnt"]
 
-    # If builder ran both times, counts should be identical
-    # (or very close; no duplicates or crashes)
-    assert count2 == count1, f"Edge count changed after rebuild: {count1} -> {count2}"
+    assert count2 == count1, f"Edge count should be identical after rebuild: {count1} vs {count2}"
+
+
+@pytest.mark.asyncio
+async def test_multi_edge_types_same_pair_persists_without_unique_crash(
+    temp_repo: tuple[str, str],
+    cleanup_build_snapshots,
+) -> None:
+    """CS-330 Item 1 test: calls and extends edges on the SAME (snapshot_id, src, dst) pair both persist without IntegrityError."""
+    db = get_db()
+    snap_id = f"test-multi-edge-{new_id()[:8]}"
+
+    await db.executemany(
+        """
+        INSERT INTO symbol_graph_edges
+        (snapshot_id, src_symbol, dst_symbol, edge_type, confidence_score, resolution_method, confidence, evidence_lines)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (snap_id, "foo.py::Sub", "bar.py::Base", "calls", 1.0, "direct", "high", "[]"),
+            (snap_id, "foo.py::Sub", "bar.py::Base", "extends", 1.0, "inheritance", "high", "[]"),
+        ],
+    )
+    await db.commit()
+
+    async with db.execute(
+        "SELECT edge_type FROM symbol_graph_edges WHERE snapshot_id=? AND src_symbol=? AND dst_symbol=?",
+        (snap_id, "foo.py::Sub", "bar.py::Base"),
+    ) as cur:
+        rows = await cur.fetchall()
+        types = {r["edge_type"] for r in rows}
+        assert types == {"calls", "extends"}
 
 
 @pytest.mark.asyncio

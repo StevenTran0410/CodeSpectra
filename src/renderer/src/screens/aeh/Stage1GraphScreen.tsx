@@ -70,6 +70,27 @@ const CANDIDATE_COLORS = [
 
 
 
+/** CS-320: shows the classified kind (agent/system) + system type (pipeline/orchestrator/…). */
+function SystemTypeBadges({ candidate }: { candidate: AEHDiscoveryCandidate }): React.ReactElement | null {
+  const kind = candidate.system_type_signals?.kind
+  const type = candidate.system_type
+  if (!kind && !type) return null
+  return (
+    <div className="flex items-center gap-1.5 shrink-0">
+      {kind && (
+        <span className="text-[9px] uppercase tracking-wider font-mono font-bold px-1.5 py-0.5 rounded bg-slate-800/60 border border-slate-700 text-slate-300">
+          {kind}
+        </span>
+      )}
+      {type && (
+        <span className="text-[9px] uppercase tracking-wider font-mono font-bold px-1.5 py-0.5 rounded bg-emerald-950/50 border border-emerald-900/40 text-emerald-300">
+          {type}
+        </span>
+      )}
+    </div>
+  )
+}
+
 function WiringBlockPanel({
   selectedNode,
   selectedCandidateId,
@@ -107,6 +128,8 @@ function WiringBlockPanel({
           <h3 className="text-xs font-semibold text-slate-200 truncate" title={candidate.name}>
             {candidate.name}
           </h3>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <SystemTypeBadges candidate={candidate} />
           {wb && (
             <div className="flex items-center gap-1.5 shrink-0">
               <span className="text-[9px] uppercase tracking-wider font-mono font-bold px-1.5 py-0.5 rounded bg-indigo-950/50 border border-indigo-900/30 text-indigo-300">
@@ -119,6 +142,7 @@ function WiringBlockPanel({
               )}
             </div>
           )}
+          </div>
         </div>
         {/* Per-block verdict: only confirmed blocks are offered to Stage 2. */}
         <div className="flex items-center justify-between gap-2">
@@ -404,6 +428,8 @@ function DiscoveryBoard({
             ))}
           </div>
         )}
+
+        <SystemTypeBadges candidate={candidate} />
 
         {/* Verdict Actions */}
         <div className="flex items-center justify-between gap-3 pt-2.5 border-t border-slate-850">
@@ -729,10 +755,18 @@ function SeedFileListPanel({
                 const isSelected = path === selectedNode
                 const isExcluded = (cand.excluded_files || []).includes(path)
                 return (
-                  <button
+                  <div
                     key={path}
+                    role="button"
+                    tabIndex={0}
                     onClick={() => onSelectFile(path, cand.id)}
-                    className={`w-full text-left px-3 py-2.5 hover:bg-slate-900/30 transition-colors flex flex-col gap-0.5 border-l-2 ${
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault()
+                        onSelectFile(path, cand.id)
+                      }
+                    }}
+                    className={`w-full text-left px-3 py-2.5 hover:bg-slate-900/30 transition-colors flex flex-col gap-0.5 border-l-2 cursor-pointer ${
                       isSelected
                         ? 'bg-indigo-950/20 border-l-amber-400'
                         : 'border-l-transparent'
@@ -769,7 +803,7 @@ function SeedFileListPanel({
                         </span>
                       )}
                     </div>
-                  </button>
+                  </div>
                 )
               })}
             </div>

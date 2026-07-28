@@ -5,11 +5,15 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import os
+import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from agent_eval_harness.config import ContractConventions
+from agent_eval_harness.datasets.archetype_vocabulary import EVIDENCE_CASE_KEY
 from agent_eval_harness.discovery.agent_knowledge import (
     AgentKnowledge,
     ComponentRef,
@@ -24,17 +28,21 @@ from agent_eval_harness.discovery.agent_knowledge import (
 )
 from agent_eval_harness.discovery.prompt_site_scan import scan_for_prompt_sites
 from agent_eval_harness.instrumentation._extract import utc_now_iso
-from agent_eval_harness.llm.client import LLMClient
+from agent_eval_harness.llm.client import LLMClient, LLMMessage
 from agent_eval_harness.mapping.agent_flow import AgentFlow, AgentFlowMap, save_agent_flow_map
 from agent_eval_harness.mapping.builder.contract_harvest import (
+    _CONFIG_PARAMS,
     _dep_role_for_annotation,
+    _entry_schema_scope,
     _find_entry_method,
     _harvest_constructor_dep_bindings,
     _harvest_dep_call_sites,
+    _harvest_kwargs,
     _resolve_class_schema,
+    _resolve_entry,
     _SchemaResolveCtx,
-    ENTRY_METHOD_NAMES,
     harvest_component_contract,
+    harvest_contracts,
 )
 from agent_eval_harness.discovery.wiring import parse_entry_suffix
 from agent_eval_harness.mapping.builder.prompts import ROLE_TAXONOMY
@@ -42,16 +50,31 @@ from agent_eval_harness.mapping.builder.roles import (
     ROLE_CONFIDENCE_THRESHOLD,
     VALID_ROLES,
     admissible_roles,
+    forced_role,
     structural_facts,
 )
 from agent_eval_harness.mapping.builder.types import parse_python_source
 from agent_eval_harness.mapping.system_map import Component, SystemMap, save_system_map
-from agent_eval_harness.planning.agentic_planner import DagNode, complete_json, run_dag
+from agent_eval_harness.planning.agentic_planner import (
+    DagNode,
+    _apply_virtual_bindings,
+    complete_json,
+    complete_json_with_raw,
+    run_dag,
+)
+from agent_eval_harness.planning.contract import EvaluationContract, KwargSpec, OutputContract
 from agent_eval_harness.store import repository
 
 logger = logging.getLogger("agent_eval_harness.discovery.enrichment")
 
-_STRUCTURAL_PRODUCER_VERSION = 4  # Manual bump on output-schema shape change; hash won't self-invalidate.
+# Derived from the hash_input field shape below, not a manually bumped integer -- adding, removing, or
+# renaming a field in _enrich_single_agent's hash_input automatically invalidates every cached entry.
+_HASH_INPUT_FIELDS = (
+    "component_ids", "accepted_file_count", "edges",
+    "component_attrs:id,motif,is_tool,constructor_fanout,conditional_downstream_count,call_downstream_count",
+    "eval_contract:v1",  # bump this token whenever a contract_harvest/enrichment fix changes harvested output for unchanged structure -- busts every persisted sidecar exactly once.
+)
+_STRUCTURAL_PRODUCER_VERSION = hashlib.sha256("|".join(_HASH_INPUT_FIELDS).encode("utf-8")).hexdigest()[:12]
 
 _PROMPT_SITE_CHAR_BUDGET = 2000
 _PROMPT_SITE_BLOCK_BUDGET = 20000
@@ -64,9 +87,10 @@ _QUERY_EXCERPT_CHAR_LIMIT = 1200
 _OWN_FILE_CHUNK_LIMIT = 8
 _RELATED_FILE_CHUNK_LIMIT = 3
 _MAX_RELATED_FILES = 6
+_FAN_IN_SINK_PERCENTILE = 0.9  # a component at/above this percentile of the MAP's own fan-in distribution is a sink
 _MAX_SYMBOL_EDGES_FOLLOWED = 8
 _ENRICH_MAX_TOKENS = 16000
-_ENRICH_REASONING_EFFORT = "medium"
+_ENRICH_REASONING_EFFORT = "high"  # role classification benefits from reasoning; on DeepSeek's effort_toggle, only "high"/"max" actually enable thinking ("medium" left it OFF)
 _FILE_CHUNK_CONTENT_CHAR_LIMIT = 1500
 _COVERAGE_SUFFICIENT_THRESHOLD = 0.8
 _CONFIDENCE_HIGH_MIN_FIELDS = 5
@@ -81,6 +105,42 @@ _GENERATION_VERBS = frozenset({
     "complete", "completion", "chat", "generate", "predict", "stream", "embed", "ask",
     "acomplete", "achat", "invoke_llm", "create",
 })
+_OPAQUE_CONTAINER_TYPES = frozenset({"dict", "list"})
+_PRIMITIVE_TYPES = frozenset({"str", "int", "float", "bool", "Any", "None"})
+# ContractArg.source_kind vocabulary (stays a permissive str -- see agent_knowledge.ContractArg).
+# "internally-retrieved" is reserved for VirtualInputContract-adjacent evidence; a regular kwarg is
+# never internally-retrieved by definition, so this classifier never emits it.
+_PROVENANCE_CONFIG_STATIC = "config-static"
+_PROVENANCE_RUNTIME_STATE = "runtime-state"
+_PROVENANCE_UPSTREAM_OUTPUT = "upstream-agent-output"
+# recognized_entry_methods needs an AST tree; this fallback only ever sees search-index symbol rows.
+_SEARCH_INDEX_ENTRY_METHOD_NAMES = ("run", "run_async", "__call__")
+
+
+
+_ID_DECORATION_RE = re.compile(r"\s+[@(]")
+
+
+def _undecorate_component_id(raw: str) -> str:
+    """Strip the prompt's display decoration off a component id the model echoed verbatim
+    (`id="x"`, `x @ path/to.py`, `x (file: ...)`) so the verdict still matches a real component."""
+    s = raw.strip()
+    quoted = re.fullmatch(r'id\s*=\s*"([^"]+)"', s) or re.fullmatch(r'"([^"]+)"', s)
+    if quoted:
+        s = quoted.group(1)
+    return _ID_DECORATION_RE.split(s, maxsplit=1)[0].strip().strip('"')
+
+
+def _resolve_entry_point_id(raw: str, structural_by_id: dict[str, dict]) -> str:
+    """Map an entry-point-shaped id the model echoed (`module.path:Owner.member`) back to the real
+    component id — the prompt lists both `id` and `entry:`, and the model sometimes copies the latter,
+    which used to cost every component of that agent its role."""
+    s = raw.strip()
+    for cid, comp in structural_by_id.items():
+        if s == (comp.get('entry_point') or ''):
+            return cid
+    tail = s.rsplit(':', 1)[-1].rsplit('.', 1)[-1].strip()
+    return tail if tail in structural_by_id else raw
 
 
 def _schema_is_evidence_shaped(schema: dict) -> bool:
@@ -200,7 +260,59 @@ _ENRICH_SYSTEM = (
     "plain words (e.g. \"Insufficient evidence to determine purpose beyond <best guess>\") "
     "rather than returning null or an empty string.\n"
     "3. \"component_roles\" is REQUIRED — one entry per component listed in the evidence, "
-    "each role taken from THAT component's own admissible set. Do NOT add fields like "
+    "each role taken from THAT component's own admissible set. Each verdict's \"id\" MUST be the "
+    "component's bare id — the FIRST token on its evidence line, before the ' @ ' — never the "
+    "longer dotted/colon-separated path shown after 'entry:'; an id in any other form is discarded "
+    "and that component loses its role.\n"
+    "Decide the role from the component's PRIMARY purpose in this system, read from its own code — "
+    "never from a library or framework name, and never from behaviour that every component happens "
+    "to share. 'worker' is the FALLBACK: first check whether a more specific role fits and pick "
+    "'worker' only when none does — but do NOT force a component into a specialized role either; if "
+    "its defining job is simply turning inputs into an output, 'worker' is the correct answer, not a "
+    "stretch. Each role below has a generic, framework-neutral example; match on the underlying "
+    "behaviour, not on the example's wording.\n"
+    "- retrieval_agent: a component that DECIDES what to fetch at runtime — it plans, derives, "
+    "rewrites, or iterates on its own queries/lookups, or manages a set of fetch/tool calls — so the "
+    "retrieval strategy itself is part of its work and worth evaluating. This holds even when the "
+    "component also produces its own output. The discriminator is WHERE THE QUERY COMES FROM: a "
+    "component that fetches with a FIXED, predetermined query (or does not retrieve at all) and "
+    "simply transforms the result is a worker, not a retrieval_agent — its retrieval carries no "
+    "decision. Example: a component that, given a goal, generates several targeted queries, runs "
+    "them, and gathers the results — as opposed to one that always issues the same hardcoded query.\n"
+    "- worker: turns its inputs into a structured output, typically via one model call or a "
+    "computation — the general-purpose producer. Fetching with a fixed/hardcoded query (even several "
+    "of them) is still worker. Example: a component that reads some context and emits a summary, a "
+    "classification, or a structured record.\n"
+    "- validator: judges ANOTHER component's output — scores it, checks it, or flags problems — "
+    "rather than merely validating its own output's shape. Example: a component that reviews "
+    "another component's answer and assigns it a quality score.\n"
+    "- writer: produces the system's final, outward-facing artifact, with nothing downstream "
+    "consuming it. Example: the terminal component that composes the final answer returned to the "
+    "caller.\n"
+    "- orchestrator: decides WHICH other components run and in what order. Example: a coordinator "
+    "that routes control to different sub-components based on the current state.\n"
+    "- input_guard.rule / input_guard.llm: screens, validates, or rejects the input before real "
+    "work begins — by fixed rules, or by a model, respectively. Example: a component that rejects an "
+    "out-of-scope or malformed request up front.\n"
+    "- tool: a discrete callable capability an agent invokes on demand, not a stage in the main "
+    "flow. Example: a function the agent can call to compute a value or look up a single fact.\n"
+    "- unknown: use ONLY when the evidence genuinely does not distinguish between roles.\n\n"
+    "CONTROL FLOW:\n"
+    "Identify any component whose OUTPUT re-enters the system as a control decision — "
+    "i.e. it drives a repeat/retry loop, gates further work, or selects which component runs next. "
+    "You MUST set the \"control_motif\" field for such a component: "
+    "\"loop\" if its output drives a repeat/retry/iteration loop (the component runs again, or "
+    "re-runs other components, until a condition is met); "
+    "\"branch\" if its output selects which component runs next (dynamic dispatch/routing); "
+    "null for an ordinary component whose output only flows forward to the next fixed step. "
+    "A component IS a loop/branch controller even when the loop/dispatch is written in plain code "
+    "in a driver/orchestrator that reads this component's output — judge by what the output DOES, "
+    "not by whether this component's own body contains the loop keyword. "
+    "This is about SYSTEM control flow BETWEEN components: a component that merely refines or iterates "
+    "INTERNALLY (its own multi-round retrieval/refinement) is NOT a controller — use null for it. "
+    "When control_motif is loop or branch, also describe its termination condition and the "
+    "feedback channel (what output it reads to decide). Use generic control-flow terms only.\n\n"
+    "Do NOT add fields like "
     "\"degraded\", \"location\", \"components\", \"input_contract\", or \"output_contract\" "
     "— those are computed separately from static analysis, not from you, and including "
     "them will be ignored or cause an error."
@@ -291,6 +403,8 @@ def _sanitize_llm_knowledge_dict(raw: Any) -> dict:
             if _s(c.get('description'))
         ],
         'output_described_in_prompt': _s(raw.get('output_described_in_prompt')),
+        'output_schema_from_prompt': raw.get('output_schema_from_prompt') if isinstance(raw.get('output_schema_from_prompt'), dict) else None,
+        'output_enum_values_from_prompt': raw.get('output_enum_values_from_prompt') if isinstance(raw.get('output_enum_values_from_prompt'), dict) else {},
         'special_traits': [t for t in (raw.get('special_traits') or []) if isinstance(t, str)],
         'constraints': [t for t in (raw.get('constraints') or []) if isinstance(t, str)],
         'method_steps': [t for t in (raw.get('method_steps') or []) if isinstance(t, str)],
@@ -354,12 +468,16 @@ async def _fetch_file_chunks(ctx: _EnrichmentContext, rel_path: str, limit: int)
 
 
 async def _fetch_direct_evidence(
-    ctx: _EnrichmentContext, own_files: set[str], known_edge_files: set[str]
+    ctx: _EnrichmentContext, own_files: set[str], known_edge_files: set[str],
+    boost_control_flow: bool = False,
 ) -> tuple[list[str], list[str]]:
-    """Ground-truth evidence for one agent: own file(s) plus related files (known edges + 1-hop symbol-graph calls), all fetched directly by path, zero search."""
+    """Ground-truth evidence for one agent: own file(s) plus related files (known edges + 1-hop symbol-graph calls), all fetched directly by path, zero search.
+    When boost_control_flow is set, raise the own- AND related-file chunk caps so a control loop — which may live in a *driver* file that reads this component's output, not in the component's own body — surfaces into evidence."""
+    own_chunk_limit = 16 if boost_control_flow else _OWN_FILE_CHUNK_LIMIT
+    related_chunk_limit = 6 if boost_control_flow else _RELATED_FILE_CHUNK_LIMIT
     own_lines: list[str] = []
     for f in own_files:
-        own_lines.extend(await _fetch_file_chunks(ctx, f, limit=_OWN_FILE_CHUNK_LIMIT))
+        own_lines.extend(await _fetch_file_chunks(ctx, f, limit=own_chunk_limit))
 
     related_files: set[str] = set(known_edge_files) - own_files
     for f in own_files:
@@ -379,8 +497,8 @@ async def _fetch_direct_evidence(
                 related_files.add(dst_file)
 
     related_lines: list[str] = []
-    for f in list(related_files)[:_MAX_RELATED_FILES]:
-        related_lines.extend(await _fetch_file_chunks(ctx, f, limit=_RELATED_FILE_CHUNK_LIMIT))
+    for f in sorted(related_files)[:_MAX_RELATED_FILES]:
+        related_lines.extend(await _fetch_file_chunks(ctx, f, limit=related_chunk_limit))
 
     return own_lines, related_lines
 
@@ -400,6 +518,7 @@ class _EnrichmentContext:
     force_agent_ids: list[str]
     semaphore: asyncio.Semaphore
     repo_root: Path | None = None
+    system_type: str | None = None
 
 
 async def enrich_agents(
@@ -418,6 +537,8 @@ async def enrich_agents(
     map_path: str | Path | None = None,
     agent_flows_path: str | Path | None = None,
     repo_root: str | Path | None = None,
+    system_type: str | None = None,
+    conventions: ContractConventions | None = None,
 ) -> list[AgentKnowledge]:
     """Orchestrate concurrent enrichment of discovered agents, returns one AgentKnowledge per agent. snapshot_id must be passed by real callers (queries no-op without it); system_map YAML is the sole authority for role, written back via map_path."""
     resolved_repo_root = Path(repo_root) if repo_root is not None else None
@@ -451,6 +572,7 @@ async def enrich_agents(
         force_agent_ids=list(force_ids),
         semaphore=semaphore,
         repo_root=resolved_repo_root,
+        system_type=system_type,
     )
 
     async def _gather(_: dict[str, Any]) -> dict[str, Any]:
@@ -463,6 +585,13 @@ async def enrich_agents(
         for item in accepted_with_annotations
     ]
 
+    # Cross-agent EvaluationContract harvest: pure AST, no LLM, cheap -- runs once here (not per-agent,
+    # not at plan-time) so Stage 3 can read it from the sidecar instead of re-harvesting.
+    harvest_files = [
+        (resolved_repo_root / f) if resolved_repo_root else Path(f) for f in accepted_files
+    ]
+    contracts = harvest_contracts(system_map, agent_flow_map, harvest_files, resolved_repo_root, conventions)
+
     for agent in target_agents:
         agent_id = agent.id
         enrich_name = f"enrich:{agent_id}"
@@ -473,13 +602,19 @@ async def enrich_agents(
         ) -> AgentKnowledge:
             try:
                 evidence = results["gather"]
-                return await _enrich_single_agent(
+                knowledge = await _enrich_single_agent(
                     agent_id_,
                     evidence,
                     ctx,
                     depth_cap,
                     accepted_files,
+                    contracts,
                 )
+                contract = contracts.get(agent_id_)
+                if contract:
+                    _apply_virtual_bindings(contract, knowledge.virtual_inputs)
+                    knowledge.evaluation_contract = contract
+                return knowledge
             except Exception as e:
                 logger.exception(f"Error enriching {agent_id_}: {e}")
                 return AgentKnowledge(
@@ -557,6 +692,19 @@ async def enrich_agents(
     return knowledge_list
 
 
+def _fan_in_sink_threshold(system_map: SystemMap) -> float | None:
+    """A fixed fan-in constant fired on 3 infra services and missed a real terminal writer in an
+    earlier iteration (see roles.py's structural_facts demotion) — degree alone needs the map's own
+    distribution, not a cross-target number. None when the map has too few components or no real
+    concentration (every fan-in <= 1) to say anything meaningful."""
+    fan_ins = sorted(len(c.upstream) for c in system_map.components)
+    if len(fan_ins) < 2:
+        return None
+    idx = max(0, math.ceil(_FAN_IN_SINK_PERCENTILE * len(fan_ins)) - 1)
+    threshold = fan_ins[idx]
+    return float(threshold) if threshold > 1 else None
+
+
 async def _gather_evidence(ctx: _EnrichmentContext) -> dict[str, Any]:
     """Gather shared evidence: prompt sites, component info, edges. Returns a dict with
     prompt_sites_by_file, component_by_agent, edges_by_agent, and source_coverage (0-1 per agent)."""
@@ -591,6 +739,9 @@ async def _gather_evidence(ctx: _EnrichmentContext) -> dict[str, Any]:
                     'constructor_fanout': comp.constructor_fanout,
                     'fan_in': len(comp.upstream),
                     'fan_out': len(comp.downstream),
+                    'conditional_downstream': list(comp.conditional_downstream),
+                    'call_downstream': list(comp.call_downstream),
+                    'motif': comp.motif,
                 })
         component_by_agent[agent.id] = agent_components
 
@@ -621,6 +772,7 @@ async def _gather_evidence(ctx: _EnrichmentContext) -> dict[str, Any]:
         'component_by_agent': component_by_agent,
         'edges_by_agent': edges_by_agent,
         'source_coverage': source_coverage,
+        'fan_in_sink_threshold': _fan_in_sink_threshold(ctx.system_map),
     }
 
 
@@ -769,6 +921,37 @@ async def _resolve_return_schema_via_symbol_index(
         return None
 
 
+async def _resolve_kwarg_evidence_schema(ctx: _EnrichmentContext, annotation: str) -> dict:
+    """Resolve a signature kwarg's own annotation to a schema for the evidence-shape check --
+    unwraps a single list[X]/List[X] layer before resolving X via _resolve_type_schema_via_symbol_index,
+    since a bare 'list' base type never carries field shape on its own."""
+    import re as _re
+
+    list_match = _re.match(r"^\s*(?:list|List)\[\s*([A-Za-z_][A-Za-z0-9_]*)\s*\]\s*$", annotation or "")
+    if list_match:
+        item_name = list_match.group(1)
+        if item_name in _PRIMITIVE_TYPES:
+            return {}
+        item_schema_result = await _resolve_type_schema_via_symbol_index(ctx, item_name)
+        if not item_schema_result:
+            return {}
+        item_schema, _, _ = item_schema_result
+        return {"type": "array", "items": item_schema}
+
+    base_match = _re.search(r"[A-Za-z_][A-Za-z0-9_]*", annotation or "")
+    if not base_match or base_match.group(0) in _PRIMITIVE_TYPES or base_match.group(0) in _OPAQUE_CONTAINER_TYPES:
+        return {}
+    schema_result = await _resolve_type_schema_via_symbol_index(ctx, base_match.group(0))
+    return schema_result[0] if schema_result else {}
+
+
+def _evidence_item_schema(schema: dict) -> dict | None:
+    """The per-record schema for an evidence-shaped kwarg schema, when directly array-shaped."""
+    if isinstance(schema, dict) and schema.get("type") == "array" and isinstance(schema.get("items"), dict):
+        return schema["items"]
+    return None
+
+
 async def _harvest_virtual_inputs_static(
     ctx: _EnrichmentContext,
     cls: Any,
@@ -776,6 +959,7 @@ async def _harvest_virtual_inputs_static(
     own_tree: Any,
     own_file: Path,
     asts: dict[Path, Any],
+    entry_kwargs: list[KwargSpec] | None = None,
 ) -> list[VirtualInputContract]:
     """Static harvest of virtual inputs from constructor deps and call sites."""
     if cls is None or entry is None:
@@ -799,6 +983,18 @@ async def _harvest_virtual_inputs_static(
                 load_signals = signals.get("dep_role_keywords", {})
     except Exception:
         pass
+
+    # The entry's own signature evidence param (if any) grounds the WEAK verb/keyword-only
+    # classification below and, when the dep's own return schema didn't resolve, supplies the field
+    # shape and the real name -- so a virtual input is never named off a bare literal.
+    evidence_kwarg_name: str | None = None
+    evidence_kwarg_schema: dict = {}
+    for kw in (entry_kwargs or []):
+        kw_schema = await _resolve_kwarg_evidence_schema(ctx, kw.annotation or "")
+        if _schema_is_evidence_shaped(kw_schema):
+            evidence_kwarg_name = kw.name
+            evidence_kwarg_schema = kw_schema
+            break
 
     contracts: list[VirtualInputContract] = []
     call_sites_by_dep = {}
@@ -833,7 +1029,9 @@ async def _harvest_virtual_inputs_static(
             continue
         if _schema_is_evidence_shaped(schema):
             dep_role = "retrieval"
-        elif not schema and (is_retrieval_verb or keyword_role == "retrieval"):
+        elif not schema and (is_retrieval_verb or keyword_role == "retrieval") and evidence_kwarg_name is not None:
+            # A verb/keyword match alone has no structural backing -- trusted only when a real
+            # signature-bound evidence param corroborates it, never fabricated off the name alone.
             dep_role = "retrieval"
         else:
             continue
@@ -847,9 +1045,19 @@ async def _harvest_virtual_inputs_static(
                     provenance="annotation",
                     confidence=0.85,
                 ))
+        elif evidence_kwarg_name is not None:
+            item_schema = _evidence_item_schema(evidence_kwarg_schema)
+            if item_schema and "properties" in item_schema:
+                for fname, fschema in item_schema.get("properties", {}).items():
+                    fields.append(VirtualFieldSpec(
+                        name=fname,
+                        schema=fschema,
+                        provenance="annotation",
+                        confidence=0.85,
+                    ))
 
         contracts.append(VirtualInputContract(
-            name=f"bundle",
+            name=evidence_kwarg_name or EVIDENCE_CASE_KEY,
             dep_param=binding.param,
             dep_attr=binding.attr,
             dep_annotation=binding.annotation or "",
@@ -862,26 +1070,41 @@ async def _harvest_virtual_inputs_static(
     return contracts
 
 
+def _base_type_name(type_hint: str) -> str | None:
+    import re as _re
+    match = _re.search(r"[A-Za-z_][A-Za-z0-9_]*", type_hint)
+    return match.group(0) if match else None
+
+
 async def _resolve_input_kwarg_schemas(
     ctx: _EnrichmentContext,
     input_contract: list[ContractArg],
-) -> dict[str, dict]:
-    """Resolve schemas for input kwargs that have resolvable type annotations."""
-    import re as _re
+    upstream_output_schema: dict | None = None,
+) -> tuple[dict[str, dict], str | None, list[str]]:
+    """Resolve schemas for input kwargs that have resolvable type annotations. Returns
+    (schemas, upstream_resolved_kwarg, needs_human_notes): a bare dict/list kwarg carries no
+    field-level shape of its own, so it resolves via the sole upstream agent's own output schema
+    when unambiguous (upstream_resolved_kwarg names which one), else it is flagged rather than
+    silently dropped."""
+    opaque_kwargs = [
+        arg.kwarg for arg in input_contract
+        if _base_type_name(arg.type_hint or "") in _OPAQUE_CONTAINER_TYPES
+    ]
 
-    input_schemas = {}
+    input_schemas: dict[str, dict] = {}
+    notes: list[str] = []
+    upstream_resolved_kwarg: str | None = None
     for arg in input_contract:
-        type_hint = arg.type_hint or ""
-        if not type_hint:
+        type_name = _base_type_name(arg.type_hint or "")
+        if type_name is None or type_name in _PRIMITIVE_TYPES:
             continue
 
-        base_type = _re.search(r"[A-Za-z_][A-Za-z0-9_]*", type_hint)
-        if not base_type:
-            continue
-
-        type_name = base_type.group(0)
-
-        if type_name in ("str", "int", "float", "bool", "dict", "list", "Any", "None"):
+        if type_name in _OPAQUE_CONTAINER_TYPES:
+            if upstream_output_schema is not None and len(opaque_kwargs) == 1:
+                input_schemas[arg.kwarg] = upstream_output_schema
+                upstream_resolved_kwarg = arg.kwarg
+            else:
+                notes.append(f"{arg.kwarg}: bare '{type_name}' type hint, unresolvable — needs_human")
             continue
 
         schema_result = await _resolve_type_schema_via_symbol_index(ctx, type_name)
@@ -889,7 +1112,286 @@ async def _resolve_input_kwarg_schemas(
             schema, _, _ = schema_result
             input_schemas[arg.kwarg] = schema
 
-    return input_schemas
+    return input_schemas, upstream_resolved_kwarg, notes
+
+
+async def _finalize_input_contract(
+    ctx: _EnrichmentContext,
+    llm_knowledge: AgentKnowledge,
+    upstream_output_schema: dict | None,
+    own_contract: EvaluationContract | None = None,
+) -> None:
+    """Resolves input_schemas for llm_knowledge.input_contract in-place and tags each kwarg's
+    source_kind by provenance (config-static / upstream-agent-output / runtime-state). When
+    own_contract is given, mirrors both the resolved schema and the provenance tag onto the matching
+    KwargSpec in own_contract.invocation.kwargs (by name) so the SAME resolution reaches the
+    persisted EvaluationContract, not only the legacy AgentKnowledge fields."""
+    schemas, upstream_resolved_kwarg, notes = await _resolve_input_kwarg_schemas(
+        ctx, llm_knowledge.input_contract, upstream_output_schema
+    )
+    llm_knowledge.input_schemas = schemas
+    llm_knowledge.needs_human.extend(notes)
+    contract_kwargs_by_name = (
+        {k.name: k for k in own_contract.invocation.kwargs}
+        if own_contract is not None and own_contract.invocation is not None
+        else {}
+    )
+    for arg in llm_knowledge.input_contract:
+        if arg.kwarg in _CONFIG_PARAMS:
+            arg.source_kind = _PROVENANCE_CONFIG_STATIC
+        elif arg.kwarg == upstream_resolved_kwarg:
+            arg.source_kind = _PROVENANCE_UPSTREAM_OUTPUT
+        else:
+            arg.source_kind = _PROVENANCE_RUNTIME_STATE
+        contract_kwarg = contract_kwargs_by_name.get(arg.kwarg)
+        if contract_kwarg is not None:
+            contract_kwarg.source_kind = arg.source_kind
+            # Don't clobber a schema the harvester already resolved (e.g. a state-node's read-subset);
+            # only fill when harvest left it unresolved.
+            if arg.kwarg in schemas and contract_kwarg.resolved_schema is None:
+                contract_kwarg.resolved_schema = schemas[arg.kwarg]
+
+    if own_contract is not None and own_contract.invocation is not None:
+        for kwarg in own_contract.invocation.kwargs:
+            if kwarg.resolved_schema is None and kwarg.annotation:
+                type_name = _base_type_name(kwarg.annotation)
+                if type_name is not None and type_name not in _PRIMITIVE_TYPES and type_name not in _OPAQUE_CONTAINER_TYPES:
+                    schema_result = await _resolve_type_schema_via_symbol_index(ctx, type_name)
+                    if schema_result:
+                        schema, _, _ = schema_result
+                        kwarg.resolved_schema = schema
+
+    if own_contract is not None and notes:
+        own_contract.needs_human.extend(notes)
+
+
+def _entry_scoped_prompt_sites(cls: Any, entry: Any, tree: Any, file_sites: list[Any]) -> list[Any]:
+    """Filters one file's prompt sites down to the ones the entry method's own closure actually
+    references -- the same self.<helper>() closure _entry_schema_scope uses for schema constants --
+    so a sibling entry method's prompt constant on a multi-entry class (e.g. LangGraph nodes sharing
+    one class) never cross-attributes. A module_assignment site is scoped by whether its assigned
+    NAME is referenced in the closure (its definition line is elsewhere); any other kind is scoped by
+    whether its own recorded line falls inside the closure (it records a use site, not a definition)."""
+    if entry is None or not file_sites:
+        return []
+    import ast as _ast
+
+    scope_nodes = _entry_schema_scope(cls, entry) if cls is not None else [entry]
+    referenced_names: set[str] = set()
+    for scope_node in scope_nodes:
+        for node in _ast.walk(scope_node):
+            if isinstance(node, _ast.Name):
+                referenced_names.add(node.id)
+            elif isinstance(node, _ast.Attribute):
+                referenced_names.add(node.attr)
+
+    def _assigned_name_at(line: int) -> str | None:
+        for node in _ast.walk(tree):
+            if isinstance(node, (_ast.Assign, _ast.AugAssign)) and node.lineno == line:
+                target = node.targets[0] if isinstance(node, _ast.Assign) else node.target
+                if isinstance(target, _ast.Name):
+                    return target.id
+                if isinstance(target, _ast.Attribute):
+                    return target.attr
+        return None
+
+    def _within_closure(line: int) -> bool:
+        return any(
+            scope_node.lineno <= line <= (getattr(scope_node, "end_lineno", None) or scope_node.lineno)
+            for scope_node in scope_nodes
+        )
+
+    scoped = []
+    for site in file_sites:
+        if site.kind == "module_assignment":
+            name = _assigned_name_at(site.line)
+            if name is not None and name not in referenced_names:
+                continue
+        elif not _within_closure(site.line):
+            continue
+        scoped.append(site)
+    return scoped
+
+
+def _extract_prompt_json_schema(prompt_sites: list[PromptSiteRef]) -> tuple[set[str], str] | None:
+    """First balanced-brace {...} JSON object embedded in a prompt site's snippet, preferring an
+    untruncated module_assignment-kind snippet over the 120-char-capped sdk_call-kind (which can cut
+    a JSON block mid-token). Returns (top-level key set, "file:line") or None when nothing parses."""
+    ordered = sorted(prompt_sites, key=lambda s: 0 if s.kind == "module_assignment" else 1)
+    for site in ordered:
+        start = site.snippet.find("{")
+        if start == -1:
+            continue
+        depth = 0
+        end = None
+        for i, ch in enumerate(site.snippet[start:], start):
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    end = i + 1
+                    break
+        if end is None:
+            continue
+        try:
+            parsed = json.loads(site.snippet[start:end])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict) and parsed:
+            return set(parsed.keys()), f"{site.file}:{site.line}"
+    return None
+
+
+def _schema_top_level_keys(json_schema: dict) -> set[str]:
+    """The field-name key set for a harvested json_schema, regardless of which of the two shapes
+    harvest_component_contract produces: a JSON-Schema envelope ({"type":"object","properties":
+    {...}}) from the dict-literal/class-resolver paths, or a raw example dict -- the fields ARE the
+    top-level keys -- from the schema-constant-parsed-as-a-JSON-string path."""
+    properties = json_schema.get("properties")
+    if isinstance(properties, dict):
+        return set(properties.keys())
+    return set(json_schema.keys())
+
+
+def _cross_validate_output_schema(
+    output: OutputContract | None, candidate_sites: list[Any]
+) -> tuple[OutputContract | None, str | None]:
+    """Cross-checks an AST-derived output schema against a JSON block embedded in an entry-scoped
+    prompt site (see _entry_scoped_prompt_sites -- candidate_sites must already be scoped to this
+    entry, never the whole file). AST silence and a genuine key-set mismatch both count as
+    disagreement; on disagreement the prompt-derived key-set wins (schema_source stays truthful,
+    pointing at the prompt site) and a schema_discrepancy + needs_human note record why. No
+    parseable prompt JSON, or an agreeing key-set, returns `output` untouched.
+    Takes/returns a bare OutputContract (not an AgentKnowledge) so the SAME validation applies
+    unchanged to both the legacy AgentKnowledge.output_contract and the persisted
+    EvaluationContract.output -- one shared helper, two callers, never duplicated logic."""
+    prompt_schema = _extract_prompt_json_schema(candidate_sites)
+    if prompt_schema is None:
+        return output, None
+    prompt_keys, prompt_cite = prompt_schema
+
+    ast_keys = (
+        _schema_top_level_keys(output.json_schema)
+        if output and output.json_schema else None
+    )
+    if ast_keys is not None and ast_keys == prompt_keys:
+        return output, None
+
+    is_authoritative = bool(output and (output.validated_in_target or (output.schema_source and (".py" in output.schema_source or "state mutation delta" in output.schema_source))))
+    if is_authoritative:
+        output.schema_discrepancy = (
+            f"AST schema properties {sorted(ast_keys) if ast_keys is not None else '(none)'} "
+            f"vs prompt-derived {sorted(prompt_keys)} at {prompt_cite}"
+        )
+        note = f"output schema discrepancy: AST vs prompt-derived key-set disagree ({prompt_cite})"
+        return output, note
+
+    if output is None:
+        output = OutputContract()
+    output.json_schema = {
+        "type": "object",
+        "properties": {k: {} for k in sorted(prompt_keys)},
+        "required": sorted(prompt_keys),
+    }
+    output.schema_source = f"{prompt_cite} (prompt-derived)"
+    output.cardinality = "object"  # a prompt-embedded JSON block is always parsed as a flat object
+    output.schema_discrepancy = (
+        f"AST schema properties {sorted(ast_keys) if ast_keys is not None else '(none)'} "
+        f"vs prompt-derived {sorted(prompt_keys)} at {prompt_cite}"
+    )
+    note = f"output schema discrepancy: AST vs prompt-derived key-set disagree ({prompt_cite})"
+    return output, note
+
+
+def _validate_tier_b_schema(schema: Any) -> dict[str, Any] | None:
+    """Validates an LLM-emitted JSON Schema dict (Tier B). Must be a dict with valid structure (type object/array or properties/items)."""
+    if not isinstance(schema, dict) or not schema:
+        return None
+    stype = schema.get("type")
+    properties = schema.get("properties")
+    items = schema.get("items")
+    if stype not in ("object", "array") and not isinstance(properties, dict) and not isinstance(items, dict):
+        return None
+    if isinstance(properties, dict):
+        for k in properties:
+            if not isinstance(k, str):
+                return None
+    return schema
+
+
+def _apply_multi_tier_output_resolution(
+    output: OutputContract | None,
+    prompt_schema: dict[str, Any] | None,
+    prompt_enums: dict[str, list[str]] | None,
+    agent_id: str,
+) -> tuple[OutputContract, list[str]]:
+    """Multi-tier output schema resolution policy:
+    1. Tier A (static type / AST constant): if present, prefer static type (schema_source = "static_type" / "static_constant").
+       If Tier B is also present, cross-check for discrepancy; if key-set matches and Tier A is key-only ({}), enrich with Tier B types.
+    2. Tier B (prompt-derived structured schema): if Tier A is missing but Tier B valid, use Tier B (schema_source = "prompt").
+    3. Neither present: json_schema = None, schema_source = "none", explicit needs_human note.
+    """
+    notes: list[str] = []
+    if output is None:
+        output = OutputContract()
+
+    valid_prompt_schema = _validate_tier_b_schema(prompt_schema)
+    valid_prompt_enums = (
+        {k: v for k, v in prompt_enums.items() if isinstance(k, str) and isinstance(v, list)}
+        if isinstance(prompt_enums, dict) else {}
+    )
+
+    tier_a_schema = output.json_schema
+
+    if tier_a_schema is not None:
+        is_flat_literal = isinstance(tier_a_schema, dict) and "properties" not in tier_a_schema and "type" not in tier_a_schema
+        if is_flat_literal and valid_prompt_schema is not None:
+            ast_keys = _schema_top_level_keys(tier_a_schema)
+            prompt_keys = _schema_top_level_keys(valid_prompt_schema)
+            if not ast_keys or ast_keys == prompt_keys:
+                output.json_schema = valid_prompt_schema
+                output.schema_source = "prompt"
+                output.cardinality = "array" if valid_prompt_schema.get("type") == "array" else "object"
+                if valid_prompt_enums:
+                    output.schema_enum_values.update(valid_prompt_enums)
+                return output, notes
+
+        output.schema_source = output.schema_source or "static_type"
+        is_authoritative_typeddict = bool(output.validated_in_target or (output.schema_source and ".py" in output.schema_source))
+        if valid_prompt_schema is not None and not is_authoritative_typeddict:
+            ast_keys = _schema_top_level_keys(tier_a_schema)
+            prompt_keys = _schema_top_level_keys(valid_prompt_schema)
+            if ast_keys and prompt_keys and ast_keys != prompt_keys:
+                output.schema_discrepancy = (
+                    f"AST schema properties {sorted(ast_keys)} vs prompt-derived {sorted(prompt_keys)}"
+                )
+                notes.append(f"output schema discrepancy for agent {agent_id}: static type vs prompt description")
+            elif ast_keys and prompt_keys and ast_keys == prompt_keys:
+                a_props = tier_a_schema.get("properties")
+                b_props = valid_prompt_schema.get("properties")
+                if isinstance(a_props, dict) and isinstance(b_props, dict):
+                    if all(v == {} for v in a_props.values()):
+                        output.json_schema = dict(tier_a_schema)
+                        output.json_schema["properties"] = b_props
+        if valid_prompt_enums:
+            for k, v in valid_prompt_enums.items():
+                if k not in output.schema_enum_values:
+                    output.schema_enum_values[k] = v
+        return output, notes
+
+    if valid_prompt_schema is not None:
+        output.json_schema = valid_prompt_schema
+        output.schema_source = "prompt"
+        output.cardinality = "array" if valid_prompt_schema.get("type") == "array" else "object"
+        if valid_prompt_enums:
+            output.schema_enum_values.update(valid_prompt_enums)
+        return output, notes
+
+    output.json_schema = None
+    output.schema_source = "none"
+    notes.append(f"{agent_id}: output schema not statically resolvable and prompt did not describe a structured output")
+    return output, notes
 
 
 async def _enrich_single_agent(
@@ -898,21 +1400,29 @@ async def _enrich_single_agent(
     ctx: _EnrichmentContext,
     depth_cap: dict[str, int],
     accepted_files: list[str],
+    contracts: dict[str, EvaluationContract] | None = None,
 ) -> AgentKnowledge:
     """Enrich a single agent: check cache, verify coverage, run queries/LLM, persist."""
 
-    component_ids = sorted([
-        c['id'] for c in evidence['component_by_agent'].get(agent_id, [])
-    ])
+    components_list = evidence['component_by_agent'].get(agent_id, [])
+    component_ids = sorted([c['id'] for c in components_list])
     edges = sorted([
         (e['src'], e['dst']) for e in evidence['edges_by_agent'].get(agent_id, [])
+    ])
+
+    # Include component structural attributes in hash so re-topology invalidates cache.
+    component_attrs = sorted([
+        f"{c['id']}:{c.get('motif', 'N')}:{c.get('is_tool', False)}:{c.get('constructor_fanout', 0)}:"
+        f"{len(c.get('conditional_downstream', []))}:{len(c.get('call_downstream', []))}"
+        for c in components_list
     ])
 
     hash_input = '|'.join([
         str(_STRUCTURAL_PRODUCER_VERSION),
         ':'.join(component_ids),
-        ':'.join(str(len(accepted_files))),
+        str(len(accepted_files)),
         ':'.join(f"{s}→{d}" for s, d in edges),
+        ':'.join(component_attrs),
     ])
     evidence_hash = hashlib.sha256(hash_input.encode('utf-8')).hexdigest()
 
@@ -933,6 +1443,16 @@ async def _enrich_single_agent(
     # Gates the SUPPLEMENTARY pre-query only; the LLM call always runs.
     prompt_sites = evidence['prompt_sites_by_file']
     components = evidence['component_by_agent'].get(agent_id, [])
+    # Structural veto for the LLM's control_motif claim: a component is only a plausible loop/branch
+    # CONTROLLER if it is a structural loop/branch region, a conditional-edge source, or a high-fan-in
+    # sink (an aggregator whose output drives a driver-side gate). Structure filters; the LLM only proposes.
+    fan_in_threshold = evidence.get('fan_in_sink_threshold')
+    is_plausible_controller = any(
+        c.get('motif') in ('loop', 'branch')
+        or c.get('conditional_downstream')
+        or (fan_in_threshold is not None and c.get('fan_in', 0) >= fan_in_threshold)
+        for c in components
+    )
     component_files = {c['file'] for c in components if c.get('file')}
     prompt_site_files = set(prompt_sites.keys()) & component_files
 
@@ -959,16 +1479,64 @@ async def _enrich_single_agent(
             generated_at=utc_now_iso(),
         )
 
-    context_lines = [f"Agent: {agent.label}", ""]
+    # This agent's own just-harvested EvaluationContract (same dict harvest_contracts() built once,
+    # up in enrich_agents; the wrapper later attaches it to knowledge.evaluation_contract) --
+    # mutated in place below so the output/input-kwarg resolution reaches the persisted contract,
+    # not only the legacy AgentKnowledge fields.
+    own_contract: EvaluationContract | None = contracts.get(agent_id) if contracts else None
+
+    # The sole upstream agent's own resolved output schema -- used to resolve a bare dict/list kwarg
+    # (e.g. worker_output: dict) that carries another agent's output but has no shape of its own.
+    # More than one upstream (or none resolved) is ambiguous -- left to needs_human, never guessed.
+    upstream_output_schema: dict | None = None
+    if contracts:
+        upstream_schemas = [
+            contracts[u].output.json_schema
+            for u in agent.upstream_agents
+            if u in contracts and contracts[u].output and contracts[u].output.json_schema
+        ]
+        if len(upstream_schemas) == 1:
+            upstream_output_schema = upstream_schemas[0]
+
+    # Per-SYSTEM context leads, per-agent detail follows: every agent of one system then shares a
+    # longer identical prefix, which is what the provider's prefix cache can reuse.
+    context_lines: list[str] = []
+    # CS-320: Inject system_type context if available
+    if ctx.system_type:
+        if ctx.system_type == "orchestrator":
+            context_lines.append("System type: 'orchestrator' — router node present → treat conditional-edge sources as orchestrator")
+        elif ctx.system_type == "pipeline":
+            context_lines.append("System type: 'pipeline' — no central orchestrator expected, do not force one")
+        elif ctx.system_type in ("single-flow", "tool-loop", "plan-execute", "reflection"):
+            context_lines.append(f"System type: '{ctx.system_type}' — single agent, no multi-component orchestration")
+        else:
+            context_lines.append(f"System type: '{ctx.system_type}'")
+        context_lines.append("")
+    context_lines += [f"Agent: {agent.label}", ""]
     if components:
         context_lines.append(f"Components ({len(components)}):")
         for c in components:
             entry = f" — entry: {c['entry_point']}" if c.get('entry_point') else ""
             facts = structural_facts(c.get('fan_in', 0), c.get('fan_out', 0))
             admissible = sorted(admissible_roles(c.get('is_tool'), c.get('constructor_fanout')))
+            structural = [facts]
+            if c.get('conditional_downstream') or c.get('call_downstream') or c.get('motif'):
+                edges_parts = []
+                if c.get('conditional_downstream'):
+                    edges_parts.append(f"conditional→{','.join(c['conditional_downstream'])}")
+                if c.get('call_downstream'):
+                    edges_parts.append(f"call→{','.join(c['call_downstream'])}")
+                if c.get('motif'):
+                    edges_parts.append(f"motif:{c['motif']}")
+                structural.append('; '.join(edges_parts))
+            structural_str = '; '.join(structural)
             context_lines.append(
-                f"  - {c['id']} @ {c.get('file', '?')}{entry} — {facts}; admissible roles: {admissible}"
+                f"  - {c['id']} @ {c.get('file', '?')}{entry} — {structural_str}; admissible roles: {admissible}"
             )
+            if c.get('motif') == 'loop':
+                context_lines.append("    ↳ Loop member: harvest its termination/exit condition and the feedback signal it consumes each iteration")
+            elif c.get('motif') == 'branch':
+                context_lines.append("    ↳ Branch source: harvest the policy by which it selects among downstream targets")
     else:
         context_lines.append("Components: none")
 
@@ -1000,7 +1568,16 @@ async def _enrich_single_agent(
         known_edge_files = {
             f for e in agent_edges for f in (e.get('src'), e.get('dst')) if f
         }
-        own_lines, related_lines = await _fetch_direct_evidence(ctx, component_files, known_edge_files)
+        # Boost control-flow evidence when any component looks control-relevant: a structural loop/branch
+        # region, a conditional-edge source, or a high-fan-in sink (an aggregator whose output typically
+        # drives a driver-side retry/gate loop that is invisible to the wiring graph).
+        boost_control_flow = any(
+            c.get('motif') in ('loop', 'branch')
+            or c.get('conditional_downstream')
+            or (fan_in_threshold is not None and c.get('fan_in', 0) >= fan_in_threshold)
+            for c in components
+        )
+        own_lines, related_lines = await _fetch_direct_evidence(ctx, component_files, known_edge_files, boost_control_flow=boost_control_flow)
         if own_lines:
             context_lines.append("")
             context_lines.append("=== GROUND TRUTH — direct from DB, this agent's own file ===")
@@ -1050,8 +1627,9 @@ async def _enrich_single_agent(
                 if cls is None and entry is None:
                     continue
 
+                entry_kwargs = _harvest_kwargs(entry)[0] if entry is not None else []
                 virtual_contracts = await _harvest_virtual_inputs_static(
-                    ctx, cls, entry, tree, comp_file, asts
+                    ctx, cls, entry, tree, comp_file, asts, entry_kwargs
                 )
                 virtual_inputs_list.extend(virtual_contracts)
 
@@ -1093,9 +1671,12 @@ Return JSON with this exact shape (all fields required, empty arrays/null if unk
     {{"description": "<prose description>", "file": "<path/to/file.py>", "line": 40}}
   ],
   "output_described_in_prompt": "<how the prompt says this agent's output should look — format/shape/fields, 1-2 sentences; empty string if the prompt is silent>",
+  "output_schema_from_prompt": <a valid JSON Schema dict matching the output shape described by the prompt, e.g. {{"type": "object", "properties": {{"field1": {{"type": "string"}}}}}}; null if the prompt is silent or describes no structured format>,
+  "output_enum_values_from_prompt": <a dict mapping field path to list of allowed enum string values if prompt specifies allowed values, e.g. {{"confidence": ["high", "medium", "low"]}}; empty dict {{}} if none>,
   "method_steps": ["<one step, in order, of the procedure the prompt tells the agent to follow, e.g. 'retrieve evidence' then 'reason' then 'emit JSON'>"],
   "constraints": ["<one HARD RULE the prompt imposes, e.g. 'return only JSON', 'must cite evidence_files', 'never invent file paths'>"],
   "special_traits": ["<one notable/distinctive behavior the prompt calls out>"],
+  "control_motif": null,
   "need_more": false,
   "next_queries": [],
   "virtual_input_complete": true,
@@ -1111,15 +1692,16 @@ In that case, list those missing fields in virtual_input_fields with (file, line
 """
 
     llm_knowledge: AgentKnowledge | None = None
+    stashed_input_examples: dict[str, Any] = {}
     async def _run_llm_rounds(
         prompt: str,
         depth: dict[str, int],
     ) -> AgentKnowledge | None:
         """Run LLM round-1, optionally round-2 based on need_more."""
-        nonlocal query_count, llm_calls
+        nonlocal query_count, llm_calls, stashed_input_examples
 
         llm_calls += 1
-        raw = await complete_json(
+        raw, raw_text = await complete_json_with_raw(
             ctx.llm_client, _ENRICH_SYSTEM, prompt,
             max_tokens=_ENRICH_MAX_TOKENS, label=f"enrich[{agent_id}]",
             reasoning_effort=_ENRICH_REASONING_EFFORT,
@@ -1134,14 +1716,11 @@ In that case, list those missing fields in virtual_input_fields with (file, line
         virtual_input_complete = raw.get('virtual_input_complete', True)
         input_contract_examples = raw.get('input_contract_examples', {})
         virtual_input_fields = raw.get('virtual_input_fields', [])
+        control_motif = raw.get('control_motif')
 
         round_knowledge = AgentKnowledge.model_validate(_sanitize_llm_knowledge_dict(raw))
-
-        # Fill example values and merge LLM-tier fields onto static-tier deps.
-        if input_contract_examples and isinstance(input_contract_examples, dict):
-            for arg in round_knowledge.input_contract:
-                if arg.kwarg in input_contract_examples:
-                    arg.example = input_contract_examples[arg.kwarg]
+        if control_motif and isinstance(control_motif, str) and control_motif in ('loop', 'branch') and is_plausible_controller:
+            round_knowledge.control_motif = control_motif
 
         if virtual_input_fields and isinstance(virtual_input_fields, list):
             for llm_field in virtual_input_fields:
@@ -1181,6 +1760,13 @@ In that case, list those missing fields in virtual_input_fields with (file, line
             query_count += executed_queries
             llm_calls += 1
 
+            # Round 2 replays round 1 verbatim as history: without it the model was told to "keep your
+            # previous answer" while never being shown that answer OR the original evidence. Replaying
+            # it also means the whole round-1 prefix is a provider cache hit instead of new input.
+            round2_history = [
+                LLMMessage(role="user", content=prompt),
+                LLMMessage(role="assistant", content=raw_text),
+            ]
             round2_prompt = (
                 f"Given your previous analysis, here are the follow-up query results you asked for:\n\n"
                 f"{query_results}\n\n"
@@ -1198,18 +1784,17 @@ In that case, list those missing fields in virtual_input_fields with (file, line
                 ctx.llm_client, _ENRICH_SYSTEM, round2_prompt,
                 max_tokens=_ENRICH_MAX_TOKENS, label=f"enrich[{agent_id}]-round2",
                 reasoning_effort=_ENRICH_REASONING_EFFORT,
+                history=round2_history,
             )
             if raw2 is not None:
                 round2_knowledge = AgentKnowledge.model_validate(_sanitize_llm_knowledge_dict(raw2))
+                control_motif_r2 = raw2.get('control_motif')
+                if control_motif_r2 and isinstance(control_motif_r2, str) and control_motif_r2 in ('loop', 'branch') and is_plausible_controller:
+                    round2_knowledge.control_motif = control_motif_r2
 
-                # Apply the same merge logic to round2.
+                # Stash examples and fields for later merge (after static-contract attach).
                 input_contract_examples_r2 = raw2.get('input_contract_examples', {})
                 virtual_input_fields_r2 = raw2.get('virtual_input_fields', [])
-
-                if input_contract_examples_r2 and isinstance(input_contract_examples_r2, dict):
-                    for arg in round2_knowledge.input_contract:
-                        if arg.kwarg in input_contract_examples_r2:
-                            arg.example = input_contract_examples_r2[arg.kwarg]
 
                 if virtual_input_fields_r2 and isinstance(virtual_input_fields_r2, list):
                     for llm_field in virtual_input_fields_r2:
@@ -1236,10 +1821,14 @@ In that case, list those missing fields in virtual_input_fields with (file, line
                 r1, r2 = _richness(round_knowledge), _richness(round2_knowledge)
                 if r2 > r1 or (r2 == r1 and len(round2_knowledge.functionality) >= len(round_knowledge.functionality)):
                     round_knowledge = round2_knowledge
+                    stashed_input_examples = input_contract_examples_r2
                 else:
                     logger.debug(
                         f"Agent {agent_id}: round-2 less rich than round-1 ({r2} < {r1} claims), keeping round-1"
                     )
+                    stashed_input_examples = input_contract_examples
+            else:
+                stashed_input_examples = input_contract_examples
 
         return round_knowledge
 
@@ -1257,14 +1846,46 @@ In that case, list those missing fields in virtual_input_fields with (file, line
     for verdict in llm_knowledge.component_roles:
         c = structural_by_id.get(verdict.id)
         if c is None:
-            continue  # LLM named a component id that isn't this agent's — discard, never invent
-        admissible = admissible_roles(c.get('is_tool'), c.get('constructor_fanout'))
-        role = verdict.role
-        if role not in admissible or verdict.confidence < ROLE_CONFIDENCE_THRESHOLD:
-            role = 'unknown'
+            # Tolerate a decorated id (`<id> @ <file>`, `<id> (file: ...)`, `id="<id>"`) before
+            # discarding: a formatting slip silently cost the component its role, surfacing later
+            # as a stray 'unknown' that looks like the model failed to classify it.
+            bare = _undecorate_component_id(verdict.id)
+            c = structural_by_id.get(bare)
+            if c is None:
+                bare = _resolve_entry_point_id(bare, structural_by_id)
+                c = structural_by_id.get(bare)
+            if c is not None:
+                logger.info(
+                    f"Agent {agent_id}: recovered decorated component id {verdict.id!r} -> {bare!r}"
+                )
+                verdict = verdict.model_copy(update={"id": bare})
+        if c is None:
+            # LLM named a component id that isn't this agent's — discard, never invent.
+            logger.warning(
+                f"Agent {agent_id}: discarding role for unknown component id {verdict.id!r} "
+                f"(known ids: {sorted(structural_by_id)})"
+            )
+            continue
+        # CS-320: forced_role applies before admissible check
+        forced = forced_role(bool(c.get('conditional_downstream')))
+        if forced:
+            role = forced
+        else:
+            admissible = admissible_roles(c.get('is_tool'), c.get('constructor_fanout'))
+            role = verdict.role
+            if role not in admissible or verdict.confidence < ROLE_CONFIDENCE_THRESHOLD:
+                role = 'unknown'
         gated_roles.append(ComponentRoleVerdict(
             id=verdict.id, role=role, confidence=verdict.confidence, reasoning=verdict.reasoning
         ))
+    # CS-320: Post-loop pass for conditional-source components the LLM omitted
+    llm_emitted_ids = {v.id for v in llm_knowledge.component_roles}
+    for cid, c in structural_by_id.items():
+        if cid not in llm_emitted_ids and c.get('conditional_downstream'):
+            gated_roles.append(ComponentRoleVerdict(
+                id=cid, role='orchestrator', confidence=1.0,
+                reasoning='structural: conditional-edge source'
+            ))
     llm_knowledge.component_roles = gated_roles
 
     # Structural fields never come from the LLM.
@@ -1293,6 +1914,7 @@ In that case, list those missing fields in virtual_input_fields with (file, line
             try:
                 comp_files = {c['file'] for c in components_list if c.get('file')}
                 if comp_files:
+                    head_id = agent_id if any(c.get('id') == agent_id for c in components_list) else (components_list[0].get('id') if components_list else agent_id)
                     for comp_file in comp_files:
                         try:
                             file_basename = Path(comp_file).name
@@ -1304,7 +1926,10 @@ In that case, list those missing fields in virtual_input_fields with (file, line
                             comp_for_harvest = next(
                                 (c for c in components_list if c.get('file') == comp_file), None
                             )
-                            if comp_for_harvest and comp_for_harvest.get('entry_point'):
+                            if comp_for_harvest is None or comp_for_harvest.get('id') != head_id:
+                                continue  # only the agent's head/entry component may set location/input_contract/output_contract
+
+                            if comp_for_harvest.get('entry_point'):
                                 _, _, suffix = comp_for_harvest['entry_point'].partition(':')
                                 owner, name = parse_entry_suffix(suffix)
                                 entry_kind = comp_for_harvest.get('entry_kind')
@@ -1331,8 +1956,8 @@ In that case, list those missing fields in virtual_input_fields with (file, line
                                     else:
                                         for sym in symbols:
                                             if (sym.get('parent_name') == target_class and sym.get('kind') == 'method'
-                                                    and sym.get('name') in ENTRY_METHOD_NAMES):
-                                                if method_row is None or ENTRY_METHOD_NAMES.index(sym.get('name')) < ENTRY_METHOD_NAMES.index(method_row.get('name')):
+                                                    and sym.get('name') in _SEARCH_INDEX_ENTRY_METHOD_NAMES):
+                                                if method_row is None or _SEARCH_INDEX_ENTRY_METHOD_NAMES.index(sym.get('name')) < _SEARCH_INDEX_ENTRY_METHOD_NAMES.index(method_row.get('name')):
                                                     method_row = sym
 
                                 if (class_row and method_row) or function_row:
@@ -1368,26 +1993,77 @@ In that case, list those missing fields in virtual_input_fields with (file, line
                                                 invocation_contract, output, _, _, _ = harvest_component_contract(temp_component, asts, files_root=ctx.repo_root)
                                                 if output:
                                                     llm_knowledge.output_contract = output
+                                                    _, entry_cls, entry_fn = _resolve_entry(temp_component, asts)
+                                                    scoped_sites = _entry_scoped_prompt_sites(
+                                                        entry_cls, entry_fn, asts[comp_path],
+                                                        prompt_sites.get(comp_file, []),
+                                                    )
+                                                    ak_output, ak_note = _cross_validate_output_schema(
+                                                        llm_knowledge.output_contract, scoped_sites,
+                                                    )
+                                                    llm_knowledge.output_contract = ak_output
+                                                    if ak_note:
+                                                        llm_knowledge.needs_human.append(ak_note)
+                                                    # Same recovery, on the persisted contract's own output.
+                                                    if own_contract is not None:
+                                                        ec_output, ec_note = _cross_validate_output_schema(
+                                                            own_contract.output, scoped_sites,
+                                                        )
+                                                        own_contract.output = ec_output
+                                                        if ec_note:
+                                                            own_contract.needs_human.append(ec_note)
                                     except Exception as e:
                                         logger.debug(f"Failed to harvest contracts for {agent_id}: {e}")
 
-                                    # Build input_contract from AST-harvested kwargs (real type hints) if available
-                                    if invocation_contract and invocation_contract.kwargs:
+                                    # Build input_contract from AST-harvested kwargs (real type hints) if available.
+                                    # For bound_method, use the method's own signature, not the resolved callee'params.
+                                    if entry_kind == "bound_method" and method_row is not None:
+                                        sig = method_row.get('signature', '')
+                                        kwargs_with_hints = _parse_signature_kwargs(sig)
+                                        if kwargs_with_hints:
+                                            llm_knowledge.input_contract = [
+                                                ContractArg(kwarg=name, type_hint=hint, example='')
+                                                for name, hint in kwargs_with_hints
+                                            ]
+                                            await _finalize_input_contract(
+                                                ctx, llm_knowledge, upstream_output_schema, own_contract,
+                                            )
+                                    elif invocation_contract and invocation_contract.kwargs:
                                         llm_knowledge.input_contract = [
-                                            ContractArg(kwarg=k.name, source_kind='ast', type_hint=k.annotation or '', example='')
+                                            ContractArg(kwarg=k.name, type_hint=k.annotation or '', example='')
                                             for k in invocation_contract.kwargs
                                         ]
-                                        llm_knowledge.input_schemas = await _resolve_input_kwarg_schemas(ctx, llm_knowledge.input_contract)
+                                        await _finalize_input_contract(
+                                            ctx, llm_knowledge, upstream_output_schema, own_contract,
+                                        )
                                     elif method_row is not None:
                                         # Fallback to truncated signature parsing (backward compat; class/bound-method only).
                                         sig = method_row.get('signature', '')
                                         kwargs_with_hints = _parse_signature_kwargs(sig)
                                         if kwargs_with_hints:
                                             llm_knowledge.input_contract = [
-                                                ContractArg(kwarg=name, source_kind='signature', type_hint=hint, example='')
+                                                ContractArg(kwarg=name, type_hint=hint, example='')
                                                 for name, hint in kwargs_with_hints
                                             ]
-                                            llm_knowledge.input_schemas = await _resolve_input_kwarg_schemas(ctx, llm_knowledge.input_contract)
+                                            await _finalize_input_contract(
+                                                ctx, llm_knowledge, upstream_output_schema, own_contract,
+                                            )
+
+                                    # Apply LLM examples after static-contract attach.
+                                    if stashed_input_examples and isinstance(stashed_input_examples, dict):
+                                        for arg in llm_knowledge.input_contract:
+                                            if arg.kwarg in stashed_input_examples:
+                                                arg.example = stashed_input_examples[arg.kwarg]
+
+                                    # Static fallback: if arg.example is still empty, check own_contract invocation kwargs for default_repr
+                                    if own_contract and own_contract.invocation and own_contract.invocation.kwargs:
+                                        default_repr_by_kwarg = {
+                                            k.name: k.default_repr for k in own_contract.invocation.kwargs
+                                            if k.name and k.default_repr
+                                        }
+                                        for arg in llm_knowledge.input_contract:
+                                            if not arg.example and arg.kwarg in default_repr_by_kwarg:
+                                                arg.example = default_repr_by_kwarg[arg.kwarg]
 
                                 anchor_row = class_row or function_row
                                 if anchor_row:
@@ -1451,6 +2127,23 @@ In that case, list those missing fields in virtual_input_fields with (file, line
                 sum(1 for c in vreport.claims if c.status == "phantom"),
                 sum(1 for c in vreport.claims if c.status == "unverified"),
             )
+
+    # Multi-tier output schema resolution policy
+    p_schema = getattr(llm_knowledge, "output_schema_from_prompt", None)
+    p_enums = getattr(llm_knowledge, "output_enum_values_from_prompt", None)
+
+    resolved_out, out_notes = _apply_multi_tier_output_resolution(
+        llm_knowledge.output_contract, p_schema, p_enums, agent_id
+    )
+    llm_knowledge.output_contract = resolved_out
+    llm_knowledge.needs_human.extend(out_notes)
+
+    if own_contract is not None:
+        resolved_ec_out, ec_notes = _apply_multi_tier_output_resolution(
+            own_contract.output, p_schema, p_enums, agent_id
+        )
+        own_contract.output = resolved_ec_out
+        own_contract.needs_human.extend(ec_notes)
 
     if llm_knowledge.degraded:
         llm_knowledge.confidence = 'low'

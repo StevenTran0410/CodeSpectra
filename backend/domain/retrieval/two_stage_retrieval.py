@@ -336,17 +336,29 @@ async def load_symbol_index(
     index: dict[str, list[tuple[str, int, int]]] = {}
 
     async with db.execute(
-        "SELECT name, rel_path, line_start, line_end FROM code_symbols WHERE snapshot_id=?",
+        "SELECT name, parent_name, rel_path, line_start, line_end FROM code_symbols WHERE snapshot_id=?",
         (snapshot_id,),
     ) as cur:
         rows = await cur.fetchall()
 
     for row in rows:
-        name_lower = (row["name"] or "").lower()
+        name = row["name"] or ""
+        parent = row["parent_name"] or ""
+        rel_path = row["rel_path"] or ""
+        line_start = int(row["line_start"])
+        line_end = int(row["line_end"])
+        entry = (rel_path, line_start, line_end)
+
+        name_lower = name.lower()
         if name_lower:
-            index.setdefault(name_lower, []).append(
-                (row["rel_path"], int(row["line_start"]), int(row["line_end"]))
-            )
+            index.setdefault(name_lower, []).append(entry)
+
+        if parent:
+            q_key = f"{parent}.{name}".lower()
+            index.setdefault(q_key, []).append(entry)
+
+        fqn_key = (f"{rel_path}::{parent + '.' if parent else ''}{name}").lower()
+        index.setdefault(fqn_key, []).append(entry)
 
     _symbol_cache[snapshot_id] = index
     return index

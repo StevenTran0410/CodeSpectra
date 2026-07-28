@@ -870,12 +870,9 @@ class DeepResearchAgent(BaseTypedAgent):
             ) as cur:
                 row = await cur.fetchone()
             if not row:
-                async with db.execute(
-                    "SELECT 1 FROM code_symbols WHERE snapshot_id=? AND name LIKE ? LIMIT 1",
-                    (snapshot_id, f"%{target}%"),
-                ) as cur:
-                    row2 = await cur.fetchone()
-                if not row2:
+                from domain.repo_map.service import search_symbols_cascade
+                matches = await search_symbols_cascade(db, snapshot_id, target, limit=1)
+                if not matches:
                     step["_warning"] = f"target '{target}' not found in snapshot — step may produce empty results"
         return step
 

@@ -438,19 +438,22 @@ class StructuralGraphService:
                     logger.exception("[structural_graph] SymbolGraphBuilder failed for snapshot %s", req.snapshot_id)
 
             if _symbol_edge_rows:
-                await db.executemany(
-                    """
-                    INSERT INTO symbol_graph_edges
-                    (snapshot_id, src_symbol, dst_symbol, edge_type, confidence_score, resolution_method, confidence, evidence_lines)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    _symbol_edge_rows,
-                )
-                logger.info(
-                    "[structural_graph] symbol_graph_edges: inserted %d rows for snapshot %s",
-                    len(_symbol_edge_rows),
-                    req.snapshot_id,
-                )
+                try:
+                    await db.executemany(
+                        """
+                        INSERT INTO symbol_graph_edges
+                        (snapshot_id, src_symbol, dst_symbol, edge_type, confidence_score, resolution_method, confidence, evidence_lines)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        _symbol_edge_rows,
+                    )
+                    logger.info(
+                        "[structural_graph] symbol_graph_edges: inserted %d rows for snapshot %s",
+                        len(_symbol_edge_rows),
+                        req.snapshot_id,
+                    )
+                except Exception:
+                    logger.exception("[structural_graph] symbol_graph_edges insert failed for snapshot %s", req.snapshot_id)
         else:
             logger.info("[structural_graph] SymbolGraphBuilder wiring disabled via SYMBOL_GRAPH_BUILDER_ENABLED")
 

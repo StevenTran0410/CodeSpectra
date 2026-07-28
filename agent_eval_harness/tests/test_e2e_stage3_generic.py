@@ -213,3 +213,98 @@ async def test_langgraph_agent_scanner_to_case():
             produced_case = True
             assert cases[0].input.get("shape") == "generic"
     assert produced_case, "0 agents produced a case — scanner/harvest not rich enough for LangGraph"
+
+
+@pytest.mark.parametrize("target", ["multi_agent", "linear_rag"])
+async def test_full_enrich_sidecar_real_path(target, tmp_path, monkeypatch):
+    """CS-326 real-path integration gate: runs the FULL enrich_agents DAG (deterministic
+    FakeLLMClient, no paid provider) over the real test_targets/<target>, persists to a temp
+    session dir, and asserts on the RELOADED sidecar -- not _harvest()'s in-memory
+    harvest_contracts() result above, and not suite-count."""
+    monkeypatch.setenv("AEH_DATA_DIR", str(tmp_path))
+    import json
+
+    from agent_eval_harness.discovery.agent_knowledge import AgentKnowledge
+    from agent_eval_harness.discovery.enrichment import agent_knowledge_dir, enrich_agents
+    from agent_eval_harness.planning.agentic_planner import generate_plan_agentic
+    from agent_eval_harness.store.database import get_db, init_db
+
+    # Defensive re-init: an earlier test file may have closed the shared DB without reopening it
+    # (see test_enrichment.py's _ensure_db fixture for the same precedent).
+    try:
+        get_db()
+    except RuntimeError:
+        await init_db()
+
+    map_path = _TARGETS_DIR / target / "system_map.yaml"
+    system_map = load_system_map(map_path)
+    agent_flow_map = _build_agent_flow_map(system_map)
+    files = list(_TARGETS_DIR.rglob("*.py"))
+    accepted_files = [str(p.relative_to(_ROOT)).replace("\\", "/") for p in files]
+
+    session_id = f"cs326-{target}"
+    llm_client = FakeLLMClient(LLMResponse(content="{}", model="fake"))
+    await enrich_agents(
+        session_id=session_id, agent_flow_map=agent_flow_map, system_map=system_map,
+        accepted_with_annotations=accepted_files, accepted_edges=[], client=None,
+        llm_client=llm_client, snapshot_id="", repo_root=_ROOT,
+    )
+
+    sidecar_dir = agent_knowledge_dir(session_id)
+    by_id: dict[str, AgentKnowledge] = {}
+    for agent in agent_flow_map.agents:
+        json_path = sidecar_dir / f"{agent.id}.json"
+        assert json_path.exists(), f"{target}: no sidecar written for {agent.id}"
+        by_id[agent.id] = AgentKnowledge.from_json(json.loads(json_path.read_text(encoding="utf-8")))
+
+    # Stage-2 harvest attached + round-trips for every agent.
+    for agent_id, knowledge in by_id.items():
+        assert knowledge.evaluation_contract is not None, f"{target}/{agent_id}: no evaluation_contract"
+        reloaded = AgentKnowledge.from_json(json.loads(json.dumps(knowledge.to_json())))
+        assert reloaded.evaluation_contract is not None
+
+    if target == "multi_agent":
+        # output_contract (AgentKnowledge's own field) only fills via the DB-backed symbol-index
+        # path (snapshot_id), inert offline here; evaluation_contract.output is the §2.0 Stage-2
+        # harvest, populated regardless -- §2.1's distinct-per-component schemas are checked there.
+        #
+        # guard_llm/planner/writer each define a Haystack-required sync `run` stub alongside the
+        # real `run_async`; resolution_primitives picks the real one, so all five components below
+        # carry this assertion's real-path weight symmetrically.
+        assert set(by_id["judge"].evaluation_contract.output.json_schema["properties"]) == {"sufficient", "context"}
+        assert set(by_id["worker"].evaluation_contract.output.json_schema["properties"]) == {"context"}
+        assert set(by_id["guard_llm"].evaluation_contract.output.json_schema["properties"]) == {"query", "passed"}
+        assert set(by_id["planner"].evaluation_contract.output.json_schema["properties"]) == {"answer"}
+        assert set(by_id["writer"].evaluation_contract.output.json_schema["properties"]) == {"answer"}
+
+        # No fabricated virtual input: every emitted one names a real signature/dep param.
+        for agent_id, knowledge in by_id.items():
+            for vi in knowledge.virtual_inputs:
+                assert vi.name, f"{target}/{agent_id}: virtual input with an empty name"
+
+        # PlannerComponent.MAX_ITEMS_PER_CALL harvested into the Stage-2 contract's constants.
+        assert by_id["planner"].evaluation_contract.constants.get("MAX_ITEMS_PER_CALL") == 2
+
+    elif target == "linear_rag":
+        # WriterComponent has no constructor retrieval dep (documents arrives as a real kwarg) ->
+        # no virtual input; RetrieverComponent is internal/deterministic, no LLM -> none either.
+        assert not by_id["writer"].virtual_inputs
+        assert not by_id["retriever"].virtual_inputs
+
+    # Plan-time read: NO re-harvest when every sidecar already carries a contract.
+    import agent_eval_harness.mapping.builder.contract_harvest as ch_module
+
+    def _must_not_reharvest(*_a, **_kw):
+        raise AssertionError("harvest_contracts must not run when every sidecar already has a contract")
+
+    monkeypatch.setattr(ch_module, "harvest_contracts", _must_not_reharvest)
+    knowledge_by_id = {
+        agent.id: json.loads((sidecar_dir / f"{agent.id}.json").read_text(encoding="utf-8"))
+        for agent in agent_flow_map.agents
+    }
+    _, report = await generate_plan_agentic(
+        system_map, agent_flow_map, {a.id: "" for a in agent_flow_map.agents}, [],
+        llm_client, run_critic_pass=False, files=None, files_root=None,
+        agent_knowledge_by_id=knowledge_by_id,
+    )
+    assert {a.agent_id for a in report.agents} == {a.id for a in agent_flow_map.agents}

@@ -42,6 +42,7 @@ class SymbolRecord(BaseModel):
     signature: str | None
     parent_name: str | None = None
     extract_source: ExtractSource = ExtractSource.LEXICAL
+    qualified_name: str | None = None
 
 
 class RepoMapSummary(BaseModel):

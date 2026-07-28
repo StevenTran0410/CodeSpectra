@@ -3,11 +3,13 @@ from __future__ import annotations
 import ast
 import json
 import logging
+import time
 from typing import Any
 
 from agent_eval_harness.discovery.analysis_context import ProjectContext
 from agent_eval_harness.discovery.client import CodeSpectraClient
 from agent_eval_harness.llm.client import LLMClient, LLMMessage
+from agent_eval_harness.mapping.system_map import SystemMap
 
 logger = logging.getLogger("agent_eval_harness.discovery.expansion")
 
@@ -93,8 +95,9 @@ async def _classify_nodes_batch(
     llm_client: LLMClient,
     candidate: dict,
     project_context: ProjectContext | None = None,
-) -> dict[str, dict]:
-    """Classify a batch of Python code chunks separately using a single LLM call."""
+) -> dict[str, dict | str]:
+    """Classify a batch of Python code chunks separately using a single LLM call.
+    Returns a dict mapping chunk_id to verdict dict, or error message on failure after retry."""
     name = candidate.get("name", "unknown")
     frameworks = ", ".join(candidate.get("frameworks", []))
 
@@ -132,52 +135,76 @@ async def _classify_nodes_batch(
     user_prompt = (
         f"The candidate agentic system we are expanding is named \"{name}\" and uses frameworks: "
         f"[{frameworks}].\n\n"
-        + "\n\n".join(
-            f"=== ID: {path}::{chunk_id} ===\n{content}" for path, content, chunk_id in items
-        )
+    )
+    # CS-320: Inject system_type context if available
+    stype = candidate.get('system_type')
+    if stype:
+        user_prompt += f"The detected system type is '{stype}'; classify components consistent with that shape (e.g. do not expect an orchestrator in a 'pipeline').\n\n"
+    user_prompt += "\n\n".join(
+        f"=== ID: {path}::{chunk_id} ===\n{content}" for path, content, chunk_id in items
     )
 
     result: dict[str, dict] = {
         f"{path}::{chunk_id}": _default_verdict()
         for path, _, chunk_id in items
     }
-    try:
-        response = await llm_client.complete(
-            [
-                LLMMessage(role="system", content=system_prompt),
-                LLMMessage(role="user", content=user_prompt),
-            ],
-            max_tokens=_CLASSIFY_MAX_TOKENS,
-            json_mode=True,
-            reasoning_effort="low",  # structured extraction: reasoning burns the completion budget and returns empty content
-        )
-        if not (response.content or "").strip():
-            raise ValueError(
-                "LLM returned empty content — reasoning likely consumed the whole completion budget"
+
+    error_on_retry = None
+    _t0 = time.monotonic()  # start time for classification-failure diagnostics
+    for attempt in range(2):  # Try once, then retry once on failure
+        try:
+            response = await llm_client.complete(
+                [
+                    LLMMessage(role="system", content=system_prompt),
+                    LLMMessage(role="user", content=user_prompt),
+                ],
+                max_tokens=_CLASSIFY_MAX_TOKENS,
+                json_mode=True,
+                reasoning_effort="low",  # structured extraction: reasoning burns the completion budget and returns empty content
             )
-        data = json.loads(response.content)
-        for entry in data.get("verdicts", []):
-            unique_id = entry.get("id")
-            verdict = entry.get("verdict")
-            if unique_id in result and verdict in ("accept", "boundary", "expand"):
-                role_hint = entry.get("role_hint")
-                # Coerce role_hint to None if not in valid set
-                if role_hint and role_hint not in VALID_ROLE_HINTS:
-                    role_hint = None
-                result[unique_id] = {
-                    "verdict": verdict,
-                    "reason": entry.get("reason", ""),
-                    "role_hint": role_hint,
-                    "key_symbols": entry.get("key_symbols", []),
-                    "follow": bool(entry.get("follow", False)),
-                    "skip": bool(entry.get("skip", False)),
-                }
-    except Exception as e:
-        logger.warning(
-            f"Batch classification failed: {e}. Defaulting {len(items)} node(s) to 'boundary' — "
-            f"they will NOT be expanded, so the map may be under-discovered: "
-            f"{', '.join(f'{p}::{c}' for p, _, c in items)}"
-        )
+            if not (response.content or "").strip():
+                raise ValueError(
+                    "LLM returned empty content — reasoning likely consumed the whole completion budget"
+                )
+            data = json.loads(response.content)
+            for entry in data.get("verdicts", []):
+                unique_id = entry.get("id")
+                verdict = entry.get("verdict")
+                if unique_id in result and verdict in ("accept", "boundary", "expand"):
+                    role_hint = entry.get("role_hint")
+                    # Coerce role_hint to None if not in valid set
+                    if role_hint and role_hint not in VALID_ROLE_HINTS:
+                        role_hint = None
+                    result[unique_id] = {
+                        "verdict": verdict,
+                        "reason": entry.get("reason", ""),
+                        "role_hint": role_hint,
+                        "key_symbols": entry.get("key_symbols", []),
+                        "follow": bool(entry.get("follow", False)),
+                        "skip": bool(entry.get("skip", False)),
+                    }
+            error_on_retry = None
+            break  # Success, exit retry loop
+        except Exception as e:
+            error_on_retry = e
+            if attempt == 0:
+                logger.debug(
+                    f"Batch classification attempt 1 failed after {time.monotonic() - _t0:.1f}s "
+                    f"[{type(e).__module__}.{type(e).__name__}]: {e!r}. Retrying..."
+                )
+                continue
+            else:
+                logger.error(
+                    f"Batch classification FAILED (both attempts) after {time.monotonic() - _t0:.1f}s "
+                    f"[{type(e).__module__}.{type(e).__name__}] {e!r}. "
+                    f"Keeping {len(items)} node(s) as 'boundary' (will NOT be expanded, map may be under-discovered): "
+                    f"{', '.join(f'{p}::{c}' for p, _, c in items)}"
+                )
+
+    # If failed after both attempts, return error message for recording.
+    if error_on_retry is not None:
+        return f"Classify batch failed: {type(error_on_retry).__name__}: {error_on_retry!r}"
+
     return result
 
 
@@ -212,6 +239,34 @@ def _build_expansion_result(
     }
 
 
+def reconcile_scope(
+    system_map: SystemMap,
+    accepted_files: set[str],
+    boundary_files: set[str],
+    excluded_files: set[str] | None = None,
+) -> set[str]:
+    """Close the scanner<->expansion file-scope gap: a scanner's own call-closure resolvers mint
+    components in files expansion's frontier never visited. A never-visited file is folded into the
+    returned accepted set (the resolver already AST-confirmed the symbol, so this is not a guess); a
+    DELIBERATELY refused file (boundary or user-excluded) instead marks the component out_of_scope
+    with that reason. Mutates system_map.components in place; returns the widened accepted-file set
+    for the caller to persist."""
+    excluded_files = excluded_files or set()
+    widened = set(accepted_files)
+    for component in system_map.components:
+        if not component.file or component.file in accepted_files:
+            continue
+        if component.file in boundary_files:
+            component.out_of_scope = True
+            component.out_of_scope_reason = "file classified boundary during expansion"
+        elif component.file in excluded_files:
+            component.out_of_scope = True
+            component.out_of_scope_reason = "file excluded from scope by user"
+        else:
+            widened.add(component.file)
+    return widened
+
+
 async def expand_candidate(
     snapshot_id: str,
     candidate: dict,
@@ -244,6 +299,23 @@ async def expand_candidate(
     for f in sorted(fallback_files):
         if f not in chunked_files:
             seeds.append((f, None, None))
+
+    # CS-321: Seed conditional_sources (router/branch entry files) with auto-trust skip-classify
+    conditional_sources = (
+        candidate.get("system_type_signals", {})
+        .get("signals", {})
+        .get("conditional_sources", [])
+    )
+    if conditional_sources:
+        wb = candidate.get("wiring_block")
+        if isinstance(wb, dict):
+            nodes = wb.get("nodes") or []
+            alias_to_file = {n.get("alias"): n.get("source_hint_file") for n in nodes}
+            for alias in conditional_sources:
+                file_path = alias_to_file.get(alias)
+                if file_path and file_path not in excluded and file_path not in chunked_files:
+                    seeds.append((file_path, None, None))
+                    chunked_files.add(file_path)
 
     # Frontier elements: list of (file_path, chunk_id, snippet)
     frontier = seeds[:]
@@ -328,6 +400,12 @@ async def expand_candidate(
                 to_classify.append((file_path, content, chunk_id))
 
         verdicts = await _classify_nodes_batch(to_classify, llm_client, candidate, project_context) if to_classify else {}
+
+        # Check if verdicts is an error message (string) instead of verdicts dict
+        if isinstance(verdicts, str):
+            # Classification failed after retry; record error and use boundary defaults
+            boundary_reasons.append(verdicts)
+            verdicts = {}
 
         for file_path, chunk_id, snippet in level:
             content, skip_classify = resolved[(file_path, chunk_id)]

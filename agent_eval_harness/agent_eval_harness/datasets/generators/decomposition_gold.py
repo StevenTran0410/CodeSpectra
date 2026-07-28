@@ -1,3 +1,5 @@
+import json
+import logging
 import random
 from typing import Any
 
@@ -5,9 +7,10 @@ from pydantic import BaseModel
 
 from agent_eval_harness.datasets.generator_utils import (
     apply_painpoint,
-    parse_json_with_fallback,
     strip_markdown_code_block,
 )
+
+logger = logging.getLogger("agent_eval_harness.datasets.generators.decomposition_gold")
 from agent_eval_harness.datasets.types import DatasetCase
 from agent_eval_harness.llm.client import LLMClient, LLMMessage
 from agent_eval_harness.mapping.system_map import load_system_map
@@ -20,6 +23,38 @@ class DecompositionGoldConfig(BaseModel):
     component_id: str = "planner"
     count: int = 15  # Total count. Will be divided among clean, rambling, over_limit.
     painpoint: str | None = None
+    # Constraint name on the component to read the fan-out limit from; unset -> no limit mined,
+    # over_limit category skipped (see the degrade below) rather than assuming a target-specific name.
+    max_items_constraint_name: str | None = None
+
+# Static format spec + one-shot example per category — byte-identical across every
+# component/dataset that generates that category, so it becomes a cacheable prefix.
+_CLEAN_SYSTEM = (
+    "Respond ONLY with a JSON list of objects, where each object has 'query' (string) "
+    "and 'intents' (list of strings).\n"
+    "Example output format:\n"
+    '[\n  {\n    "query": "Book a flight to Paris and reserve a hotel",\n'
+    '    "intents": ["Book a flight to Paris", "Reserve a hotel"]\n  }\n]\n'
+    "Do not include any Markdown wrap (like ```json) or explanation."
+)
+
+_RAMBLING_SYSTEM = (
+    "Respond ONLY with a JSON list of objects, where each object has 'query' (string) "
+    "and 'intents' (list of strings containing exactly one item for the condensed intent).\n"
+    "Example output format:\n"
+    '[\n  {\n    "query": "Hello, if it is not too much trouble, can you please book a '
+    'hotel in Paris?",\n    "intents": ["Book a hotel in Paris"]\n  }\n]\n'
+    "Do not include any Markdown wrap (like ```json) or explanation."
+)
+
+_OVER_LIMIT_SYSTEM = (
+    "Respond ONLY with a JSON list of objects, where each object has 'query' (string) "
+    "and 'intents' (list of strings).\n"
+    "Example output format:\n"
+    '[\n  {\n    "query": "Do A, B, and C",\n'
+    '    "intents": ["Do A", "Do B", "Do C"]\n  }\n]\n'
+    "Do not include any Markdown wrap (like ```json) or explanation."
+)
 
 async def generate(
     config: dict, llm_client: LLMClient | None, seed: int | None = None
@@ -38,10 +73,11 @@ async def generate(
         )
 
     limit = None
-    for c in component.constraints:
-        if c.name == "max_items_per_call":
-            limit = c.value
-            break
+    if parsed_config.max_items_constraint_name:
+        for c in component.constraints:
+            if c.name == parsed_config.max_items_constraint_name:
+                limit = c.value
+                break
 
     if not llm_client:
         raise ValueError("LLM client is required for decomposition_gold generation")
@@ -58,47 +94,32 @@ async def generate(
     prompt_clean = (
         f"Generate exactly {per_cat} unique examples of user queries containing multiple "
         f"distinct intents. Each query must contain between {intents_count_range[0]} and "
-        f"{intents_count_range[1]} distinct intents.\n"
-        f"Respond ONLY with a JSON list of objects, where each object has 'query' (string) "
-        f"and 'intents' (list of strings).\n"
-        f"Example output format:\n"
-        f'[\n  {{\n    "query": "Book a flight to Paris and reserve a hotel",\n'
-        f'    "intents": ["Book a flight to Paris", "Reserve a hotel"]\n  }}\n]\n'
-        f"Do not include any Markdown wrap (like ```json) or explanation."
+        f"{intents_count_range[1]} distinct intents."
     )
 
     prompt_rambling = (
         f"Generate exactly {per_cat} unique examples of long, wordy, or rambling user "
-        f"queries that contain EXACTLY ONE core intent.\n"
-        f"Respond ONLY with a JSON list of objects, where each object has 'query' (string) "
-        f"and 'intents' (list of strings containing exactly one item for the condensed intent).\n"
-        f"Example output format:\n"
-        f'[\n  {{\n    "query": "Hello, if it is not too much trouble, can you please book a '
-        f'hotel in Paris?",\n    "intents": ["Book a hotel in Paris"]\n  }}\n]\n'
-        f"Do not include any Markdown wrap (like ```json) or explanation."
+        f"queries that contain EXACTLY ONE core intent."
     )
 
-    prompts = [("clean", prompt_clean), ("rambling", prompt_rambling)]
+    prompts = [("clean", _CLEAN_SYSTEM, prompt_clean), ("rambling", _RAMBLING_SYSTEM, prompt_rambling)]
 
     # 4. Over-limit Cases (> limit intents) — only meaningful when a real limit exists
     if limit is not None:
         over_limit_count = limit + 1
         prompt_over_limit = (
             f"Generate exactly {per_cat} unique examples of user queries containing exactly "
-            f"{over_limit_count} distinct intents.\n"
-            f"Respond ONLY with a JSON list of objects, where each object has 'query' (string) "
-            f"and 'intents' (list of strings).\n"
-            f"Example output format:\n"
-            f'[\n  {{\n    "query": "Do A, B, and C",\n'
-            f'    "intents": ["Do A", "Do B", "Do C"]\n  }}\n]\n'
-            f"Do not include any Markdown wrap (like ```json) or explanation."
+            f"{over_limit_count} distinct intents."
         )
-        prompts.append(("over_limit", prompt_over_limit))
+        prompts.append(("over_limit", _OVER_LIMIT_SYSTEM, prompt_over_limit))
 
-    for category, prompt in prompts:
+    for category, system_prompt, prompt in prompts:
         prompt = apply_painpoint(prompt, parsed_config.painpoint)
         resp = await llm_client.complete(
-            [LLMMessage(role="user", content=prompt)],
+            [
+                LLMMessage(role="system", content=system_prompt),
+                LLMMessage(role="user", content=prompt),
+            ],
             max_tokens=2048,
             temperature=0.7,
             json_mode=True
@@ -106,17 +127,21 @@ async def generate(
         content = resp.content.strip()
         content = strip_markdown_code_block(content)
 
-        def fallback_item(i: int) -> dict[str, Any]:
-            if category == "rambling":
-                fallback_intents = [f"intent {i}"]
-            else:
-                fallback_intents = [f"intent {i} A", f"intent {i} B"]
-            return {
-                "query": f"Mock {category} query {i}",
-                "intents": fallback_intents
-            }
+        try:
+            items = json.loads(content)
+            if isinstance(items, dict):
+                # Model dropped the array wrapper: a lone {query,...} is one item; else unwrap {"...":[...]}.
+                items = [items] if "query" in items else next((v for v in items.values() if isinstance(v, list)), [])
+            if not isinstance(items, list):
+                raise ValueError("Response is not a list")
+            parse_error = None
+        except Exception as e:
+            parse_error = str(e)
+            items = []
 
-        items = parse_json_with_fallback(content, per_cat, fallback_item)
+        if parse_error is not None:
+            logger.error(f"Failed to parse LLM response for category '{category}': {parse_error}. Skipping this batch.")
+            continue
 
         for item in items[:per_cat]:
             query = item.get("query", "")

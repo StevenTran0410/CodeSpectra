@@ -4,11 +4,11 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from agent_eval_harness.planning.contract import OutputContract
+from agent_eval_harness.planning.contract import EvaluationContract, OutputContract
 
 logger = logging.getLogger("agent_eval_harness.discovery.agent_knowledge")
 
@@ -155,6 +155,8 @@ class AgentKnowledge(BaseModel):
     input_schemas: dict[str, dict] = Field(default_factory=dict)
     output_contract: OutputContract | None = None
     prompt_sites: list[PromptSiteRef] = Field(default_factory=list)
+    # Harvested once at Stage 2 (see enrich_agents) and read back at Stage 3 instead of re-harvesting.
+    evaluation_contract: EvaluationContract | None = None
 
     # Role verdicts — first conclusion of the LLM round, post hard-gate; NEVER authoritative, see Component.role on the system_map.
     component_roles: list[ComponentRoleVerdict] = Field(default_factory=list)
@@ -168,6 +170,8 @@ class AgentKnowledge(BaseModel):
     downstream_consumers: list[ConsumerRef] = Field(default_factory=list)
     failure_modes: list[FailureModeRef] = Field(default_factory=list)
     output_described_in_prompt: str = ''
+    output_schema_from_prompt: dict[str, Any] | None = None
+    output_enum_values_from_prompt: dict[str, list[str]] = Field(default_factory=dict)
     special_traits: list = Field(default_factory=list)
     constraints: list = Field(default_factory=list)  # hard rules the prompt imposes → Stage 3 gate fuel
     method_steps: list = Field(default_factory=list)  # ordered procedure the prompt tells the agent to follow
@@ -175,6 +179,7 @@ class AgentKnowledge(BaseModel):
     degraded: bool = False
     confidence: Literal['low', 'medium', 'high'] = 'low'
     degraded_reason: str | None = None
+    control_motif: str | None = None  # CS-321: loop/branch/None; region kind for dispatch and termination signals
     needs_human: list[str] = Field(default_factory=list)
     evidence_hash: str = ''
     query_count: int = 0

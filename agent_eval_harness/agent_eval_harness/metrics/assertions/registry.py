@@ -40,6 +40,7 @@ def _import_all() -> None:
         referential_integrity,
         retry_on_reject_required,
         schema_valid,
+        trajectory_termination,
     )
 
 

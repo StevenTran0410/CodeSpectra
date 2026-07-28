@@ -33,12 +33,15 @@ def _resolve_symbol_for_chunk(
     if chunk_start == 0 and chunk_end == 0:
         return None
 
-    # Find the first symbol whose definition range overlaps this chunk (same overlap predicate as _symbol_overlap_fallback: sym_start >= chunk_start and sym_end <= chunk_end).
+    bare_match: str | None = None
     for symbol_name, ranges in symbol_index.items():
         for rel_path, sym_start, sym_end in ranges:
             if rel_path == chunk_rel_path and sym_start >= chunk_start and sym_end <= chunk_end:
-                return symbol_name
-    return None
+                if "." in symbol_name and "::" not in symbol_name:
+                    return symbol_name
+                if not bare_match and "::" not in symbol_name:
+                    bare_match = symbol_name
+    return bare_match
 
 
 def _resolve_chunk_for_symbol(

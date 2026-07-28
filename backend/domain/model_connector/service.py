@@ -271,6 +271,28 @@ class ProviderConfigService:
         finally:
             await adapter.aclose()
 
+    async def list_embedding_models(self, provider_id: str) -> list[str]:
+        """Embedding model ids this provider's ACTUAL endpoint serves — never a hardcoded list.
+
+        Provider kind alone doesn't guarantee embeddings: an OpenAI-compatible base_url (e.g. a
+        DeepSeek endpoint registered as kind=openai) may only do chat and 404 on /v1/embeddings. We
+        enumerate the endpoint's own /v1/models and keep only its embedding models; [] means the
+        endpoint serves none, so the UI hides it. No blind probe — that would 404-spam chat-only
+        endpoints.
+        """
+        config = await self._get_by_id_full(provider_id)
+        kind = config.kind.value if hasattr(config.kind, "value") else str(config.kind)
+        if kind not in ("openai", "gemini"):
+            return []
+        adapter = _get_adapter(config)
+        try:
+            models = await adapter.list_embedding_models()
+        except Exception:  # noqa: BLE001 — endpoint/auth error ⇒ can't enumerate ⇒ treat as no embeddings
+            models = []
+        finally:
+            await adapter.aclose()
+        return sorted(models)
+
     @staticmethod
     def _row_to_config(row) -> ProviderConfig:
         caps_raw = row["capabilities"] or "{}"

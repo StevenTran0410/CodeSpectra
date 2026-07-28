@@ -553,6 +553,7 @@ declare global {
         update: (id: string, req: UpdateProviderRequest) => Promise<ProviderConfig>
         delete: (id: string) => Promise<void>
         test: (id: string) => Promise<{ ok: boolean; message: string; warning?: string }>
+        embeddingModels: (id: string) => Promise<{ models: string[] }>
         models: (id: string) => Promise<{ models: ModelInfo[] }>
       }
       consent: {
@@ -1037,7 +1038,7 @@ declare global {
             force_agent_ids?: string[] | null
           }
         ) => Promise<Record<string, AEHFulfillmentGroupResult>>
-        listDatasets: () => Promise<AEHDatasetSummary[]>
+        listDatasets: (sessionId?: string) => Promise<AEHDatasetSummary[]>
         getDatasetCases: (datasetId: string) => Promise<AEHDatasetCase[]>
         caseVerdict: (
           caseId: string,
@@ -1122,6 +1123,7 @@ declare global {
     agents: AEHAgentFlow[]
     entry_agent_ids: string[]
     unassigned_component_ids: string[]
+    flow_component_ids: string[]
   }
 
   export interface AEHRunDetailResponse extends AEHRunSummaryBase {
@@ -1225,6 +1227,13 @@ declare global {
     excluded_files: string[]
     matched_files?: string[]
     file_provenance?: Record<string, string>
+    system_type?: string | null
+    system_type_signals?: {
+      kind?: 'agent' | 'system'
+      confidence?: 'high' | 'medium' | 'low'
+      capability_tags?: string[]
+      [k: string]: unknown
+    }
   }
 
   export interface AEHExpansionAcceptedItem {

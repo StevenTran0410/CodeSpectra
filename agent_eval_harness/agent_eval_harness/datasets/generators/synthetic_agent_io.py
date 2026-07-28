@@ -27,7 +27,7 @@ logger = logging.getLogger("agent_eval_harness.datasets.generators.synthetic_age
 _MAX_CASES_PER_CALL = 3
 _MAX_GENERATION_ROUNDS = 8
 _MAX_CONSECUTIVE_DRY_ROUNDS = 2
-_GENERATION_MAX_TOKENS = 20000
+_GENERATION_MAX_TOKENS = 15000  # trimmed ~1/4 from 20000: less thinking room, faster rounds
 _CONFIDENCE_ENUM = ("low", "medium", "high")
 _CONFIDENCE_FIELD_RULE = f"Any field literally named 'confidence' must be one of: {', '.join(_CONFIDENCE_ENUM)}."
 _AVOID_LIMIT_CHARS = 2000
@@ -96,6 +96,7 @@ class SyntheticAgentIOConfig(BaseModel):
     input_schemas: dict[str, dict[str, Any]] = {}
     virtual_inputs: list[dict[str, Any]] = []
     context_builders: list[dict[str, Any]] = []
+    section_output_schemas: dict[str, dict[str, Any]] = {}
     count: int = 20
     painpoint: str | None = None
 
@@ -122,12 +123,172 @@ def is_dataset_stale(dataset_cases: list[dict[str, Any]], current_json_schema: d
     return False
 
 
-def _validate_gold(gold: Any, json_schema: dict[str, Any] | None) -> list[str]:
-    """jsonschema.validate against the harvested output schema; empty schema -> treated as valid (no constraints)."""
-    if json_schema is None:
+def _validate_schema_enum_values(gold: Any, schema_enum_values: dict[str, list[str]]) -> list[str]:
+    """Validate that field values in gold match harvested schema_enum_values domains."""
+    if not schema_enum_values:
         return []
-    if isinstance(json_schema, dict) and not json_schema:
-        return []
+    errors: list[str] = []
+
+    def _check_path(obj: Any, path_parts: list[str], allowed: list[str]) -> None:
+        if not path_parts:
+            if isinstance(obj, str) and obj not in allowed:
+                errors.append(f"value '{obj}' not in allowed enum domain {allowed}")
+            return
+        curr, *rest = path_parts
+        if curr.endswith("[]"):
+            key = curr[:-2]
+            val = obj.get(key) if isinstance(obj, dict) else None
+            if isinstance(val, list):
+                for item in val:
+                    _check_path(item, rest, allowed)
+        elif curr == "*":
+            if isinstance(obj, dict):
+                for item in obj.values():
+                    _check_path(item, rest, allowed)
+            elif isinstance(obj, list):
+                for item in obj:
+                    _check_path(item, rest, allowed)
+        elif isinstance(obj, dict) and curr in obj:
+            _check_path(obj[curr], rest, allowed)
+
+    for field_path, allowed_vals in schema_enum_values.items():
+        parts = field_path.split(".")
+        _check_path(gold, parts, allowed_vals)
+
+    return errors
+
+
+def _coerce_input_object_strings(inp: Any) -> Any:
+    """Coerces stringified JSON objects/arrays inside input to python dicts/lists across all archetypes."""
+    if isinstance(inp, dict):
+        for k, v in list(inp.items()):
+            if isinstance(v, str) and v.strip().startswith(("{", "[")):
+                try:
+                    parsed_val = json.loads(v)
+                except Exception:
+                    try:
+                        parsed_val = json_repair.loads(v)
+                    except Exception:
+                        parsed_val = None
+                if isinstance(parsed_val, (dict, list)):
+                    inp[k] = _coerce_input_object_strings(parsed_val)
+            elif isinstance(v, (dict, list)):
+                inp[k] = _coerce_input_object_strings(v)
+    elif isinstance(inp, list):
+        return [_coerce_input_object_strings(item) for item in inp]
+    return inp
+
+
+_DEFAULT_CONFIG_KWARGS = frozenset({
+    "provider_id", "model_id", "snapshot_id", "profile",
+    "session_id", "map_path", "dataset_name", "count",
+})
+
+
+def _validate_input(input_data: Any, parsed: SyntheticAgentIOConfig) -> list[str]:
+    """Validates candidate input against harvested contract: required fields present, no foreign fields, matching types."""
+    if not isinstance(input_data, dict):
+        return ["input is not a JSON object"]
+
+    contract = parsed.contract or {}
+    invocation = contract.get("invocation") or {}
+    kwargs = invocation.get("kwargs") or []
+    cb = invocation.get("case_binding")
+    config_names = config_kwarg_names_from_case_binding(cb) if cb else _DEFAULT_CONFIG_KWARGS
+    upstream_context_specs = contract.get("upstream_context_specs") or []
+    upstream_names = {s["name"] for s in upstream_context_specs if isinstance(s, dict) and s.get("name")}
+    virtual_names = {vi["name"] for vi in (parsed.virtual_inputs or []) if isinstance(vi, dict) and vi.get("name")}
+    input_schema_names = set(parsed.input_schemas or {})
+
+    valid_kwarg_names = {
+        kw.get("name") for kw in kwargs
+        if isinstance(kw, dict) and kw.get("name") and kw.get("name") not in config_names
+    }
+    allowed_keys = (
+        valid_kwarg_names
+        | upstream_names
+        | virtual_names
+        | input_schema_names
+        | {"shape", "all_sections"}
+    )
+
+    errors: list[str] = []
+
+    # 1. Required kwargs present
+    for kw in kwargs:
+        if not isinstance(kw, dict):
+            continue
+        kname = kw.get("name")
+        if not kname or kname in config_names:
+            continue
+        if kw.get("required") and kname not in input_data:
+            if not kw.get("default_repr"):
+                errors.append(f"missing required input field '{kname}'")
+
+    # 2. No foreign fields (when contract specifies expected non-config input fields)
+    expected_fields = valid_kwarg_names | upstream_names | virtual_names | input_schema_names
+    if expected_fields:
+        for k in input_data:
+            if k not in allowed_keys:
+                errors.append(f"foreign input field '{k}' not in harvested contract")
+
+    # 3. Type matching for resolved object/array schemas
+    all_schemas: dict[str, Any] = {}
+    for kw in kwargs:
+        if isinstance(kw, dict) and kw.get("name") and kw.get("resolved_schema"):
+            all_schemas[kw["name"]] = kw["resolved_schema"]
+    for s in upstream_context_specs:
+        if isinstance(s, dict) and s.get("name") and (s.get("schema") or s.get("resolved_schema")):
+            all_schemas[s["name"]] = s.get("schema") or s.get("resolved_schema")
+    for fname, fschema in (parsed.input_schemas or {}).items():
+        all_schemas[fname] = fschema
+
+    import jsonschema
+
+    for k, val in input_data.items():
+        if k in all_schemas and val is not None:
+            expected_schema = all_schemas[k]
+            if isinstance(expected_schema, dict) and expected_schema:
+                stype = expected_schema.get("type")
+                if stype == "object" or "properties" in expected_schema:
+                    if not isinstance(val, dict):
+                        errors.append(f"field '{k}' expected object dict, got {type(val).__name__}")
+                    else:
+                        try:
+                            jsonschema.validate(instance=val, schema=expected_schema)
+                        except jsonschema.ValidationError as exc:
+                            errors.append(f"field '{k}' schema validation failed: {exc.message}")
+                elif stype == "array":
+                    if not isinstance(val, list):
+                        errors.append(f"field '{k}' expected list array, got {type(val).__name__}")
+                    else:
+                        try:
+                            jsonschema.validate(instance=val, schema=expected_schema)
+                        except jsonschema.ValidationError as exc:
+                            errors.append(f"field '{k}' schema validation failed: {exc.message}")
+
+    return errors
+
+
+
+
+def _validate_gold(
+    gold: Any,
+    json_schema: dict[str, Any] | None,
+    schema_enum_values: dict[str, list[str]] | None = None,
+    cardinality: str | None = None,
+    has_streamed_output: bool = False,
+) -> list[str]:
+    """jsonschema.validate against the harvested output schema + enum domain and cardinality constraints."""
+    if cardinality == "object" and not isinstance(gold, dict):
+        return ["gold is not a JSON object"]
+    if cardinality == "array" and not isinstance(gold, list):
+        return ["gold is not a JSON array"]
+
+    if json_schema is None or (isinstance(json_schema, dict) and not json_schema):
+        enum_errs = _validate_schema_enum_values(gold, schema_enum_values or {})
+        return enum_errs
+
     if not isinstance(gold, dict):
         return ["gold is not a JSON object"]
     import jsonschema
@@ -136,7 +297,12 @@ def _validate_gold(gold: Any, json_schema: dict[str, Any] | None) -> list[str]:
         jsonschema.validate(instance=gold, schema=json_schema)
     except jsonschema.ValidationError as exc:
         return [exc.message]
+
+    enum_errs = _validate_schema_enum_values(gold, schema_enum_values or {})
+    if enum_errs:
+        return enum_errs
     return []
+
 
 
 def _parse_json_array(content: str) -> list[Any]:
@@ -151,6 +317,9 @@ def _parse_json_array(content: str) -> list[Any]:
             logger.debug("synthetic_agent_io: json_repair also failed to parse content (%d chars): %s", len(content), e)
             return []
     if isinstance(parsed, dict):
+        # A single candidate object (some models drop the array wrapper) — treat as a 1-element batch.
+        if "input" in parsed and "gold" in parsed:
+            return [parsed]
         # Some models wrap the array in {"cases": [...]}; unwrap the first list value found.
         for value in parsed.values():
             if isinstance(value, list):
@@ -159,19 +328,55 @@ def _parse_json_array(content: str) -> list[Any]:
     return parsed if isinstance(parsed, list) else []
 
 
-def _upstream_field_spec(field_downstream_consumers: dict[str, list[str]]) -> str:
+def _summarize_schema(schema: Any, _depth: int = 0) -> Any:
+    """Recursively summarize a resolved JSON schema to a nested type shape so prompts constrain complex types at every level."""
+    if not isinstance(schema, dict) or _depth > 6:
+        return "any"
+    if schema.get("type") == "object" or "properties" in schema:
+        props = schema.get("properties") or {}
+        return {k: _summarize_schema(v, _depth + 1) for k, v in props.items()} or "object"
+    if schema.get("type") == "array":
+        items = schema.get("items")
+        return [_summarize_schema(items, _depth + 1)] if isinstance(items, dict) else "array"
+    # Surface enum domains (e.g. plan step "type") so the LLM emits a valid value instead of a
+    # plausible synonym like "trace" that the input jsonschema check would then reject.
+    enum = schema.get("enum")
+    if isinstance(enum, list) and enum:
+        return "|".join(str(v) for v in enum)
+    return schema.get("type", "any")
+
+
+def _upstream_field_spec(
+    field_downstream_consumers: dict[str, list[str]],
+    section_output_schemas: dict[str, dict[str, Any]] | None = None,
+) -> str:
     lines = []
+    section_schemas = section_output_schemas or {}
     for letter in sorted(field_downstream_consumers):
         fields = field_downstream_consumers[letter]
-        lines.append(f'  "{letter}": {{ {", ".join(fields)} }}')
+        sec_schema = section_schemas.get(letter)
+        props = sec_schema.get("properties") if isinstance(sec_schema, dict) else {}
+        if isinstance(props, dict) and props:
+            field_parts = []
+            for fname in fields:
+                ftype = _summarize_schema(props.get(fname, {})) if fname in props else "any"
+                field_parts.append(f'"{fname}": {json.dumps(ftype)}')
+            lines.append(f'  "{letter}": {{ {", ".join(field_parts)} }}')
+        else:
+            lines.append(f'  "{letter}": {{ {", ".join(fields)} }}')
     return "\n".join(lines)
 
 
-def _failure_modes_addendum(failure_modes: list[str], *, detailed: bool) -> str:
-    """Shared by every prompt builder; `detailed` selects the fuller fan-in/rag-writer wording vs the generic builder's shorter one."""
+def _failure_modes_addendum(failure_modes: list[str], total_count: int, *, detailed: bool) -> str:
+    """Shared by every prompt builder. Caps EDGE/failure cases at ~20% of the dataset (round); every other case must be a substantive success — the old 'include 1-2' let up to 40% come back empty."""
+    n_fail = round(total_count * 0.2)
+    if n_fail <= 0:
+        return "\n\nEVERY case MUST be a normal, SUCCESSFUL case with substantive, NON-EMPTY output — do NOT produce empty/low-confidence/failure cases."
     header = (
-        "\n\nADDITIONALLY, include 1-2 extra cases covering EDGE-CASE or NEGATIVE scenarios "
-        "based on the agent's known failure modes"
+        f"\n\nThis dataset has {total_count} cases total. Make EXACTLY {n_fail} of them EDGE-CASE / NEGATIVE "
+        f"(failure-mode) cases; every OTHER case MUST be a normal, SUCCESSFUL case with substantive, NON-EMPTY "
+        f"output — never produce more than {n_fail} empty/low-confidence case(s). The {n_fail} edge case(s) draw "
+        f"on the agent's known failure modes"
     )
     header += (
         ". Gold for these cases must reflect correct handling of the failure mode "
@@ -197,9 +402,58 @@ def _avoid_addendum(avoid: list[dict[str, Any]], *, detailed: bool) -> str:
     return header + json.dumps(avoid, ensure_ascii=False)[:_AVOID_LIMIT_CHARS]
 
 
+_FAN_IN_JUDGE_SYSTEM = (
+    "You are generating realistic synthetic test cases for evaluating a fan-in judge "
+    "agent in a static-analysis pipeline.\n\n"
+    "This agent reads a fixed subset of fields from each of several upstream 'section' "
+    "outputs (identified by single letters) and produces one JSON output summarizing/"
+    "synthesizing them. The agent NEVER sees any field beyond the ones provided per "
+    "letter — do not invent additional fields per letter.\n\n"
+    f"{_CONFIDENCE_FIELD_RULE}\n"
+    "Any field literally named 'blind_spots' must be a short list (0-3) of one-sentence "
+    "strings describing a specific gap in that section's own analysis.\n\n"
+    "Each case is an object with exactly two keys:\n"
+    '  "input": an object keyed by EVERY letter provided, each value an object with '
+    "EXACTLY the fields listed for that letter (plausible fictional static-analysis-repo "
+    "content, internally consistent within the case)\n"
+    '  "gold": the single correct output this agent should produce for that "input", '
+    "strictly matching the schema provided and GROUNDED ONLY in facts present in \"input\" "
+    "— never inventing a weak section, score, or claim that \"input\" doesn't support.\n\n"
+    "Respond ONLY with a JSON array of such objects. No markdown, no explanation."
+)
+
+
+def _enum_and_strategy_prompt_block(parsed: SyntheticAgentIOConfig) -> str:
+    """Formats schema_enum_values, observability input_kind, has_separable_context, and has_streamed_output for prompt injection."""
+    contract = parsed.contract or {}
+    output = contract.get("output") or {}
+    observability = contract.get("observability") or {}
+    blocks: list[str] = []
+
+    input_kind = observability.get("input_kind")
+    if input_kind == "query":
+        blocks.append("INPUT STRATEGY: Natural language user query framing a technical question or task.")
+    elif input_kind == "structured":
+        blocks.append("INPUT STRATEGY: Structured data parameters matching exact harvested schemas.")
+
+    if observability.get("has_separable_context"):
+        blocks.append("CONTEXT STRUCTURE: Separable context block.")
+
+    enum_vals = output.get("schema_enum_values") or {}
+    if enum_vals:
+        enum_lines = [f'  "{k}": {json.dumps(v)}' for k, v in enum_vals.items()]
+        blocks.append("ALLOWED ENUM DOMAINS FOR OUTPUT FIELDS (gold must use ONLY these values):\n" + "\n".join(enum_lines))
+
+    if output.get("has_streamed_output"):
+        blocks.append("STREAMED OUTPUT NOTE: The agent streams text at runtime; 'gold' MUST strictly contain ONLY the scorable JSON metadata output object.")
+
+    return ("\n\n" + "\n\n".join(blocks)) if blocks else ""
+
+
 def _fan_in_judge_prompt(
     parsed: SyntheticAgentIOConfig, n: int, avoid: list[dict[str, Any]] | None = None
 ) -> str:
+    """Returns the user-message content only; _FAN_IN_JUDGE_SYSTEM carries the agent-invariant static rules."""
     contract = parsed.contract
     output = contract.get("output") or {}
     json_schema = output.get("json_schema")
@@ -208,37 +462,27 @@ def _fan_in_judge_prompt(
     fields_by_letter = contract.get("field_downstream_consumers") or {}
     purpose = (parsed.profile or {}).get("purpose") or _generic_purpose_for_archetype(parsed.archetype)
 
-    prompt = (
-        f"You are generating realistic synthetic test cases for evaluating a fan-in judge "
-        f"agent in a static-analysis pipeline.\n\n"
+    agent_invariant = (
         f"AGENT PURPOSE: {purpose}\n\n"
-        f"This agent reads a fixed subset of fields from each of several upstream 'section' "
-        f"outputs (identified by single letters) and produces one JSON output summarizing/"
-        f"synthesizing them. The agent NEVER sees any field beyond what's listed below — do "
-        f"not invent additional fields per letter.\n\n"
-        f"UPSTREAM FIELDS THE AGENT ACTUALLY READS, PER LETTER:\n{_upstream_field_spec(fields_by_letter)}\n\n"
-        f"{_CONFIDENCE_FIELD_RULE}\n"
-        f"Any field literally named 'blind_spots' must be a short list (0-3) of one-sentence "
-        f"strings describing a specific gap in that section's own analysis.\n\n"
+        f"UPSTREAM FIELDS THE AGENT ACTUALLY READS, PER LETTER:\n"
+        f"{_upstream_field_spec(fields_by_letter, parsed.section_output_schemas)}\n\n"
         f"THE AGENT'S OWN REQUIRED OUTPUT JSON SCHEMA (this is the 'gold' you must match):\n"
-        f"{json.dumps(json_schema, ensure_ascii=False)}\n\n"
-        f"Generate exactly {n} DISTINCT cases spanning a realistic range (some upstream "
-        f"sections uniformly high-confidence/no blind spots, some with 2-3 sections weak or "
-        f"contradictory, at least one borderline/ambiguous case). Each case is an object with "
-        f"exactly two keys:\n"
-        f'  "input": an object keyed by EVERY letter listed above, each value an object with '
-        f"EXACTLY the fields listed for that letter (plausible fictional static-analysis-repo "
-        f"content, internally consistent within the case)\n"
-        f'  "gold": the single correct output this agent should produce for that "input", '
-        f"strictly matching the schema above and GROUNDED ONLY in facts present in \"input\" "
-        f"— never inventing a weak section, score, or claim that \"input\" doesn't support.\n\n"
-        f"Respond ONLY with a JSON array of {n} such objects. No markdown, no explanation."
+        f"{json.dumps(json_schema, ensure_ascii=False)}"
     )
     if parsed.failure_modes:
-        prompt += _failure_modes_addendum(parsed.failure_modes, detailed=True)
+        agent_invariant += _failure_modes_addendum(parsed.failure_modes, parsed.count, detailed=True)
+    agent_invariant += _enum_and_strategy_prompt_block(parsed)
+    agent_invariant = apply_painpoint(agent_invariant, parsed.painpoint)
+
+    round_variant = (
+        f"\n\nGenerate exactly {n} DISTINCT cases spanning a realistic range (some upstream "
+        f"sections uniformly high-confidence/no blind spots, some with 2-3 sections weak or "
+        f"contradictory, at least one borderline/ambiguous case)."
+    )
     if avoid:
-        prompt += _avoid_addendum(avoid, detailed=True)
-    return apply_painpoint(prompt, parsed.painpoint)
+        round_variant += _avoid_addendum(avoid, detailed=True)
+    return agent_invariant + round_variant
+
 
 
 async def _generate_fan_in_judge(
@@ -249,97 +493,10 @@ async def _generate_fan_in_judge(
         return _fan_in_judge_prompt(parsed, n, avoid)
 
     return await _generate_validated_cases(
-        parsed, llm_client, build_prompt,
+        parsed, llm_client, _FAN_IN_JUDGE_SYSTEM, build_prompt,
         build_case_input=lambda inp: {"shape": "all_sections", "all_sections": inp},
         embedding_client=embedding_client,
     )
-
-
-def _upstream_specs_for(parsed: SyntheticAgentIOConfig) -> list[tuple[str, str]]:
-    """Harvested upstream_context_specs only — no hardcoded agent-id fallback remains."""
-    contract_specs = parsed.contract.get("upstream_context_specs") or []
-    return [(s["name"], s["description"]) for s in contract_specs if s.get("name")]
-
-_FOLDER_TREE_SPEC = (
-    "folder_tree",
-    "an indented directory-listing string for the SAME fictional repo (must include the "
-    "directory of every rel_path used in bundle.evidences)",
-)
-
-
-def _rag_writer_prompt(
-    parsed: SyntheticAgentIOConfig,
-    n: int,
-    *,
-    upstream_specs: list[tuple[str, str]],
-    string_field_specs: list[tuple[str, str]],
-    query_planning: bool,
-    avoid: list[dict[str, Any]] | None = None,
-    extra_instruction: str | None = None,
-) -> str:
-    contract = parsed.contract
-    output = contract.get("output") or {}
-    json_schema = output.get("json_schema") or {}
-    purpose = (parsed.profile or {}).get("purpose") or _generic_purpose_for_archetype(parsed.archetype)
-
-    parts = [
-        "You are generating realistic synthetic test cases for evaluating a "
-        "retrieval-augmented code-analysis agent.",
-        f"AGENT PURPOSE: {purpose}",
-        "This agent reads retrieved code-evidence chunks from a fictional repository you "
-        "invent and produces one JSON output about that repository. Every claim in the gold "
-        "output must be traceable to something in the evidence/context given — never invent "
-        "a fact absent from the synthetic repo you create.",
-        'The "input" object for each case must have exactly this shape:\n'
-        '  "bundle": {"evidences": [{"rel_path": "<fictional file path>", '
-        '"excerpt": "<plausible code/text snippet, 1-4 lines>", "score": <0.0-1.0>}, ...]} '
-        "(4-10 evidences, internally consistent with each other, as if drawn from ONE real repo)",
-    ]
-    if string_field_specs:
-        lines = "\n".join(f'  "{name}": {desc}' for name, desc in string_field_specs)
-        parts.append(f"  Plus these string context fields:\n{lines}")
-    if _FOLDER_TREE_SPEC in string_field_specs:
-        parts.append(
-            "CRITICAL (faithfulness guard): every bundle.evidences[].rel_path AND every path "
-            "mentioned in any other context field MUST also appear in folder_tree — never "
-            "reference a file absent from the folder tree you generate."
-        )
-    if upstream_specs:
-        lines = "\n".join(f'  "{name}": {desc}' for name, desc in upstream_specs)
-        parts.append(
-            "  Plus these upstream agent output field(s) — plausible dicts matching that "
-            f"agent's real shape, consistent with the same fictional repo:\n{lines}"
-        )
-    if query_planning:
-        parts.append(
-            "This agent also runs an internal query-planning LLM sub-call before retrieval "
-            "in the real system — you do not simulate that separately, it has no bearing on "
-            "the input/gold shape you produce here."
-        )
-    if extra_instruction:
-        parts.append(extra_instruction)
-    parts.append(_CONFIDENCE_FIELD_RULE)
-    parts.append(
-        "Keep any list-of-object fields (e.g. rules, violations_found, signals) realistic but "
-        "short — 2-4 items each, never padded with filler entries."
-    )
-    parts.append(
-        "THE AGENT'S OWN REQUIRED OUTPUT JSON SCHEMA (this is the 'gold' you must match):\n"
-        f"{json.dumps(json_schema, ensure_ascii=False)}"
-    )
-    parts.append(
-        f"Generate exactly {n} DISTINCT cases spanning a realistic range of repos/domains "
-        '(vary language, size, and maturity). Each case is an object with exactly two keys: '
-        '"input" (the shape above) and "gold" (the correct output for that input, strictly '
-        "matching the schema, grounded only in the evidence/context given).\n\n"
-        f"Respond ONLY with a JSON array of {n} such objects. No markdown, no explanation."
-    )
-    prompt = "\n\n".join(parts)
-    if parsed.failure_modes:
-        prompt += _failure_modes_addendum(parsed.failure_modes, detailed=True)
-    if avoid:
-        prompt += _avoid_addendum(avoid, detailed=True)
-    return apply_painpoint(prompt, parsed.painpoint)
 
 
 def _shape_case_input(shape: str) -> Callable[[dict[str, Any]], dict[str, Any]]:
@@ -349,6 +506,7 @@ def _shape_case_input(shape: str) -> Callable[[dict[str, Any]], dict[str, Any]]:
 async def _generate_validated_cases(
     parsed: SyntheticAgentIOConfig,
     llm_client: LLMClient,
+    system_prompt: str,
     build_prompt: Callable[[int, list[dict[str, Any]] | None], str],
     build_case_input: Callable[[dict[str, Any]], dict[str, Any]],
     embedding_client: EmbeddingClient | None = None,
@@ -364,6 +522,7 @@ async def _generate_validated_cases(
     dedup_stash: list[tuple[float, dict[str, Any]]] = []  # (max_sim, candidate) for floor-guard reinstatement
     rejected_last_round: list[dict[str, Any]] = []
     dry_rounds = 0
+    reasoning_effort_override: str | None = None
 
     for round_idx in range(_MAX_GENERATION_ROUNDS):
         remaining = parsed.count - len(accepted)
@@ -371,24 +530,42 @@ async def _generate_validated_cases(
             break
         batch_n = min(remaining, _MAX_CASES_PER_CALL)
         resp = await llm_client.complete(
-            [LLMMessage(role="user", content=build_prompt(batch_n, rejected_last_round or None))],
+            [
+                LLMMessage(role="system", content=system_prompt),
+                LLMMessage(role="user", content=build_prompt(batch_n, rejected_last_round or None)),
+            ],
             max_tokens=_GENERATION_MAX_TOKENS,
             temperature=0.7,
             json_mode=True,
-            reasoning_effort="low",
+            reasoning_effort=reasoning_effort_override,
         )
         candidates = _parse_json_array(resp.content)
         rejected_last_round = []
         newly_accepted = 0
+        output_contract = parsed.contract.get("output") or {}
+        enum_values = output_contract.get("schema_enum_values") or {}
+        cardinality = output_contract.get("cardinality")
+        has_streamed = output_contract.get("has_streamed_output", False)
+
         for candidate in candidates:
             if not isinstance(candidate, dict) or "input" not in candidate or "gold" not in candidate:
                 continue
             if not isinstance(candidate["input"], dict):
                 continue
-            errors = _validate_gold(candidate["gold"], json_schema)
-            if errors:
+            candidate["input"] = _coerce_input_object_strings(candidate["input"])
+            # Validate the input as the agent will receive it (post-shaping); fan_in nests raw sections under all_sections, so validating the pre-shape form wrongly flags them foreign/missing.
+            input_errors = _validate_input(build_case_input(candidate["input"]), parsed)
+            gold_errors = _validate_gold(
+                candidate["gold"],
+                json_schema,
+                schema_enum_values=enum_values,
+                cardinality=cardinality,
+                has_streamed_output=has_streamed,
+            )
+            if input_errors or gold_errors:
                 rejected_last_round.append(candidate)
                 continue
+
 
             # Embedding dedup — degrades cleanly when client is absent or embedding fails.
             extra_labels: dict[str, Any] = {}
@@ -423,16 +600,21 @@ async def _generate_validated_cases(
             if not candidates:
                 logger.warning(
                     "synthetic_agent_io[%s/%s]: round %d produced an unparseable/empty "
-                    "response (%d chars) — possible truncation at max_tokens=%d",
+                    "response (%d chars) — possible truncation at max_tokens=%d; "
+                    "disabling reasoning for the retry",
                     parsed.agent_id, parsed.archetype, round_idx + 1,
                     len(resp.content), _GENERATION_MAX_TOKENS,
                 )
+                # Empty/truncated output usually means reasoning ate the token budget — turn it off
+                # for the remaining rounds so the retry spends its budget on the JSON itself.
+                reasoning_effort_override = "disable"
             elif rejected_last_round:
                 logger.warning(
                     "synthetic_agent_io[%s/%s]: round %d — all %d candidate(s) failed "
                     "schema validation, e.g. %s",
                     parsed.agent_id, parsed.archetype, round_idx + 1,
-                    len(rejected_last_round), _validate_gold(rejected_last_round[0].get("gold"), json_schema)[:1],
+                    len(rejected_last_round),
+                    (_validate_input(build_case_input(rejected_last_round[0].get("input", {})), parsed) + _validate_gold(rejected_last_round[0].get("gold"), json_schema))[:1],
                 )
             if dry_rounds >= _MAX_CONSECUTIVE_DRY_ROUNDS:
                 break
@@ -494,120 +676,19 @@ async def _generate_validated_cases(
     return cases
 
 
-async def _generate_rag_single_shot(
-    parsed: SyntheticAgentIOConfig, llm_client: LLMClient,
-    embedding_client: EmbeddingClient | None = None,
-) -> list[DatasetCase]:
-    """I, G — one fixed-query retrieval call, no upstream, no mem_ctx."""
-
-    def build_prompt(n: int, avoid: list[dict[str, Any]] | None) -> str:
-        return _rag_writer_prompt(
-            parsed, n, upstream_specs=[], string_field_specs=[], query_planning=False, avoid=avoid,
-        )
-
-    return await _generate_validated_cases(
-        parsed, llm_client, build_prompt, build_case_input=_shape_case_input("retrieval_only"),
-        embedding_client=embedding_client,
-    )
-
-
-async def _generate_rag_upstream(
-    parsed: SyntheticAgentIOConfig, llm_client: LLMClient,
-    embedding_client: EmbeddingClient | None = None,
-) -> list[DatasetCase]:
-    """E, H — one fixed-query retrieval call + one upstream agent's raw output dict."""
-    specs = _upstream_specs_for(parsed)
-
-    def build_prompt(n: int, avoid: list[dict[str, Any]] | None) -> str:
-        return _rag_writer_prompt(
-            parsed, n, upstream_specs=specs, string_field_specs=[], query_planning=False, avoid=avoid,
-        )
-
-    return await _generate_validated_cases(
-        parsed, llm_client, build_prompt, build_case_input=_shape_case_input("retrieval_and_upstream"),
-        embedding_client=embedding_client,
-    )
-
-
-async def _generate_rag_mem_ctx(
-    parsed: SyntheticAgentIOConfig, llm_client: LLMClient,
-    embedding_client: EmbeddingClient | None = None,
-) -> list[DatasetCase]:
-    """A — 4 mutually-consistent artifacts generated together per case so evidence paths are always a real subset of that case's synthetic folder_tree."""
-    string_specs = [
-        _FOLDER_TREE_SPEC,
-        ("doc_ctx", "a short fictional README/CHANGELOG excerpt for the SAME repo"),
-        ("manifest_ctx", "a short fictional manifest file (pyproject.toml/package.json-style) for the SAME repo"),
-        ("repo_name", "a plausible repo name string for the SAME repo"),
-    ]
-
-    def build_prompt(n: int, avoid: list[dict[str, Any]] | None) -> str:
-        return _rag_writer_prompt(
-            parsed, n, upstream_specs=[], string_field_specs=string_specs, query_planning=False,
-            avoid=avoid,
-        )
-
-    return await _generate_validated_cases(
-        parsed, llm_client, build_prompt, build_case_input=_shape_case_input("mem_ctx_and_retrieval"),
-        embedding_client=embedding_client,
-    )
-
-
-async def _generate_rag_mem_ctx_participant(
-    parsed: SyntheticAgentIOConfig, llm_client: LLMClient,
-    embedding_client: EmbeddingClient | None = None,
-) -> list[DatasetCase]:
-    """B, C — an inherited arch_bundle + folder_tree, optionally an upstream identity dict."""
-    specs = _upstream_specs_for(parsed)
-
-    def build_prompt(n: int, avoid: list[dict[str, Any]] | None) -> str:
-        return _rag_writer_prompt(
-            parsed, n, upstream_specs=specs, string_field_specs=[_FOLDER_TREE_SPEC],
-            query_planning=False, avoid=avoid,
-        )
-
-    return await _generate_validated_cases(
-        parsed, llm_client, build_prompt, build_case_input=_shape_case_input("mem_ctx_participant"),
-        embedding_client=embedding_client,
-    )
-
-
-async def _generate_rag_query_planning(
-    parsed: SyntheticAgentIOConfig, llm_client: LLMClient,
-    embedding_client: EmbeddingClient | None = None,
-) -> list[DatasetCase]:
-    """D, J — a query-planning LLM sub-call (not simulated) + retrieve_multi, optionally one upstream agent output dict (D only)."""
-    specs = _upstream_specs_for(parsed)
-
-    def build_prompt(n: int, avoid: list[dict[str, Any]] | None) -> str:
-        return _rag_writer_prompt(
-            parsed, n, upstream_specs=specs, string_field_specs=[], query_planning=True, avoid=avoid,
-        )
-
-    return await _generate_validated_cases(
-        parsed, llm_client, build_prompt, build_case_input=_shape_case_input("query_planning"),
-        embedding_client=embedding_client,
-    )
-
-
-async def _generate_rag_query_planning_mem_ctx(
-    parsed: SyntheticAgentIOConfig, llm_client: LLMClient,
-    embedding_client: EmbeddingClient | None = None,
-) -> list[DatasetCase]:
-    """F — query-planning + retrieve_multi + a parallel frontend-screens retrieve, plus folder_tree and two upstream agent output dicts (identity, architecture)."""
-    specs = _upstream_specs_for(parsed)
-
-    def build_prompt(n: int, avoid: list[dict[str, Any]] | None) -> str:
-        return _rag_writer_prompt(
-            parsed, n, upstream_specs=specs, string_field_specs=[_FOLDER_TREE_SPEC],
-            query_planning=True, avoid=avoid,
-        )
-
-    return await _generate_validated_cases(
-        parsed, llm_client, build_prompt, build_case_input=_shape_case_input("query_planning_mem_ctx"),
-        embedding_client=embedding_client,
-    )
-
+_GENERIC_SYSTEM = (
+    "You are generating synthetic test cases for evaluating an agent.\n\n"
+    "Each case is an object with two keys: 'input' (matching the input shape provided) "
+    "and 'gold' (the expected output, strictly matching the output schema provided).\n\n"
+    "CRITICAL (faithfulness guard): keep every case internally consistent — every file "
+    "path appearing anywhere in the input (evidence rel_paths, paths named in any context "
+    "field) MUST also appear in any folder-tree / file-listing field present in that same "
+    "input; never reference a file absent from the folder tree you generate. Every claim "
+    "in 'gold' must be traceable to the input evidence you created. Any 'blind_spots' or "
+    "fallback/degradation notes in 'gold' MUST be grounded in and consistent with 'input' — "
+    "never assert absence or failure of a feature/section when present in 'input'.\n\n"
+    "Respond ONLY with a JSON array of such objects. No markdown, no explanation."
+)
 
 
 async def _generate_generic(
@@ -660,17 +741,7 @@ async def _generate_generic(
                 desc += f", e.g. {example}"
             field_descs[name] = desc
 
-    # Recursively summarizes a resolved JSON schema to a nested type shape so the prompt constrains complex types at every level, not just the top.
-    def _summarize_schema(schema: Any, _depth: int = 0) -> Any:
-        if not isinstance(schema, dict) or _depth > 6:
-            return "any"
-        if schema.get("type") == "object" or "properties" in schema:
-            props = schema.get("properties") or {}
-            return {k: _summarize_schema(v, _depth + 1) for k, v in props.items()} or "object"
-        if schema.get("type") == "array":
-            items = schema.get("items")
-            return [_summarize_schema(items, _depth + 1)] if isinstance(items, dict) else "array"
-        return schema.get("type", "any")
+    # _summarize_schema is module-level (shared with _upstream_field_spec).
 
     def _coerce_to_schema(value: Any, schema: Any, _depth: int = 0) -> Any:
         """Deterministically forces a generated value to structurally match its resolved schema at every level (object/array/scalar), guaranteeing faithful structure regardless of LLM drift; callers skip None so an absent Optional field stays absent."""
@@ -678,6 +749,14 @@ async def _generate_generic(
             return value
         stype = schema.get("type")
         if stype == "object" or "properties" in schema:
+            if isinstance(value, str) and value.strip():
+                try:
+                    value = json.loads(value)
+                except Exception:
+                    try:
+                        value = json_repair.loads(value)
+                    except Exception:
+                        pass
             props = schema.get("properties") or {}
             if not props:
                 return value
@@ -685,6 +764,14 @@ async def _generate_generic(
             return {k: _coerce_to_schema(src.get(k), sub, _depth + 1) for k, sub in props.items()}
         if stype == "array":
             item_schema = schema.get("items") if isinstance(schema.get("items"), dict) else {}
+            if isinstance(value, str) and value.strip():
+                try:
+                    value = json.loads(value)
+                except Exception:
+                    try:
+                        value = json_repair.loads(value)
+                    except Exception:
+                        pass
             if isinstance(value, list):
                 return [_coerce_to_schema(v, item_schema, _depth + 1) for v in value]
             if isinstance(value, str) and value.strip():
@@ -694,6 +781,41 @@ async def _generate_generic(
         return value
 
     field_schemas: dict[str, Any] = {}
+
+    # Collect object schemas from KwargSpec resolved_schema and upstream_context_specs
+    for kwarg in kwargs:
+        if not isinstance(kwarg, dict):
+            continue
+        name = kwarg.get("name")
+        res_schema = kwarg.get("resolved_schema")
+        if name and name not in config_kwarg_names and isinstance(res_schema, dict):
+            field_schemas[name] = res_schema
+            schema_summary = _summarize_schema(res_schema)
+            if isinstance(schema_summary, dict) and schema_summary:
+                desc = (
+                    f"a JSON object that MUST use EXACTLY the keys shown here at EVERY level — no renaming, "
+                    f"no omissions, no extra keys — matching this nested structure (values are the types): "
+                    f"{json.dumps(schema_summary)}"
+                )
+                field_descs[name] = desc
+
+    for spec in upstream_context_specs:
+        if not isinstance(spec, dict):
+            continue
+        name = spec.get("name")
+        res_schema = spec.get("schema") or spec.get("resolved_schema")
+        if name and isinstance(res_schema, dict):
+            field_schemas[name] = res_schema
+            schema_summary = _summarize_schema(res_schema)
+            if isinstance(schema_summary, dict) and schema_summary:
+                desc = (
+                    f"a JSON object that MUST use EXACTLY the keys shown here at EVERY level — no renaming, "
+                    f"no omissions, no extra keys — matching this nested structure (values are the types): "
+                    f"{json.dumps(schema_summary)}"
+                )
+                if spec.get("description"):
+                    desc = spec["description"] + " — " + desc
+                field_descs[name] = desc
 
     # Overwrites the generic kwarg desc with the resolved nested schema so complex typed kwargs generate faithful structures; must not skip kwargs already in field_descs.
     for kwarg_name, kwarg_schema in (parsed.input_schemas or {}).items():
@@ -715,8 +837,10 @@ async def _generate_generic(
         name = vi.get("name")
         if not name:
             continue
+        if name in field_schemas:
+            continue
         fields = vi.get("fields") or []
-        schema_summary = {f["name"]: _summarize_schema(f.get("schema") or {}) for f in fields if f.get("name")}
+        schema_summary = {f["name"]: _summarize_schema(f.get("field_schema") or f.get("schema") or {}) for f in fields if f.get("name")}
         if not schema_summary:
             field_descs.setdefault(name, "the agent's internally-retrieved evidence object")
             continue
@@ -731,36 +855,31 @@ async def _generate_generic(
         field_descs[name] = desc
         field_schemas[name] = {
             "type": "object",
-            "properties": {f["name"]: (f.get("schema") or {}) for f in fields if f.get("name")},
+            "properties": {f["name"]: (f.get("field_schema") or f.get("schema") or {}) for f in fields if f.get("name")},
         }
+
 
     purpose = (parsed.profile or {}).get("purpose") or _generic_purpose_for_archetype(parsed.archetype)
     fields_block = json.dumps(field_descs, indent=2, ensure_ascii=False) if field_descs else "{}"
 
     def build_prompt(n: int, avoid: list[dict[str, Any]] | None) -> str:
-        prompt = (
-            f"You are generating synthetic test cases for evaluating an agent.\n\n"
-            f"AGENT PURPOSE: {purpose}\n\n"
+        agent_invariant = (
             f"INPUT SHAPE — each case's 'input' must have exactly these fields:\n{fields_block}\n\n"
-            f"OUTPUT SCHEMA (for 'gold'):\n{schema_block}\n\n"
-            f"Generate exactly {n} DISTINCT cases. Each case is an object with two keys: "
-            f"'input' (matching the shape above) and 'gold' (the expected output, strictly "
-            f"matching the schema).\n\n"
-            f"CRITICAL (faithfulness guard): keep every case internally consistent — every file "
-            f"path appearing anywhere in the input (evidence rel_paths, paths named in any context "
-            f"field) MUST also appear in any folder-tree / file-listing field present in that same "
-            f"input; never reference a file absent from the folder tree you generate. Every claim "
-            f"in 'gold' must be traceable to the input evidence you created.\n\n"
-            f"Respond ONLY with a JSON array of {n} such objects. No markdown, no explanation."
+            f"AGENT PURPOSE: {purpose}\n\n"
+            f"OUTPUT SCHEMA (for 'gold'):\n{schema_block}"
         )
         if parsed.failure_modes:
-            prompt += _failure_modes_addendum(parsed.failure_modes, detailed=False)
+            agent_invariant += _failure_modes_addendum(parsed.failure_modes, parsed.count, detailed=False)
+        agent_invariant += _enum_and_strategy_prompt_block(parsed)
+        agent_invariant = apply_painpoint(agent_invariant, parsed.painpoint)
+
+        round_variant = f"\n\nGenerate exactly {n} DISTINCT cases."
         if avoid:
-            prompt += _avoid_addendum(avoid, detailed=False)
-        return apply_painpoint(prompt, parsed.painpoint)
+            round_variant += _avoid_addendum(avoid, detailed=False)
+        return agent_invariant + round_variant
 
     cases = await _generate_validated_cases(
-        parsed, llm_client, build_prompt, build_case_input=_shape_case_input("generic"),
+        parsed, llm_client, _GENERIC_SYSTEM, build_prompt, build_case_input=_shape_case_input("generic"),
         embedding_client=embedding_client,
     )
     # Enforces faithful structure (keys/types/nesting) on every schema-typed field after generation so nested fields match the resolved type even when the LLM drifts; None stays untouched.
@@ -785,12 +904,31 @@ def _flag_schema_unvalidated(cases: list[DatasetCase], contract: dict[str, Any])
             case.labels["needs_human"] = note
 
 
+def _has_single_resolved_object_kwarg(parsed: SyntheticAgentIOConfig) -> bool:
+    """True if agent has exactly one non-config invocation kwarg that resolves to an object schema."""
+    contract = parsed.contract or {}
+    invocation = contract.get("invocation") or {}
+    kwargs = invocation.get("kwargs") or []
+    cb = invocation.get("case_binding")
+    config_names = config_kwarg_names_from_case_binding(cb) if cb else _DEFAULT_CONFIG_KWARGS
+    non_config_kwargs = [
+        kw for kw in kwargs
+        if isinstance(kw, dict) and kw.get("name") and kw.get("name") not in config_names
+    ]
+    if len(non_config_kwargs) == 1:
+        kw = non_config_kwargs[0]
+        schema = kw.get("resolved_schema")
+        if isinstance(schema, dict) and (schema.get("type") == "object" or "properties" in schema):
+            return True
+    return False
+
+
 async def _dispatch_builder(
     parsed: SyntheticAgentIOConfig, llm_client: LLMClient,
     embedding_client: EmbeddingClient | None,
 ) -> list[DatasetCase]:
-    # Only fan_in_judge has a specialized path; all retrieval agents use generic path with resolved schemas
-    if parsed.archetype == "fan_in_judge":
+    # Only fan_in_judge has a specialized path, unless the agent takes a single resolved object kwarg (e.g. LangGraph state node)
+    if parsed.archetype == "fan_in_judge" and not _has_single_resolved_object_kwarg(parsed):
         return await _generate_fan_in_judge(parsed, llm_client, embedding_client)
     return await _generate_generic(parsed, llm_client, embedding_client)
 

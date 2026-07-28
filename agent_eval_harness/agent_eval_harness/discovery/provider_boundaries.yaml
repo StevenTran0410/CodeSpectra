@@ -1,0 +1,21 @@
+# Provider-boundary identities: what marks a statically-resolved call target as reaching a model
+# provider. Two row shapes, deliberately not fingerprints.yaml's id/type/query/pattern/framework/
+# weight -- a boundary row gates a confident `True`, so it must never carry a "maybe" weight.
+#   entry: <dotted module.Class.method> -- an in-repo interface/Protocol method. The correct terminal
+#     when a target injects its model client behind an interface rather than calling a concrete SDK
+#     directly: the interface method IS the seam, and demanding a concrete implementation would fail
+#     on every target that injects one.
+#   import: <top-level package name> -- a pip-installed provider SDK's import identity (the technique
+#     OpenLLMetry already uses in production, ~16 providers). Matched against an import module a
+#     resolver could not find on disk (i.e. genuinely external), never against a repo-local file.
+# A missing entry can only ever leave a call unresolved-as-boundary -- never a confident guess.
+boundaries:
+  - id: aeh_llm_client
+    entry: agent_eval_harness.llm.client.LLMClient.complete
+    kind: generative
+  - id: openai_sdk
+    import: openai
+    kind: generative
+  - id: anthropic_sdk
+    import: anthropic
+    kind: generative

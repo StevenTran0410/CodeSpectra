@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from agent_eval_harness.config import DEFAULT_CASES_PER_AGENT
 from agent_eval_harness.llm.client import LLMClient, LLMMessage
@@ -192,6 +193,7 @@ def _component_role_rules(
 
         # Check if this retrieval agent is part of a retry loop
         is_in_retry_loop = False
+        retry_rationale = None
         if validator_comp:
             # check if retrieval_agent goes to validator, and validator goes to planner
             has_downstream_validator = any(d == validator_comp.id for d in component.downstream)
@@ -202,12 +204,16 @@ def _component_role_rules(
             )
             if has_downstream_validator and has_validator_to_orchestrator:
                 is_in_retry_loop = True
+                retry_rationale = (
+                    f"role={role} ⇒ verifies orchestrator dispatches "
+                    "a retry when validator rejects."
+                )
 
         if is_in_retry_loop:
             role_rules.append({
                 "metric": "retry_on_reject_required",
                 "metric_class": "assertion",
-                "rationale": (
+                "rationale": retry_rationale or (
                     f"role={role} ⇒ verifies orchestrator dispatches "
                     "a retry when validator rejects."
                 ),
@@ -231,7 +237,43 @@ def _component_role_rules(
             ),
         })
     elif role == "worker":
-        pass  # ordinary transform node — no role-derived gate
+        role_rules.append({
+            "metric": "schema_valid",
+            "metric_class": "assertion",
+            "rationale": (
+                f"role={role} ⇒ worker output must match contract schema."
+            ),
+        })
+        role_rules.append({
+            "metric": "fallback_sentinel",
+            "metric_class": "assertion",
+            "rationale": (
+                f"role={role} ⇒ worker output should not be the contract's fallback literal."
+            ),
+        })
+    elif role == "unknown":
+        role_rules.append({
+            "metric": "schema_valid",
+            "metric_class": "assertion",
+            "rationale": (
+                f"role={role} ⇒ component output must match contract schema."
+            ),
+        })
+        role_rules.append({
+            "metric": "fallback_sentinel",
+            "metric_class": "assertion",
+            "rationale": (
+                f"role={role} ⇒ component output should not be the contract's fallback literal."
+            ),
+        })
+
+    # Trigger retry_on_reject_required for any component with loop motif
+    if component.motif == "loop":
+        role_rules.append({
+            "metric": "retry_on_reject_required",
+            "metric_class": "assertion",
+            "rationale": "motif=loop ⇒ verifies loop component handles rejection/retry.",
+        })
 
     return role_rules
 
@@ -244,6 +286,8 @@ async def _hydrate_rule_to_entry(
     llm_client: LLMClient,
     *,
     agent_id: str | None = None,
+    level: Literal["component", "trace", "session"] = "component",
+    agent_knowledge_by_id: dict[str, dict] | None = None,
 ) -> SuiteEntry:
     """Resolve dataset refs and params, producing the SuiteEntry for one fired role rule."""
     dataset_ref = None
@@ -268,7 +312,9 @@ async def _hydrate_rule_to_entry(
             logger.debug(f"Could not fetch sample queries for dataset {dataset_ref.ref}: {e}")
 
     if "queries" not in params:
-        params["queries"] = [
+        knowledge = agent_knowledge_by_id.get(component.id) if agent_knowledge_by_id else None
+        synthesized = _synthesize_queries_from_knowledge(component, knowledge)
+        params["queries"] = synthesized if synthesized else [
             "<TODO: add a representative query for this target>"
         ]
 
@@ -300,6 +346,7 @@ async def _hydrate_rule_to_entry(
         component=component.id,
         metric=rule["metric"],
         metric_class=rule["metric_class"],
+        level=level,
         dataset=dataset_ref,
         params=params,
         rationale=rule["rationale"],
@@ -313,6 +360,7 @@ def _constraint_entries(
     components_by_id: dict[str, Component],
     *,
     agent_id: str | None = None,
+    agent_knowledge_by_id: dict[str, dict] | None = None,
 ) -> list[SuiteEntry]:
     """Constraints → assertion SuiteEntry list. Pure/deterministic — no I/O."""
     entries: list[SuiteEntry] = []
@@ -335,10 +383,12 @@ def _constraint_entries(
             if downstream_retrievers:
                 target_comp_id = downstream_retrievers[0]
 
+        knowledge = agent_knowledge_by_id.get(component.id) if agent_knowledge_by_id else None
+        synthesized = _synthesize_queries_from_knowledge(component, knowledge)
         params = {
             "limit": constraint.value,
             "source": f"system_map constraint ({constraint.source})",
-            "queries": ["<TODO: add a representative query for this target>"],
+            "queries": synthesized if synthesized else ["<TODO: add a representative query for this target>"],
         }
 
         entries.append(
@@ -353,6 +403,38 @@ def _constraint_entries(
                 agent_id=agent_id,
             )
         )
+
+    # Emit up to 2 geval gates from AgentKnowledge.constraints
+    if agent_id and agent_knowledge_by_id:
+        agent_knowledge = agent_knowledge_by_id.get(agent_id)
+        if agent_knowledge and isinstance(agent_knowledge.get("constraints"), list):
+            constraints = agent_knowledge["constraints"]
+            for i, constraint_text in enumerate(constraints[:2]):  # Cap at 2
+                if not isinstance(constraint_text, str) or not constraint_text.strip():
+                    continue
+                # Create deterministic rubric name from constraint text (slug format)
+                slug = (
+                    constraint_text.lower()
+                    .strip()[:50]  # Truncate to first 50 chars
+                    .replace(" ", "_")
+                    .replace("-", "_")
+                )
+                slug = re.sub(r"[^a-z0-9_]", "", slug)
+                if not slug:
+                    continue
+                entries.append(
+                    SuiteEntry(
+                        id=f"{component.id}.constraint_rubric_{i}",
+                        component=component.id,
+                        metric=f"geval.{slug}",
+                        metric_class="llm_judge",
+                        params={"rubric_text": constraint_text},
+                        rationale=f"hard rule from prompt: {constraint_text[:60]}",
+                        provenance="rule",
+                        agent_id=agent_id,
+                    )
+                )
+
     return entries
 
 
@@ -361,6 +443,145 @@ def _find_validator(system_map: SystemMap) -> Component | None:
         if c.role == "validator":
             return c
     return None
+
+
+def _richness_from_agent_knowledge(knowledge: dict | None) -> int:
+    """Extract richness count from AgentKnowledge dict (sidecar format)."""
+    if not knowledge:
+        return 0
+    data = knowledge if isinstance(knowledge, dict) else {}
+    return (
+        len(data.get("functionality_citations") or []) +
+        len(data.get("context_builders") or []) +
+        len(data.get("upstream_consumers") or []) +
+        len(data.get("downstream_consumers") or []) +
+        len(data.get("failure_modes") or []) +
+        len(data.get("constraints") or []) +
+        len(data.get("method_steps") or [])
+    )
+
+
+def _synthesize_queries_from_knowledge(
+    component: Component,
+    knowledge: dict | None,
+) -> list[str]:
+    """Synthesize 2-3 deterministic query examples from AgentKnowledge."""
+    if not knowledge:
+        return []
+
+    queries: list[str] = []
+
+    # Try to synthesize from functionality
+    functionality = knowledge.get("functionality")
+    if isinstance(functionality, str) and functionality.strip():
+        queries.append(f"Test {component.id} with: {functionality[:60].strip()}")
+
+    # Try to synthesize from failure modes
+    failure_modes = knowledge.get("failure_modes") or []
+    if failure_modes and isinstance(failure_modes, list) and len(failure_modes) > 0:
+        first_mode = failure_modes[0]
+        if isinstance(first_mode, str) and first_mode.strip():
+            queries.append(f"Verify {component.id} handles: {first_mode[:60].strip()}")
+
+    # Try to synthesize from input examples
+    input_examples = knowledge.get("input_examples") or []
+    if input_examples and isinstance(input_examples, list) and len(input_examples) > 0:
+        first_example = input_examples[0]
+        if isinstance(first_example, str) and first_example.strip():
+            queries.append(f"Input: {first_example[:60].strip()}")
+
+    return queries[:3]  # Return up to 3 queries
+
+
+def _is_thin_component(
+    component: Component,
+    components_by_id: dict[str, Component],
+    agent_knowledge_by_id: dict[str, dict] | None = None,
+) -> bool:
+    """True if component is a near-deterministic transform (thin) vs independent judgment (rich).
+
+    Thin = parse/format/validate with no independent decisions.
+    Rich = makes independent judgments, queries, or complex logic.
+    """
+    role = component.role
+
+    if role in ("tool", "unknown"):
+        return False
+
+    if role in ("retrieval_agent", "orchestrator", "validator"):
+        return False
+
+    if role == "writer":
+        return False
+
+    if role == "input_guard.llm":
+        return False
+
+    if role == "worker":
+        richness = 0
+        if agent_knowledge_by_id and component.id in agent_knowledge_by_id:
+            richness = _richness_from_agent_knowledge(agent_knowledge_by_id[component.id])
+
+        has_downstream_tools = any(
+            d in components_by_id and components_by_id[d].role == "tool"
+            for d in component.downstream
+        )
+
+        if richness > 2 or has_downstream_tools:
+            return False
+
+        return True
+
+    return False
+
+
+def _is_system_thin_chain(
+    system_map: SystemMap,
+    agent_knowledge_by_id: dict[str, dict] | None = None,
+) -> bool:
+    """True if system has only one substantive decision node, rest plumbing."""
+    components_by_id = {c.id: c for c in system_map.components}
+
+    substantial_count = 0
+    for component in system_map.components:
+        if not _is_thin_component(component, components_by_id, agent_knowledge_by_id):
+            substantial_count += 1
+
+    return substantial_count == 1
+
+
+def _select_granularity_level(
+    component: Component,
+    system_map: SystemMap,
+    components_by_id: dict[str, Component],
+    agent_knowledge_by_id: dict[str, dict] | None = None,
+    agent_id: str | None = None,
+) -> tuple[Literal["component", "trace", "session"], bool]:
+    """Select granularity level for a component's entries.
+
+    Returns (level, needs_trajectory) where:
+    - level="component": per-node entry (default)
+    - level="session": end-to-end entry (thin-chain collapse)
+    - needs_trajectory: True if this component should also get a trajectory entry (dual-channel: motif=loop OR control_motif)
+    """
+    # Sidecars are keyed by AGENT id; for a single-component agent that equals the component id,
+    # but a grouped agent needs the agent-id lookup too or its control_motif is missed.
+    knowledge = None
+    if agent_knowledge_by_id:
+        knowledge = agent_knowledge_by_id.get(component.id) or (
+            agent_knowledge_by_id.get(agent_id) if agent_id else None
+        )
+    has_control_loop = bool(
+        component.motif == "loop"
+        or (knowledge or {}).get("control_motif") is not None
+    )
+
+    is_thin_chain = _is_system_thin_chain(system_map, agent_knowledge_by_id)
+
+    if is_thin_chain:
+        return ("session", has_control_loop)
+
+    return ("component", has_control_loop)
 
 
 def role_skip_note(component: Component) -> str | None:
@@ -378,17 +599,40 @@ async def baseline_gates_for_component(
     llm_client: LLMClient,
     *,
     agent_id: str | None = None,
+    agent_knowledge_by_id: dict[str, dict] | None = None,
 ) -> list[SuiteEntry]:
     """Deterministic role+constraint baseline for ONE component; role rules no-op for tool/unknown/worker, constraints always apply."""
     entries: list[SuiteEntry] = []
+
+    level, needs_trajectory = _select_granularity_level(
+        component, system_map, components_by_id, agent_knowledge_by_id, agent_id=agent_id
+    )
+
     for rule in _component_role_rules(component, components_by_id, validator_comp, system_map):
         entries.append(
             await _hydrate_rule_to_entry(
                 rule, component, components_by_id, system_map, llm_client,
                 agent_id=agent_id,
+                level=level,
+                agent_knowledge_by_id=agent_knowledge_by_id,
             )
         )
-    entries.extend(_constraint_entries(component, components_by_id, agent_id=agent_id))
+
+    entries.extend(_constraint_entries(component, components_by_id, agent_id=agent_id, agent_knowledge_by_id=agent_knowledge_by_id))
+
+    if needs_trajectory:
+        trajectory_entry = SuiteEntry(
+            id=f"{component.id}.trajectory",
+            component=component.id,
+            metric="trajectory_termination",
+            metric_class="assertion",
+            level="trace",
+            rationale=f"Component {component.id} has control-loop/retry behavior (motif={'loop' if component.motif == 'loop' else 'control'}); verify termination within bounds and feedback incorporation.",
+            provenance="rule",
+            agent_id=agent_id,
+        )
+        entries.append(trajectory_entry)
+
     return entries
 
 
@@ -398,34 +642,85 @@ async def baseline_gates_for_agent(
     llm_client: LLMClient,
     *,
     agent_id: str,
+    agent_knowledge_by_id: dict[str, dict] | None = None,
 ) -> list[SuiteEntry]:
-    """Deterministic-rule baseline for every component one AgentFlowMap agent owns."""
+    """Deterministic-rule baseline for every component one AgentFlowMap agent owns.
+
+    On a thin chain, collapses non-anchor components to session level, skipping
+    per-component role/constraint entries and keeping only trajectory entries.
+    """
     components_by_id = {c.id: c for c in system_map.components}
     validator_comp = _find_validator(system_map)
     entries: list[SuiteEntry] = []
+
+    is_thin_chain = _is_system_thin_chain(system_map, agent_knowledge_by_id)
+    thin_chain_component: Component | None = None
+
+    if is_thin_chain:
+        for component in system_map.components:
+            if not _is_thin_component(component, components_by_id, agent_knowledge_by_id):
+                thin_chain_component = component
+                break
+
     for cid in agent_component_ids:
         component = components_by_id.get(cid)
         if component is None:
             continue
-        entries.extend(
-            await baseline_gates_for_component(
-                component, components_by_id, validator_comp, system_map,
-                llm_client, agent_id=agent_id,
+
+        skip_component_entries = is_thin_chain and component.id != (thin_chain_component.id if thin_chain_component else "")
+
+        if not skip_component_entries:
+            entries.extend(
+                await baseline_gates_for_component(
+                    component, components_by_id, validator_comp, system_map,
+                    llm_client, agent_id=agent_id,
+                    agent_knowledge_by_id=agent_knowledge_by_id,
+                )
             )
-        )
+        elif is_thin_chain and (
+            component.motif == "loop" or
+            (agent_knowledge_by_id and component.id in agent_knowledge_by_id and
+             agent_knowledge_by_id[component.id].get("control_motif") is not None)
+        ):
+            trajectory_entry = SuiteEntry(
+                id=f"{component.id}.trajectory",
+                component=component.id,
+                metric="trajectory_termination",
+                metric_class="assertion",
+                level="trace",
+                rationale=f"Component {component.id} has control-loop/retry behavior (motif={'loop' if component.motif == 'loop' else 'control'}); verify termination within bounds and feedback incorporation.",
+                provenance="rule",
+                agent_id=agent_id,
+            )
+            entries.append(trajectory_entry)
+
     return entries
 
 
 async def generate_plan(
     system_map_path: str | Path,
     llm_client: LLMClient,
+    agent_knowledge_by_id: dict[str, dict] | None = None,
 ) -> Suite:
-    """Generate an evaluation plan from a system map (flat, role+constraint rules only)."""
+    """Generate an evaluation plan from a system map (flat, role+constraint rules only).
+
+    Applies CS-322 granularity selector: per-node (component), trajectory (trace), or
+    end-to-end (session) based on motif + richness.
+    """
     system_map = load_system_map(system_map_path)
     entries: list[SuiteEntry] = []
 
     components_by_id = {c.id: c for c in system_map.components}
     validator_comp = _find_validator(system_map)
+
+    is_thin_chain = _is_system_thin_chain(system_map, agent_knowledge_by_id)
+    thin_chain_component: Component | None = None
+
+    if is_thin_chain:
+        for component in system_map.components:
+            if not _is_thin_component(component, components_by_id, agent_knowledge_by_id):
+                thin_chain_component = component
+                break
 
     for component in system_map.components:
         role = component.role
@@ -438,16 +733,34 @@ async def generate_plan(
             entries.extend(suggested_entries)
             continue
 
-        # Handle tools (tools have no explicit suite entries by default)
         if role == "tool":
             continue
 
-        entries.extend(
-            await baseline_gates_for_component(
-                component, components_by_id, validator_comp, system_map,
-                llm_client,
+        skip_component_entries = is_thin_chain and component.id != (thin_chain_component.id if thin_chain_component else "")
+
+        if not skip_component_entries:
+            entries.extend(
+                await baseline_gates_for_component(
+                    component, components_by_id, validator_comp, system_map,
+                    llm_client,
+                    agent_knowledge_by_id=agent_knowledge_by_id,
+                )
             )
-        )
+        elif is_thin_chain and (
+            component.motif == "loop" or
+            (agent_knowledge_by_id and component.id in agent_knowledge_by_id and
+             agent_knowledge_by_id[component.id].get("control_motif") is not None)
+        ):
+            trajectory_entry = SuiteEntry(
+                id=f"{component.id}.trajectory",
+                component=component.id,
+                metric="trajectory_termination",
+                metric_class="assertion",
+                level="trace",
+                rationale=f"Component {component.id} has control-loop/retry behavior (motif={'loop' if component.motif == 'loop' else 'control'}); verify termination within bounds and feedback incorporation.",
+                provenance="rule",
+            )
+            entries.append(trajectory_entry)
 
     return Suite(entries=entries)
 
@@ -468,7 +781,7 @@ async def _tailor_geval_rubric(
             LLMMessage(role="user", content=user_prompt),
         ],
         json_mode=True,
-        reasoning_effort="low",
+        # reasoning_effort left to the client's config default — never hardcoded.
     )
 
     fallback_rubric = (
@@ -504,7 +817,7 @@ async def _suggest_unknown_component_suite(
             LLMMessage(role="user", content=user_prompt),
         ],
         json_mode=True,
-        reasoning_effort="low",
+        reasoning_effort="disable", 
     )
 
     fallback_entries = [

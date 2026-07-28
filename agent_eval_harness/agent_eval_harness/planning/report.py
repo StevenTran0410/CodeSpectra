@@ -44,6 +44,7 @@ class EvaluationGate(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
     dataset: DatasetRef | None = None
     dataset_kind: str | None = None
+    level: str = "component"
     rationale: str = ""
     provenance: Literal["rule", "human_added", "llm_suggested"] = "rule"
     status: str | None = None
@@ -57,14 +58,15 @@ class AgentPlanReport(BaseModel):
     contract: EvaluationContract | None = None
     gates: list[EvaluationGate] = Field(default_factory=list)
     needs_human: list[str] = Field(default_factory=list)
-    # Per-agent opt-in for the synthetic_agent_io workflow-eval dataset; off by default.
-    eval_enabled: bool = False
+    # Per-agent opt-out for the synthetic_agent_io workflow-eval dataset; Stage3Screen toggle controls cost.
+    eval_enabled: bool = True
 
 
 class EvaluationPlanReport(BaseModel):
     target_system_id: str
     agents: list[AgentPlanReport] = Field(default_factory=list)
     advisory_notes: list[str] = Field(default_factory=list)
+    schema_version: int | None = None
 
 
 def load_plan_report(path: str | Path) -> EvaluationPlanReport:

@@ -665,6 +665,9 @@ async def _enrich_command(args: argparse.Namespace) -> int:
                     "target repo root. Set AEH_REPO_ROOT to override."
                 )
 
+            candidate = await repository.get_discovery_candidate(sess["candidate_id"])
+            system_type = (candidate or {}).get("system_type") if candidate else None
+
             force_ids = [a.id for a in agent_flow_map.agents] if args.force else []
 
             knowledge_list = await enrich_agents(
@@ -682,6 +685,8 @@ async def _enrich_command(args: argparse.Namespace) -> int:
                 map_path=sess["map_path"],
                 agent_flows_path=sess["agent_flows_path"],
                 repo_root=Path(local_path_str),
+                system_type=system_type,
+                conventions=config.contract_conventions,
             )
 
             enriched_count = sum(1 for k in knowledge_list if not k.degraded)

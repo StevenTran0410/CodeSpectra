@@ -32,6 +32,13 @@ def admissible_roles(is_tool: bool | None, constructor_fanout: int | None) -> fr
     return frozenset(admissible)
 
 
+def forced_role(is_conditional_source: bool) -> str | None:
+    """The ONE path that ASSIGNS a role structurally instead of subtracting from the LLM's
+    verdict. Always wins, applied before the admissible/confidence gate. admissible_roles
+    can only remove (and its fanout<2 rule would otherwise strip orchestrator right back)."""
+    return "orchestrator" if is_conditional_source else None
+
+
 def structural_facts(fan_in: int, fan_out: int) -> str:
     """Shown as evidence, not as a rule — degree alone cannot separate the semantic axis."""
     return f"fan-in: {fan_in}, fan-out: {fan_out}"

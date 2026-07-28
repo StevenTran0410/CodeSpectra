@@ -30,6 +30,12 @@ export function registerProviderHandlers(client: BackendClient): void {
   )
 
   ipcMain.handle(
+    'provider:embedding-models',
+    (_event, id: string): Promise<{ models: string[] }> =>
+      client.get(`/api/provider/${id}/embedding-models`)
+  )
+
+  ipcMain.handle(
     'provider:models',
     (_event, id: string): Promise<{ models: ModelInfo[] }> =>
       client.get(`/api/provider/${id}/models`)

@@ -238,7 +238,12 @@ export function registerAEHHandlers(): void {
     )
   )
 
-  ipcMain.handle('aeh:listDatasets', () => aehClient().get('/api/datasets'))
+  ipcMain.handle('aeh:listDatasets', (_e, sessionId?: string) => {
+    const params = new URLSearchParams()
+    if (sessionId) params.set('session_id', sessionId)
+    const qs = params.toString()
+    return aehClient().get(`/api/datasets${qs ? `?${qs}` : ''}`)
+  })
 
   ipcMain.handle('aeh:getDatasetCases', (_e, datasetId: string) =>
     aehClient().get(`/api/datasets/${datasetId}/cases`)

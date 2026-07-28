@@ -73,6 +73,11 @@ METRIC_REGISTRY: dict[str, MetricSpec] = {
         description="Agent retries when a downstream component rejects its output.",
         cost_class="free",
     ),
+    "trajectory_termination": MetricSpec(
+        metric_class="assertion",
+        description="Component with control loop/retry behavior terminates within iteration bounds.",
+        cost_class="free",
+    ),
     # ── Deterministic metrics ──────────────────────────────────────────────────
     "schema_valid": MetricSpec(
         metric_class="assertion",
@@ -169,16 +174,14 @@ DATASET_KINDS: frozenset[str] = frozenset(
         "decomposition_gold",
         "sufficiency_labeled",
         "field_match_gold",
-        "retrieval_grounded",
-        "multi_turn_session",
         # Repo-input snapshot kinds.
         "snapshot_fixture",
-        "snapshot_regression_baseline",
         "recorded_report_replay",  # mines real analysis_reports rows for K/L, no new ingestion needed
         "synthetic_agent_io",  # LLM-synthesized input+gold at an agent's real LLM boundary
         "metamorphic_relation",  # mechanically-derived gold from a reviewed source + config relation
     }
 )
+
 
 # Public API
 

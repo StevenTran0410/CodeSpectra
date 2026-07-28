@@ -14,7 +14,6 @@ _GENERATOR_MODULES: dict[str, str] = {
     "decomposition_gold": "agent_eval_harness.datasets.generators.decomposition_gold",
     "sufficiency_labeled": "agent_eval_harness.datasets.generators.sufficiency_labeled",
     "snapshot_fixture": "agent_eval_harness.datasets.generators.snapshot_fixture",
-    "snapshot_regression_baseline": "agent_eval_harness.datasets.generators.snapshot_regression_baseline",
     "field_match_gold": "agent_eval_harness.datasets.generators.field_match_gold",
     "recorded_report_replay": "agent_eval_harness.datasets.generators.recorded_report_replay",
     "synthetic_agent_io": "agent_eval_harness.datasets.generators.synthetic_agent_io",

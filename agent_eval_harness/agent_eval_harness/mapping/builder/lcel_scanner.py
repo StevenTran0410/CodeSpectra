@@ -31,17 +31,11 @@ from agent_eval_harness.discovery.wiring import (
     _imports_langchain,
     _looks_like_type_union,
 )
-from agent_eval_harness.mapping.builder.types import CandidateComponent, parse_python_source
-
-_SNIPPET_LINE_COUNT = 30
-
-
-def _snippet(lines: list[str], line: int) -> str:
-    if line <= 1 or line > len(lines):
-        return ""
-    start = line
-    end = min(line + _SNIPPET_LINE_COUNT - 1, len(lines))
-    return "\n".join(lines[start : end + 1])
+from agent_eval_harness.mapping.builder.types import (
+    CandidateComponent,
+    _extract_source_snippet,
+    parse_python_source,
+)
 
 
 def _dedup_and_sort(candidates: list[CandidateComponent]) -> list[CandidateComponent]:
@@ -109,10 +103,11 @@ class LCELScanner:
                 continue
             callee = _call_func_name(node.value)
             if callee in _LANGCHAIN_CHAIN_FACTORIES or callee == _RETRIEVER_FACTORY_METHOD:
+                snippet, truncated = _extract_source_snippet(node.value, source_lines)
                 candidates.append(CandidateComponent(
                     file=file, line=node.value.lineno, class_name=node.targets[0].id,
                     entry_kind="function", is_library_object=False,
-                    source_snippet=_snippet(source_lines, node.value.lineno),
+                    source_snippet=snippet, snippet_truncated=truncated,
                 ))
 
     def _scan_pipe_idiom(
@@ -155,10 +150,11 @@ class LCELScanner:
             and op.args[0].id in target_functions
         ):
             fn = target_functions[op.args[0].id]
+            snippet, truncated = _extract_source_snippet(fn, source_lines)
             return CandidateComponent(
                 file=file, line=fn.lineno, class_name=op.args[0].id,
                 entry_kind="function", is_library_object=False,
-                source_snippet=_snippet(source_lines, fn.lineno),
+                source_snippet=snippet, snippet_truncated=truncated,
             )
 
         name = None
@@ -170,18 +166,23 @@ class LCELScanner:
             name = op.attr
 
         if name and name in target_classes:
+            node = target_classes[name]
+            snippet, truncated = _extract_source_snippet(node, source_lines)
             return CandidateComponent(
-                file=file, line=line, class_name=name, entry_kind="class",
-                is_library_object=False, source_snippet=_snippet(source_lines, line),
+                file=file, line=node.lineno, class_name=name, entry_kind="class",
+                is_library_object=False, source_snippet=snippet, snippet_truncated=truncated,
             )
         if name and name in target_functions:
+            node = target_functions[name]
+            snippet, truncated = _extract_source_snippet(node, source_lines)
             return CandidateComponent(
-                file=file, line=line, class_name=name, entry_kind="function",
-                is_library_object=False, source_snippet=_snippet(source_lines, line),
+                file=file, line=node.lineno, class_name=name, entry_kind="function",
+                is_library_object=False, source_snippet=snippet, snippet_truncated=truncated,
             )
         # Unresolved or library-defined → surface explicitly, then degrade (never harvestable).
+        snippet, truncated = _extract_source_snippet(op, source_lines)
         return CandidateComponent(
             file=file, line=line, class_name=name or "unknown",
             entry_kind="function", is_library_object=True,
-            source_snippet=_snippet(source_lines, line),
+            source_snippet=snippet, snippet_truncated=truncated,
         )

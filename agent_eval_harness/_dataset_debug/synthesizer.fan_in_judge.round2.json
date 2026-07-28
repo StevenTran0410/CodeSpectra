@@ -1,0 +1,25 @@
+{
+  "agent_id": "synthesizer",
+  "archetype": "fan_in_judge",
+  "target_count": 5,
+  "batch_n": 3,
+  "json_schema": {
+    "executive_summary": "string",
+    "architecture_narrative": "string",
+    "tech_stack_snapshot": "string",
+    "developer_quickstart": "string",
+    "conventions_digest": "string",
+    "risk_highlights": "string",
+    "reading_path": "string",
+    "confidence": "high|medium|low"
+  },
+  "schema_present": true,
+  "system_prompt": "You are generating realistic synthetic test cases for evaluating a fan-in judge agent in a static-analysis pipeline.\n\nThis agent reads a fixed subset of fields from each of several upstream 'section' outputs (identified by single letters) and produces one JSON output summarizing/synthesizing them. The agent NEVER sees any field beyond the ones provided per letter — do not invent additional fields per letter.\n\nAny field literally named 'confidence' must be one of: low, medium, high.\nAny field literally named 'blind_spots' must be a short list (0-3) of one-sentence strings describing a specific gap in that section's own analysis.\n\nEach case is an object with exactly two keys:\n  \"input\": an object keyed by EVERY letter provided, each value an object with EXACTLY the fields listed for that letter (plausible fictional static-analysis-repo content, internally consistent within the case)\n  \"gold\": the single correct output this agent should produce for that \"input\", strictly matching the schema provided and GROUNDED ONLY in facts present in \"input\" — never inventing a weak section, score, or claim that \"input\" doesn't support.\n\nRespond ONLY with a JSON array of such objects. No markdown, no explanation.",
+  "prompt": "AGENT PURPOSE: Synthesizes and evaluates outputs from multiple upstream agents.\n\nUPSTREAM FIELDS THE AGENT ACTUALLY READS, PER LETTER:\n  \"A\": { \"domain\": \"string\", \"purpose\": \"string\", \"runtime_type\": \"string\", \"tech_stack\": [\"string\"] }\n  \"B\": { \"entrypoints\": [\"string\"], \"frameworks\": [\"string\"], \"main_layers\": [\"string\"] }\n  \"C\": { \"folders\": [{\"path\": \"string\", \"role\": \"string\", \"description\": \"string\"}], \"summary\": \"string\" }\n  \"D\": { async_style, error_handling, naming_style }\n  \"E\": { \"rules\": [{\"rule\": \"string\", \"inferred_from\": \"string\", \"severity\": \"string\"}], \"violations_found\": [{\"rule\": \"string\", \"file\": \"string\", \"description\": \"string\", \"severity\": \"string\"}] }\n  \"F\": { \"features\": [{\"name\": \"string\", \"description\": \"string\", \"entrypoint\": \"string\", \"key_files\": [\"string\"], \"data_path\": \"string\", \"tests\": [\"string\"], \"reading_order\": [\"string\"]}] }\n  \"G\": { \"backbone\": {\"file\": \"string\", \"reason\": \"string\"}, \"entrypoint\": {\"file\": \"string\", \"reason\": \"string\"}, \"read_first\": {\"file\": \"string\", \"reason\": \"string\"} }\n  \"H\": { \"steps\": [{\"order\": \"integer\", \"file\": \"string\", \"goal\": \"string\", \"outcome\": \"string\"}] }\n  \"I\": { \"terms\": [{\"term\": \"string\", \"definition\": \"string\", \"evidence_files\": [\"string\"]}] }\n  \"J\": { \"findings\": [{\"category\": \"string\", \"severity\": \"string\", \"title\": \"string\", \"rationale\": \"string\", \"evidence\": [\"string\"]}], \"summary\": \"string\" }\n  \"K\": { \"notes\": \"string\", \"overall_confidence\": \"string\", \"section_scores\": {\"A\": \"string\", \"B\": \"string\", \"C\": \"string\", \"D\": \"string\", \"E\": \"string\", \"F\": \"string\", \"G\": \"string\", \"H\": \"string\", \"I\": \"string\", \"J\": \"string\"}, \"weakest_sections\": [\"string\"] }\n\nTHE AGENT'S OWN REQUIRED OUTPUT JSON SCHEMA (this is the 'gold' you must match):\n{\"executive_summary\": \"string\", \"architecture_narrative\": \"string\", \"tech_stack_snapshot\": \"string\", \"developer_quickstart\": \"string\", \"conventions_digest\": \"string\", \"risk_highlights\": \"string\", \"reading_path\": \"string\", \"confidence\": \"high|medium|low\"}\n\nINPUT STRATEGY: Structured data parameters matching exact harvested schemas.\n\nALLOWED ENUM DOMAINS FOR OUTPUT FIELDS (gold must use ONLY these values):\n  \"confidence\": [\"high\", \"low\", \"medium\"]\n\nGenerate exactly 3 DISTINCT cases spanning a realistic range (some upstream sections uniformly high-confidence/no blind spots, some with 2-3 sections weak or contradictory, at least one borderline/ambiguous case).",
+  "raw_content": "[]",
+  "candidates_parsed": 0,
+  "newly_accepted": 0,
+  "rejected_this_round": 0,
+  "accepted_total": 0,
+  "sample_rejection_errors": []
+}

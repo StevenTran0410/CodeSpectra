@@ -23,6 +23,10 @@ export default function EmbeddingConfigModal({
 }): React.ReactElement | null {
   const { providers, load: loadProviders } = useProviderStore()
   const [localStatus, setLocalStatus] = useState<LocalEmbeddingStatus | null>(null)
+  // providerId -> the embedding model ids its ACTUAL endpoint serves (kind isn't enough: an
+  // OpenAI-compatible base_url may only do chat, or expose different model names). Empty = none.
+  const [embedModels, setEmbedModels] = useState<Record<string, string[]>>({})
+  const [probing, setProbing] = useState(false)
 
   useEffect(() => {
     loadProviders()
@@ -32,10 +36,36 @@ export default function EmbeddingConfigModal({
       .catch(() => {})
   }, [loadProviders])
 
+  // Fetch the real embedding models each openai/gemini endpoint serves whenever the modal opens.
+  useEffect(() => {
+    if (!isOpen) return
+    const candidates = providers.filter((p) => p.kind === 'openai' || p.kind === 'gemini')
+    if (candidates.length === 0) return
+    let cancelled = false
+    setProbing(true)
+    Promise.all(
+      candidates.map((p) =>
+        window.api.provider
+          .embeddingModels(p.id)
+          .then((r) => [p.id, r.models] as const)
+          .catch(() => [p.id, [] as string[]] as const)
+      )
+    ).then((results) => {
+      if (cancelled) return
+      setEmbedModels(Object.fromEntries(results))
+      setProbing(false)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [isOpen, providers])
+
   if (!isOpen) return null
 
-  // Filter providers to only OpenAI and Gemini
-  const embedProviders = providers.filter((p) => p.kind === 'openai' || p.kind === 'gemini')
+  // Only providers whose real endpoint returned at least one embedding model.
+  const embedProviders = providers.filter(
+    (p) => (p.kind === 'openai' || p.kind === 'gemini') && (embedModels[p.id]?.length ?? 0) > 0
+  )
 
   // Find currently selected provider kind (cloud)
   const selectedProvider = providers.find((p) => p.id === providerId) ?? null
@@ -72,27 +102,19 @@ export default function EmbeddingConfigModal({
         <FormGroup label="Select Embedding Model">
           <Select value={selectVal} onChange={(e) => handleOptionChange(e.target.value)}>
             <option value="" disabled>Select an option...</option>
-            
-            {/* OpenAI options */}
-            {embedProviders
-              .filter((p) => p.kind === 'openai')
-              .flatMap((p) => [
-                <option key={`${p.id}:text-embedding-3-small`} value={`${p.id}:text-embedding-3-small`}>
-                  OpenAI: text-embedding-3-small (Recommended)
-                </option>,
-                <option key={`${p.id}:text-embedding-3-large`} value={`${p.id}:text-embedding-3-large`}>
-                  OpenAI: text-embedding-3-large
-                </option>
-              ])}
+            {probing && (
+              <option value="" disabled>Loading embedding models from your endpoints…</option>
+            )}
 
-            {/* Gemini options */}
-            {embedProviders
-              .filter((p) => p.kind === 'gemini')
-              .map((p) => (
-                <option key={`${p.id}:gemini-embedding-001`} value={`${p.id}:gemini-embedding-001`}>
-                  Gemini: gemini-embedding-001
+            {/* Real embedding models fetched per endpoint — never a hardcoded list. */}
+            {embedProviders.flatMap((p) => {
+              const kindLabel = p.kind === 'openai' ? 'OpenAI' : p.kind === 'gemini' ? 'Gemini' : p.kind
+              return (embedModels[p.id] || []).map((m) => (
+                <option key={`${p.id}:${m}`} value={`${p.id}:${m}`}>
+                  {p.display_name} ({kindLabel}): {m}
                 </option>
-              ))}
+              ))
+            })}
 
             {/* Local option */}
             <option
@@ -117,9 +139,9 @@ export default function EmbeddingConfigModal({
           </Badge>
         )}
 
-        {embedProviders.length === 0 && !localStatus?.gpu_available && (
+        {!probing && embedProviders.length === 0 && !localStatus?.gpu_available && (
           <Badge variant="error" size="sm" className="w-full justify-center">
-            No cloud keys configured AND no local GPU available.
+            No provider endpoint serves embeddings AND no local GPU available.
           </Badge>
         )}
 

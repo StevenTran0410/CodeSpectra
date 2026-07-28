@@ -23,6 +23,19 @@ class Constraint(BaseModel):
     source: str  # file:line citation (required)
 
 
+class CallSiteRecord(BaseModel):
+    """One enumerated call site in a component's call closure — a receipt ledger a downstream
+    verdict layer can cite as evidence."""
+    site_id: str
+    file: str
+    lineno: int
+    callee_text: str
+    source_line: str = ""
+    outcome: str = "unresolved"  # "resolved" | "out_of_scope" | "unresolved"
+    reason: str | None = None
+    external_module: str | None = None
+
+
 class Component(BaseModel):
     id: str
     role: str
@@ -35,17 +48,37 @@ class Component(BaseModel):
     model: str | None = None
     entry_point: str
     entry_kind: str | None = None  # "class" | "function" | "bound_method"; None on legacy maps => treated as class
+    needs_human: bool | None = None  # True when a wiring step's defining file could not be resolved by any layer (import/MRO/RRF) — surfaced for review, never silently dropped
+    out_of_scope: bool | None = None  # True when this component's file was deliberately refused (boundary/excluded) rather than widened into the accepted set
+    out_of_scope_reason: str | None = None  # why (e.g. "file classified boundary during expansion") — set together with out_of_scope, never guessed
     file: str = ""
     span_match: list[SpanMatchBlock] = Field(default_factory=list)
     constraints: list[Constraint] = Field(default_factory=list)
     upstream: list[str] = Field(default_factory=list)
     downstream: list[str] = Field(default_factory=list)
+    # CS-319 (additive; empty except on a LangGraph map with an intra-node call graph): subset of
+    # `downstream` reached by a gray "call" edge, and subset whose hard edge is a conditional router branch.
+    call_downstream: list[str] = Field(default_factory=list)
+    conditional_downstream: list[str] = Field(default_factory=list)
+    # CS-321: motif classification (linear/branch/loop).
+    motif: str | None = None
+    # Did every call in this component's closure resolve, or did at least one stop at an unresolved
+    # seam? None when the closure was never walked (no recognized entry method).
+    closure_complete: bool | None = None
+    call_sites: list[CallSiteRecord] = Field(default_factory=list)
+    # Static tri-state verdict (None means undecided, never "no"): does this component itself make a
+    # model call. model_call_source names which tier decided it; model_call_citation is its "file:line".
+    makes_model_call: bool | None = None
+    model_call_source: str | None = None
+    model_call_citation: str | None = None
+    model_call_evidence_hash: str | None = None
 
 
 class SystemMap(BaseModel):
     target_system_id: str
     components: list[Component]
     framework: str | None = None  # the scanner that produced this map; None on legacy maps
+    system_type: str | None = None  # detected agentic system type (pipeline, orchestrator, etc.)
     discrepancies: list[str] = Field(default_factory=list)
 
     def component_by_id(self, component_id: str) -> Component | None:

@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from agent_eval_harness.config import ContractConventions
-from agent_eval_harness.mapping.agent_flow import AgentFlow, AgentFlowMap
+from agent_eval_harness.mapping.agent_flow import AgentFlow, AgentFlowMap, _build_structural_agents
 from agent_eval_harness.mapping.builder.contract_harvest import (
     _SchemaResolveCtx,
     _parse_files,
@@ -117,14 +117,17 @@ def test_run_signature_kwargs_defaults_and_required(tmp_path: Path) -> None:
     assert invocation.constructor_deps == ["ProviderConfigService", "RetrievalService"]
     # Constructor deps do not force a route: only in-process invocation can substitute a retrieval stub.
     assert invocation.invocation_mode == "in_harness"
-    assert invocation.route == "/api/analysis/rerun_section"  # recorded, not used to drive cases
+    assert invocation.route is None  # no ContractConventions passed -> unconfigured, never a guess
     assert invocation.citations and "foo_agent.py" in invocation.citations[0]
 
 
 def test_case_binding_uses_run_kwargs_even_when_a_route_exists(tmp_path: Path) -> None:
     """A per-section route resolves its own state from a stored report, so it can never take a synthetic case's input; the binding must be the real run() kwargs shape instead."""
     asts = _parse_files(_write_fixture(tmp_path))
-    invocation, _, _, notes, input_kind = harvest_component_contract(_foo_component(), asts, tmp_path)
+    conventions = ContractConventions(rerun_section_route="/api/analysis/rerun_section")
+    invocation, _, _, notes, input_kind = harvest_component_contract(
+        _foo_component(), asts, tmp_path, conventions=conventions
+    )
 
     assert invocation is not None
     assert "report_id" not in invocation.case_binding
@@ -173,6 +176,7 @@ def test_typeddict_schema_via_validate_call(tmp_path: Path) -> None:
     assert "mermaid" in props
     assert set(output.json_schema["required"]) == {"repo_name", "domain", "tech_stack", "confidence"}
     assert output.schema_source is not None and "SectionA" in output.schema_source
+    assert output.cardinality == "object"
 
 
 def test_fallback_literal_with_dynamic_marker(tmp_path: Path) -> None:
@@ -214,6 +218,71 @@ def test_dict_literal_return_infers_output_schema_on_main_path(tmp_path: Path) -
     assert set(output.json_schema["required"]) == {"sufficient", "context"}
     assert output.json_schema["properties"].keys() == {"sufficient", "context"}
     assert output.schema_source is not None and "inferred from return dict" in output.schema_source
+    assert output.cardinality == "object"
+    assert output.has_streamed_output is False
+
+
+# A list-returning entry point (no dict-literal return) must still yield an array output schema,
+# item-shaped from its first element -- the list-return sibling of the dict-literal case above.
+_LIST_LITERAL_AGENT_SRC = '''
+class RosterAgent:
+    async def run(self, query: str) -> list:
+        return [
+            {"name": "alice", "role": "lead"},
+            {"name": "bob", "role": "member"},
+        ]
+'''
+
+
+def test_list_literal_return_infers_array_output_schema(tmp_path: Path) -> None:
+    src = tmp_path / "roster_agent.py"
+    src.write_text(_LIST_LITERAL_AGENT_SRC, encoding="utf-8")
+    asts = _parse_files([src])
+    comp = Component(id="roster", role="writer", entry_point="roster_agent:RosterAgent", file="roster_agent.py")
+
+    _, output, _, _, _ = harvest_component_contract(comp, asts, tmp_path)
+
+    assert output is not None
+    assert output.json_schema is not None, "list-literal return must yield an inferred array schema, not None"
+    assert output.json_schema["type"] == "array"
+    assert output.json_schema["items"]["properties"].keys() == {"name", "role"}
+    assert output.cardinality == "array"
+    assert output.schema_source is not None and "inferred from return list" in output.schema_source
+
+
+# An entry point that both streams (a call whose own name contains "stream") and returns a
+# schema-constant-typed JSON meta-object -- e.g. node_synthesize's real shape in deep_research.py
+# (streamed markdown answer + a separately returned meta-JSON).
+_STREAMING_AGENT_SRC = '''
+SYNTH_SCHEMA_STR = \'{"summary": "", "confidence": ""}\'
+
+class SynthesizerAgent:
+    async def _call_stream(self, on_token):
+        return "streamed text"
+
+    def _on_token(self, tok: str) -> None:
+        pass
+
+    async def run(self, query: str) -> dict:
+        await self._call_stream(self._on_token)
+        return await self._chat_json(SYNTH_SCHEMA_STR)
+'''
+
+
+def test_has_streamed_output_true_when_entry_calls_a_streaming_method(tmp_path: Path) -> None:
+    src = tmp_path / "synthesizer_agent.py"
+    src.write_text(_STREAMING_AGENT_SRC, encoding="utf-8")
+    asts = _parse_files([src])
+    comp = Component(
+        id="synth", role="writer", entry_point="synthesizer_agent:SynthesizerAgent",
+        file="synthesizer_agent.py",
+    )
+
+    _, output, _, _, _ = harvest_component_contract(comp, asts, tmp_path)
+
+    assert output is not None and output.json_schema is not None
+    assert output.has_streamed_output is True
+    assert output.cardinality == "object"
 
 
 def test_constants_harvested(tmp_path: Path) -> None:
@@ -351,7 +420,8 @@ def test_harvest_fallback_falls_through_to_pipeline_module_for_k(tmp_path: Path)
     )
     asts = _parse_files([tmp_path / "agent_k.py", tmp_path / "agent_pipeline.py"])
     comp = Component(id="k", role="auditor", entry_point="agent_k:KAgent", file="agent_k.py")
-    _, output, _, notes, _ = harvest_component_contract(comp, asts, tmp_path)
+    conventions = ContractConventions(pipeline_fallback_name_pattern="_section_{letter}_pipeline_fallback")
+    _, output, _, notes, _ = harvest_component_contract(comp, asts, tmp_path, conventions=conventions)
     assert output is not None and output.fallback_literal is not None
     assert output.fallback_literal == {
         "overall_confidence": "low", "notes": "Audit could not be completed.",
@@ -380,11 +450,11 @@ def test_harvest_fallback_no_fallthrough_without_a_validator_letter(tmp_path: Pa
 
 
 def test_contract_conventions_rerun_section_route_overridable(tmp_path: Path) -> None:
-    """rerun_section_route has no harvestable equivalent at all (statics can't discover a target's REST route) — config is the only source, so it must actually reach the output."""
+    """rerun_section_route has no harvestable equivalent at all (statics can't discover a target's REST route) — config is the only source, so it must actually reach the output, and stays unset (never a guess) when no conventions are configured."""
     asts = _parse_files(_write_fixture(tmp_path))
     default_invocation, _, _, _, _ = harvest_component_contract(_foo_component(), asts, tmp_path)
     assert default_invocation is not None
-    assert default_invocation.route == "/api/analysis/rerun_section"
+    assert default_invocation.route is None
 
     custom = ContractConventions(rerun_section_route="/api/custom/rerun")
     custom_invocation, _, _, _, _ = harvest_component_contract(
@@ -730,3 +800,31 @@ class ComplexAgent:
     assert "Optional" in by_name["threshold"].annotation, (
         "Optional wrapper must be preserved in annotation"
     )
+
+
+def test_no_agent_owns_more_than_one_llm_calling_boundary() -> None:
+    """CS-326 §2.6 empirical check (near-zero-diff confirm-only, per the judged spec): grepped
+    component_ids/comp_files per agent across test_targets/multi_agent, test_targets/linear_rag, and
+    both live systems (Deep Research's 8-node DeepResearchAgent class included, via
+    test_dogfood_deep_research.py's own 1-component-per-agent mapping) -- no agent owns >1
+    independent LLM-calling boundary today. _build_structural_agents (mapping/agent_flow.py) makes
+    this structural, not incidental: "another agent found via the call closure stays its own
+    top-level node, never folded" -- a second model-calling component reachable from an agent's
+    closure always seeds its OWN agent, never merges into the first. This confirms
+    harvest_contracts' single head-component selection (component_ids[0]) is safe, and that
+    AgentKnowledge/EvaluationContract's single-valued output_contract stays correct without a
+    plural-contract representation (which would breach the additive-only guardrail)."""
+    system_map = SystemMap(
+        target_system_id="t",
+        components=[
+            Component(id="a", role="worker", entry_point="m:A", file="a.py", entry_kind="function", makes_model_call=True, downstream=["b"]),
+            Component(id="b", role="worker", entry_point="m:B", file="b.py", entry_kind="function", makes_model_call=True, upstream=["a"]),
+        ],
+    )
+    agents, _reached = _build_structural_agents(system_map, {})
+    assert len(agents) == 2
+    for agent in agents:
+        assert len(agent.component_ids) == 1, (
+            f"agent {agent.id!r} unexpectedly owns >1 component ({agent.component_ids}) -- "
+            "harvest_contracts' single-head-component assumption would need revisiting"
+        )

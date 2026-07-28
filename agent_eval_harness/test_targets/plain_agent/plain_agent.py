@@ -81,3 +81,31 @@ class ToolAgent:
 # A bare `*Agent` class with NO corroborating signal — must NOT be emitted (precision guard).
 class DisabledAgent:
     version = 1
+
+
+# A class with NO English "Agent" suffix at all — a name-based gate would reject this outright
+# regardless of behavior; a structural gate looks at the entry method's call closure instead.
+class TroLyNghienCuu(_LLMBase):
+    """A research assistant named in Vietnamese — same shape as ResearchAgent, different name."""
+
+    async def run(self, provider_id: str, model_id: str, question: str) -> dict:
+        answer = await self._call(RESEARCH_SYSTEM, question, max_tokens=800)
+        return {"answer": answer}
+
+
+class TinyAgent(_LLMBase):
+    """Deliberately tiny body: proves the evidence window ends at THIS class's own end_lineno
+    instead of a flat line-count window bleeding into the class defined right after it."""
+
+    async def run(self, question: str) -> str:
+        return await self._call("", question)
+
+
+class LeakGuardAgent(_LLMBase):
+    """Sits immediately after TinyAgent; its prompt literal must never appear in TinyAgent's
+    snippet — a bled window would include it."""
+
+    LEAK_MARKER_PROMPT = "LEAK_MARKER_must_not_appear_in_tiny_agent_snippet"
+
+    async def run(self, question: str) -> str:
+        return await self._call(self.LEAK_MARKER_PROMPT, question)

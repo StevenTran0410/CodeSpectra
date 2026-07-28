@@ -26,10 +26,21 @@ def postprocess(text: str) -> str:
     return text.strip().lower()
 
 
+def _normalize(text: str) -> str:
+    return text.strip()
+
+
+def finalize(text: str) -> str:
+    """Real target code: calls a local helper — proves the generic call closure resolves an LCEL
+    RunnableLambda-wrapped function's own calls, not just Haystack/plain-python's."""
+    return _normalize(text).lower()
+
+
 library_chain = prompt | ChatOpenAI(model="gpt-4o-mini") | StrOutputParser()
 
 hybrid_chain = (
-    prompt | ChatOpenAI(model="gpt-4o-mini") | RunnableLambda(postprocess) | StrOutputParser()
+    prompt | ChatOpenAI(model="gpt-4o-mini") | RunnableLambda(postprocess)
+    | RunnableLambda(finalize) | StrOutputParser()
 )
 
 

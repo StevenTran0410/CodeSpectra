@@ -310,15 +310,21 @@ class TestScanAll:
     """CS-316: run every registered scanner over one file set and merge (mixed-cluster dispatch)."""
 
     def test_haystack_fixtures_equal_haystack_only_counts_and_label(self, target_root: Path):
-        """Highest-risk invariant: over a pure-Haystack fixture, scan_all == HaystackScanner-only
-        (LangGraphScanner self-gates to 0), and the contributed label is exactly 'haystack'."""
-        expected = {"linear_rag": 2, "multi_agent": 7, "t3_reranker": 3}
+        """LangGraphScanner self-gates to 0 on a pure-Haystack fixture. PlainPythonScanner no longer
+        does (it dropped the Agent$-suffix gate for a structural one), so it now ALSO contributes
+        wherever a class has a recognized entry method with call-closure activity — every fixture
+        here qualifies, so the label always includes 'plain_python' too. linear_rag and
+        t3_reranker's plain_python hits fully dedup against Haystack's own (same class_name, no
+        tag_suffix), so their counts are unchanged; multi_agent's GuardComponent is unsplit under
+        plain_python (it has no manual_span tag_suffix concept) so it adds ONE candidate alongside
+        Haystack's own split guard_rule/guard_llm — deliberate widening, narrowed later at a
+        different layer."""
+        expected = {"linear_rag": 2, "multi_agent": 8, "t3_reranker": 3}
         for tgt, count in expected.items():
             files = sorted((target_root / tgt).glob("**/*.py"))
             candidates, label = scan_all(files)
             assert len(candidates) == count, tgt
-            assert len(candidates) == len(HaystackScanner().scan(files)), tgt
-            assert label == "haystack", tgt
+            assert label == "haystack+plain_python", tgt
 
     def test_langgraph_fixture_labels_langgraph(self, target_root: Path):
         files = sorted((target_root / "langgraph_agent").glob("*.py"))
@@ -328,7 +334,9 @@ class TestScanAll:
 
     def test_mixed_set_unions_both_scanners_and_joins_label(self, target_root: Path):
         """A mixed cluster (Haystack files + a LangGraph file) yields BOTH scanners' candidates and
-        a '+'-joined sorted label — the exact scenario that produced 0 langgraph nodes before."""
+        a '+'-joined sorted label — the exact scenario that produced 0 langgraph nodes before.
+        plain_python also contributes now, fully deduped against linear_rag's own Haystack
+        candidates (same class_name, no split), so the count is unchanged."""
         files = sorted((target_root / "linear_rag").glob("**/*.py"))
         files += sorted((target_root / "langgraph_agent").glob("*.py"))
         candidates, label = scan_all(files)
@@ -336,7 +344,7 @@ class TestScanAll:
         assert len(candidates) == 6  # 2 haystack + 4 langgraph
         assert {"RetrieverComponent", "WriterComponent"} <= names
         assert {"_node_investigate", "_node_synthesize"} <= names
-        assert label == "haystack+langgraph"
+        assert label == "haystack+langgraph+plain_python"
 
     def test_dedups_file_claimed_by_two_scanners(self):
         """A single file matched by BOTH scanners (a @component class also used as an add_node

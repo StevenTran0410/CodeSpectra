@@ -178,7 +178,14 @@ def _wb_source_files(c: dict) -> set[str]:
     return {(n.get("source_hint_file") or "").replace("\\", "/") for n in _wb(c).get("nodes", [])}
 
 
-async def _expand_and_build(cand: dict, client, llm, local_path, args):
+# CS-318: force exactly ONE real qa step past the import layer so it falls through to the LIVE RRF
+# path (search_retrieval + AST-confirm against the real symbol index) and resolves to its true
+# definer. Retrieval-only — costs NO chat-provider tokens, so it respects the FSOFT-429 / Gemini caps.
+# A concrete symbol name is allowed here because this file lives under scripts/, not the inner package.
+_FORCE_RRF_STEP = "plan_queries"
+
+
+async def _expand_and_build(cand: dict, client, llm, local_path, args, *, resolver_skip=frozenset()):
     """Run the REAL Stage-2 expansion + map build + topology for ONE candidate, returning its own
     single-framework SystemMap and the accepted file list."""
     from agent_eval_harness.discovery.expansion import expand_candidate
@@ -200,8 +207,27 @@ async def _expand_and_build(cand: dict, client, llm, local_path, args):
         wiring_block=WiringBlock.from_dict(wb) if wb else None,
         scope_framework=cand.get("map_scope_framework"),
         exclude_component_classes=set(cand.get("excluded_component_classes") or []),
+        retrieval_client=client, snapshot_id=args.snapshot,
+        resolver_skip_import_for=resolver_skip,
     )
     return system_map, accepted_files
+
+
+async def _probe_resolver_layers(cand: dict, client, local_path, args, *, resolver_skip=frozenset()):
+    """Directly probe the CS-318 resolver on the plain candidate's OWN files (no expansion needed):
+    returns {callee: StepResolution} so the acceptance can assert WHICH layer placed each step and
+    that RRF landed the correct definer — proving the free layers did the work, not RRF masking a
+    regression."""
+    from agent_eval_harness.discovery.wiring import WiringBlock, resolve_unscanned_steps
+    wb = cand.get("wiring_block")
+    if not wb:
+        return {}
+    seed = [local_path / f for f in (cand.get("hub_paths") or cand.get("matched_files") or [])]
+    resolutions = await resolve_unscanned_steps(
+        WiringBlock.from_dict(wb), seed, local_path, client, args.snapshot,
+        skip_import_layer_for=resolver_skip,
+    )
+    return {r.callee: r for r in resolutions}
 
 
 async def run(args) -> int:
@@ -277,14 +303,30 @@ async def run(args) -> int:
             failures.append("LangGraph candidate wiring_block has ZERO edges (StateGraph orphaned pre-build)")
         if not any(_LANGGRAPH_FILE_MARK in f for f in (lg.get("matched_files") or [])):
             failures.append("deep_research file absent from LangGraph candidate matched_files")
-        if plain.get("wiring_block") is not None:
-            failures.append("plain_python candidate unexpectedly carries a wiring_block")
+        # CS-318: the plain candidate is now a split wired system (plain_python wiring_block, steps
+        # composed from imported helpers + inherited base methods) — that block is what the resolver
+        # consumes. If it carries a block at all it must be pure plain_python.
+        plain_wb_fw = (plain.get("wiring_block") or {}).get("framework")
+        if plain_wb_fw and "plain_python" not in plain_wb_fw:
+            failures.append(f"plain_python candidate wiring_block impure: {plain_wb_fw!r}")
+
+        # ---- CS-318 resolver-layer probe: prove WHICH layer placed each step (free import/mro did the
+        # real work; exactly one forced step exercises the LIVE RRF path). Retrieval-only, no chat tokens.
+        plain_layers = await _probe_resolver_layers(
+            plain, client, local_path, args, resolver_skip=frozenset({_FORCE_RRF_STEP})
+        )
+        print("\n[stage 2 resolver] plain-python step resolution layers:")
+        for callee, r in sorted(plain_layers.items()):
+            print(f"    {callee!r:22} layer={r.layer:10} file={r.defining_file or '(unresolved)'}")
 
         # ---- REAL Stage 2 + map build, PER candidate -> its OWN single-framework map ----
         print("\n[stage 2 + build] expanding + building each candidate into its own map...")
         maps: dict[str, object] = {}
         for label, cand in (("haystack", hay), ("langgraph", lg), ("plain_python", plain)):
-            system_map, accepted_files = await _expand_and_build(cand, client, llm, local_path, args)
+            skip = frozenset({_FORCE_RRF_STEP}) if label == "plain_python" else frozenset()
+            system_map, accepted_files = await _expand_and_build(
+                cand, client, llm, local_path, args, resolver_skip=skip
+            )
             maps[label] = system_map
             comps = system_map.components
             total_edges = sum(len(c.upstream) + len(c.downstream) for c in comps)
@@ -317,17 +359,52 @@ async def run(args) -> int:
         if len(hay_map.components) < 12:
             failures.append(f"Haystack map components {len(hay_map.components)} < 12")
 
-        # (b) LangGraph: EXACTLY the 8 _node_* bound_methods, with edges, and NO sibling agent class.
-        lg_boundmethod = [c for c in lg_map.components if c.entry_kind == "bound_method"]
+        # (b) LangGraph (CS-319): the 8 StateGraph node methods MUST all be present, and on top of that
+        # the intra-node "gray" call graph must be expanded — the nodes' call targets (imported helpers,
+        # inherited base methods, same-module fns, own-class helpers, injected services) become real
+        # components. The 4 co-located junk classes (BaseLLMAgent / _SectionAgent / QAAgent /
+        # DeepResearchAgent) must NOT appear (scope_framework persistence). Symbol names below are the
+        # acceptance ORACLE for THIS target, matched against real components — not spec.
+        lg_ids = {(c.id or "").lower() for c in lg_map.components}
         lg_edges = sum(len(c.upstream) + len(c.downstream) for c in lg_map.components)
-        lg_agent_classes = [c for c in lg_map.components if c.entry_kind == "class" and _AGENT_CLASS.search(c.id or "")]
-        if len(lg_boundmethod) != 8:
-            failures.append(f"LangGraph map has {len(lg_boundmethod)} bound_method components, expected exactly 8")
-        if lg_agent_classes:
-            failures.append(f"LangGraph map bleeds sibling agent classes: {[c.id for c in lg_agent_classes]}")
-        if len(lg_map.components) != len(lg_boundmethod):
-            failures.append(f"LangGraph map has non-node components: "
-                            f"{[c.id for c in lg_map.components if c.entry_kind != 'bound_method']}")
+        # b.1 — the 8 StateGraph nodes survive.
+        expected_nodes = {
+            "_node_load_context", "_node_plan", "_node_trace_forward", "_node_trace_backward",
+            "_node_impact", "_node_retrieve", "_node_analyze_step", "_node_synthesize",
+        }
+        missing_nodes = expected_nodes - lg_ids
+        if missing_nodes:
+            failures.append(f"LangGraph map missing StateGraph node(s): {sorted(missing_nodes)}")
+        # b.2 — the gray call targets (>=1 per resolution kind) are present at their REAL defining files.
+        expected_gray = {
+            "trace_call_chain": "graph_queries.py", "get_impact_cone": "graph_queries.py",
+            "_retrieve_evidence": "deep_research.py", "_accumulate_evidence": "deep_research.py",
+            "_validate_plan_step": "deep_research.py", "_load_graph_ctx": "deep_research.py",
+            "render_bundle_subset": "deep_research.py", "plan_queries": "_graph_plan.py",
+            "retrieve_multi": "_graph_plan.py", "retrievalservice": "service.py",
+            "_chat_json_typed": "base.py", "_call_stream": "base.py",
+        }
+        by_id = {(c.id or "").lower(): c for c in lg_map.components}
+        for gid, want_file in expected_gray.items():
+            comp = by_id.get(gid)
+            if comp is None:
+                failures.append(f"LangGraph gray target missing: {gid!r} (expected from {want_file})")
+            elif not (comp.file or "").replace("\\", "/").endswith(want_file):
+                failures.append(f"LangGraph gray target {gid!r} points at {comp.file!r}, expected {want_file}")
+        # b.3 — shared hub: _retrieve_evidence is ONE component with >=2 inbound call edges.
+        rev = by_id.get("_retrieve_evidence")
+        if rev is not None and len(rev.upstream) < 2:
+            failures.append(f"_retrieve_evidence not a shared hub: inbound={rev.upstream} (expected >=2)")
+        # b.4 — conditional router marking on the two add_conditional_edges sources.
+        for router in ("_node_plan", "_node_analyze_step"):
+            comp = by_id.get(router)
+            if comp is not None and not getattr(comp, "conditional_downstream", None):
+                failures.append(f"{router} outgoing edges not marked conditional (router branch missing)")
+        # b.5 — the 4 co-located junk classes are gone.
+        junk = [c.id for c in lg_map.components
+                if c.entry_kind == "class" and _AGENT_CLASS.search(c.id or "")]
+        if junk:
+            failures.append(f"LangGraph map bleeds co-located agent classes (scope not applied): {junk}")
         if lg_edges == 0:
             failures.append("LangGraph map ORPHANED — zero topology edges")
 
@@ -340,10 +417,57 @@ async def run(args) -> int:
         if any(_LANGGRAPH_OWNER.lower() == (c.id or "").lower() for c in plain_map.components):
             failures.append(f"plain_python map bleeds sibling-owned {_LANGGRAPH_OWNER}")
 
+        # (c.1) CS-318 core: >=5 components (up from 1), connected call flow, and every wiring step
+        # resolved to a REAL component — none silently dropped, none a needs_human placeholder.
+        plain_edges = sum(len(c.upstream) + len(c.downstream) for c in plain_map.components)
+        needs_human = [c for c in plain_map.components if getattr(c, "needs_human", None)]
+        if len(plain_map.components) < 5:
+            failures.append(f"plain_python map has {len(plain_map.components)} components, expected >=5 (steps dropped)")
+        if plain_edges == 0:
+            failures.append("plain_python map has ZERO topology edges — call flow not connected")
+        if needs_human:
+            failures.append(f"plain_python steps unresolved by every layer (needs_human): {[c.id for c in needs_human]}")
+
+        # (c.2) Resolver guard against RRF noise: the 4 out-of-file steps must resolve to their TRUE
+        # definers (_graph_plan.py via import, base.py via inheritance) — no junk file admitted; and the
+        # ONE forced step must have gone down the LIVE RRF path and still landed the correct definer.
+        def _rel(r) -> str:
+            return (r.defining_file or "").replace("\\", "/")
+        forced = plain_layers.get(_FORCE_RRF_STEP)
+        if forced is None:
+            failures.append(f"forced RRF step {_FORCE_RRF_STEP!r} not present among resolver steps")
+        else:
+            if forced.layer != "rrf":
+                failures.append(f"forced step {_FORCE_RRF_STEP!r} resolved via {forced.layer!r}, expected 'rrf' (live-RRF path not exercised)")
+            if not _rel(forced).endswith("_graph_plan.py"):
+                failures.append(f"RRF resolved {_FORCE_RRF_STEP!r} to {_rel(forced)!r}, expected the real _graph_plan.py definer")
+        # Every resolved step's file must be a genuine definer (no RRF junk leaked as a component).
+        for callee, r in plain_layers.items():
+            if r.defining_file and not (_rel(r).endswith("_graph_plan.py") or _rel(r).endswith("base.py")):
+                failures.append(f"resolver admitted a non-definer file for {callee!r}: {_rel(r)!r} (possible RRF noise)")
+        # The free layers must have done the real work on the other steps (not RRF masking a regression).
+        free_layers = {r.layer for c, r in plain_layers.items() if c != _FORCE_RRF_STEP and r.defining_file}
+        if not free_layers or not (free_layers <= {"import", "mro"}):
+            failures.append(f"non-forced steps did not all resolve via free import/mro layers: {free_layers}")
+
         # (d) QAAgent must appear in NONE of the other two maps.
         for other_label, other_map in (("haystack", hay_map), ("langgraph", lg_map)):
             if any(_is_qaagent(c) for c in other_map.components):
                 failures.append(f"QAAgent bled into the {other_label} map")
+
+        # (e) CS-318: LangGraph completes Stage 2 end-to-end — a non-empty agent flow on top of the map.
+        try:
+            from agent_eval_harness.mapping.agent_flow import build_source_by_component, separate_agent_flows
+            lg_abs = [local_path / f for f in (lg.get("matched_files") or [])]
+            lg_src = build_source_by_component(lg_abs, lg_map)
+            lg_flow = await separate_agent_flows(lg_map, lg_src, llm, files=lg_abs)
+            n_agents = len(lg_flow.agents)
+            print(f"\n[stage 2 agent-flow] LangGraph agent flow: agents={n_agents} "
+                  f"entry={len(lg_flow.entry_agent_ids)} unassigned={len(lg_flow.unassigned_component_ids)}")
+            if n_agents == 0:
+                failures.append("LangGraph agent flow is EMPTY — Stage 2 did not complete end-to-end")
+        except Exception as e:
+            failures.append(f"LangGraph agent-flow generation raised: {e}")
 
         print("\n=== ACCEPTANCE SUMMARY (THREE scoped single-framework systems) ===")
         print(f"  (1) Haystack     : name={hay['name']!r}  components={len(hay_map.components)}  "

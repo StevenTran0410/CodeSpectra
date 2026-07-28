@@ -80,7 +80,9 @@ def scan_for_prompt_sites(repo_root: Path, accepted_files: list[str]) -> dict[st
             # Detector 2: LLM SDK calls with string literal prompts
             elif isinstance(node, ast.Call):
                 func_name = _get_call_func_name(node)
-                if func_name and _matches_sdk_pattern(func_name):
+                # _matches_sdk_pattern alone never decides: it must be corroborated by a receiver
+                # (an attribute call, e.g. `client.messages.create(...)`), never a bare name call.
+                if func_name and _matches_sdk_pattern(func_name) and isinstance(node.func, ast.Attribute):
                     if node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
                         snippet = node.args[0].value[:_SDK_CALL_SNIPPET_CHARS]
                         sites.append(PromptSite(
@@ -145,7 +147,8 @@ def _get_call_func_name(call: ast.Call) -> str | None:
 
 
 def _matches_sdk_pattern(func_name: str) -> bool:
-    """Check if function name matches known LLM SDK patterns."""
+    """Name match only — necessary but not sufficient; the call site also requires an attribute
+    receiver before this can decide sdk_call."""
     patterns = ['ChatCompletion', 'messages', 'create', 'complete', 'chat']
     return any(p.lower() in func_name.lower() for p in patterns)
 

@@ -22,10 +22,10 @@ from agent_eval_harness.discovery.wiring import (
 from agent_eval_harness.mapping.builder.types import (
     CandidateComponent,
     ManualSpanHint,
+    _extract_source_snippet,
+    find_symbol_node,
     parse_python_source,
 )
-
-_SNIPPET_LINE_COUNT = 30  # first N lines of a class/function body kept as its source_snippet
 
 
 @runtime_checkable
@@ -155,9 +155,7 @@ class HaystackScanner:
                             haystack_name = name
                             break
 
-                    source_snippet = _extract_source_snippet(
-                        file, node.lineno, source_lines
-                    )
+                    source_snippet, snippet_truncated = _extract_source_snippet(node, source_lines)
                     manual_span_hints = _extract_manual_spans(node, file)
 
                     candidate = CandidateComponent(
@@ -166,6 +164,7 @@ class HaystackScanner:
                         class_name=node.name,
                         haystack_name=haystack_name,
                         source_snippet=source_snippet,
+                        snippet_truncated=snippet_truncated,
                         manual_span_hints=manual_span_hints,
                     )
                     candidates.append(candidate)
@@ -199,7 +198,7 @@ class HaystackScanner:
                             )
 
         # Sub-span split and dedup/sort
-        candidates = _split_sub_spans(candidates)
+        candidates = _split_sub_spans(candidates, file_contents)
         candidates = _dedup_and_sort(candidates)
 
         return candidates
@@ -218,14 +217,6 @@ class HaystackScanner:
             return node.func.attr == "add_component"
         return False
 
-def _extract_source_snippet(file: Path, line: int, lines: list[str]) -> str:
-    """Extract first ~30 lines of a class/function body."""
-    if line <= 1 or line > len(lines):
-        return ""
-    start = line
-    end = min(line + _SNIPPET_LINE_COUNT - 1, len(lines))
-    return "\n".join(lines[start : end + 1])
-
 
 def _extract_manual_spans(node: ast.ClassDef, file: Path) -> list[ManualSpanHint]:
     """Extract manual_span() calls from a class's methods."""
@@ -241,7 +232,7 @@ def _extract_manual_spans(node: ast.ClassDef, file: Path) -> list[ManualSpanHint
                             if isinstance(context_expr.func, ast.Name):
                                 if context_expr.func.id == "manual_span":
                                     hint = _parse_manual_span_call(
-                                        context_expr, file, context_expr.lineno
+                                        context_expr, file, context_expr.lineno, child.end_lineno,
                                     )
                                     if hint:
                                         hints.append(hint)
@@ -250,7 +241,7 @@ def _extract_manual_spans(node: ast.ClassDef, file: Path) -> list[ManualSpanHint
 
 
 def _parse_manual_span_call(
-    call: ast.Call, file: Path, line: int
+    call: ast.Call, file: Path, line: int, end_line: int | None = None,
 ) -> ManualSpanHint | None:
     """Parse a manual_span(op_name, component_name, tags=...) call."""
     if len(call.args) < 2:
@@ -289,6 +280,7 @@ def _parse_manual_span_call(
         tags=tags,
         file=file,
         line=line,
+        end_line=end_line,
     )
 
 
@@ -330,7 +322,7 @@ def _extract_tool_candidates(
         # Use pre-parsed source_lines if available, else read from file
         if source_lines is None:
             source_lines = file.read_text(encoding="utf-8").splitlines()
-        source_snippet = _extract_source_snippet(file, func_node.lineno, source_lines)
+        source_snippet, snippet_truncated = _extract_source_snippet(func_node, source_lines)
 
         candidate = CandidateComponent(
             file=file,
@@ -341,11 +333,37 @@ def _extract_tool_candidates(
             owner_class_name=owner_class_name,
             entry_kind="function",
             source_snippet=source_snippet,
+            snippet_truncated=snippet_truncated,
         )
         candidates.append(candidate)
 
 
-def _split_sub_spans(candidates: list[CandidateComponent]) -> list[CandidateComponent]:
+def _span_scoped_snippet(
+    candidate: CandidateComponent, hints: list[ManualSpanHint], file_contents: dict[str, str] | None,
+) -> tuple[str, bool] | None:
+    """Evidence region for a split child: the enclosing `with manual_span(...)` block(s) around its
+    OWN hints, not the whole symbol two siblings would otherwise share byte-identically. None
+    (degrade to the parent's whole-symbol snippet) when a hint has no end_line or the file content
+    isn't available."""
+    if not file_contents:
+        return None
+    bounded = [h for h in hints if h.end_line]
+    if not bounded:
+        return None
+    source = file_contents.get(str(candidate.file))
+    if source is None:
+        return None
+    lines = source.splitlines()
+    start = min(h.line for h in bounded)
+    end = max(h.end_line for h in bounded)
+    if start < 1 or end > len(lines):
+        return None
+    return "\n".join(lines[start - 1 : end]), False
+
+
+def _split_sub_spans(
+    candidates: list[CandidateComponent], file_contents: dict[str, str] | None = None,
+) -> list[CandidateComponent]:
     """Split candidates with multi-valued tag keys in their manual_span_hints."""
     result = []
 
@@ -387,6 +405,8 @@ def _split_sub_spans(candidates: list[CandidateComponent]) -> list[CandidateComp
         else:
             for tag_key, value_dict in split_info.items():
                 for tag_value, hints_for_value in value_dict.items():
+                    scoped = _span_scoped_snippet(candidate, hints_for_value, file_contents)
+                    snippet, truncated = scoped if scoped else (candidate.source_snippet, candidate.snippet_truncated)
                     split_candidate = CandidateComponent(
                         file=candidate.file,
                         line=candidate.line,
@@ -397,8 +417,10 @@ def _split_sub_spans(candidates: list[CandidateComponent]) -> list[CandidateComp
                         registered_name=candidate.registered_name,
                         owner_class_name=candidate.owner_class_name,
                         entry_kind=candidate.entry_kind,
-                        source_snippet=candidate.source_snippet,
-                        model_hints=candidate.model_hints,
+                        is_library_object=candidate.is_library_object,
+                        framework=candidate.framework,
+                        source_snippet=snippet,
+                        snippet_truncated=truncated,
                         manual_span_hints=hints_for_value,
                     )
                     result.append(split_candidate)
@@ -468,12 +490,17 @@ class LangGraphScanner:
                         known_class_names, str(file), file_contents,
                     )
                     if alias and callee:
-                        arg1 = node.args[1]
-                        line = arg1.lineno if hasattr(arg1, "lineno") else node.lineno
+                        # Anchor on the callee's OWN def/class node, not the add_node() call site;
+                        # falls back to the call-arg node when the callee isn't defined in this same
+                        # file (e.g. resolved to a constructor elsewhere).
+                        def_node = find_symbol_node(tree, [owner, callee] if owner else [callee])
+                        anchor = def_node if def_node is not None else node.args[1]
+                        line = anchor.lineno if hasattr(anchor, "lineno") else node.lineno
+                        snippet, truncated = _extract_source_snippet(anchor, source_lines)
                         candidates.append(CandidateComponent(
                             file=file, line=line, class_name=callee,
                             entry_kind=entry_kind, owner_class_name=owner,
-                            source_snippet=_extract_source_snippet(file, node.lineno, source_lines),
+                            source_snippet=snippet, snippet_truncated=truncated,
                         ))
 
                 elif (
@@ -484,10 +511,11 @@ class LangGraphScanner:
                     and _call_func_name(node.value) == "create_react_agent"
                     and imports_lg
                 ):
+                    snippet, truncated = _extract_source_snippet(node, source_lines)
                     candidates.append(CandidateComponent(
                         file=file, line=node.lineno, class_name=node.targets[0].id,
                         entry_kind="function",
-                        source_snippet=_extract_source_snippet(file, node.lineno, source_lines),
+                        source_snippet=snippet, snippet_truncated=truncated,
                     ))
 
             if imports_lg:
@@ -497,13 +525,14 @@ class LangGraphScanner:
                             _decorator_effective_name(d) in ("task", "entrypoint")
                             for d in node.decorator_list
                         ):
+                            snippet, truncated = _extract_source_snippet(node, source_lines)
                             candidates.append(CandidateComponent(
                                 file=file, line=node.lineno, class_name=node.name,
                                 entry_kind="function",
-                                source_snippet=_extract_source_snippet(file, node.lineno, source_lines),
+                                source_snippet=snippet, snippet_truncated=truncated,
                             ))
 
-        candidates = _split_sub_spans(candidates)
+        candidates = _split_sub_spans(candidates, file_contents)
         candidates = _dedup_and_sort(candidates)
         return candidates
 

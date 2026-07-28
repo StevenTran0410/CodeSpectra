@@ -59,6 +59,22 @@ class OpenAIAdapter(CloudAdapterBase):
         except Exception as e:
             raise ProviderError(self._code_unknown(), str(e), provider_id=self.config.id) from e
 
+    async def list_embedding_models(self) -> list[str]:
+        """Embedding models the endpoint actually exposes via /v1/models (id contains 'embedding')."""
+        try:
+            res = await self._client.get("/v1/models", headers=self._auth())
+            res.raise_for_status()
+            raw_ids = [m["id"] for m in res.json().get("data", []) if isinstance(m, dict) and "id" in m]
+            return sorted(m for m in raw_ids if "embedding" in m.lower())
+        except httpx.ConnectError as e:
+            raise self._map_connect_error(e) from e
+        except httpx.TimeoutException as e:
+            raise self._map_timeout(e) from e
+        except httpx.HTTPStatusError as e:
+            raise self._map_http_error(e) from e
+        except Exception as e:
+            raise ProviderError(self._code_unknown(), str(e), provider_id=self.config.id) from e
+
     # Models that reject any explicit temperature value — must omit it from the payload.
     # GPT-5 series and reasoning models (o1/o3/o4) only accept their built-in default.
     _NO_TEMPERATURE_PREFIXES = ("o1", "o3", "o4", "gpt-5")

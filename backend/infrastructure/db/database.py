@@ -574,6 +574,36 @@ ALTER TABLE retrieval_chunks ADD COLUMN split_part INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE retrieval_chunks ADD COLUMN split_of    INTEGER NOT NULL DEFAULT 1;
 """,
     },
+    {
+        "version": 35,
+        "description": "Widen idx_sym_edges_unique to (snapshot_id, src_symbol, dst_symbol, edge_type) to support multi-edge kinds between symbol pairs",
+        "sql": """
+DROP INDEX IF EXISTS idx_sym_edges_unique;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sym_edges_unique ON symbol_graph_edges(snapshot_id, src_symbol, dst_symbol, edge_type);
+""",
+    },
+    {
+        "version": 36,
+        "description": "Add qualified_name column to code_symbols for FQN graph-signal joins",
+        "sql": """
+ALTER TABLE code_symbols ADD COLUMN qualified_name TEXT;
+CREATE INDEX IF NOT EXISTS idx_symbols_qname ON code_symbols(snapshot_id, qualified_name);
+UPDATE code_symbols SET qualified_name = rel_path || '::' || CASE WHEN parent_name IS NOT NULL AND parent_name<>'' THEN parent_name||'.'||name ELSE name END;
+""",
+    },
+    {
+        "version": 37,
+        "description": "Add name_segment_vocab table for CS-331 fuzzy symbol lookup and segment matching",
+        "sql": """
+CREATE TABLE IF NOT EXISTS name_segment_vocab (
+    snapshot_id TEXT NOT NULL,
+    segment     TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    PRIMARY KEY (snapshot_id, segment, name)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS idx_vocab_seg ON name_segment_vocab(snapshot_id, segment);
+""",
+    },
 ]
 
 TARGET_VERSION = len(_MIGRATIONS) - 1

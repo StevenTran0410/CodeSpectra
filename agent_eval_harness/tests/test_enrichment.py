@@ -241,6 +241,7 @@ async def test_zero_query_fast_path_when_coverage_sufficient() -> None:
         force_agent_ids: list = None
         semaphore: object = None
         repo_root: object = None
+        system_type: str | None = None
 
         def __post_init__(self):
             if self.agent_flow_map is None:
@@ -322,14 +323,20 @@ async def test_rerun_cache_hit_reads_actual_json(tmp_path: Path, monkeypatch: py
 
     import hashlib
     from agent_eval_harness.discovery.enrichment import _STRUCTURAL_PRODUCER_VERSION
-    component_ids = sorted([c['id'] for c in evidence['component_by_agent'].get("test_agent", [])])
+    components_list = evidence['component_by_agent'].get("test_agent", [])
+    component_ids = sorted([c['id'] for c in components_list])
     edges = sorted([(e['src'], e['dst']) for e in evidence['edges_by_agent'].get("test_agent", [])])
     accepted_files = []
+    component_attrs = sorted([
+        f"{c['id']}:{c.get('motif', 'N')}:{c.get('is_tool', False)}:{c.get('constructor_fanout', 0)}:{len(c.get('conditional_downstream', []))}"
+        for c in components_list
+    ])
     hash_input = '|'.join([
         str(_STRUCTURAL_PRODUCER_VERSION),
         ':'.join(component_ids),
         ':'.join(str(len(accepted_files))),
         ':'.join(f"{s}→{d}" for s, d in edges),
+        ':'.join(component_attrs),
     ])
     correct_hash = hashlib.sha256(hash_input.encode('utf-8')).hexdigest()
 
@@ -361,6 +368,7 @@ async def test_rerun_cache_hit_reads_actual_json(tmp_path: Path, monkeypatch: py
         force_agent_ids: list = None
         semaphore: object = None
         repo_root: object = None
+        system_type: str | None = None
 
         def __post_init__(self):
             if self.agent_flow_map is None:
@@ -803,6 +811,126 @@ async def test_ac1_unit_proxy_validator_survives_for_high_fan_in_auditor_shaped_
     assert saved.component_by_id("auditor").role == "validator"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "returned_id",
+    [
+        "worker_c @ pkg/w.py",             # the exact shape observed in a real run
+        'id="worker_c"',
+        "worker_c (file: pkg/w.py)",
+    ],
+)
+async def test_decorated_component_id_still_lands_its_role(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, returned_id: str
+) -> None:
+    """The prompt renders components as `id="x" (file: ...)`; a model that echoes the decoration
+    instead of the bare id used to have its verdict silently dropped, leaving a stray 'unknown'."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "w.py").write_text("class W:\n    pass\n", encoding="utf-8")
+
+    system_map = SystemMap(
+        target_system_id="t",
+        components=[Component(id="worker_c", role="unknown", entry_point="pkg.w:W",
+                              file="pkg/w.py", is_tool=False, constructor_fanout=0)],
+    )
+    agent_flow_map = AgentFlowMap(
+        target_system_id="t",
+        agents=[AgentFlow(id="a", label="A", component_ids=["worker_c"])],
+    )
+
+    class _DecoratedIdClient:
+        async def complete(self, messages, *, max_tokens=512, temperature=0.2, json_mode=False, reasoning_effort=None):
+            from agent_eval_harness.llm.client import LLMResponse
+            return LLMResponse(content=json.dumps({
+                "component_roles": [
+                    {"id": returned_id, "role": "worker", "confidence": 0.9, "reasoning": "transforms input"}
+                ],
+                "functionality": "does work", "functionality_citations": [],
+                "context_builders": [], "upstream_consumers": [], "downstream_consumers": [],
+                "failure_modes": [], "need_more": False, "next_queries": [],
+            }), model="fake")
+
+    map_path = tmp_path / "map.yaml"
+    await enrich_agents(
+        session_id=f"decorated-{abs(hash(returned_id))}",
+        agent_flow_map=agent_flow_map,
+        system_map=system_map,
+        accepted_with_annotations=["pkg/w.py"],
+        accepted_edges=[],
+        client=None,
+        llm_client=_DecoratedIdClient(),
+        snapshot_id="",
+        repo_root=tmp_path,
+        map_path=map_path,
+    )
+
+    from agent_eval_harness.mapping.system_map import load_system_map
+    assert load_system_map(map_path).component_by_id("worker_c").role == "worker"
+
+
+@pytest.mark.asyncio
+async def test_genuinely_unknown_component_id_is_still_discarded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The tolerant match must not become 'accept anything' — an id for a different component
+    still gets dropped rather than inventing a role."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "w.py").write_text("class W:\n    pass\n", encoding="utf-8")
+
+    system_map = SystemMap(
+        target_system_id="t",
+        components=[Component(id="worker_c", role="unknown", entry_point="pkg.w:W",
+                              file="pkg/w.py", is_tool=False, constructor_fanout=0)],
+    )
+    agent_flow_map = AgentFlowMap(
+        target_system_id="t", agents=[AgentFlow(id="a", label="A", component_ids=["worker_c"])]
+    )
+
+    class _WrongIdClient:
+        async def complete(self, messages, *, max_tokens=512, temperature=0.2, json_mode=False, reasoning_effort=None):
+            from agent_eval_harness.llm.client import LLMResponse
+            return LLMResponse(content=json.dumps({
+                "component_roles": [
+                    {"id": "some_other_agent @ pkg/other.py", "role": "writer", "confidence": 0.9, "reasoning": "x"}
+                ],
+                "functionality": "does work", "functionality_citations": [],
+                "context_builders": [], "upstream_consumers": [], "downstream_consumers": [],
+                "failure_modes": [], "need_more": False, "next_queries": [],
+            }), model="fake")
+
+    map_path = tmp_path / "map.yaml"
+    await enrich_agents(
+        session_id="wrong-id", agent_flow_map=agent_flow_map, system_map=system_map,
+        accepted_with_annotations=["pkg/w.py"], accepted_edges=[], client=None,
+        llm_client=_WrongIdClient(), snapshot_id="", repo_root=tmp_path, map_path=map_path,
+    )
+
+    # No verdict survived, so nothing is written back and the component keeps its prior role.
+    assert system_map.component_by_id("worker_c").role == "unknown"
+    assert not map_path.exists()
+
+
+def test_role_vocabulary_present_and_framework_neutral() -> None:
+    """The enrichment prompt must DEFINE each role (so a model doesn't invent its own meaning and
+    drift run-to-run) while staying framework/target-neutral — no repo, framework, or concrete
+    symbol may leak into the role definitions (nguyên tắc số 0)."""
+    from agent_eval_harness.discovery.enrichment import _ENRICH_SYSTEM
+
+    for role in ("retrieval_agent", "worker", "validator", "writer", "orchestrator", "tool"):
+        assert f"- {role}:" in _ENRICH_SYSTEM, f"{role} has no definition in the enrichment prompt"
+
+    lowered = _ENRICH_SYSTEM.lower()
+    for banned in (
+        "haystack", "langgraph", "langchain", "crewai", "autogen", "deepresearch",
+        "codespectra", "plan_queries", "retrieve_multi", "_node_", "stategraph",
+    ):
+        assert banned not in lowered, f"role vocabulary leaked a target/framework literal: {banned!r}"
+
+
 def test_agent_flow_role_derivation_is_deterministic_never_llm() -> None:
     """AgentFlow.role is derived in code, never asked of the LLM."""
     from agent_eval_harness.discovery.enrichment import _derive_agent_role
@@ -861,14 +989,20 @@ async def test_cache_hit_coerces_pre_cs300_empty_role_to_unknown_never_crashes(t
         "edges_by_agent": {"test_agent": []}, "source_coverage": {"test_agent": 0.0},
     }
 
-    component_ids = sorted([c['id'] for c in evidence['component_by_agent'].get("test_agent", [])])
+    components_list = evidence['component_by_agent'].get("test_agent", [])
+    component_ids = sorted([c['id'] for c in components_list])
     edges = sorted([(e['src'], e['dst']) for e in evidence['edges_by_agent'].get("test_agent", [])])
     accepted_files = []
+    component_attrs = sorted([
+        f"{c['id']}:{c.get('motif', 'N')}:{c.get('is_tool', False)}:{c.get('constructor_fanout', 0)}:{len(c.get('conditional_downstream', []))}"
+        for c in components_list
+    ])
     hash_input = '|'.join([
         str(_STRUCTURAL_PRODUCER_VERSION),
         ':'.join(component_ids),
         ':'.join(str(len(accepted_files))),
         ':'.join(f"{s}→{d}" for s, d in edges),
+        ':'.join(component_attrs),
     ])
     correct_hash = hashlib.sha256(hash_input.encode('utf-8')).hexdigest()
 
@@ -892,6 +1026,7 @@ async def test_cache_hit_coerces_pre_cs300_empty_role_to_unknown_never_crashes(t
         force_agent_ids: list = None
         semaphore: object = None
         repo_root: object = None
+        system_type: str | None = None
 
         def __post_init__(self):
             self.agent_flow_map = self.agent_flow_map or flow_map
@@ -952,6 +1087,7 @@ async def test_cs301_slice1_cache_hash_comparison(tmp_path: Path, monkeypatch: p
         force_agent_ids: list = None
         semaphore: object = None
         repo_root: object = None
+        system_type: str | None = None
 
         def __post_init__(self):
             self.agent_flow_map = self.agent_flow_map or flow_map
@@ -966,6 +1102,102 @@ async def test_cs301_slice1_cache_hash_comparison(tmp_path: Path, monkeypatch: p
     # Hash differs from stored, so the LLM was called and we get a fresh response
     assert knowledge.functionality == "Fresh LLM response"
     assert llm_client.call_count == 1
+
+
+@pytest.mark.anyio
+async def test_cache_version_bump_busts_pre_fix_sidecar(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """CS-326 finding #1: _STRUCTURAL_PRODUCER_VERSION now also depends on a contract-producer-version
+    token (the last element of _HASH_INPUT_FIELDS) so the harvest-logic fixes in this ticket bust
+    every pre-fix sidecar exactly once. A sidecar hashed under the field shape from BEFORE that token
+    was added must MISS on the next enrichment (re-harvest), never silently serve stale pre-fix
+    output_contract/input_schemas/virtual_inputs; a subsequent run then warm-cache-hits normally."""
+    monkeypatch.setenv("AEH_DATA_DIR", str(tmp_path))
+    import hashlib
+    from dataclasses import dataclass
+
+    from agent_eval_harness.discovery.enrichment import (
+        _enrich_single_agent,
+        _HASH_INPUT_FIELDS,
+        _STRUCTURAL_PRODUCER_VERSION,
+    )
+
+    json_dir = tmp_path / "agents" / "test-session"
+    json_dir.mkdir(parents=True, exist_ok=True)
+    json_path = json_dir / "test_agent.json"
+    json_path.write_text(json.dumps({"functionality": "STALE pre-fix content"}), encoding="utf-8")
+
+    # Reproduces exactly what evidence_hash would have been under the field shape from BEFORE this
+    # ticket's cache-bump (one fewer element in _HASH_INPUT_FIELDS), for these same empty inputs.
+    pre_bump_version = hashlib.sha256("|".join(_HASH_INPUT_FIELDS[:-1]).encode("utf-8")).hexdigest()[:12]
+    pre_bump_hash_input = '|'.join([str(pre_bump_version), '', '0', '', ''])
+    pre_bump_hash = hashlib.sha256(pre_bump_hash_input.encode('utf-8')).hexdigest()
+
+    await repository.upsert_agent_knowledge(
+        session_id="test-session", agent_id="test_agent",
+        md_path=str(json_dir / "test_agent.md"), json_path=str(json_path),
+        evidence_hash=pre_bump_hash, confidence="medium", query_count=0,
+    )
+
+    agent = AgentFlow(id="test_agent", label="Test", component_ids=[])
+    flow_map = AgentFlowMap(target_system_id="test", agents=[agent])
+    system_map = SystemMap(target_system_id="test", components=[])
+    evidence = {
+        "prompt_sites_by_file": {}, "component_by_agent": {"test_agent": []},
+        "edges_by_agent": {"test_agent": []}, "source_coverage": {"test_agent": 0.0},
+    }
+    llm_client = _StubLLMClient({"functionality": "FRESH post-fix content"})
+
+    @dataclass
+    class _EnrichCtx:
+        session_id: str = "test-session"
+        snapshot_id: str = ""
+        agent_flow_map: AgentFlowMap = None
+        system_map: SystemMap = None
+        accepted_with_annotations: list = None
+        accepted_edges: list = None
+        client: object = None
+        llm_client: object = None
+        depth: str = "normal"
+        force_agent_ids: list = None
+        semaphore: object = None
+        repo_root: object = None
+        system_type: str | None = None
+
+        def __post_init__(self):
+            self.agent_flow_map = self.agent_flow_map or flow_map
+            self.system_map = self.system_map or system_map
+            self.accepted_with_annotations = self.accepted_with_annotations or []
+            self.accepted_edges = self.accepted_edges or []
+            self.force_agent_ids = self.force_agent_ids or []
+
+    depth_cap = _DEPTH_CAP
+    knowledge = await _enrich_single_agent("test_agent", evidence, _EnrichCtx(llm_client=llm_client), depth_cap, [])
+
+    assert knowledge.functionality == "FRESH post-fix content", (
+        "a sidecar cached under the pre-cache-bump field shape must MISS and re-harvest, "
+        "never silently serve stale pre-fix data"
+    )
+    assert llm_client.call_count == 1
+
+    # Warm-cache path: _enrich_single_agent alone never persists (that is enrich_agents' _persist
+    # node), so simulate what the first run above would have written -- the CURRENT-version hash and
+    # the freshly re-harvested content -- then a second lookup with matching evidence_hash cache-hits
+    # (mirrors test_cs301_slice1_cache_hash_comparison's precedent).
+    json_path.write_text(json.dumps({"functionality": "FRESH post-fix content"}), encoding="utf-8")
+    current_hash_input = '|'.join([str(_STRUCTURAL_PRODUCER_VERSION), '', '0', '', ''])
+    current_hash = hashlib.sha256(current_hash_input.encode('utf-8')).hexdigest()
+    await repository.upsert_agent_knowledge(
+        session_id="test-session", agent_id="test_agent",
+        md_path=str(json_dir / "test_agent.md"), json_path=str(json_path),
+        evidence_hash=current_hash, confidence="medium", query_count=0,
+    )
+
+    llm_client_2 = _StubLLMClient({"functionality": "SHOULD NOT BE CALLED"})
+    knowledge_2 = await _enrich_single_agent(
+        "test_agent", evidence, _EnrichCtx(llm_client=llm_client_2), depth_cap, []
+    )
+    assert knowledge_2.functionality == "FRESH post-fix content"
+    assert llm_client_2.call_count == 0, "a warm cache (current version) must hit, not re-call the LLM"
 
 
 @pytest.mark.anyio
@@ -1006,6 +1238,7 @@ async def test_cs301_slice4_confidence_needs_human_cap(tmp_path: Path, monkeypat
         force_agent_ids: list = None
         semaphore: object = None
         repo_root: object = None
+        system_type: str | None = None
 
         def __post_init__(self):
             self.agent_flow_map = self.agent_flow_map or flow_map
@@ -1061,6 +1294,7 @@ async def test_cs301_slice4_confidence_degraded_is_low() -> None:
         force_agent_ids: list = None
         semaphore: object = None
         repo_root: object = None
+        system_type: str | None = None
 
         def __post_init__(self):
             self.agent_flow_map = self.agent_flow_map or flow_map
@@ -1078,3 +1312,188 @@ async def test_cs301_slice4_confidence_degraded_is_low() -> None:
 
     assert knowledge.degraded
     assert knowledge.confidence == 'low'
+
+
+def test_cross_validate_output_schema_on_real_deep_research_nodes() -> None:
+    """CS-326 §2.2 real-path check: exercises the entry-scoped prompt cross-check directly against
+    the REAL, parsed backend/domain/qa/deep_research.py (not a fabricated snippet). node_plan and
+    node_synthesize are LLM-calling siblings on the SAME DeepResearchAgent class -- the exact shape
+    of the historical class-leak bug. node_plan's own real schema (`plan_schema`) is a function-local
+    lowercase variable no AST-name resolver reaches, so the AST harvest alone is silent; its own
+    prompt (_PLAN_SYSTEM) embeds a parseable {"steps": [...]} block, which the cross-check adopts.
+    node_synthesize's own AST constant (_SYNTHESIZE_META_SCHEMA) and its own prompt
+    (_SYNTHESIZE_META_SYSTEM) genuinely agree, so no discrepancy is recorded. Neither ever leaks
+    the other's schema."""
+    import ast
+
+    from agent_eval_harness.discovery.enrichment import _cross_validate_output_schema, _entry_scoped_prompt_sites
+    from agent_eval_harness.discovery.prompt_site_scan import scan_for_prompt_sites
+    from agent_eval_harness.mapping.builder.contract_harvest import harvest_component_contract
+    from agent_eval_harness.mapping.system_map import Component
+
+    package_root = Path(__file__).parent.parent.parent / "backend"
+    rel_path = "domain/qa/deep_research.py"
+    disk_path = package_root / rel_path
+    if not disk_path.exists():
+        pytest.skip("deep_research.py not on this checkout")
+
+    tree = ast.parse(disk_path.read_text(encoding="utf-8"))
+    asts = {disk_path: tree}
+    sites_by_file = scan_for_prompt_sites(package_root, [rel_path])
+    cls = next(n for n in ast.walk(tree) if isinstance(n, ast.ClassDef) and n.name == "DeepResearchAgent")
+
+    def _knowledge_for(method_name: str) -> AgentKnowledge:
+        component = Component(
+            id=method_name, role="worker",
+            entry_point=f"domain.qa.deep_research:DeepResearchAgent.{method_name}",
+            file=rel_path, entry_kind="bound_method",
+        )
+        _invocation, output, _constants, _notes, _kind = harvest_component_contract(component, asts, package_root)
+        entry = next(
+            n for n in cls.body
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == method_name
+        )
+        scoped_sites = _entry_scoped_prompt_sites(cls, entry, tree, sites_by_file.get(rel_path, []))
+        validated_output, note = _cross_validate_output_schema(output, scoped_sites)
+        knowledge = AgentKnowledge(output_contract=validated_output)
+        if note:
+            knowledge.needs_human.append(note)
+        return knowledge
+
+    plan = _knowledge_for("_node_plan")
+    synthesize = _knowledge_for("_node_synthesize")
+
+    assert plan.output_contract is not None and plan.output_contract.json_schema is not None
+    assert set(plan.output_contract.json_schema.get("properties", {})) == {"debug", "hop_cap", "plan", "plan_cursor"}
+    assert plan.output_contract.schema_source and "state mutation delta" in plan.output_contract.schema_source
+    assert plan.output_contract.cardinality == "object"
+
+    assert synthesize.output_contract is not None and synthesize.output_contract.json_schema is not None
+    assert set(synthesize.output_contract.json_schema.get("properties", {})) == {"confidence", "reasoning_chain", "summary", "unknowns"}
+    assert synthesize.output_contract.cardinality == "object"
+    # node_synthesize streams the markdown answer (self._call_stream) AND separately returns this
+    # meta-JSON -- the streamed text is never the scorable gold, only this schema is (§2.4).
+    assert synthesize.output_contract.has_streamed_output is True
+    assert plan.output_contract.has_streamed_output is False  # node_plan never streams
+
+    assert plan.output_contract.json_schema != synthesize.output_contract.json_schema
+
+
+@pytest.mark.anyio
+async def test_bare_dict_kwarg_flags_needs_human_not_silently_dropped() -> None:
+    """CS-326 §2.3a real-path check: JudgeComponent.worker_output: dict (a bare, unresolvable
+    container type hint) against the REAL test_targets/multi_agent/components.py. With no upstream
+    agent contract available (the generic, no-wiring-context case), it is flagged needs_human --
+    never silently dropped from input_schemas as a bare "dict" with no trace it was ever seen."""
+    import asyncio
+
+    from agent_eval_harness.discovery.agent_knowledge import ContractArg
+    from agent_eval_harness.discovery.enrichment import _EnrichmentContext, _finalize_input_contract
+    from agent_eval_harness.mapping.builder.contract_harvest import _parse_files, harvest_component_contract
+    from agent_eval_harness.mapping.system_map import Component
+
+    repo_root = Path(__file__).parent.parent / "test_targets"
+    comp_file = repo_root / "multi_agent" / "components.py"
+    asts = _parse_files([comp_file])
+    component = Component(
+        id="judge", role="validator",
+        entry_point="test_targets.multi_agent.components:JudgeComponent",
+        file="multi_agent/components.py",
+    )
+    invocation, _output, _constants, _notes, _kind = harvest_component_contract(component, asts, repo_root)
+    assert invocation is not None
+    input_contract = [
+        ContractArg(kwarg=k.name, type_hint=k.annotation or "", example="")
+        for k in invocation.kwargs
+    ]
+    assert {a.kwarg for a in input_contract} == {"query", "worker_output"}
+
+    knowledge = AgentKnowledge(input_contract=input_contract)
+    ctx = _EnrichmentContext(
+        session_id="t", snapshot_id="", agent_flow_map=AgentFlowMap(target_system_id="t", agents=[]),
+        system_map=SystemMap(target_system_id="t", components=[]),
+        accepted_with_annotations=[], accepted_edges=[], client=None, llm_client=None,
+        depth="normal", force_agent_ids=[], semaphore=asyncio.Semaphore(1),
+    )
+    await _finalize_input_contract(ctx, knowledge, None)
+
+    assert "worker_output" not in knowledge.input_schemas
+    assert any("worker_output" in n for n in knowledge.needs_human)
+    worker_output_arg = next(a for a in knowledge.input_contract if a.kwarg == "worker_output")
+    assert worker_output_arg.source_kind == "runtime-state"
+
+
+@pytest.mark.anyio
+async def test_schema_enum_values_populated_on_persisted_evaluation_contract_for_live_agents(
+    tmp_path, monkeypatch
+) -> None:
+    """CS-326 §2.4 real-path check: enum-whitelist post-processing guards on 3 real live-system
+    agents (StructureAgent's folder-role guard, ViolationsAgent's rule-strength/violation-severity
+    guards, AuditAgent's _normalize_conf-based confidence normalizer) populate
+    OutputContract.schema_enum_values -- previously always {} (declared, consumed by
+    injection/scoring.py, never written). Runs the full enrich_agents DAG, persists to a temp session
+    dir, and asserts on the RELOADED sidecar's evaluation_contract, not the in-memory
+    harvest_contracts() result and not suite-count."""
+    monkeypatch.setenv("AEH_DATA_DIR", str(tmp_path))
+    from agent_eval_harness.discovery.enrichment import agent_knowledge_dir
+    from agent_eval_harness.llm.client import LLMResponse
+    from agent_eval_harness.llm.fake_client import FakeLLMClient
+
+    package_root = Path(__file__).parent.parent.parent / "backend"
+    targets = {
+        "structure": (
+            "domain/analysis/agents/agent_structure.py",
+            "domain.analysis.agents.agent_structure:StructureAgent",
+        ),
+        "violations": (
+            "domain/analysis/agents/agent_violations.py",
+            "domain.analysis.agents.agent_violations:ViolationsAgent",
+        ),
+        "auditor": (
+            "domain/analysis/agents/agent_auditor.py",
+            "domain.analysis.agents.agent_auditor:AuditAgent",
+        ),
+    }
+    for rel_file, _entry_point in targets.values():
+        if not (package_root / rel_file).exists():
+            pytest.skip(f"{rel_file} not on this checkout")
+
+    components = [
+        Component(id=agent_id, role="worker", entry_point=entry_point, file=rel_file)
+        for agent_id, (rel_file, entry_point) in targets.items()
+    ]
+    system_map = SystemMap(target_system_id="codespectra-analysis", components=components)
+    agent_flow_map = AgentFlowMap(
+        target_system_id="codespectra-analysis",
+        agents=[AgentFlow(id=c.id, component_ids=[c.id]) for c in components],
+    )
+    accepted_files = [rel_file for rel_file, _entry_point in targets.values()]
+
+    session_id = "cs326-schema-enum-values"
+    llm_client = FakeLLMClient(LLMResponse(content="{}", model="fake"))
+    await enrich_agents(
+        session_id=session_id, agent_flow_map=agent_flow_map, system_map=system_map,
+        accepted_with_annotations=accepted_files, accepted_edges=[], client=None,
+        llm_client=llm_client, snapshot_id="", repo_root=package_root,
+    )
+
+    sidecar_dir = agent_knowledge_dir(session_id)
+    reloaded: dict[str, AgentKnowledge] = {}
+    for agent_id in targets:
+        json_path = sidecar_dir / f"{agent_id}.json"
+        assert json_path.exists(), f"no sidecar written for {agent_id}"
+        reloaded[agent_id] = AgentKnowledge.from_json(json.loads(json_path.read_text(encoding="utf-8")))
+        assert reloaded[agent_id].evaluation_contract is not None
+        assert reloaded[agent_id].evaluation_contract.output is not None
+
+    structure_enum = reloaded["structure"].evaluation_contract.output.schema_enum_values
+    assert set(structure_enum.get("role", [])) == {
+        "domain", "infrastructure", "delivery", "shared", "test", "generated", "unknown",
+    }
+
+    violations_enum = reloaded["violations"].evaluation_contract.output.schema_enum_values
+    assert "severity" in violations_enum and violations_enum["severity"]
+
+    auditor_enum = reloaded["auditor"].evaluation_contract.output.schema_enum_values
+    assert set(auditor_enum.get("overall_confidence", [])) == {"high", "medium", "low"}
+    assert set(auditor_enum.get("section_scores", [])) == {"high", "medium", "low"}

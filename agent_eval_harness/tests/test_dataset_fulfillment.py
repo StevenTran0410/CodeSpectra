@@ -93,30 +93,25 @@ async def test_field_match_gold_derives_tech_stack_from_disk(tmp_path):
     assert "python" in expected["field_paths"]["tech_stack"]
 
 
-async def test_snapshot_regression_baseline_always_needs_human(tmp_path):
-    plan_path = tmp_path / "plan.yaml"
-    _write_plan(plan_path, textwrap.dedent("""\
-          - id: agent1.baseline
-            component: c1
-            agent_id: agent1
-            metric: field_match
-            metric_class: assertion
-            params: {fields: ["x"]}
-            dataset:
-              required: {kind: snapshot_regression_baseline, min_cases: 1}
-            rationale: r
-            provenance: rule
-    """))
-    llm_client = FakeLLMClient(LLMResponse(content="{}", model="fake"))
+def test_fulfillment_input_acceptance_gate():
+    """FIX 3: _validate_case_input_against_contract enforces missing-required against the contract across all kinds (foreign-field lives in the per-generator gate)."""
+    from agent_eval_harness.datasets.fulfillment import _validate_case_input_against_contract
+    from agent_eval_harness.planning.contract import EvaluationContract, InvocationContract, KwargSpec
 
-    report = await fulfill_plan(
-        plan_path, str(tmp_path / "map.yaml"), "snap-1", str(tmp_path),
-        "prov-1", "model-1", llm_client,
+    contract = EvaluationContract(
+        agent_id="a1",
+        invocation=InvocationContract(kwargs=[KwargSpec(name="query", required=True)]),
+        upstream_context_specs=[{"name": "ctx1", "description": "d"}],
     )
 
-    key = "snapshot_regression_baseline/agent1"
-    assert report[key]["status"] == "needs_human"
-    assert "CS-283" in report[key]["reason"] or "live target-execution" in report[key]["reason"]
+    # Valid input
+    errs_valid = _validate_case_input_against_contract({"query": "q", "ctx1": "c"}, contract)
+    assert errs_valid == []
+
+    # Missing required field
+    errs_missing = _validate_case_input_against_contract({"ctx1": "c"}, contract)
+    assert any("missing required input field 'query'" in e for e in errs_missing)
+
 
 
 async def test_guard_classification_underivable_categories_needs_human(tmp_path):
@@ -449,12 +444,14 @@ def test_archetype_for_rag_single_shot_matches_glossary_and_important_files():
     ) == "rag_single_shot"
 
 
-def test_archetype_for_rag_mem_ctx_matches_project_identity():
+def test_archetype_for_no_longer_special_cases_a_mem_ctx_named_kwarg():
+    """A kwarg literally named 'mem_ctx' is not a structural signal — no upstream_context_specs and
+    no query_planning falls through to the generic archetype like any other kwarg name would."""
     contract = _contract_with_kwargs(
         "project_identity",
         ["provider_id", "model_id", "snapshot_id", "repo_name", "mem_ctx", "profile"],
     )
-    assert _archetype_for(contract) == "rag_mem_ctx"
+    assert _archetype_for(contract) == "rag_single_shot"
 
 
 def test_archetype_for_rag_upstream_matches_violations_and_onboarding():
@@ -477,21 +474,23 @@ def test_archetype_for_rag_upstream_matches_violations_and_onboarding():
     ) == "rag_upstream"
 
 
-def test_archetype_for_rag_mem_ctx_participant_matches_architecture_and_structure():
+def test_archetype_for_no_longer_special_cases_a_folder_tree_named_kwarg():
+    """A kwarg literally named 'folder_tree' is not a structural signal by itself — without a
+    harvested upstream_context_specs entry, it falls through to the generic archetype."""
     assert _archetype_for(
         _contract_with_kwargs(
             "architecture",
             ["provider_id", "model_id", "snapshot_id", "graph_summary", "arch_bundle",
              "identity_output", "profile", "folder_tree"],
         )
-    ) == "rag_mem_ctx_participant"
+    ) == "rag_single_shot"
     assert _archetype_for(
         _contract_with_kwargs(
             "structure",
             ["provider_id", "model_id", "snapshot_id", "arch_bundle", "folder_tree",
              "identity_output", "profile"],
         )
-    ) == "rag_mem_ctx_participant"
+    ) == "rag_single_shot"
 
 
 def test_archetype_for_rag_query_planning_matches_conventions_and_risk():
@@ -510,14 +509,15 @@ def test_archetype_for_rag_query_planning_matches_conventions_and_risk():
     ) == "rag_query_planning"
 
 
-def test_archetype_for_rag_query_planning_mem_ctx_matches_feature_map():
+def test_archetype_for_folder_tree_kwarg_with_query_planning_is_plain_query_planning():
+    """query_planning_subcall still wins on its own — the folder_tree name adds nothing now."""
     contract = _contract_with_kwargs(
         "feature_map",
         ["provider_id", "model_id", "snapshot_id", "graph_summary", "identity_output",
          "architecture_output", "profile", "folder_tree"],
         query_planning=True,
     )
-    assert _archetype_for(contract) == "rag_query_planning_mem_ctx"
+    assert _archetype_for(contract) == "rag_query_planning"
 
 
 async def test_derive_config_synthetic_agent_io_returns_config_when_enabled_and_contract_present():
@@ -726,4 +726,63 @@ async def test_fulfill_plan_only_agent_ids_scopes_to_requested_agents_only(tmp_p
     by_id = {e.id: e for e in suite.entries}
     assert by_id["agent1.snap"].dataset.ref is not None  # written back
     assert by_id["agent2.snap"].dataset.required is not None  # left untouched, still unfulfilled
+
+
+async def test_fulfill_plan_persists_expansion_session_id_on_dataset(tmp_path):
+    """The Dataset Review screen scopes its list by expansion_session_id — fulfill_plan must
+    stamp the dataset it writes with the session_id it was called with."""
+    plan_path = tmp_path / "plan.yaml"
+    _write_plan(plan_path, textwrap.dedent("""\
+          - id: agent1.snap
+            component: c1
+            agent_id: agent1
+            metric: schema_valid
+            metric_class: assertion
+            dataset:
+              required: {kind: snapshot_fixture, min_cases: 1}
+            rationale: r
+            provenance: rule
+    """))
+    llm_client = FakeLLMClient(LLMResponse(content="{}", model="fake"))
+    session_id = repository.new_id()
+
+    report = await fulfill_plan(
+        plan_path, str(tmp_path / "map.yaml"), "snap-1", str(tmp_path),
+        "prov-1", "model-1", llm_client,
+        session_id=session_id,
+    )
+
+    dataset_id = report["snapshot_fixture/agent1"]["dataset_id"]
+    row = await repository.get_dataset_metadata(dataset_id)
+    assert row["expansion_session_id"] == session_id
+
+
+async def test_list_dataset_ids_scopes_by_expansion_session():
+    session_a = repository.new_id()
+    session_b = repository.new_id()
+    dataset_a = f"scope_test_a_{repository.new_id()}"
+    dataset_b = f"scope_test_b_{repository.new_id()}"
+    dataset_legacy = f"scope_test_legacy_{repository.new_id()}"
+
+    for dataset_id in (dataset_a, dataset_b, dataset_legacy):
+        case = DatasetCase(
+            id=repository.new_id(), dataset=dataset_id, kind="synthetic_agent_io",
+            input={"query": "q"}, expected=None, labels=None, provenance="synthetic",
+        )
+        await repository.insert_dataset_cases_bulk(dataset_id, [case])
+
+    await repository.insert_dataset_metadata(
+        dataset_a, "synthetic_agent_io", min_cases=1, expansion_session_id=session_a
+    )
+    await repository.insert_dataset_metadata(
+        dataset_b, "synthetic_agent_io", min_cases=1, expansion_session_id=session_b
+    )
+    await repository.insert_dataset_metadata(dataset_legacy, "synthetic_agent_io", min_cases=1)
+
+    rows_a = await repository.list_dataset_ids(session_a)
+    assert {r["dataset_id"] for r in rows_a} == {dataset_a}
+
+    rows_unscoped = await repository.list_dataset_ids()
+    unscoped_ids = {r["dataset_id"] for r in rows_unscoped}
+    assert {dataset_a, dataset_b, dataset_legacy} <= unscoped_ids
 

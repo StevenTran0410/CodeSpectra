@@ -330,6 +330,55 @@ _MIGRATIONS: list[dict[str, Any]] = [
             ");"
         ),
     },
+    {
+        "version": 22,
+        "description": "Persist per-system map scoping on discovery_candidates (CS-319): a split "
+        "candidate's map_scope_framework + excluded_component_classes were computed at discovery "
+        "but never stored, so expansion rebuilt with no scope filter and co-located sibling classes "
+        "leaked into the map. Store them so the scope reaches build_from_files.",
+        "sql": (
+            "ALTER TABLE discovery_candidates ADD COLUMN map_scope_framework TEXT;\n"
+            "ALTER TABLE discovery_candidates ADD COLUMN excluded_component_classes_json TEXT NOT NULL DEFAULT '[]';"
+        ),
+    },
+    {
+        "version": 23,
+        "description": "Persist structural system-type classification (CS-320): each discovered "
+        "system is classified into an agentic-system type (pipeline/orchestrator/routing/etc.) "
+        "and agent type (single-flow/tool-loop/etc.) via structural signals + optional LLM "
+        "confirmation. system_type stores the primary type (or NULL for ambiguous/unresolved); "
+        "system_type_signals_json stores the full struct with confidence/candidates/signals.",
+        "sql": (
+            "ALTER TABLE discovery_candidates ADD COLUMN system_type TEXT;\n"
+            "ALTER TABLE discovery_candidates ADD COLUMN system_type_signals_json TEXT NOT NULL DEFAULT '{}';"
+        ),
+    },
+    {
+        "version": 24,
+        "description": "Add model_call_verdicts table - global cache for the LLM residue pass over "
+        "an incomplete-closure component; keyed on a content hash of its evidence (never "
+        "snapshot_id or session_id), so an unrelated commit or re-run reuses the verdict at zero "
+        "token cost",
+        "sql": (
+            "CREATE TABLE IF NOT EXISTS model_call_verdicts (\n"
+            "    cache_key        TEXT PRIMARY KEY,\n"
+            "    makes_model_call INTEGER NOT NULL,\n"
+            "    source           TEXT NOT NULL,\n"
+            "    citation         TEXT,\n"
+            "    evidence_kind    TEXT,\n"
+            "    created_at       TEXT NOT NULL\n"
+            ");"
+        ),
+    },
+    {
+        "version": 25,
+        "description": "Add expansion_session_id to datasets - scopes the Dataset Review list to "
+        "the system whose expansion session produced it (snapshot_id is shared across sibling "
+        "systems, so it can't be used as the scope key); nullable, existing rows stay unscoped.",
+        "sql": (
+            "ALTER TABLE datasets ADD COLUMN expansion_session_id TEXT;"
+        ),
+    },
 ]
 
 TARGET_VERSION = len(_MIGRATIONS) - 1

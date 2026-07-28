@@ -1,0 +1,182 @@
+{
+  "agent_id": "conventions",
+  "archetype": "rag_single_shot",
+  "target_count": 5,
+  "batch_n": 3,
+  "json_schema": {
+    "type": "object",
+    "properties": {
+      "naming_style": {
+        "type": "object",
+        "properties": {
+          "pattern": {
+            "type": "string"
+          },
+          "evidence_files": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "pattern",
+          "evidence_files"
+        ]
+      },
+      "error_handling": {
+        "type": "object",
+        "properties": {
+          "pattern": {
+            "type": "string"
+          },
+          "evidence_files": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "pattern",
+          "evidence_files"
+        ]
+      },
+      "async_style": {
+        "type": "object",
+        "properties": {
+          "pattern": {
+            "type": "string"
+          },
+          "evidence_files": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "pattern",
+          "evidence_files"
+        ]
+      },
+      "di_style": {
+        "type": "object",
+        "properties": {
+          "pattern": {
+            "type": "string"
+          },
+          "evidence_files": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "pattern",
+          "evidence_files"
+        ]
+      },
+      "class_vs_functional": {
+        "type": "object",
+        "properties": {
+          "pattern": {
+            "type": "string"
+          },
+          "evidence_files": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "pattern",
+          "evidence_files"
+        ]
+      },
+      "test_style": {
+        "type": "object",
+        "properties": {
+          "pattern": {
+            "type": "string"
+          },
+          "evidence_files": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "pattern",
+          "evidence_files"
+        ]
+      },
+      "signals": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "category": {
+              "type": "string"
+            },
+            "description": {
+              "type": "string"
+            },
+            "evidence": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "category",
+            "description",
+            "evidence"
+          ]
+        }
+      },
+      "confidence": {
+        "type": "string",
+        "enum": [
+          "high",
+          "medium",
+          "low"
+        ]
+      },
+      "evidence_files": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "blind_spots": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "required": [
+      "naming_style",
+      "error_handling",
+      "async_style",
+      "di_style",
+      "class_vs_functional",
+      "test_style",
+      "signals",
+      "confidence",
+      "evidence_files",
+      "blind_spots"
+    ]
+  },
+  "schema_present": true,
+  "system_prompt": "You are generating synthetic test cases for evaluating an agent.\n\nEach case is an object with two keys: 'input' (matching the input shape provided) and 'gold' (the expected output, strictly matching the output schema provided).\n\nCRITICAL (faithfulness guard): keep every case internally consistent — every file path appearing anywhere in the input (evidence rel_paths, paths named in any context field) MUST also appear in any folder-tree / file-listing field present in that same input; never reference a file absent from the folder tree you generate. Every claim in 'gold' must be traceable to the input evidence you created. Any 'blind_spots' or fallback/degradation notes in 'gold' MUST be grounded in and consistent with 'input' — never assert absence or failure of a feature/section when present in 'input'.\n\nRespond ONLY with a JSON array of such objects. No markdown, no explanation.",
+  "prompt": "INPUT SHAPE — each case's 'input' must have exactly these fields:\n{\n  \"snapshot_id\": \"(str)\",\n  \"static_convention\": \"a JSON object that MUST use EXACTLY the keys shown here at EVERY level — no renaming, no omissions, no extra keys — matching this nested structure (values are the types): {\\\"signals\\\": [{\\\"signal\\\": \\\"string\\\", \\\"title\\\": \\\"string\\\", \\\"description\\\": \\\"string\\\", \\\"confidence\\\": \\\"string\\\", \\\"evidence\\\": [\\\"string\\\"], \\\"details\\\": \\\"object\\\"}]}\",\n  \"structure_output\": \"(dict[str, Any] | None), e.g. None\",\n  \"profile\": \"a JSON object that MUST use EXACTLY the keys shown here at EVERY level — no renaming, no omissions, no extra keys — matching this nested structure (values are the types): {\\\"mode\\\": \\\"string\\\", \\\"retrieval_max_results\\\": \\\"integer\\\", \\\"retrieval_doc_char_limit\\\": \\\"integer\\\", \\\"retrieval_manifest_char_limit\\\": \\\"integer\\\", \\\"retrieval_arch_max_results\\\": \\\"integer\\\", \\\"tokens_project_identity\\\": \\\"integer\\\", \\\"tokens_architecture\\\": \\\"integer\\\", \\\"tokens_structure\\\": \\\"integer\\\", \\\"tokens_conventions\\\": \\\"integer\\\", \\\"tokens_violations\\\": \\\"integer\\\", \\\"tokens_feature_map\\\": \\\"integer\\\", \\\"tokens_important_files\\\": \\\"integer\\\", \\\"tokens_onboarding\\\": \\\"integer\\\", \\\"tokens_glossary\\\": \\\"integer\\\", \\\"tokens_risk\\\": \\\"integer\\\", \\\"tokens_auditor\\\": \\\"integer\\\", \\\"tokens_synthesizer\\\": \\\"integer\\\", \\\"concurrency_scale\\\": \\\"number\\\", \\\"retrieval_augment_rounds\\\": \\\"integer\\\"}\"\n}\n\nAGENT PURPOSE: Analyzes retrieved code evidence and produces a structured output.\n\nOUTPUT SCHEMA (for 'gold'):\n{\"type\": \"object\", \"properties\": {\"naming_style\": {\"type\": \"object\", \"properties\": {\"pattern\": {\"type\": \"string\"}, \"evidence_files\": {\"type\": \"array\", \"items\": {\"type\": \"string\"}}}, \"required\": [\"pattern\", \"evidence_files\"]}, \"error_handling\": {\"type\": \"object\", \"properties\": {\"pattern\": {\"type\": \"string\"}, \"evidence_files\": {\"type\": \"array\", \"items\": {\"type\": \"string\"}}}, \"required\": [\"pattern\", \"evidence_files\"]}, \"async_style\": {\"type\": \"object\", \"properties\": {\"pattern\": {\"type\": \"string\"}, \"evidence_files\": {\"type\": \"array\", \"items\": {\"type\": \"string\"}}}, \"required\": [\"pattern\", \"evidence_files\"]}, \"di_style\": {\"type\": \"object\", \"properties\": {\"pattern\": {\"type\": \"string\"}, \"evidence_files\": {\"type\": \"array\", \"items\": {\"type\": \"string\"}}}, \"required\": [\"pattern\", \"evidence_files\"]}, \"class_vs_functional\": {\"type\": \"object\", \"properties\": {\"pattern\": {\"type\": \"string\"}, \"evidence_files\": {\"type\": \"array\", \"items\": {\"type\": \"string\"}}}, \"required\": [\"pattern\", \"evidence_files\"]}, \"test_style\": {\"type\": \"object\", \"properties\": {\"pattern\": {\"type\": \"string\"}, \"evidence_files\": {\"type\": \"array\", \"items\": {\"type\": \"string\"}}}, \"required\": [\"pattern\", \"evidence_files\"]}, \"signals\": {\"type\": \"array\", \"items\": {\"type\": \"object\", \"properties\": {\"category\": {\"type\": \"string\"}, \"description\": {\"type\": \"string\"}, \"evidence\": {\"type\": \"string\"}}, \"required\": [\"category\", \"description\", \"evidence\"]}}, \"confidence\": {\"type\": \"string\", \"enum\": [\"high\", \"medium\", \"low\"]}, \"evidence_files\": {\"type\": \"array\", \"items\": {\"type\": \"string\"}}, \"blind_spots\": {\"type\": \"array\", \"items\": {\"type\": \"string\"}}}, \"required\": [\"naming_style\", \"error_handling\", \"async_style\", \"di_style\", \"class_vs_functional\", \"test_style\", \"signals\", \"confidence\", \"evidence_files\", \"blind_spots\"]}\n\nThis dataset has 5 cases total. Make EXACTLY 1 of them EDGE-CASE / NEGATIVE (failure-mode) cases; every OTHER case MUST be a normal, SUCCESSFUL case with substantive, NON-EMPTY output — never produce more than 1 empty/low-confidence case(s). The 1 edge case(s) draw on the agent's known failure modes:\n- If plan_queries or retrieval fails, the agent falls back to a hardcoded default query and may produce a low-confidence report with empty fields.\n- If LLM output is not valid JSON or schema validation fails, the base class _chat_json_with_augment retries and eventually returns a hardcoded fallback dict with low confidence and 'output_repair_failed' blind spot.\n- Any exception in run() triggers _fallback, which returns an empty/low-confidence report with a blind spot describing the failure reason.\n\nINPUT STRATEGY: Structured data parameters matching exact harvested schemas.\n\nALLOWED ENUM DOMAINS FOR OUTPUT FIELDS (gold must use ONLY these values):\n  \"confidence\": [\"high\", \"medium\", \"low\"]\n\nGenerate exactly 3 DISTINCT cases.",
+  "raw_content": "[]",
+  "candidates_parsed": 0,
+  "newly_accepted": 0,
+  "rejected_this_round": 0,
+  "accepted_total": 0,
+  "sample_rejection_errors": []
+}

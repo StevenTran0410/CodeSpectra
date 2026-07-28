@@ -24,6 +24,8 @@ const api = {
     delete: (id: string): Promise<void> => ipcRenderer.invoke('provider:delete', id),
     test: (id: string): Promise<{ ok: boolean; message: string; warning?: string }> =>
       ipcRenderer.invoke('provider:test', id),
+    embeddingModels: (id: string): Promise<{ models: string[] }> =>
+      ipcRenderer.invoke('provider:embedding-models', id),
     models: (id: string): Promise<{ models: string[] }> =>
       ipcRenderer.invoke('provider:models', id)
   },
@@ -369,7 +371,7 @@ const api = {
       ipcRenderer.invoke('aeh:advanceSession', sessionId, body),
     fulfillDatasets: (sessionId: string, body: unknown) =>
       ipcRenderer.invoke('aeh:fulfillDatasets', sessionId, body),
-    listDatasets: () => ipcRenderer.invoke('aeh:listDatasets'),
+    listDatasets: (sessionId?: string) => ipcRenderer.invoke('aeh:listDatasets', sessionId),
     getDatasetCases: (datasetId: string) =>
       ipcRenderer.invoke('aeh:getDatasetCases', datasetId),
     caseVerdict: (caseId: string, body: unknown) =>

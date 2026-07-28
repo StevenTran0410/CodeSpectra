@@ -20,6 +20,43 @@ def parse_python_source(file: Path) -> tuple[str, ast.Module] | None:
         return None
 
 
+def find_symbol_node(tree: ast.AST, names: list[str]) -> ast.AST | None:
+    """Resolve `Owner.member` / `Owner` / `func` to its OWN definition node, never a caller's
+    reference to it. Shared by the LangGraph scanner (anchor a node candidate on its own def, not
+    the add_node() call site) and agent_flow's uncapped re-extraction."""
+    owner, member = (names[0], names[1]) if len(names) >= 2 else (names[0], None)
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if node.name != owner:
+            continue
+        if member is None:
+            return node
+        for sub in getattr(node, "body", []):
+            if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef)) and sub.name == member:
+                return sub
+    return None
+
+
+_DEFAULT_SNIPPET_CAP = 30  # line cap for a function/method body
+_SNIPPET_CAP_BY_KIND = {"ClassDef": 200}  # a class body may legitimately be long; a function may not
+
+
+def _extract_source_snippet(node: ast.AST, lines: list[str]) -> tuple[str, bool]:
+    """Extract a symbol's OWN body: anchored on `node`'s own def/class line, ending at its real
+    `end_lineno` (never a caller's reference to it), capped by kind so one huge symbol can't blow
+    the prompt budget. Returns (snippet, truncated) so the consumer can tell a short symbol from
+    one the cap actually clipped. Shared by every scanner (Haystack/LangGraph/LCEL/plain-python) so
+    there is one anchor-and-bound implementation, not a per-scanner copy."""
+    start_line = getattr(node, "lineno", None)
+    end_lineno = getattr(node, "end_lineno", None)
+    if not start_line or not end_lineno or start_line > len(lines):
+        return "", False
+    cap = _SNIPPET_CAP_BY_KIND.get(type(node).__name__, _DEFAULT_SNIPPET_CAP)
+    capped_end = min(end_lineno, start_line + cap)
+    return "\n".join(lines[start_line:capped_end]), capped_end < end_lineno
+
+
 @dataclass
 class ManualSpanHint:
     """A single manual_span() call detected in source code."""
@@ -29,6 +66,7 @@ class ManualSpanHint:
     tags: dict[str, str]  # third arg dict — only literal string values kept
     file: Path
     line: int
+    end_line: int | None = None  # enclosing `with` block's end_lineno — scopes a split child's own evidence region
 
 
 @dataclass
@@ -46,8 +84,8 @@ class CandidateComponent:
     entry_kind: str = "class"  # "class" | "function" | "bound_method"
     is_library_object: bool = False  # LCEL library/framework link (ChatOpenAI, StrOutputParser) — surfaced then degraded, never harvestable
     framework: str | None = None  # producing scanner's framework; set by scan_all, used to scope a split per-system map to its own components
-    source_snippet: str = ""  # first ~30 lines of the class/function body
-    model_hints: list[str] = field(default_factory=list)
+    source_snippet: str = ""  # the symbol's own body, anchored+bounded by _extract_source_snippet
+    snippet_truncated: bool = False  # True when the by-kind cap actually clipped the body
     manual_span_hints: list[ManualSpanHint] = field(default_factory=list)
 
     @property
@@ -71,3 +109,10 @@ class TopologyEdges:
     upstream: list[str] = field(default_factory=list)
     downstream: list[str] = field(default_factory=list)
     constructor_downstream: list[str] = field(default_factory=list)  # sibling components this one constructs/owns
+    # CS-319 (additive; empty on every non-langgraph map so Haystack is byte-identical): the subset of
+    # `downstream` reached by a "call" edge (intra-node call to a gray target), and the subset of
+    # `downstream` whose hard edge is a conditional router branch (add_conditional_edges source).
+    call_downstream: list[str] = field(default_factory=list)
+    conditional_downstream: list[str] = field(default_factory=list)
+    # CS-321: motif classification over the downstream graph (linear/branch/loop, shared-state reserved).
+    motif: str | None = None

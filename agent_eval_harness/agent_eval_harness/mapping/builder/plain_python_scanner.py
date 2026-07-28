@@ -8,44 +8,41 @@ that calls an inherited `self._call(...)`).
 
 Coverage:
   AST-covered, deterministic, 0 LLM:
-    - CORE: a class named `*Agent` corroborated by ANY of {an entry method (run/run_async/__call__), a
-      `self.<attr>(...)` call whose attr looks like an LLM call, a referenced module-level system-prompt
-      constant}. The corroborator holds precision — a bare `*Agent` dataclass/mock is not emitted.
+    - CORE: any class with a recognized entry method (run/run_async/__call__) whose call closure
+      contains at least one call — every such call is either a resolved boundary or an unresolved
+      seam, so a class is emitted without reading any identifier's English meaning. This
+      deliberately widens candidate emission; narrowing happens at the verdict layer, which can
+      degrade to `unknown` instead of silently dropping. A bare stub entry method with zero calls
+      (e.g. a mock/dataclass) is excluded — there is nothing to be evidence for or against.
     - SECONDARY (lower-confidence, one vendor's shape): a `tools=[fn, ...]` list literal of module-level
       functions → tool components. Validated only synthetically; ~0 recall on provider-abstraction agents.
-  llm_fallback (wiring_block, source="llm_fallback"): shapes the AST can't fit — non-`*Agent` names,
-    free-function agents, exotic dispatch — best-effort via Stage-1 Pass D.
+  llm_fallback (wiring_block, source="llm_fallback"): shapes the AST can't fit — free-function agents,
+    exotic dispatch — best-effort via Stage-1 Pass D.
   Out of scope: multi-file agent graphs, decorator-registered tool frameworks (CrewAI/AutoGen), and
     runtime-dynamic tool registration.
 
-Framework-generic: matches the `*Agent` naming idiom + generic LLM-call/prompt signals, never any one
-target's symbols.
+Framework-generic: matches structural call-closure activity, never any one target's symbols.
 """
 from __future__ import annotations
 
 import ast
-import re
 from pathlib import Path
 
-from agent_eval_harness.mapping.builder.types import CandidateComponent, parse_python_source
-
-_SNIPPET_LINE_COUNT = 30
-_AGENT_CLASS_SUFFIX_RE = re.compile(r"Agent$")
-# Generic LLM-call method-name signal (provider-abstraction `self._call_stream`, raw `chat.completions
-# .create`, `client.messages.create`, `.invoke`, `.generate`, …) — a corroborator, never sufficient alone.
-_LLM_CALL_ATTR_RE = re.compile(r"(?i)(call|chat|complete|completion|stream|invoke|generate|predict|messages)")
-# System-prompt-shaped module constant: ALL-CAPS name ending in _SYSTEM/_PROMPT/_INSTRUCTION(S).
-_PROMPT_CONST_RE = re.compile(r"(?:^[A-Z0-9_]+$)")
-_PROMPT_CONST_SUFFIX = ("_SYSTEM", "_PROMPT", "_INSTRUCTION", "_INSTRUCTIONS")
-_ENTRY_METHOD_NAMES = ("run", "run_async", "__call__")
-
-
-def _snippet(lines: list[str], line: int) -> str:
-    if line <= 1 or line > len(lines):
-        return ""
-    start = line
-    end = min(line + _SNIPPET_LINE_COUNT - 1, len(lines))
-    return "\n".join(lines[start : end + 1])
+from agent_eval_harness.discovery.wiring import (
+    _class_def_node,
+    _container_call_sites,
+    _imports_langgraph,
+    _is_pure_data_classdef,
+    _iter_method_calls,
+    _self_attr_containers,
+)
+from agent_eval_harness.mapping.builder.resolution_primitives import recognized_entry_methods
+from agent_eval_harness.mapping.builder.types import (
+    CandidateComponent,
+    _extract_source_snippet,
+    find_symbol_node,
+    parse_python_source,
+)
 
 
 def _dedup_and_sort(candidates: list[CandidateComponent]) -> list[CandidateComponent]:
@@ -61,7 +58,8 @@ def _dedup_and_sort(candidates: list[CandidateComponent]) -> list[CandidateCompo
 
 
 class PlainPythonScanner:
-    """Scan a framework-free target for `*Agent`-shaped classes + their tool functions."""
+    """Scan a framework-free target for classes with entry-method call-closure activity + their
+    tool functions."""
 
     framework = "plain_python"
 
@@ -84,16 +82,20 @@ class PlainPythonScanner:
                 n.name for n in tree.body
                 if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
             }
-            prompt_consts = self._module_prompt_consts(tree)
+            # A LangGraph file's node/router methods are referenced (never self-called) as callback
+            # arguments to add_node/add_conditional_edges, so the "no intra-class caller" rule would
+            # wrongly re-admit them here -- that graph is LangGraphScanner's own territory.
+            owned_by_langgraph = _imports_langgraph(tree)
 
             for node in tree.body:
-                if isinstance(node, ast.ClassDef) and _AGENT_CLASS_SUFFIX_RE.search(node.name):
-                    if self._corroborated(node, prompt_consts):
-                        candidates.append(CandidateComponent(
-                            file=file, line=node.lineno, class_name=node.name,
-                            entry_kind="class",
-                            source_snippet=_snippet(source_lines, node.lineno),
-                        ))
+                if (isinstance(node, ast.ClassDef) and not owned_by_langgraph
+                        and self._has_closure_activity(tree, node.name)):
+                    snippet, truncated = _extract_source_snippet(node, source_lines)
+                    candidates.append(CandidateComponent(
+                        file=file, line=node.lineno, class_name=node.name,
+                        entry_kind="class",
+                        source_snippet=snippet, snippet_truncated=truncated,
+                    ))
 
             self._scan_tool_lists(tree, file, module_functions, source_lines, candidates)
 
@@ -102,29 +104,25 @@ class PlainPythonScanner:
 
         return _dedup_and_sort(candidates)
 
-    def _module_prompt_consts(self, tree: ast.AST) -> set[str]:
-        consts: set[str] = set()
-        for node in getattr(tree, "body", []):
-            if isinstance(node, ast.Assign):
-                for tgt in node.targets:
-                    if isinstance(tgt, ast.Name) and (
-                        tgt.id.endswith(_PROMPT_CONST_SUFFIX) or _PROMPT_CONST_RE.match(tgt.id)
-                    ):
-                        consts.add(tgt.id)
-        return consts
-
-    def _corroborated(self, cls: ast.ClassDef, prompt_consts: set[str]) -> bool:
-        """A `*Agent` class is emitted only with a second signal, to keep precision."""
-        for item in cls.body:
-            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name in _ENTRY_METHOD_NAMES:
-                return True
-        for child in ast.walk(cls):
-            if isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute):
-                if _LLM_CALL_ATTR_RE.search(child.func.attr):
-                    return True
-            if isinstance(child, ast.Name) and child.id in prompt_consts:
-                return True
-        return False
+    def _has_closure_activity(self, tree: ast.AST, class_name: str) -> bool:
+        """Structural emission gate: a class is a candidate iff it has a recognized entry method
+        (no intra-class caller) whose call closure contains at least one call -- any call is either
+        a resolved boundary or an unresolved seam, so no resolution is needed here, only the same
+        shape-recognition the generic call closure also uses. Replaces the Agent$-suffix /
+        LLM-verb-attr / prompt-const regex gates, which decided from an identifier's English
+        meaning. A pure-data class (dataclass/TypedDict/NamedTuple/BaseModel) is excluded even when
+        one of its methods has calls (e.g. a classmethod factory) -- it is state, not an agent."""
+        cls_node = _class_def_node(tree, class_name)
+        if cls_node is not None and _is_pure_data_classdef(cls_node):
+            return False
+        entry_methods = recognized_entry_methods(tree, class_name)
+        if not entry_methods:
+            return False
+        self_containers = _self_attr_containers(tree, class_name)
+        return any(
+            _iter_method_calls(m) or _container_call_sites(m, self_containers)
+            for m in entry_methods
+        )
 
     def _scan_tool_lists(
         self, tree: ast.AST, file: Path, module_functions: set[str],
@@ -140,10 +138,14 @@ class PlainPythonScanner:
                 continue
             owner = enclosing.get(id(node))
             for elt in elts:
+                def_node = find_symbol_node(tree, [elt.id])
+                snippet, truncated = (
+                    _extract_source_snippet(def_node, source_lines) if def_node is not None else ("", False)
+                )
                 candidates.append(CandidateComponent(
                     file=file, line=elt.lineno, class_name=elt.id, is_tool=True,
                     registered_name=elt.id, owner_class_name=owner, entry_kind="function",
-                    source_snippet=_snippet(source_lines, elt.lineno),
+                    source_snippet=snippet, snippet_truncated=truncated,
                 ))
 
     def _enclosing_class_map(self, tree: ast.AST) -> dict[int, str]:
@@ -158,26 +160,28 @@ class PlainPythonScanner:
         self, wiring_block: object, asts: dict, sources: dict,
         candidates: list[CandidateComponent],
     ) -> None:
-        """llm_fallback path: a persisted wiring_block (source='llm_fallback') names components the AST
-        heuristic missed; resolve each to a real ClassDef/FunctionDef in the target and emit it."""
+        """A persisted wiring_block names steps the AST heuristic missed; resolve each to a real
+        ClassDef/FunctionDef anywhere in the scanned set and emit it. The whole scanned set is
+        searched (not just the hint file) because a step's DEFINING file — an imported helper or an
+        inherited base class — is admitted to the scan set by the CS-318 unscanned-step resolver, so
+        the definer is present under a different path than the call-site hint."""
         for w_node in getattr(wiring_block, "nodes", []):
             name = getattr(w_node, "callee_name", None)
-            hint = getattr(w_node, "source_hint_file", "") or ""
             if not name:
                 continue
             for file, tree in asts.items():
-                if hint and not str(file).endswith(hint) and Path(hint).name != Path(file).name:
-                    continue
                 source_lines = sources[file].splitlines()
                 for node in ast.walk(tree):
                     if isinstance(node, ast.ClassDef) and node.name == name:
+                        snippet, truncated = _extract_source_snippet(node, source_lines)
                         candidates.append(CandidateComponent(
                             file=file, line=node.lineno, class_name=name, entry_kind="class",
-                            source_snippet=_snippet(source_lines, node.lineno),
+                            source_snippet=snippet, snippet_truncated=truncated,
                         ))
                     elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+                        snippet, truncated = _extract_source_snippet(node, source_lines)
                         candidates.append(CandidateComponent(
                             file=file, line=node.lineno, class_name=name, is_tool=True,
                             registered_name=name, entry_kind="function",
-                            source_snippet=_snippet(source_lines, node.lineno),
+                            source_snippet=snippet, snippet_truncated=truncated,
                         ))

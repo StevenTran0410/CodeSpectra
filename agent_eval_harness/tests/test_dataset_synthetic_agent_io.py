@@ -170,12 +170,20 @@ def _rag_config(agent_id: str, archetype: str, count: int = 1) -> dict:
     contract: dict = {"output": {"json_schema": _G_SCHEMA}}
     shape = _KNOWN_SHAPE_KWARG_SETS.get(f"{archetype}:{agent_id}")
     if shape:
-        contract["invocation"] = {"kwargs": [{"name": n} for n in sorted(shape)]}
+        contract["invocation"] = {
+            "kwargs": [{"name": n} for n in sorted(shape)],
+            "case_binding": {n: f"config:{n}" for n in ("provider_id", "model_id", "snapshot_id", "profile") if n in shape},
+        }
     return {
         "dataset_name": f"test_synth_{agent_id}",
         "agent_id": agent_id,
         "archetype": archetype,
         "contract": contract,
+        "virtual_inputs": [
+            {"name": "bundle"}, {"name": "folder_tree"}, {"name": "doc_ctx"},
+            {"name": "manifest_ctx"}, {"name": "mem_ctx"}, {"name": "arch_bundle"},
+            {"name": "repo_name"}, {"name": "query"},
+        ],
         "count": count,
     }
 
@@ -589,3 +597,196 @@ async def test_d6_no_embedding_client_behavior_unchanged():
     assert len(cases) == 2
     assert not any(c.labels.get("near_duplicate") for c in cases)
     assert not any(c.labels.get("max_sim") is not None for c in cases)
+
+
+def test_cs327_validate_input_gate():
+    """CS-327: _validate_input cross-checks input against contract required fields, foreign fields, and types."""
+    from agent_eval_harness.datasets.generators.synthetic_agent_io import (
+        SyntheticAgentIOConfig,
+        _validate_input,
+    )
+
+    parsed_config = SyntheticAgentIOConfig.model_validate({
+        "dataset_name": "ds1",
+        "agent_id": "agent_a",
+        "archetype": "rag_single_shot",
+        "contract": {
+            "invocation": {
+                "kwargs": [
+                    {"name": "query", "required": True, "type_hint": "str"},
+                    {"name": "context", "required": False, "resolved_schema": {"type": "object", "properties": {"title": {"type": "string"}}}},
+                ]
+            }
+        },
+        "count": 2,
+    })
+
+    # Valid input
+    valid_in = {"query": "test query", "context": {"title": "doc1"}}
+    assert _validate_input(valid_in, parsed_config) == []
+
+    # Missing required field
+    missing_in = {"context": {"title": "doc1"}}
+    errs = _validate_input(missing_in, parsed_config)
+    assert any("missing required input field 'query'" in e for e in errs)
+
+    # Foreign field
+    foreign_in = {"query": "test", "fake_param": 123}
+    errs = _validate_input(foreign_in, parsed_config)
+    assert any("foreign input field 'fake_param'" in e for e in errs)
+
+    # Type mismatch (int instead of object dict)
+    type_err_in = {"query": "test", "context": 12345}
+    errs = _validate_input(type_err_in, parsed_config)
+    assert any("expected object dict" in e for e in errs)
+
+
+def test_cs327_validate_schema_enum_values():
+    """CS-327: _validate_gold rejects gold containing enum values outside schema_enum_values domain."""
+    from agent_eval_harness.datasets.generators.synthetic_agent_io import (
+        _validate_gold,
+        _validate_schema_enum_values,
+    )
+
+    enums = {
+        "severity": ["low", "medium", "high"],
+        "folders[].role": ["src", "tests"],
+    }
+
+    # Valid gold
+    valid_gold = {"severity": "high", "folders": [{"role": "src"}, {"role": "tests"}]}
+    assert _validate_schema_enum_values(valid_gold, enums) == []
+
+    # Invalid enum value in root
+    invalid_gold_root = {"severity": "critical", "folders": [{"role": "src"}]}
+    errs = _validate_schema_enum_values(invalid_gold_root, enums)
+    assert len(errs) == 1
+    assert "not in allowed enum domain" in errs[0]
+
+    # Invalid enum value in list item
+    invalid_gold_item = {"severity": "low", "folders": [{"role": "unknown"}]}
+    errs = _validate_schema_enum_values(invalid_gold_item, enums)
+    assert len(errs) == 1
+    assert "not in allowed enum domain" in errs[0]
+
+    # Integrated _validate_gold test
+    errs = _validate_gold(invalid_gold_root, None, schema_enum_values=enums)
+    assert len(errs) > 0
+
+
+async def test_cs327_coerce_stringified_json_object_kwarg():
+    """CS-327: _generate_generic coerces stringified JSON object kwargs to python dicts."""
+    from agent_eval_harness.datasets.generators.synthetic_agent_io import generate
+
+    cfg = {
+        "dataset_name": "ds_coerce",
+        "agent_id": "agent_b",
+        "archetype": "rag_single_shot",
+        "contract": {
+            "invocation": {
+                "kwargs": [
+                    {"name": "meta", "required": True, "resolved_schema": {"type": "object", "properties": {"version": {"type": "string"}}}}
+                ]
+            },
+            "output": {"json_schema": {"type": "object", "properties": {"status": {"type": "string"}}}}
+        },
+        "count": 1,
+    }
+
+    # Model returns stringified JSON for object kwarg 'meta'
+    case_with_stringified_kwarg = {
+        "input": {"meta": '{"version": "1.0"}'},
+        "gold": {"status": "ok"},
+    }
+    payload = json.dumps([case_with_stringified_kwarg])
+    llm_client = FakeLLMClient(LLMResponse(content=payload, model="fake"))
+
+    cases = await generate(cfg, llm_client)
+    assert len(cases) == 1
+    assert isinstance(cases[0].input["meta"], dict)
+    assert cases[0].input["meta"]["version"] == "1.0"
+
+
+def test_fix1_validate_input_rejects_fabricated_bundle():
+    """FIX 1 reject path: contract declares only query; candidate with unharvested bundle MUST be rejected."""
+    from agent_eval_harness.datasets.generators.synthetic_agent_io import (
+        SyntheticAgentIOConfig,
+        _validate_input,
+    )
+
+    parsed_config = SyntheticAgentIOConfig.model_validate({
+        "dataset_name": "ds_strict",
+        "agent_id": "strict_agent",
+        "archetype": "rag_single_shot",
+        "contract": {
+            "invocation": {
+                "kwargs": [
+                    {"name": "query", "required": True, "type_hint": "str"}
+                ]
+            }
+        },
+        "count": 1,
+    })
+
+    bad_candidate_input = {"query": "how to build", "bundle": {"evidences": []}}
+    errs = _validate_input(bad_candidate_input, parsed_config)
+    assert len(errs) == 1
+    assert "foreign input field 'bundle'" in errs[0]
+
+
+async def test_fix2_fan_in_judge_coerces_stringified_input():
+    """FIX 2: _generate_fan_in_judge coerces stringified JSON input values to dicts."""
+    from agent_eval_harness.datasets.generators.synthetic_agent_io import generate
+
+    cfg = _config(count=1)
+    case_with_stringified_fan_in = {
+        "input": {
+            "A": '{"confidence": "high", "blind_spots": [], "purpose": "p1"}',
+            "B": {"confidence": "medium", "main_layers": ["api"]},
+        },
+        "gold": {"overall_confidence": "high", "notes": "ok"},
+    }
+    payload = json.dumps([case_with_stringified_fan_in])
+    llm_client = FakeLLMClient(LLMResponse(content=payload, model="fake"))
+
+    cases = await generate(cfg, llm_client)
+    assert len(cases) == 1
+    sections = cases[0].input["all_sections"]
+    assert isinstance(sections["A"], dict)
+    assert sections["A"]["confidence"] == "high"
+
+
+async def test_fix4_input_kind_strategy_signal():
+    """FIX 4: observability.input_kind ('query' vs 'structured') alters prompt strategy."""
+    from agent_eval_harness.datasets.generators.synthetic_agent_io import _enum_and_strategy_prompt_block, SyntheticAgentIOConfig
+
+    cfg_query = SyntheticAgentIOConfig.model_validate({
+        "dataset_name": "d1", "agent_id": "a1", "archetype": "rag_single_shot",
+        "contract": {"observability": {"input_kind": "query"}},
+    })
+    block_q = _enum_and_strategy_prompt_block(cfg_query)
+    assert "Natural language user query" in block_q
+
+    cfg_struct = SyntheticAgentIOConfig.model_validate({
+        "dataset_name": "d2", "agent_id": "a2", "archetype": "rag_single_shot",
+        "contract": {"observability": {"input_kind": "structured"}},
+    })
+    block_s = _enum_and_strategy_prompt_block(cfg_struct)
+    assert "Structured data parameters" in block_s
+
+
+def test_fix5_cardinality_and_streamed_output_validation():
+    """FIX 5c & cardinality: _validate_gold enforces cardinality='object' and handles streamed output flag."""
+    from agent_eval_harness.datasets.generators.synthetic_agent_io import _validate_gold
+
+    # Array gold when object expected -> rejected
+    errs = _validate_gold([{"a": 1}], {"type": "object"}, cardinality="object")
+    assert len(errs) > 0
+    assert "gold is not a JSON object" in errs[0]
+
+    # Object gold when array expected -> rejected
+    errs_arr = _validate_gold({"a": 1}, {"type": "array"}, cardinality="array")
+    assert len(errs_arr) > 0
+    assert "gold is not a JSON array" in errs_arr[0]
+
+

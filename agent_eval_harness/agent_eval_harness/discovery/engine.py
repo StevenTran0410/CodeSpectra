@@ -17,9 +17,13 @@ from agent_eval_harness.discovery.analysis_context import ProjectContext, load_p
 from agent_eval_harness.discovery.client import CodeSpectraClient
 from agent_eval_harness.discovery.consolidation import consolidate_candidates
 from agent_eval_harness.discovery.wiring import (
+    classify_system_type,
     detect_wiring_block,
     detect_wiring_systems,
     strip_json_code_fence,
+)
+from agent_eval_harness.mapping.builder.system_types import (
+    ALL_SYSTEM_TYPES, DECIDED_BY_STRUCTURAL, DECIDED_BY_LLM, DECIDED_BY_UNRESOLVED
 )
 from agent_eval_harness.llm.client import LLMClient, LLMMessage, RateLimitExceeded
 from agent_eval_harness.store import repository
@@ -48,6 +52,63 @@ def load_fingerprints() -> list[dict[str, Any]]:
     with open(p, encoding="utf-8") as f:
         data = yaml.safe_load(f)
     return data.get("fingerprints", [])
+
+
+def load_provider_boundaries() -> list[dict[str, Any]]:
+    p = Path(__file__).parent / "provider_boundaries.yaml"
+    if not p.exists():
+        logger.warning(f"provider_boundaries.yaml not found at {p}")
+        return []
+    with open(p, encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+    return data.get("boundaries", [])
+
+
+def provider_boundaries_content_hash() -> str:
+    """Content hash of provider_boundaries.yaml -- part of the LLM residue pass's cache key, so a
+    change to the boundary vocabulary invalidates a stored verdict instead of silently reusing it."""
+    p = Path(__file__).parent / "provider_boundaries.yaml"
+    if not p.exists():
+        return ""
+    return hashlib.sha256(p.read_bytes()).hexdigest()
+
+
+def _module_path_for_rel_file(rel_file: str) -> str:
+    """Repo-relative posix path -> dotted module path (drops a trailing __init__)."""
+    stem = rel_file[:-3] if rel_file.endswith(".py") else rel_file
+    parts = [p for p in stem.split("/") if p]
+    if parts and parts[-1] == "__init__":
+        parts = parts[:-1]
+    return ".".join(parts)
+
+
+def match_provider_boundary_entry(
+    boundaries: list[dict[str, Any]], *, defining_file: str, owner_class: str | None, resolved_symbol: str,
+) -> dict[str, Any] | None:
+    """A resolved (defining_file, owner_class, resolved_symbol) against an `entry:` row -- an in-repo
+    interface/Protocol method named as `module.Class.method`."""
+    if not owner_class or not resolved_symbol:
+        return None
+    dotted = f"{_module_path_for_rel_file(defining_file)}.{owner_class}.{resolved_symbol}"
+    for row in boundaries:
+        if row.get("entry") == dotted:
+            return row
+    return None
+
+
+def match_provider_boundary_import(
+    boundaries: list[dict[str, Any]], module: str | None,
+) -> dict[str, Any] | None:
+    """An external (unresolvable-on-disk) import module against an `import:` row -- top-level package
+    identity match (`openai.types.chat` matches an `import: openai` row)."""
+    if not module:
+        return None
+    top = module.split(".")[0]
+    for row in boundaries:
+        imp = row.get("import")
+        if imp and imp.split(".")[0] == top:
+            return row
+    return None
 
 
 def _encode_hits_toon(hits: list[dict[str, Any]]) -> str:
@@ -143,6 +204,10 @@ def _build_system_candidate(
     filtered_ev = [h for h in base_profile.get("evidence", []) if h.get("file") in sysfiles]
     if filtered_ev:
         prof["evidence"] = filtered_ev
+    # CS-320: Structural system-type classification
+    struct = classify_system_type(block)
+    prof["system_type"] = struct.get("type")
+    prof["system_type_signals"] = struct
     return prof
 
 
@@ -177,6 +242,12 @@ def _build_residual_candidate(base_profile: dict, cluster: dict, systems: list[A
     prof["excluded_component_classes"] = sorted(sibling_owned)
     base_name = base_profile.get("name") or "unknown"
     prof["name"] = f"{base_name} — plain_python" if base_name != "unknown" else "plain_python system"
+    # CS-320: Residual (no block) gets low-confidence None type
+    prof["system_type"] = None
+    prof["system_type_signals"] = {
+        "kind": "agent", "type": None, "confidence": "low", "candidate_types": [],
+        "capability_tags": [], "signals": {}
+    }
     return prof
 
 
@@ -386,14 +457,17 @@ async def discover_agentic_systems(
             '  "entry_points": ["string (key files/interfaces that entry into the system)"],\n'
             '  "component_count_estimate": integer,\n'
             '  "confidence": "string (\'high\', \'medium\', \'low\')",\n'
-            '  "systems": [{"index": integer, "name": "string"}]\n'
+            '  "systems": [{"index": integer, "name": "string", "system_type": "string or null"}]\n'
             "}\n"
             "When the evidence lists detected agentic systems, return one entry per system in "
             '"systems", with "index" matching its "System #N" and a name that describes what THAT '
             "system does — its functionality and domain, inferred from its entry symbols, component "
             "names, call flow and folder path. Each name must be distinct from the other systems' "
             "names, must not be a framework name, and must not be the community name with a "
-            'framework suffix. The top-level "name" still names the community as a whole.'
+            'framework suffix. The top-level "name" still names the community as a whole. '
+            "For each system, optionally populate system_type from: pipeline, routing, parallelization, "
+            "orchestrator, peer-collaboration, evaluator-optimizer, debate, blackboard, single-flow, "
+            "tool-loop, plan-execute, reflection, or null if ambiguous."
             + project_ctx_block
         )
 
@@ -426,6 +500,7 @@ async def discover_agentic_systems(
         }
 
         system_names: dict[int, str] = {}
+        system_types: dict[int, str | None] = {}
         try:
             messages = [
                 LLMMessage(role="system", content=system_prompt),
@@ -453,6 +528,10 @@ async def discover_agentic_systems(
                     name = (item.get("name") or "").strip()
                     if name:
                         system_names[idx] = name
+                    # CS-320: Collect LLM's system_type from the schema (optional, validated)
+                    stype = item.get("system_type")
+                    if stype and stype in ALL_SYSTEM_TYPES:
+                        system_types[idx] = stype
                 system_names = _dedupe_system_names(system_names, systems)
         except RateLimitExceeded as rle:
             raise DiscoveryPaused(
@@ -487,17 +566,34 @@ async def discover_agentic_systems(
         if n_systems > 1:
             # Genuine multi-system community: split into one candidate per system.
             for i, block in enumerate(systems):
-                candidates.append(
-                    _build_system_candidate(
-                        candidate_profile, cluster, block, system_names.get(i + 1)
-                    )
+                cand = _build_system_candidate(
+                    candidate_profile, cluster, block, system_names.get(i + 1)
                 )
+                # CS-320: Apply LLM's optional system_type override if structural confidence is low
+                struct = cand.get("system_type_signals", {})
+                if struct.get("confidence") == "low" and (i + 1) in system_types:
+                    cand["system_type"] = system_types[i + 1]
+                    struct["decided_by"] = DECIDED_BY_LLM
+                else:
+                    struct["decided_by"] = DECIDED_BY_STRUCTURAL
+                cand["system_type_signals"] = struct
+                candidates.append(cand)
             if residual is not None:
                 candidates.append(residual)
         elif systems:
             # Exactly one static system, no residual: behave IDENTICALLY to the pre-split single
             # candidate — base name/profile kept, no system_id, just its own pure wiring_block.
             candidate_profile["wiring_block"] = systems[0].to_dict()
+            # CS-320: Classify the single system
+            struct = classify_system_type(systems[0])
+            candidate_profile["system_type"] = struct.get("type")
+            candidate_profile["system_type_signals"] = struct
+            # Apply LLM override if structural confidence is low
+            if struct.get("confidence") == "low" and 1 in system_types:
+                candidate_profile["system_type"] = system_types[1]
+                struct["decided_by"] = DECIDED_BY_LLM
+            else:
+                struct["decided_by"] = DECIDED_BY_STRUCTURAL
             candidates.append(candidate_profile)
         else:
             # No static wiring in this community — preserve today's EXACT single-candidate path,
@@ -518,6 +614,19 @@ async def discover_agentic_systems(
             if wiring_block and wiring_block.source == "llm_fallback":
                 wiring_llm_fallback_used += 1
             candidate_profile["wiring_block"] = wiring_block.to_dict() if wiring_block else None
+            # CS-320: Classify if we have a wiring block
+            if wiring_block:
+                struct = classify_system_type(wiring_block)
+                candidate_profile["system_type"] = struct.get("type")
+                candidate_profile["system_type_signals"] = struct
+                struct["decided_by"] = DECIDED_BY_STRUCTURAL
+            else:
+                # No wiring block: low-confidence None type
+                candidate_profile["system_type"] = None
+                candidate_profile["system_type_signals"] = {
+                    "kind": "agent", "type": None, "confidence": "low", "candidate_types": [],
+                    "capability_tags": [], "signals": {}, "decided_by": DECIDED_BY_UNRESOLVED
+                }
 
             candidates.append(candidate_profile)
 

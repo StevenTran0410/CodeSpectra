@@ -579,7 +579,7 @@ async def test_synthesis_prompt_describes_each_detected_system() -> None:
     assert "call flow: plan -> act" in user_prompt
     # The schema/instructions live in the system prompt, which stays byte-identical across calls
     # (prompt-cache prefix); only the per-cluster data varies.
-    assert '"systems": [{"index": integer, "name": "string"}]' in llm.prompts[0][0]
+    assert '"systems": [{"index": integer, "name": "string", "system_type": "string or null"}]' in llm.prompts[0][0]
     assert len({s for s, _ in llm.prompts}) == 1
 
 

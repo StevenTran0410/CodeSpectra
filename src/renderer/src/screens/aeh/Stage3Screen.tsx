@@ -445,7 +445,7 @@ export default function Stage3Screen(): React.ReactElement {
             <div className="flex items-center gap-2 min-w-0">
               <span
                 className="w-2.5 h-2.5 rounded-full shrink-0"
-                style={{ background: ROLE_COLORS[viewingAgent.role as AEHRole] ?? ROLE_COLORS.unknown }}
+                style={{ background: ROLE_COLORS[(roleByComponentId.get(viewingAgent.id) ?? viewingAgent.role) as AEHRole] ?? ROLE_COLORS.unknown }}
               />
               <div className="min-w-0">
                 <h1 className="screen-title truncate">{viewingAgent.label || viewingAgent.id}</h1>
@@ -636,6 +636,7 @@ export default function Stage3Screen(): React.ReactElement {
                       report={reportByAgentId.get(agent.id) ?? null}
                       onClick={() => setViewingAgentId(agent.id)}
                       onToggleEvalEnabled={handleToggleEvalEnabled}
+                      roleByComponentId={roleByComponentId}
                     />
                   ))}
                 </div>
@@ -866,11 +867,13 @@ function AgentCard({
   report,
   onClick,
   onToggleEvalEnabled,
+  roleByComponentId,
 }: {
   agent: AEHAgentFlow
   report: AEHAgentPlanReport | null
   onClick: () => void
   onToggleEvalEnabled: (agentId: string, enabled: boolean) => void
+  roleByComponentId: Map<string, string>
 }): React.ReactElement {
   const gateCount = report?.gates.length ?? 0
   const needsHumanCount = report?.needs_human.length ?? 0
@@ -884,7 +887,7 @@ function AgentCard({
       <div className="flex items-center gap-1.5 min-w-0">
         <span
           className="w-2 h-2 rounded-full shrink-0"
-          style={{ background: ROLE_COLORS[agent.role as AEHRole] ?? ROLE_COLORS.unknown }}
+          style={{ background: ROLE_COLORS[(roleByComponentId.get(agent.id) ?? agent.role) as AEHRole] ?? ROLE_COLORS.unknown }}
         />
         <span className="text-[11px] font-semibold text-slate-200 truncate flex-1">{agent.label || agent.id}</span>
         {needsHumanCount > 0 && (

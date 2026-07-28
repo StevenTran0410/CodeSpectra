@@ -68,6 +68,11 @@ def parse_json_with_fallback(
     """Parse JSON content with a fallback generator for parse failures."""
     try:
         items = json.loads(content)
+        if isinstance(items, dict):
+            # Model dropped the array wrapper: unwrap the sole {"...":[...]} list value if there's exactly one.
+            list_vals = [v for v in items.values() if isinstance(v, list)]
+            if len(list_vals) == 1:
+                items = list_vals[0]
         if not isinstance(items, list):
             raise ValueError("Response is not a list")
         return items

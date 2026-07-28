@@ -13,10 +13,12 @@ DEFAULT_CASES_PER_AGENT: int = max(1, int(os.getenv("AEH_CASES_PER_AGENT", "5"))
 
 @dataclass
 class ContractConventions:
-    """Target-specific strings threaded into contract_harvest so AEH stays generic."""
-    rerun_section_route: str = "/api/analysis/rerun_section"
-    pipeline_fallback_name_pattern: str = "_section_{letter}_pipeline_fallback"
-    plan_queries_symbol: str = "plan_queries"
+    """Target-specific strings threaded into contract_harvest so AEH stays generic. Empty/None by
+    default -- a target that wants these conventions detected configures them via .aeh/config.yaml;
+    absence degrades to "not detected", never a guess."""
+    rerun_section_route: str | None = None
+    pipeline_fallback_name_pattern: str | None = None
+    plan_queries_symbol: str | None = None
 
 
 @dataclass

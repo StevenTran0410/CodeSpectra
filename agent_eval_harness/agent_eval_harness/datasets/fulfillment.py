@@ -10,7 +10,10 @@ from typing import Any
 import yaml
 
 from agent_eval_harness.config import DEFAULT_CASES_PER_AGENT
-from agent_eval_harness.datasets.generator_utils import seed_cases_to_dataset_cases
+from agent_eval_harness.datasets.generator_utils import (
+    config_kwarg_names_from_case_binding,
+    seed_cases_to_dataset_cases,
+)
 from agent_eval_harness.datasets.registry import get_generator
 from agent_eval_harness.datasets.types import TRUSTED_PROVENANCE
 from agent_eval_harness.datasets.versioning import next_version
@@ -27,7 +30,6 @@ logger = logging.getLogger("agent_eval_harness.datasets.fulfillment")
 # Some kinds are 1:1 with an execution, not a text-sample pool — min_cases scales differently.
 _MIN_CASES_OVERRIDE: dict[str, int] = {
     "snapshot_fixture": 1,
-    "snapshot_regression_baseline": 1,
     "field_match_gold": 1,
 }
 _DEFAULT_MIN_CASES: dict[str, int] = {"guard_classification": 40}
@@ -36,7 +38,7 @@ _DEFAULT_MIN_CASES: dict[str, int] = {"guard_classification": 40}
 _TOPO_ORDER = [
     "qa_testset", "decomposition_gold", "guard_classification",
     "snapshot_fixture", "field_match_gold",
-    "sufficiency_labeled", "snapshot_regression_baseline",
+    "sufficiency_labeled",
     "recorded_report_replay",
     "synthetic_agent_io",  # no dependents downstream; order among the rest doesn't matter
 ]
@@ -98,6 +100,25 @@ def _qa_testset_backend(group_entries: list[SuiteEntry]) -> str:
     return "deepeval"
 
 
+def _validate_case_input_against_contract(case_input: Any, contract: EvaluationContract | None) -> list[str]:
+    """Kind-agnostic missing-required check against the harvested contract. Foreign-field detection needs the per-kind case envelope, so it lives in each generator (e.g. synthetic_agent_io._validate_input)."""
+    if contract is None or not isinstance(case_input, dict):
+        return []
+    invocation = contract.invocation
+    if not invocation:
+        return []
+    config_names = config_kwarg_names_from_case_binding(invocation.case_binding)
+
+    errors: list[str] = []
+    for kw in (invocation.kwargs or []):
+        if kw.name and kw.name not in config_names and kw.required:
+            if not kw.default_repr and kw.name not in case_input:
+                errors.append(f"missing required input field '{kw.name}'")
+
+    return errors
+
+
+
 async def _derive_config(
     kind: str,
     dataset_id: str,
@@ -131,12 +152,23 @@ async def _derive_config(
         contract = (contract_by_agent or {}).get(agent_id)
         if contract is None:
             return None
-        # 3-tier purpose fallback: knowledge.functionality > profile.purpose > archetype generic (in generator)
+        # 3-tier purpose fallback: blend profile purpose and knowledge functionality without blindly overwriting
         knowledge = (knowledge_by_agent or {}).get(agent_id) or {}
         base_profile = dict((profile_by_agent or {}).get(agent_id) or {})
-        resolved_purpose = knowledge.get("functionality") or base_profile.get("purpose") or ""
-        if resolved_purpose:
-            base_profile["purpose"] = resolved_purpose
+        prof_purpose = base_profile.get("purpose") or ""
+        know_func = knowledge.get("functionality") or ""
+        if prof_purpose and know_func and know_func not in prof_purpose:
+            base_profile["purpose"] = f"{prof_purpose} Functionality: {know_func}"
+        elif know_func and not prof_purpose:
+            base_profile["purpose"] = know_func
+
+        section_output_schemas: dict[str, dict[str, Any]] = {}
+        if contract.field_downstream_consumers and contract_by_agent:
+            for _aid, up_contract in contract_by_agent.items():
+                sec_letter = up_contract.output.section_letter if up_contract.output else None
+                if sec_letter and up_contract.output.json_schema:
+                    section_output_schemas[sec_letter] = up_contract.output.json_schema
+
         return {
             "dataset_name": dataset_id, "agent_id": agent_id,
             "archetype": contract.archetype,
@@ -147,6 +179,7 @@ async def _derive_config(
             "input_schemas": knowledge.get("input_schemas") or {},
             "virtual_inputs": knowledge.get("virtual_inputs") or [],
             "context_builders": knowledge.get("context_builders") or [],
+            "section_output_schemas": section_output_schemas,
             "count": min_cases, "painpoint": painpoint,
         }
 
@@ -195,6 +228,13 @@ async def _derive_config(
         }
 
     if kind == "field_match_gold":
+        agent_id = group_entries[0].agent_id or component
+        contract = (contract_by_agent or {}).get(agent_id)
+        if contract and contract.output and contract.output.json_schema:
+            props = contract.output.json_schema.get("properties") or {}
+            # field_match_gold emits repo_name and tech_stack fields; gate targeting requires output schema match
+            if not ("repo_name" in props or "tech_stack" in props):
+                return None
         if extra_snapshot_ids and not codespectra_client:
             return None
         snapshot_ids = [snapshot_id, *extra_snapshot_ids]
@@ -345,6 +385,11 @@ async def fulfill_plan(
                 if not json_path or not Path(json_path).exists():
                     continue
                 raw = json.loads(Path(json_path).read_text(encoding="utf-8"))
+                if raw.get("evaluation_contract") and agent_report.agent_id not in contract_by_agent:
+                    try:
+                        contract_by_agent[agent_report.agent_id] = EvaluationContract.model_validate(raw["evaluation_contract"])
+                    except Exception as exc:
+                        logger.warning(f"fulfillment: could not parse evaluation_contract for {agent_report.agent_id}: {exc}")
                 functionality = raw.get("functionality") or ""
                 failure_modes = [
                     fm["description"]
@@ -384,16 +429,6 @@ async def fulfill_plan(
                     "reason": "eval_enabled is False for this agent — toggle it on in Stage3Screen to generate this dataset",
                 }
                 continue
-
-        if kind == "snapshot_regression_baseline":
-            report[group_key] = {
-                "status": "needs_human",
-                "reason": (
-                    "snapshot_regression_baseline requires a live target-execution seam "
-                    "that doesn't exist yet — cannot auto-generate"
-                ),
-            }
-            continue
 
         if kind == "qa_testset" and not embedding_client:
             report[group_key] = {
@@ -458,13 +493,48 @@ async def fulfill_plan(
             except Exception as e:
                 logger.warning(f"fulfillment: top-up for {group_key} failed: {e}")
 
-        if len(all_cases) < min_cases:
+        # Kind-agnostic fulfillment input acceptance gate cross-check against harvested contract
+        agent_id_for_group = group_entries[0].agent_id or group_entries[0].component
+        contract_for_group = (contract_by_agent or {}).get(agent_id_for_group)
+        if contract_for_group:
+            # Fill harness-supplied run handles (snapshot_id etc.) into cases — injected at execution, not synthetic content the generator can invent; only required, case-bound (non-config), currently-missing kwargs.
+            _run_env = {
+                "snapshot_id": snapshot_id, "snapshot_local_path": snapshot_local_path,
+                "provider_id": provider_id, "model_id": model_id, "map_path": map_path,
+            }
+            _inv = contract_for_group.invocation
+            _config_names = config_kwarg_names_from_case_binding(_inv.case_binding if _inv else {})
+            _fill = {
+                kw.name: _run_env[kw.name]
+                for kw in (_inv.kwargs if _inv else [])
+                if kw.required and kw.name in _run_env and kw.name not in _config_names and _run_env[kw.name]
+            }
+            if _fill:
+                for c in all_cases:
+                    if isinstance(c.input, dict):
+                        for _n, _v in _fill.items():
+                            c.input.setdefault(_n, _v)
+            valid_cases = []
+            for c in all_cases:
+                # Pipeline-driver cases (shape=kwargs, e.g. snapshot_fixture) drive a full run; their input is not the agent's direct contract input, so the per-agent input gate doesn't apply.
+                if isinstance(c.input, dict) and c.input.get("shape") == "kwargs":
+                    valid_cases.append(c)
+                    continue
+                input_errs = _validate_case_input_against_contract(c.input, contract_for_group)
+                if input_errs:
+                    logger.warning(f"fulfillment: case {c.id} input failed contract validation: {input_errs}")
+                else:
+                    valid_cases.append(c)
+            all_cases = valid_cases
+
+        if len(all_cases) == 0:
             report[group_key] = {
                 "status": "failed",
-                "reason": f"generated {len(all_cases)} cases, need >= {min_cases} — undersized dataset not written",
+                "reason": f"generated {len(all_cases)} cases, need >= {min_cases} — zero cases produced",
             }
             continue
 
+        # Persist partial datasets; only fail on zero cases
         max_sims = [
             c.labels["max_sim"] for c in all_cases
             if isinstance(c.labels, dict) and "max_sim" in c.labels
@@ -481,9 +551,18 @@ async def fulfill_plan(
             source_gate_ids=[e.id for e in group_entries],
             min_cases=min_cases,
             metrics=dataset_metrics,
+            expansion_session_id=session_id or None,
         )
         dataset_id_by_group[group_key] = dataset_id
-        report[group_key] = {"status": "fulfilled", "dataset_id": dataset_id}
+
+        if len(all_cases) < min_cases:
+            report[group_key] = {
+                "status": "needs_human",
+                "reason": f"generated {len(all_cases)} of {min_cases} cases — dataset persisted but undersized",
+                "dataset_id": dataset_id,
+            }
+        else:
+            report[group_key] = {"status": "fulfilled", "dataset_id": dataset_id}
 
     if dataset_id_by_group:
         for entry in suite.entries:

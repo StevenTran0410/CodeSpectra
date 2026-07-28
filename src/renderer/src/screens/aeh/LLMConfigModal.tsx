@@ -69,7 +69,7 @@ export default function LLMConfigModal({
       style === 'effort'
         ? (reasoningEffort ?? 'medium')
         : style === 'effort_toggle'
-          ? (reasoningEffort ?? 'disable')
+          ? (reasoningEffort ?? 'high')
           : null
     const nextBudget = style === 'budget_tokens' || style === 'thinking_budget' ? thinkingBudget : null
     onChange(providerId, newModelId, nextEffort, nextBudget)
@@ -147,7 +147,7 @@ export default function LLMConfigModal({
         {reasoningStyle === 'effort_toggle' && (
           <FormGroup label="Thinking">
             <Select
-              value={reasoningEffort ?? 'disable'}
+              value={reasoningEffort ?? 'high'}
               onChange={(e) => onChange(providerId, modelId, e.target.value, null)}
             >
               <option value="disable">Disable</option>

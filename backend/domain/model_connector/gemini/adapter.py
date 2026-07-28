@@ -49,6 +49,26 @@ class GeminiAdapter(CloudAdapterBase):
         except Exception as e:
             raise ProviderError(ProviderErrorCode.UNKNOWN, str(e), provider_id=self.config.id) from e
 
+    async def list_embedding_models(self) -> list[str]:
+        """Embedding models the endpoint exposes (supportedGenerationMethods includes embedContent)."""
+        try:
+            res = await self._client.get("/v1beta/models", params=self._key_param())
+            res.raise_for_status()
+            raw = [m for m in res.json().get("models", []) if isinstance(m, dict) and "name" in m]
+            return [
+                m["name"].replace("models/", "")
+                for m in raw
+                if any("mbedContent" in meth for meth in m.get("supportedGenerationMethods", []))
+            ]
+        except httpx.ConnectError as e:
+            raise self._map_connect_error(e) from e
+        except httpx.TimeoutException as e:
+            raise self._map_timeout(e) from e
+        except httpx.HTTPStatusError as e:
+            raise self._map_http_error(e) from e
+        except Exception as e:
+            raise ProviderError(ProviderErrorCode.UNKNOWN, str(e), provider_id=self.config.id) from e
+
     async def chat(self, request: ChatRequest) -> ChatResponse:
         model = self.config.model_id
         # Build Gemini contents array from messages

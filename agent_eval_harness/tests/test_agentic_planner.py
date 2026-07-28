@@ -449,15 +449,18 @@ def _contract_with_input_kind(input_kind: str, *, llm_only: bool = False) -> Eva
     )
 
 
-async def test_apply_feasibility_drops_baseline_decomposition_coverage_on_structured_input() -> None:
+async def test_apply_feasibility_replaces_baseline_decomposition_coverage_on_structured_input() -> None:
+    """Fix-plan #10: structured-input orchestrators get a routing-correctness substitute, not a bare drop."""
     gate = _rule_gate("project_identity", "geval.decomposition_coverage")
     contract = _contract_with_input_kind("structured")
     notes: list[str] = []
 
     result = ap._apply_feasibility([gate], contract, notes)
 
-    assert result == []
-    assert any("geval.decomposition_coverage" in n and "dropped" in n for n in notes)
+    assert len(result) == 1
+    assert result[0].metric == "allowed_downstream"
+    assert result[0].metric_class == "assertion"
+    assert any("geval.decomposition_coverage" in n and "allowed_downstream" in n for n in notes)
 
 
 async def test_apply_feasibility_drops_baseline_answer_relevancy_on_structured_input() -> None:
@@ -655,6 +658,7 @@ async def test_generate_plan_agentic_reuses_previous_analysis_for_unchanged_agen
     previous_report = EvaluationPlanReport(
         target_system_id="multi_agent",
         agents=[ap.AgentPlanReport(agent_id="guard_agent", data_profile=reused_profile, gates=[reused_gate])],
+        schema_version=ap._PLAN_SCHEMA_VERSION,  # FIX A: version must match current version for reuse to work
     )
 
     llm_client = FakeLLMClient(LLMResponse(content="{}", model="fake"))
@@ -670,3 +674,27 @@ async def test_generate_plan_agentic_reuses_previous_analysis_for_unchanged_agen
     assert by_agent["guard_agent"].data_profile == reused_profile
     assert reused_gate.id in {g.id for g in by_agent["guard_agent"].gates}
     assert any("Reused prior analysis for 1 agent" in n for n in report.advisory_notes)
+
+
+def test_complete_params_guard_classification_categories() -> None:
+    """FIX 6: _complete_params populates guard_classification categories from contract schema_enum_values."""
+    from agent_eval_harness.planning.contract import EvaluationContract, OutputContract
+    from agent_eval_harness.planning.agentic_planner import _complete_params, EvaluationGate
+
+    gate = EvaluationGate(
+        id="g1", agent_id="guard1", component="c1", location="output", property="cat",
+        metric="classifier.c1_accuracy", metric_class="classifier", dataset_kind="guard_classification",
+        toolkit="classifier", params={},
+    )
+    contract = EvaluationContract(
+        agent_id="guard1",
+        output=OutputContract(schema_enum_values={"category": ["allowed", "blocked"]}),
+    )
+
+    notes: list[str] = []
+    completed = _complete_params(gate, None, contract, notes)
+    assert completed.params.get("categories") == [
+        {"name": "allowed", "description": "Category: allowed"},
+        {"name": "blocked", "description": "Category: blocked"},
+    ]
+

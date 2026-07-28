@@ -81,6 +81,12 @@ export default function Stage2Screen(): React.ReactElement {
     [agentKnowledge]
   )
 
+  // Scope "already cached" to THIS system's agents -- one session can hold multiple systems' knowledge (Code Analysis + Deep Research).
+  const cachedInSystemCount = useMemo(
+    () => (agentFlowMap?.agents ?? []).filter((a) => knowledgeByAgent.has(a.id)).length,
+    [agentFlowMap, knowledgeByAgent]
+  )
+
   const loadAgentKnowledge = useCallback(async (sessionId: string) => {
     try {
       const records = await window.api.aeh.getAgentKnowledge(sessionId)
@@ -493,7 +499,7 @@ export default function Stage2Screen(): React.ReactElement {
                 .aeh/config.yaml will be used instead.
               </p>
             )}
-            {agentKnowledge.length > 0 && (
+            {cachedInSystemCount > 0 && (
               <label className="flex items-start gap-2 text-[10px] text-slate-400 cursor-pointer">
                 <input
                   type="checkbox"
@@ -502,7 +508,7 @@ export default function Stage2Screen(): React.ReactElement {
                   className="mt-0.5 accent-indigo-500"
                 />
                 <span>
-                  Force re-enrich — {agentKnowledge.length} agent{agentKnowledge.length === 1 ? '' : 's'} already
+                  Force re-enrich — {cachedInSystemCount} agent{cachedInSystemCount === 1 ? '' : 's'} already
                   {' '}have cached knowledge from a previous run and would otherwise be skipped (same
                   evidence_hash). Check this to re-run them anyway.
                 </span>
@@ -555,7 +561,23 @@ export default function Stage2Screen(): React.ReactElement {
           {/* Active Candidate Info Card */}
           {activeCandidate && (
             <div className="bg-slate-900/40 border border-slate-850 rounded-xl p-3.5 space-y-2">
-              <h3 className="text-xs font-semibold text-slate-200">{activeCandidate.name}</h3>
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="text-xs font-semibold text-slate-200 truncate" title={activeCandidate.name}>{activeCandidate.name}</h3>
+                {(activeCandidate.system_type_signals?.kind || activeCandidate.system_type) && (
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    {activeCandidate.system_type_signals?.kind && (
+                      <span className="text-[9px] uppercase tracking-wider font-mono font-bold px-1.5 py-0.5 rounded bg-slate-800/60 border border-slate-700 text-slate-300">
+                        {activeCandidate.system_type_signals.kind}
+                      </span>
+                    )}
+                    {activeCandidate.system_type && (
+                      <span className="text-[9px] uppercase tracking-wider font-mono font-bold px-1.5 py-0.5 rounded bg-emerald-950/50 border border-emerald-900/40 text-emerald-300">
+                        {activeCandidate.system_type}
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
               <div className="text-[10px] text-slate-400 space-y-1">
                 <div>Frameworks: {activeCandidate.frameworks.join(', ') || 'none'}</div>
                 <div>Confidence: {activeCandidate.confidence}</div>
@@ -741,6 +763,7 @@ export default function Stage2Screen(): React.ReactElement {
                   <div className="w-72 border-r border-slate-850 shrink-0 min-h-0">
                     <AgentFlowListPanel
                       agentFlowMap={agentFlowMap}
+                      systemMap={systemMap}
                       selectedAgentId={selectedAgentId}
                       onSelectAgent={(id) => {
                         setSelectedAgentId(id)
@@ -773,6 +796,7 @@ export default function Stage2Screen(): React.ReactElement {
                           expansionSession={expansionSession}
                           systemMap={systemMap}
                           candidate={activeCandidate}
+                          agentFlowMap={agentFlowMap}
                           selectedGraphNode={selectedGraphNode}
                           onSelectGraphNode={setSelectedGraphNode}
                         />
@@ -1066,12 +1090,14 @@ function SystemMapGraphPanel({
   expansionSession,
   systemMap,
   candidate,
+  agentFlowMap,
   selectedGraphNode,
   onSelectGraphNode,
 }: {
   expansionSession: AEHExpansionSession
   systemMap: AEHSystemMap
   candidate: AEHDiscoveryCandidate | null
+  agentFlowMap: AEHAgentFlowMap | null
   selectedGraphNode: string | null
   onSelectGraphNode: (path: string | null) => void
 }): React.ReactElement {
@@ -1083,39 +1109,65 @@ function SystemMapGraphPanel({
     return m
   }, [systemMap])
 
-  const mergedEdges = useMemo(() => {
+  // Structural kept-set from the agent view, mapped to files. Null (flows absent, or pre-field data
+  // with no flow_component_ids) means no filter -- fall back to the unfiltered accepted-file set.
+  const keptFiles = useMemo(() => {
+    const ids = agentFlowMap?.flow_component_ids
+    if (!ids || ids.length === 0) return null
+    const keptComponentIds = new Set(ids)
+    const files = new Set<string>()
+    for (const c of systemMap.components) {
+      if (c.file && keptComponentIds.has(c.id)) files.add(c.file)
+    }
+    return files
+  }, [agentFlowMap, systemMap])
+
+  // All file-to-file edges among accepted files, before any node filtering.
+  const allEdges = useMemo(() => {
     const acceptedPaths = new Set(acceptedFilePaths(expansionSession.accepted))
     const wiringEdges = wiringBlockFileEdges(candidate?.wiring_block ?? null)
       .filter((e) => acceptedPaths.has(e.src) && acceptedPaths.has(e.dst))
     const wiringEdgeKeys = new Set(wiringEdges.map((e) => `${e.src}|${e.dst}`))
-
     const symbolEdges = (expansionSession.accepted_edges || [])
       .filter((e) => !wiringEdgeKeys.has(`${e.src}|${e.dst}`) && !wiringEdgeKeys.has(`${e.dst}|${e.src}`))
-
     return [
       ...wiringEdges.map((e) => ({ ...e, kind: 'wiring' as const })),
       ...symbolEdges.map((e) => ({ ...e, kind: 'symbol' as const })),
     ]
   }, [expansionSession, candidate])
 
+  // Drop orphan file nodes (no edge to anything) always; drop non-agentic files too once flow data exists.
+  const visibleFilePaths = useMemo(() => {
+    const connected = new Set<string>()
+    for (const e of allEdges) { connected.add(e.src); connected.add(e.dst) }
+    return acceptedFilePaths(expansionSession.accepted).filter(
+      (path) => connected.has(path) && (keptFiles ? keptFiles.has(path) : true),
+    )
+  }, [expansionSession, allEdges, keptFiles])
+
+  const mergedEdges = useMemo(() => {
+    const visible = new Set(visibleFilePaths)
+    return allEdges.filter((e) => visible.has(e.src) && visible.has(e.dst))
+  }, [allEdges, visibleFilePaths])
+
   const neighborsOf = useMemo(() => {
     const m = new Map<string, Set<string>>()
-    for (const path of acceptedFilePaths(expansionSession.accepted)) m.set(path, new Set())
+    for (const path of visibleFilePaths) m.set(path, new Set())
     for (const e of mergedEdges) {
       m.get(e.src)?.add(e.dst)
       m.get(e.dst)?.add(e.src)
     }
     return m
-  }, [expansionSession, mergedEdges])
+  }, [visibleFilePaths, mergedEdges])
 
   const { layoutNodes, layoutEdges } = useMemo(() => {
-    const nodes = acceptedFilePaths(expansionSession.accepted).map((path) => ({
+    const nodes = visibleFilePaths.map((path) => ({
       id: path,
       label: path.split('/').pop() || path,
       color: ROLE_COLORS[(roleByFile.get(path) ?? 'unknown') as AEHRole] ?? ROLE_COLORS.unknown,
     }))
     return getDagreGraphLayout(nodes, mergedEdges)
-  }, [expansionSession, roleByFile, mergedEdges])
+  }, [visibleFilePaths, roleByFile, mergedEdges])
 
   // Dim everything except the selected node + its direct neighbors.
   const styledNodes = useMemo(() => {
@@ -1169,14 +1221,23 @@ function SystemMapGraphPanel({
 /** Hierarchical agent list — roots = agents with no valid parent, children under parent_agent. */
 function AgentFlowListPanel({
   agentFlowMap,
+  systemMap,
   selectedAgentId,
   onSelectAgent,
 }: {
   agentFlowMap: AEHAgentFlowMap
+  systemMap: AEHSystemMap | null
   selectedAgentId: string | null
   onSelectAgent: (agentId: string) => void
 }): React.ReactElement {
   const agentById = useMemo(() => new Map(agentFlowMap.agents.map((a) => [a.id, a])), [agentFlowMap])
+  // Dot color = the agent's head/entry component role (agent.id IS the head component id), matching the
+  // component detail panel — the derived agent.role aggregates helper roles and mis-colors self-validating workers.
+  const roleByComponentId = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const c of systemMap?.components ?? []) m.set(c.id, c.role)
+    return m
+  }, [systemMap])
 
   // '__root__' bucket = agents with no valid parent, i.e. the tree's root set.
   const childrenByParent = useMemo(() => {
@@ -1213,8 +1274,8 @@ function AgentFlowListPanel({
             {depth > 0 && <ChevronRight className="w-3 h-3 text-slate-700 shrink-0" />}
             <span
               className="w-2 h-2 rounded-full shrink-0"
-              style={{ background: ROLE_COLORS[agent.role as AEHRole] ?? ROLE_COLORS.unknown }}
-              title={agent.role}
+              style={{ background: ROLE_COLORS[(roleByComponentId.get(agent.id) ?? agent.role) as AEHRole] ?? ROLE_COLORS.unknown }}
+              title={roleByComponentId.get(agent.id) ?? agent.role}
             />
             <span className="text-[11px] font-semibold text-slate-200 truncate flex-1">
               {agent.label || agent.id}
