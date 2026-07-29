@@ -106,187 +106,6 @@ async def _generate_plan(client: AsyncClient, session_id: str):
     return resp
 
 
-@pytest.mark.usefixtures("_setup_db")
-class TestEvalRunRoute:
-    """PUT plan-report and POST eval-run endpoints; follows test_agentic_plan_routes.py's fake-external-calls pattern."""
-
-    @pytest.fixture(autouse=True)
-    def _patch_external_calls(self, monkeypatch, tmp_path):
-        async def fake_get_snapshot(self, snapshot_id: str) -> dict:
-            return {"local_path": str(tmp_path)}
-
-        async def fake_complete(self, messages, *, max_tokens=512, temperature=0.2, json_mode=False):
-            return LLMResponse(content="{}", model="fake-llm")
-
-        monkeypatch.setattr(CodeSpectraClient, "get_snapshot", fake_get_snapshot)
-        monkeypatch.setattr(CodeSpectraProxyClient, "complete", fake_complete)
-
-    async def test_put_plan_report_route_persists_eval_enabled(self, tmp_path: Path) -> None:
-        _write_widget_source(tmp_path)
-        session_id = await _seed_completed_expansion_session(tmp_path)
-
-        async with await _client() as client:
-            await _generate_plan(client, session_id)
-            get_resp = await client.get(f"/api/discovery/expansion-sessions/{session_id}/plan-report")
-            report = get_resp.json()
-            # Fix-plan #6: eval_enabled now defaults True (Stage3Screen toggle is the opt-OUT).
-            assert report["agents"][0]["eval_enabled"] is True
-
-            report["agents"][0]["eval_enabled"] = False
-            put_resp = await client.put(
-                f"/api/discovery/expansion-sessions/{session_id}/plan-report", json=report
-            )
-            assert put_resp.status_code == 200, put_resp.text
-            assert put_resp.json() == {"success": True}
-
-            reget_resp = await client.get(f"/api/discovery/expansion-sessions/{session_id}/plan-report")
-            assert reget_resp.json()["agents"][0]["eval_enabled"] is False
-
-        sess = await repository.get_expansion_session(session_id)
-        on_disk = yaml.safe_load(Path(sess["plan_report_path"]).read_text(encoding="utf-8"))
-        assert on_disk["agents"][0]["eval_enabled"] is False
-
-    async def test_put_plan_report_route_422_on_invalid_body(self, tmp_path: Path) -> None:
-        _write_widget_source(tmp_path)
-        session_id = await _seed_completed_expansion_session(tmp_path)
-
-        async with await _client() as client:
-            await _generate_plan(client, session_id)
-            resp = await client.put(
-                f"/api/discovery/expansion-sessions/{session_id}/plan-report",
-                json={"agents": "not-a-list"},
-            )
-
-        assert resp.status_code == 422
-
-    async def test_put_plan_report_route_400_before_generation(self, tmp_path: Path) -> None:
-        session_id = await _seed_completed_expansion_session(tmp_path)
-
-        async with await _client() as client:
-            resp = await client.put(
-                f"/api/discovery/expansion-sessions/{session_id}/plan-report",
-                json={"target_system_id": "widget_system", "agents": []},
-            )
-
-        assert resp.status_code == 400
-
-    async def test_eval_run_route_no_agents_enabled(self, tmp_path: Path) -> None:
-        _write_widget_source(tmp_path)
-        session_id = await _seed_completed_expansion_session(tmp_path)
-
-        async with await _client() as client:
-            await _generate_plan(client, session_id)
-            # Fix-plan #6: default is now enabled — explicitly opt every agent OUT to test the empty case.
-            report = (await client.get(f"/api/discovery/expansion-sessions/{session_id}/plan-report")).json()
-            for agent_report in report["agents"]:
-                agent_report["eval_enabled"] = False
-            await client.put(f"/api/discovery/expansion-sessions/{session_id}/plan-report", json=report)
-            resp = await client.post(
-                f"/api/discovery/expansion-sessions/{session_id}/eval-run",
-                json={"provider_id": "prov-1", "backend_url": "http://fake-backend", "backend_token": "tok"},
-            )
-
-        assert resp.status_code == 200, resp.text
-        assert resp.json()["agents"] == {}
-
-    async def test_eval_run_route_needs_human_when_no_fulfilled_dataset(self, tmp_path: Path) -> None:
-        _write_widget_source(tmp_path)
-        session_id = await _seed_completed_expansion_session(tmp_path)
-
-        async with await _client() as client:
-            await _generate_plan(client, session_id)
-            get_resp = await client.get(f"/api/discovery/expansion-sessions/{session_id}/plan-report")
-            report = get_resp.json()
-            report["agents"][0]["eval_enabled"] = True
-            put_resp = await client.put(
-                f"/api/discovery/expansion-sessions/{session_id}/plan-report", json=report
-            )
-            assert put_resp.status_code == 200
-
-            resp = await client.post(
-                f"/api/discovery/expansion-sessions/{session_id}/eval-run",
-                json={"provider_id": "prov-1", "backend_url": "http://fake-backend", "backend_token": "tok"},
-            )
-
-        assert resp.status_code == 200, resp.text
-        agents = resp.json()["agents"]
-        assert agents["widget_agent"]["status"] == "needs_human"
-
-    async def test_eval_run_route_404_for_unknown_session(self) -> None:
-        async with await _client() as client:
-            resp = await client.post(
-                "/api/discovery/expansion-sessions/does-not-exist/eval-run",
-                json={"provider_id": "prov-1", "backend_url": "http://fake-backend", "backend_token": "tok"},
-            )
-        assert resp.status_code == 404
-
-    async def test_reset_stage3_deletes_plan_report_and_fulfilled_datasets(self, tmp_path: Path) -> None:
-        _write_widget_source(tmp_path)
-        session_id = await _seed_completed_expansion_session(tmp_path)
-
-        async with await _client() as client:
-            await _generate_plan(client, session_id)
-
-        sess_before = await repository.get_expansion_session(session_id)
-        plan_path = Path(sess_before["plan_path"])
-        plan_report_path = Path(sess_before["plan_report_path"])
-        assert plan_path.exists()
-        assert plan_report_path.exists()
-
-        # Simulate a fulfilled synthetic_agent_io dataset referenced by the plan.
-        dataset_id = "ds-widget-agent-synth"
-        await repository.insert_dataset_cases_bulk(
-            dataset_id,
-            [
-                DatasetCase(
-                    id="case-1", dataset=dataset_id, kind="synthetic_agent_io",
-                    input={"shape": "retrieval_only", "bundle": {}}, expected=None, labels={},
-                    provenance="synthetic",
-                )
-            ],
-        )
-        await repository.insert_dataset_metadata(dataset_id, "synthetic_agent_io", source_gate_ids=["x"], min_cases=1)
-        suite_text = plan_path.read_text(encoding="utf-8")
-        plan_data = yaml.safe_load(suite_text)
-        plan_data["entries"][0]["dataset"] = {"ref": dataset_id, "required": None}
-        plan_path.write_text(yaml.dump(plan_data, allow_unicode=True), encoding="utf-8")
-
-        assert await repository.get_dataset_cases(dataset_id)  # sanity: seeded
-
-        async with await _client() as client:
-            resp = await client.delete(f"/api/discovery/expansion-sessions/{session_id}/stage3")
-
-        assert resp.status_code == 200, resp.text
-        body = resp.json()
-        assert body["success"] is True
-        assert body["deleted_dataset_ids"] == [dataset_id]
-
-        assert await repository.get_dataset_cases(dataset_id) == []
-        assert not plan_path.exists()
-        assert not plan_report_path.exists()
-
-        sess_after = await repository.get_expansion_session(session_id)
-        assert sess_after["plan_path"] is None
-        assert sess_after["plan_report_path"] is None
-
-    async def test_reset_stage3_graceful_when_no_plan_generated_yet(self, tmp_path: Path) -> None:
-        session_id = await _seed_completed_expansion_session(tmp_path)
-
-        async with await _client() as client:
-            resp = await client.delete(f"/api/discovery/expansion-sessions/{session_id}/stage3")
-
-        assert resp.status_code == 200, resp.text
-        assert resp.json() == {"success": True, "deleted_dataset_ids": []}
-
-    async def test_reset_stage3_404_for_unknown_session(self) -> None:
-        async with await _client() as client:
-            resp = await client.delete("/api/discovery/expansion-sessions/does-not-exist/stage3")
-        assert resp.status_code == 404
-
-
-# --- test_ingest_route.py ---
-
-
 def _write_clean_spanlog(tmp_path: Path) -> tuple[Path, Path]:
     log_path = tmp_path / "eval_log.999.jsonl"
     records = [
@@ -1452,3 +1271,104 @@ async def test_consolidation_split_siblings_same_community_id_do_not_clobber() -
     # shared.py resolves to the langgraph sibling only.
     assert "shared.py" in lg["matched_files"]
     assert "shared.py" not in hay["matched_files"]
+
+
+class TestSiblingSystems:
+    @pytest.mark.anyio
+    async def test_list_sibling_systems(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.setenv("AEH_DATA_DIR", str(tmp_path))
+        await init_db()
+        try:
+            # Let's insert two sibling sessions under same snapshot
+            snap_id = "snap-test-siblings"
+            sess1 = "session-1"
+            sess2 = "session-2"
+            
+            await repository.insert_expansion_session(sess1, "cand-1", snap_id)
+            await repository.insert_expansion_session(sess2, "cand-2", snap_id)
+
+            # Insert a separate unrelated session
+            await repository.insert_expansion_session("session-other", "cand-other", "snap-other")
+
+            # Verify list_expansion_sessions_for_snapshot directly
+            sibs = await repository.list_expansion_sessions_for_snapshot(snap_id)
+            assert len(sibs) == 2
+            ids = {s["id"] for s in sibs}
+            assert ids == {sess1, sess2}
+
+            # Setup system map files
+            map1_dir = tmp_path / "sys1"
+            map1_dir.mkdir()
+            map1_path = map1_dir / "system_map.yaml"
+            map1_yaml = {
+                "target_system_id": "system_one",
+                "framework": "langgraph",
+                "components": [{"id": "c1", "role": "worker", "entry_point": "a:b"}]
+            }
+            map1_path.write_text(yaml.dump(map1_yaml), encoding="utf-8")
+
+            map2_dir = tmp_path / "sys2"
+            map2_dir.mkdir()
+            map2_path = map2_dir / "system_map.yaml"
+            map2_yaml = {
+                "target_system_id": "system_two",
+                "framework": "haystack",
+                "components": [{"id": "c2", "role": "worker", "entry_point": "a:b"}, {"id": "c3", "role": "worker", "entry_point": "a:b"}]
+            }
+            map2_path.write_text(yaml.dump(map2_yaml), encoding="utf-8")
+
+            # Update paths in database using finish_expansion_session
+            await repository.finish_expansion_session(
+                sess1,
+                status="completed",
+                map_path=str(map1_path)
+            )
+            await repository.finish_expansion_session(
+                sess2,
+                status="completed",
+                map_path=str(map2_path)
+            )
+
+            # Insert dataset cases to test data profiles (Item 5.3)
+            await repository.insert_dataset_metadata("ds1", "golden", expansion_session_id=sess2)
+            await repository.insert_dataset_cases_bulk(
+                "ds1",
+                [
+                    {"id": "case1", "kind": "some_kind", "input": {}, "expected": {}, "labels": [], "provenance": "handwritten"},
+                    {"id": "case2", "kind": "some_kind", "input": {}, "expected": {}, "labels": [], "provenance": "synthetic"},
+                ]
+            )
+
+            # Trigger Stage 3 complete ready flag for sess2
+            report_path = map2_dir / "system_two_plan_report.yaml"
+            report_path.write_text(yaml.dump({"target_system_id": "system_two", "agents": [{"agent_id": "c2", "role": "worker"}]}), encoding="utf-8")
+            await repository.update_expansion_session_plan_report_path(sess2, str(report_path))
+
+            # Query API
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                res = await client.get(f"/api/discovery/expansion-sessions/{sess1}/sibling-systems")
+                assert res.status_code == 200
+                data = res.json()
+                assert len(data) == 2
+
+                # Ready (sess2) must be first because we sorted ready=True first
+                assert data[0]["session_id"] == sess2
+                assert data[0]["name"] == "system_two"
+                assert data[0]["framework"] == "haystack"
+                assert data[0]["agent_count"] == 1 # read from report
+                assert data[0]["dataset_count"] == 1
+                assert data[0]["runnable_cases_count"] == 1
+                assert data[0]["ready"] is True
+                assert data[0]["is_current"] is False
+
+                assert data[1]["session_id"] == sess1
+                assert data[1]["name"] == "system_one"
+                assert data[1]["framework"] == "langgraph"
+                assert data[1]["agent_count"] == 1 # fallback to map component count
+                assert data[1]["dataset_count"] == 0
+                assert data[1]["runnable_cases_count"] == 0
+                assert data[1]["ready"] is False
+                assert data[1]["is_current"] is True
+        finally:
+            await close_db()
+

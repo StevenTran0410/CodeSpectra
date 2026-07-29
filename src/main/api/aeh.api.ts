@@ -148,14 +148,6 @@ export function registerAEHHandlers(): void {
     aehClient().put(`/api/discovery/expansion-sessions/${sessionId}/plan-report`, body)
   )
 
-  ipcMain.handle('aeh:runEval', (_e, sessionId: string, body: unknown) =>
-    aehClient().post(
-      `/api/discovery/expansion-sessions/${sessionId}/eval-run`,
-      withBackendConnection(body ?? {}),
-      LONG_RUNNING_TIMEOUT_MS
-    )
-  )
-
   ipcMain.handle('aeh:resetStage3', (_e, sessionId: string) =>
     aehClient().del(`/api/discovery/expansion-sessions/${sessionId}/stage3`)
   )
@@ -184,6 +176,10 @@ export function registerAEHHandlers(): void {
 
   ipcMain.handle('aeh:deleteEvalPlan', (_e, sessionId: string) =>
     aehClient().delete(`/api/discovery/expansion-sessions/${sessionId}/eval-plan`)
+  )
+
+  ipcMain.handle('aeh:listSiblingSystems', (_e, sessionId: string) =>
+    aehClient().get(`/api/discovery/expansion-sessions/${sessionId}/sibling-systems`)
   )
 
   ipcMain.handle('aeh:loadEvalResults', (_e, sessionId: string) =>

@@ -287,38 +287,89 @@ def _harvest_dep_call_sites(
         elif isinstance(node.func, ast.Name):
             func_name = node.func.id
             resolved_func = _resolve_callable_with_disk_fallback(func_name, own_tree, own_file, asts, files_root)
-            if resolved_func is None:
-                continue
+            if resolved_func is not None:
+                func_def, func_file = resolved_func
 
-            func_def, func_file = resolved_func
+                # Check keyword args
+                for keyword in node.keywords:
+                    if (isinstance(keyword.value, ast.Attribute) and
+                        isinstance(keyword.value.value, ast.Name) and
+                        keyword.value.value.id == "self" and
+                        keyword.value.attr in dep_attrs):
 
-            # Check if any keyword arg references one of our deps
-            for keyword in node.keywords:
-                if (isinstance(keyword.value, ast.Attribute) and
-                    isinstance(keyword.value.value, ast.Name) and
-                    keyword.value.value.id == "self" and
-                    keyword.value.attr in dep_attrs):
+                        dep_attr = keyword.value.attr
+                        param_name = keyword.arg
 
-                    dep_attr = keyword.value.attr
-                    param_name = keyword.arg
+                        for func_stmt in ast.walk(func_def):
+                            if (isinstance(func_stmt, ast.Call) and
+                                isinstance(func_stmt.func, ast.Attribute) and
+                                isinstance(func_stmt.func.value, ast.Name) and
+                                func_stmt.func.value.id == param_name):
 
-                    for func_stmt in ast.walk(func_def):
-                        if (isinstance(func_stmt, ast.Call) and
-                            isinstance(func_stmt.func, ast.Attribute) and
-                            isinstance(func_stmt.func.value, ast.Name) and
-                            func_stmt.func.value.id == param_name):
+                                method_name = func_stmt.func.attr
+                                citation = _rel_cite(own_file, node.lineno, files_root)
+                                call_sites.append(DepCallSite(
+                                    dep_attr=dep_attr,
+                                    method=method_name,
+                                    citation=citation,
+                                    via=f"free_function:{func_name}"
+                                ))
+                                break
 
-                            method_name = func_stmt.func.attr
-                            citation = _rel_cite(own_file, node.lineno, files_root)
-                            call_sites.append(DepCallSite(
-                                dep_attr=dep_attr,
-                                method=method_name,
-                                citation=citation,
-                                via=f"free_function:{func_name}"
-                            ))
-                            break
+                # Pattern (c): Free-function with dep as positional arg: func(self.<dep_attr>, ...)
+                for idx, arg in enumerate(node.args):
+                    if (isinstance(arg, ast.Attribute) and
+                        isinstance(arg.value, ast.Name) and
+                        arg.value.id == "self" and
+                        arg.attr in dep_attrs):
+
+                        dep_attr = arg.attr
+                        params = [a.arg for a in (func_def.args.args + func_def.args.kwonlyargs)]
+                        param_name = params[idx] if idx < len(params) else None
+                        if param_name:
+                            for func_stmt in ast.walk(func_def):
+                                if (isinstance(func_stmt, ast.Call) and
+                                    isinstance(func_stmt.func, ast.Attribute) and
+                                    isinstance(func_stmt.func.value, ast.Name) and
+                                    func_stmt.func.value.id == param_name):
+
+                                    method_name = func_stmt.func.attr
+                                    citation = _rel_cite(own_file, node.lineno, files_root)
+                                    call_sites.append(DepCallSite(
+                                        dep_attr=dep_attr,
+                                        method=method_name,
+                                        citation=citation,
+                                        via=f"free_function_pos:{func_name}"
+                                    ))
+                                    break
+
+        # Pattern (d): Sibling helper method call: self.<sibling_method>(...)
+        elif (isinstance(node.func, ast.Attribute) and
+              isinstance(node.func.value, ast.Name) and
+              node.func.value.id == "self" and
+              node.func.attr not in dep_attrs):
+
+            sibling_name = node.func.attr
+            sibling_def = _find_sibling_method_def(own_tree, sibling_name)
+            if sibling_def is not None and sibling_def is not entry:
+                sub_sites = _harvest_dep_call_sites(sibling_def, dep_bindings, own_tree, own_file, asts, files_root)
+                if sub_sites:
+                    for ss in sub_sites:
+                        call_sites.append(DepCallSite(
+                            dep_attr=ss.dep_attr,
+                            method=ss.method,
+                            citation=_rel_cite(own_file, node.lineno, files_root),
+                            via=f"sibling:{sibling_name}"
+                        ))
 
     return call_sites
+
+
+def _find_sibling_method_def(tree: ast.Module, name: str) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
+    for stmt in ast.walk(tree):
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)) and stmt.name == name:
+            return stmt
+    return None
 
 
 def _harvest_dep_usage_fields(
@@ -627,6 +678,18 @@ _TYPE_MAP = {
 
 
 def _annotation_to_schema(node: ast.expr, ctx: _SchemaResolveCtx | None = None) -> dict:
+    # X | None  (PEP 604, Python 3.10+) — resolve the non-None branch
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        left, right = node.left, node.right
+        is_none_right = isinstance(right, ast.Constant) and right.value is None
+        is_none_left = isinstance(left, ast.Constant) and left.value is None
+        if is_none_right:
+            return _annotation_to_schema(left, ctx)
+        if is_none_left:
+            return _annotation_to_schema(right, ctx)
+        # Both non-None union: resolve left (first branch)
+        return _annotation_to_schema(left, ctx)
+
     if isinstance(node, ast.Name):
         base_schema = dict(_TYPE_MAP.get(node.id, {}))
         if not base_schema and ctx is not None and node.id not in ctx.visited:
@@ -643,6 +706,11 @@ def _annotation_to_schema(node: ast.expr, ctx: _SchemaResolveCtx | None = None) 
                 schema["items"] = item
             return schema
         if base_name in ("dict", "Dict"):
+            # dict[K, V] — emit additionalProperties for the value type
+            if isinstance(node.slice, ast.Tuple) and len(node.slice.elts) == 2:
+                val_schema = _annotation_to_schema(node.slice.elts[1], ctx)
+                if val_schema:
+                    return {"type": "object", "additionalProperties": val_schema}
             return {"type": "object"}
         if base_name == "Literal":
             elts = node.slice.elts if isinstance(node.slice, ast.Tuple) else [node.slice]
@@ -651,7 +719,11 @@ def _annotation_to_schema(node: ast.expr, ctx: _SchemaResolveCtx | None = None) 
                 return {"type": "string", "enum": values}
         if base_name in ("NotRequired", "Required"):
             return _annotation_to_schema(node.slice, ctx)
+        if base_name == "Optional":
+            # Optional[X] → resolve X (same as X | None)
+            return _annotation_to_schema(node.slice, ctx)
     return {}
+
 
 
 def _infer_schema_from_literal(literal: dict, ctx: _SchemaResolveCtx | None = None) -> dict | None:
@@ -1304,6 +1376,7 @@ def harvest_component_contract(
     tree = asts[path]
     if cls is None and entry is None:
         return None, None, {}, [f"{component.id}: entry point not resolvable in {path.name}"], "unknown"
+    entry_is_async = isinstance(entry, ast.AsyncFunctionDef) if entry is not None else False
 
     # A validator letter also identifies a per-agent-route invocation path, not just the output TypedDict.
     letter = _find_validator_letter(cls)  # None-tolerant for function entry
@@ -1528,6 +1601,9 @@ def harvest_contracts(
             contracts[agent.id] = contract
             continue
 
+        entry_path, entry_cls, entry_ast = _resolve_entry(component, asts)
+        entry_is_async = isinstance(entry_ast, ast.AsyncFunctionDef) if entry_ast is not None else False
+
         invocation, output, constants, notes, input_kind = harvest_component_contract(
             component, asts, files_root, conventions
         )
@@ -1535,12 +1611,22 @@ def harvest_contracts(
         contract.output = output
         contract.constants = constants
         contract.needs_human.extend(notes)
-        contract.observability = ObservabilityContract(has_tools=has_tools, input_kind=input_kind)
+        contract.observability = ObservabilityContract(
+            has_tools=has_tools, input_kind=input_kind, entry_is_async=entry_is_async
+        )
         contract.query_planning_subcall = _detect_query_planning_subcall(component, asts, conventions)
 
         # OR-combine keyword-tier and role-tier to set has_retrieval_signal
         constructor_deps = invocation.constructor_deps if invocation else []
         tier1 = bool(_kw_signals) and any(kw in dep for dep in constructor_deps for kw in _kw_signals)
+        if tier1 and component:
+            path, cls, entry = _resolve_entry(component, asts)
+            if path is not None and cls is not None and entry is not None:
+                dep_bindings = _harvest_constructor_dep_bindings(cls)
+                call_sites = _harvest_dep_call_sites(entry, dep_bindings, asts[path], path, asts, files_root)
+                if not call_sites:
+                    tier1 = False
+
         tier2 = any(
             components_by_id[u].role == "retrieval_agent"
             for u in (component.upstream if component else [])
@@ -1550,6 +1636,7 @@ def harvest_contracts(
             contract.has_retrieval_signal = True
             provenance = "+".join(t for t, ok in (("keyword-tier", tier1), ("role-tier", tier2)) if ok)
             contract.needs_human.append(f"has_retrieval_signal: True via {provenance}")
+        contract.retrieves_internally = tier1
 
         contracts[agent.id] = contract
 

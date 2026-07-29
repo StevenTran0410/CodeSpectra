@@ -58,9 +58,10 @@ class ComponentRefFact(BaseModel):
 class ContractArgFact(BaseModel):
     """One input parameter to an agent."""
     kwarg: str
-    source_kind: str = ""
-    type_hint: str = ""
-    example: str = ""
+    source_kind: str | None = None
+    type_hint: str | None = None
+    example: str | None = None
+    resolved_schema: dict[str, Any] | None = None
 
 
 class OutputContractFact(BaseModel):
@@ -68,6 +69,7 @@ class OutputContractFact(BaseModel):
     json_schema: dict[str, Any] | None = None
     schema_source: str | None = None
     fallback_literal: dict[str, Any] | None = None
+    schema_enum_values: dict[str, list[str]] = Field(default_factory=dict)
 
 
 class RunbookFacts(BaseModel):
@@ -96,6 +98,7 @@ class AgentFacts(BaseModel):
     route: Resolved | Missing | None = None  # value: str
 
     has_retrieval_signal: bool = False
+    retrieves_internally: bool = False
     constructor_deps: list[str] = Field(default_factory=list)
     # Case fields the entry method cannot accept — surfaced, never silently dropped.
     unconsumed_case_fields: list[str] = Field(default_factory=list)
@@ -108,6 +111,8 @@ class AgentFacts(BaseModel):
     typed_bindings: dict[str, str] = Field(default_factory=dict)
     transclude: dict[str, str] = Field(default_factory=dict)
     quirk_flags: dict[str, bool] = Field(default_factory=dict)
+    framework: str | None = None
+    entry_is_async: bool = False
 
 
 class PlanFacts(BaseModel):
@@ -116,6 +121,7 @@ class PlanFacts(BaseModel):
     target_system_id: str
     branch_name: str
     plan_id: str
+    framework: str | None = None
 
     runbook: RunbookFacts = Field(default_factory=RunbookFacts)
 
@@ -133,6 +139,7 @@ class PlanFacts(BaseModel):
     code_artifacts: dict[str, str] = Field(default_factory=dict)
     code_shas: dict[str, str] = Field(default_factory=dict)
     dispatch_modules: list[dict] = Field(default_factory=list)  # {agent_id, filename, code, sha}
+    recon_notes: list[str] = Field(default_factory=list)
 
 
 def compile_plan_facts(
@@ -144,6 +151,7 @@ def compile_plan_facts(
     plan_report: EvaluationPlanReport | None = None,
     repo_root: Path | None = None,
     knowledge_dir: Path | None = None,
+    recon_notes: list[str] | None = None,
 ) -> PlanFacts:
     """Compile every fact the render needs, each Resolved (with citation) or Missing."""
     facts = PlanFacts(
@@ -151,9 +159,11 @@ def compile_plan_facts(
         target_system_id=system_map.target_system_id,
         branch_name=branch_name,
         plan_id=wiring.get("plan_id", "unknown"),
+        framework=system_map.framework,
         dataset_summaries=dataset_summaries,
         db_path=wiring.get("aeh_db_path", ""),
         dataset_ids=list(wiring.get("dataset_ids", [])),
+        recon_notes=recon_notes or [],
     )
 
     facts.runbook = _harvest_runbook(repo_root or Path.cwd())
@@ -172,6 +182,7 @@ def compile_plan_facts(
         agent_facts = AgentFacts(
             agent_id=agent_id,
             role=agent_role,
+            framework=system_map.framework,
         )
 
         knowledge: AgentKnowledge | None = None
@@ -306,7 +317,36 @@ def compile_plan_facts(
                         for k in invocation.kwargs
                         if k.name in bound and _annotation_needs_conversion(k.annotation)
                     }
+                    if invocation.kwargs:
+                        agent_facts.input_contract = [
+                            Resolved(
+                                value=ContractArgFact(
+                                    kwarg=k.name,
+                                    source_kind=k.source_kind,
+                                    type_hint=k.annotation,
+                                    resolved_schema=k.resolved_schema,
+                                ),
+                                citation="EvaluationContract.invocation.kwargs",
+                            )
+                            for k in invocation.kwargs
+                        ]
+                if plan_agent.contract.output and (
+                    plan_agent.contract.output.json_schema or plan_agent.contract.output.fallback_literal
+                ):
+                    out_c = plan_agent.contract.output
+                    agent_facts.output_contract = Resolved(
+                        value=OutputContractFact(
+                            json_schema=out_c.json_schema,
+                            schema_source=out_c.schema_source or "contract",
+                            fallback_literal=out_c.fallback_literal,
+                            schema_enum_values=out_c.schema_enum_values,
+                        ),
+                        citation="EvaluationContract.output",
+                    )
                 agent_facts.has_retrieval_signal = plan_agent.contract.has_retrieval_signal
+                agent_facts.retrieves_internally = plan_agent.contract.retrieves_internally
+                if plan_agent.contract.observability:
+                    agent_facts.entry_is_async = plan_agent.contract.observability.entry_is_async
 
         facts.agents.append(agent_facts)
 
@@ -369,7 +409,7 @@ def _mark_unconsumed_case_fields(facts: PlanFacts) -> None:
                     # Virtual input field: extract the case key name from "virtual:bundle"
                     field = expr[len(VIRTUAL_BINDING_PREFIX):]
                     bound.add(field)
-        if agent.has_retrieval_signal:
+        if agent.retrieves_internally:
             bound.add(EVIDENCE_CASE_KEY)  # reaches the agent through the retrieval stub
         agent.unconsumed_case_fields = sorted(present - bound)
         agent.unsatisfiable_bindings = sorted(missing_required)
@@ -401,7 +441,7 @@ def _compile_code_artifacts(facts: PlanFacts, wiring: dict) -> None:
 
     stub = ""
     for a in facts.agents:
-        if a.has_retrieval_signal:
+        if a.retrieves_internally:
             stub = codegen.generate_retrieval_stub(a)
             if stub:
                 break

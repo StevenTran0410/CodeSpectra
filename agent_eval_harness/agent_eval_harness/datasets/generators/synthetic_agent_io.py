@@ -266,6 +266,16 @@ def _validate_input(input_data: Any, parsed: SyntheticAgentIOConfig) -> list[str
                             jsonschema.validate(instance=val, schema=expected_schema)
                         except jsonschema.ValidationError as exc:
                             errors.append(f"field '{k}' schema validation failed: {exc.message}")
+                elif stype == "string":
+                    if not isinstance(val, str):
+                        errors.append(f"field '{k}' expected string, got {type(val).__name__}")
+                elif stype in ("number", "integer"):
+                    if isinstance(val, bool) or not isinstance(val, (int, float)):
+                        errors.append(f"field '{k}' expected numeric ({stype}), got {type(val).__name__}")
+                elif stype == "boolean":
+                    if not isinstance(val, bool):
+                        errors.append(f"field '{k}' expected boolean, got {type(val).__name__}")
+
 
     return errors
 

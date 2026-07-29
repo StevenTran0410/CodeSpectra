@@ -29,11 +29,21 @@ async def plan_step(state: AgentState, max_steps: int = 3) -> AgentState:
     return state
 
 
-class ResearchAgent:
-    """Owner class of the 2 bound-method nodes."""
+class RetrievalService:
+    def retrieve(self, query: str) -> list[str]:
+        return []
 
-    def __init__(self, llm_client, defects=None) -> None:
+
+def retrieve_multi(retrieval_dep: RetrievalService, state: AgentState) -> list[str]:
+    return retrieval_dep.retrieve(state.get("query", ""))
+
+
+class ResearchAgent:
+    """Owner class of the bound-method nodes."""
+
+    def __init__(self, llm_client, retrieval: RetrievalService = None, defects=None) -> None:
         self._llm = llm_client
+        self._retrieval = retrieval
         self._defects = defects
 
     def build_graph(self) -> StateGraph:
@@ -46,6 +56,7 @@ class ResearchAgent:
         graph.add_node("plan_step", plan_step)
         graph.add_node("investigate", self._node_investigate)
         graph.add_node("synthesize", self._node_synthesize)
+        graph.add_node("retrieve", self._node_retrieve)
 
         graph.add_conditional_edges(
             "plan_step", self._route,
@@ -64,6 +75,10 @@ class ResearchAgent:
 
     async def _node_synthesize(self, state: AgentState) -> AgentState:
         state["summary"] = "; ".join(state.get("findings", []))
+        return state
+
+    async def _node_retrieve(self, state: AgentState) -> AgentState:
+        state["findings"] = retrieve_multi(self._retrieval, state)
         return state
 
     def _route(self, state: AgentState) -> str:

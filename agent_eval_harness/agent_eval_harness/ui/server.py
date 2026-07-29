@@ -1360,119 +1360,6 @@ async def update_plan_report_route(session_id: str, body: dict):
     return {"success": True}
 
 
-class EvalRunRequest(BaseModel):
-    """provider_id/model_id drive the agent-under-test's call; judge_provider_id/judge_model_id optionally override the judge."""
-    provider_id: str | None = None
-    model_id: str | None = None
-    judge_provider_id: str | None = None
-    judge_model_id: str | None = None
-    backend_url: str | None = None
-    backend_token: str | None = None
-
-
-@app.post("/api/discovery/expansion-sessions/{session_id}/eval-run")
-async def run_eval_route(session_id: str, body: EvalRunRequest):
-    """Runs the synthetic_agent_io suite for every eval_enabled agent, one real LLM call per case, scored by a separate cross-family judge provider where possible."""
-    sess = await _get_expansion_session_or_404(session_id)
-    plan_report_path_str = sess.get("plan_report_path")
-    plan_path_str = sess.get("plan_path")
-    if not plan_report_path_str or not Path(plan_report_path_str).exists():
-        raise HTTPException(status_code=400, detail="No plan report for this session.")
-    if not plan_path_str or not Path(plan_path_str).exists():
-        raise HTTPException(status_code=400, detail="No plan for this session.")
-
-    config = AEHConfig.load()
-    provider_id = body.provider_id or config.provider_id
-    backend_url = body.backend_url or config.backend_url
-    backend_token = body.backend_token or config.backend_token
-    if not backend_url or not backend_token:
-        raise HTTPException(status_code=400, detail="Missing backend connection config.")
-    if not provider_id:
-        raise HTTPException(status_code=400, detail="No LLM provider configured.")
-    model_id = body.model_id or config.model_id
-
-    from agent_eval_harness.injection.judge_selection import pick_judge_provider
-    from agent_eval_harness.injection.suite_runner import run_synthetic_agent_io_suite
-
-    plan_report = load_plan_report(plan_report_path_str)
-    suite = load_suite(plan_path_str)
-    system_map = load_system_map(sess["map_path"]) if sess.get("map_path") else None
-    target_system_id = system_map.target_system_id if system_map else session_id
-
-    enabled_agents = [a for a in plan_report.agents if a.eval_enabled and a.contract is not None]
-    if not enabled_agents:
-        return {"agents": {}, "note": "no agent has eval_enabled=True"}
-
-    providers_raw = await get_providers(backend_url, backend_token)
-    available = [ProviderSummary.model_validate(p) for p in providers_raw]
-    generator_summary = next(
-        (p for p in available if p.provider_id == provider_id),
-        ProviderSummary(provider_id=provider_id, display_name="", model_id=model_id, kind=""),
-    )
-    judge_pid = body.judge_provider_id
-    judge_mid = body.judge_model_id
-    if not judge_pid and available:
-        judge = pick_judge_provider(generator_summary, available)
-        if judge is not None:
-            judge_pid = judge.provider_id
-            judge_mid = judge.model_id or model_id
-    if not judge_pid:
-        judge_pid, judge_mid = provider_id, model_id
-
-    agent_llm_client = CodeSpectraProxyClient(backend_url, backend_token, provider_id, model_id)
-    judge_llm_client = CodeSpectraProxyClient(backend_url, backend_token, judge_pid, judge_mid or model_id)
-
-    results: dict[str, dict] = {}
-    try:
-        for agent in enabled_agents:
-            entry = next(
-                (
-                    e for e in suite.entries
-                    if e.agent_id == agent.agent_id
-                    and e.dataset
-                    and e.dataset.required
-                    and e.dataset.required.get("kind") == "synthetic_agent_io"
-                    and e.dataset.ref
-                ),
-                None,
-            )
-            if entry is None:
-                results[agent.agent_id] = {
-                    "status": "needs_human",
-                    "reason": "no fulfilled synthetic_agent_io dataset for this agent",
-                }
-                continue
-            dataset_cases = await repository.get_dataset_cases(entry.dataset.ref)
-            if not dataset_cases:
-                results[agent.agent_id] = {"status": "needs_human", "reason": "dataset has zero cases"}
-                continue
-
-            from agent_eval_harness.datasets.generators.synthetic_agent_io import is_dataset_stale
-
-            current_schema = (agent.contract.output.json_schema if agent.contract.output else None)
-            stale = is_dataset_stale(dataset_cases, current_schema)
-
-            run_result = await run_synthetic_agent_io_suite(
-                agent.agent_id, target_system_id, agent.contract, dataset_cases,
-                provider_id, model_id, agent_llm_client, judge_llm_client,
-            )
-            results[agent.agent_id] = {
-                "status": "completed",
-                "run_id": run_result.run_id,
-                "metric_count": len(run_result.results),
-                "error_count": len(run_result.errors),
-                # True if the dataset's gold predates the agent's current contract schema — never blocks scoring, just a UI hint.
-                "stale": stale,
-            }
-    finally:
-        if hasattr(agent_llm_client, "aclose"):
-            await agent_llm_client.aclose()
-        if hasattr(judge_llm_client, "aclose"):
-            await judge_llm_client.aclose()
-
-    return {"agents": results}
-
-
 @app.delete("/api/discovery/expansion-sessions/{session_id}/stage3")
 async def reset_stage3_route(session_id: str):
     """Deletes every dataset fulfilled from this session's plan, the plan/plan-report files and their DB pointers, then resets the session to 'awaiting_map_review'. Stage 2 artifacts are untouched."""
@@ -1860,6 +1747,77 @@ def _reharvest_contracts(sess: dict, system_map) -> dict:
         return {}
 
 
+@app.get("/api/discovery/expansion-sessions/{session_id}/sibling-systems")
+async def list_sibling_systems(session_id: str):
+    sess = await _get_expansion_session_or_404(session_id)
+    snapshot_id = sess.get("snapshot_id")
+    if not snapshot_id:
+        siblings = [sess]
+    else:
+        siblings = await repository.list_expansion_sessions_for_snapshot(snapshot_id)
+
+    results = []
+    for row in siblings:
+        row_id = row["id"]
+        is_current = (row_id == session_id)
+        ready = bool(row.get("plan_report_path"))
+        
+        name = row_id[:8]
+        framework = None
+        agent_count = None
+        
+        map_path_str = row.get("map_path")
+        if map_path_str:
+            map_path = Path(map_path_str)
+            if map_path.exists():
+                try:
+                    sys_map = load_system_map(str(map_path))
+                    name = sys_map.target_system_id
+                    framework = sys_map.framework
+                    agent_count = len(sys_map.components) if sys_map.components else None
+                except Exception as e:
+                    logger.warning(f"Failed to load system map {map_path} for session {row_id}: {e}")
+                    ready = False
+            else:
+                ready = False
+        else:
+            ready = False
+
+        if ready:
+            plan_report_path_str = row.get("plan_report_path")
+            if plan_report_path_str:
+                report_path = Path(plan_report_path_str)
+                if report_path.exists():
+                    try:
+                        plan_report = load_plan_report(report_path)
+                        if plan_report and plan_report.agents:
+                            agent_count = len(plan_report.agents)
+                    except Exception as e:
+                        logger.warning(f"Failed to load plan report {report_path} for session {row_id}: {e}")
+
+        # Get datasets data profile
+        owned_datasets = await repository.list_dataset_ids(expansion_session_id=row_id)
+        dataset_count = len(owned_datasets)
+        runnable_cases_count = sum(
+            r.get("total_count", 0) - r.get("synthetic_count", 0) for r in owned_datasets
+        )
+
+        results.append({
+            "session_id": row_id,
+            "name": name,
+            "framework": framework,
+            "agent_count": agent_count,
+            "dataset_count": dataset_count,
+            "runnable_cases_count": runnable_cases_count,
+            "ready": ready,
+            "is_current": is_current,
+            "created_at": row.get("created_at")
+        })
+
+    results.sort(key=lambda x: x["ready"], reverse=True)
+    return results
+
+
 @app.get("/api/discovery/expansion-sessions/{session_id}/eval-plan")
 async def get_eval_plan(session_id: str):
     """Existing handoff plan for this session, or plan_path=None if none was rendered."""
@@ -1893,6 +1851,57 @@ async def delete_eval_plan(session_id: str):
             removed += 1
     await repository.update_expansion_session_eval_plan_md_path(session_id, None)
     return {"deleted": removed, "kept": kept}
+
+
+
+def _reconcile_case_binding_keys(
+    case_binding: dict[str, str],
+    example_input_keys: set[str],
+) -> tuple[dict[str, str], list[str]]:
+    """Render-time reconciliation: rewrite case:$.input.<key> bindings whose <key> is absent
+    from the real dataset's example_case['input'] key-set.
+
+    Strategy (generic, no vocabulary assumptions):
+    1. Exact match — key present as-is: keep.
+    2. Suffix match — <key> is a suffix of exactly one real key (e.g. 'bundle' in 'arch_bundle'): rewrite.
+    3. No match — leave as-is and append a note for RECON.
+    """
+    if not example_input_keys:
+        return case_binding, []
+
+    new_binding: dict[str, str] = {}
+    notes: list[str] = []
+    for kwarg_name, binding_expr in case_binding.items():
+        # Only reconcile case:$.input.<key> patterns
+        if not binding_expr.startswith("case:$.input."):
+            new_binding[kwarg_name] = binding_expr
+            continue
+        key = binding_expr[len("case:$.input."):]
+        if key in example_input_keys:
+            new_binding[kwarg_name] = binding_expr
+            continue
+        # Try suffix match (bidirectional):
+        # - real key ends with binding key (e.g. 'bundle' → 'arch_bundle')
+        # - binding key ends with real key (e.g. 'project_identity_output' → 'identity_output')
+        suffix_matches = [
+            rk for rk in example_input_keys
+            if rk.endswith(key) or rk.endswith(f"_{key}")
+            or key.endswith(rk) or key.endswith(f"_{rk}")
+        ]
+        if len(suffix_matches) == 1:
+            real_key = suffix_matches[0]
+            new_binding[kwarg_name] = f"case:$.input.{real_key}"
+            notes.append(
+                f"case_binding key '{key}' not found in dataset example_case.input; "
+                f"rewritten to '{real_key}' (suffix match)"
+            )
+        else:
+            # Unresolvable — keep as-is and flag for manual review
+            new_binding[kwarg_name] = binding_expr
+            notes.append(
+                f"case_binding key '{key}' not found in dataset example_case.input — verify manually"
+            )
+    return new_binding, notes
 
 
 @app.post("/api/discovery/expansion-sessions/{session_id}/eval-plan")
@@ -1932,10 +1941,23 @@ async def create_eval_plan(session_id: str, base_ref: str = "main"):
     for agent_report in plan_report.agents:
         if agent_report.agent_id in fresh_contracts:
             agent_report.contract = fresh_contracts[agent_report.agent_id]
+
+    # Validate dataset_ids to prevent cross-system leaks (Item 5.2)
+    owned_datasets = await repository.list_dataset_ids(expansion_session_id=session_id)
+    owned_dataset_ids = {r["dataset_id"] for r in owned_datasets}
+    recon_notes: list[str] = []
+
     datasets_to_gate_ids: dict[str, list[str]] = {}
     for entry in suite.entries:
         if entry.dataset and entry.dataset.ref:
-            datasets_to_gate_ids.setdefault(entry.dataset.ref, []).append(entry.id)
+            dataset_ref = entry.dataset.ref
+            if dataset_ref not in owned_dataset_ids:
+                note = f"dataset {dataset_ref} is referenced by the plan but not owned by this expansion-session — possible cross-system leak"
+                if note not in recon_notes:
+                    recon_notes.append(note)
+                continue
+            datasets_to_gate_ids.setdefault(dataset_ref, []).append(entry.id)
+
     # Descriptive only — run_eval.py reads cases live from AEH's sqlite DB, not this export.
     dataset_summaries: list[dict] = []
     for dataset_id, gate_ids in datasets_to_gate_ids.items():
@@ -1953,12 +1975,36 @@ async def create_eval_plan(session_id: str, base_ref: str = "main"):
     # Derive agent_invocations from harvested contracts (no CodeSpectra hardcodes)
     agent_invocations = {}
     if plan_report and plan_report.agents:
+        # Build a per-agent lookup: agent_id -> its own dataset's example_case input keys, so
+        # binding reconciliation checks each agent against ITS OWN cases. A union of every agent's
+        # keys could suffix-match a key that belongs to a different agent's dataset and rewrite the
+        # binding to something absent from this agent's real cases. The owning agent is the case's
+        # labels.agent_id (the same label the driver uses to select a dispatch module).
+        agent_example_input_keys: dict[str, set[str]] = {}
+        for ds_summary in dataset_summaries:
+            ex = ds_summary.get("example_case") or {}
+            ex_input = ex.get("input") or {}
+            owner = (ex.get("labels") or {}).get("agent_id")
+            if owner and isinstance(ex_input, dict):
+                agent_example_input_keys.setdefault(owner, set()).update(ex_input.keys())
+
         for agent_report in plan_report.agents:
             if agent_report.contract and agent_report.contract.invocation:
                 invocation = agent_report.contract.invocation
+                case_binding = invocation.case_binding
+
+                # Reconcile binding keys against THIS agent's own dataset example_case.input.
+                agent_dataset_keys = agent_example_input_keys.get(agent_report.agent_id, set())
+
+                reconciled_binding, binding_notes = _reconcile_case_binding_keys(
+                    case_binding, agent_dataset_keys
+                )
+                if binding_notes:
+                    recon_notes.extend(binding_notes)
+
                 agent_invocations[agent_report.agent_id] = {
                     "invocation_mode": invocation.invocation_mode,
-                    "case_binding": invocation.case_binding,
+                    "case_binding": reconciled_binding,
                     "route": invocation.route,
                     "constructor_deps": invocation.constructor_deps,
                 }
@@ -1974,6 +2020,7 @@ async def create_eval_plan(session_id: str, base_ref: str = "main"):
         system_map, wiring, dataset_summaries, session_id, eval_branch,
         plan_report=plan_report, repo_root=repo_root, base_ref=base_ref,
         knowledge_dir=resolve_agent_knowledge_dir(session_id),
+        recon_notes=recon_notes,
     )
 
     # The 4 handoff files live in AppData, never in the target repo.

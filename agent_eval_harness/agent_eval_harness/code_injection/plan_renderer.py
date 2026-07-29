@@ -37,6 +37,7 @@ def render_eval_plan_files(
     repo_root: Path | None = None,
     base_ref: str = "main",
     knowledge_dir: Path | None = None,
+    recon_notes: list[str] | None = None,
 ) -> dict[str, str]:
     """Compile facts once and render the 4 self-contained handoff files.
 
@@ -53,6 +54,7 @@ def render_eval_plan_files(
         plan_report=plan_report,
         repo_root=repo_root,
         knowledge_dir=knowledge_dir,
+        recon_notes=recon_notes,
     )
 
     out: dict[str, str] = {}
@@ -74,12 +76,13 @@ def render_eval_plan_md(
     repo_root: Path | None = None,
     base_ref: str = "main",
     knowledge_dir: Path | None = None,
+    recon_notes: list[str] | None = None,
 ) -> str:
     """Backward-compat single-document view: the 4 files concatenated; prefer render_eval_plan_files() for the real handoff."""
     files = render_eval_plan_files(
         system_map, wiring, dataset_summaries, session_id, branch_name,
         plan_report=plan_report, repo_root=repo_root, base_ref=base_ref,
-        knowledge_dir=knowledge_dir,
+        knowledge_dir=knowledge_dir, recon_notes=recon_notes,
     )
     parts = [
         "# AEH Eval Plan (4-File, concatenated view)",

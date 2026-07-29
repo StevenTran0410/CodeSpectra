@@ -10,12 +10,15 @@ import {
   Trash2,
 } from 'lucide-react'
 import { Button, useToastStore } from '../../components/ui'
+import SystemSelector from './SystemSelector'
 
 export default function Stage4Screen(): React.ReactElement {
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
   const toast = useToastStore()
   const sessionId = searchParams.get('sessionId') || ''
+
+  const [activeSessionId, setActiveSessionId] = useState(sessionId)
 
   const [error, setError] = useState<string | null>(null)
   const [planPath, setPlanPath] = useState<string | null>(null)
@@ -25,29 +28,53 @@ export default function Stage4Screen(): React.ReactElement {
   const [planCreating, setPlanCreating] = useState(false)
   const [planDeleting, setPlanDeleting] = useState(false)
 
-  // Surface an already-rendered plan on open, so a stale one is never invisible.
+  // Sync activeSessionId if sessionId URL parameter changes
   useEffect(() => {
-    if (!sessionId) return
+    setActiveSessionId(sessionId)
+  }, [sessionId])
+
+  // Surface an already-rendered plan on activeSessionId change, so a stale one is never invisible.
+  useEffect(() => {
+    if (!activeSessionId) return
     let cancelled = false
     window.api.aeh
-      .getEvalPlan(sessionId)
+      .getEvalPlan(activeSessionId)
       .then((data) => {
-        if (cancelled || !data?.plan_path) return
-        setPlanPath(data.plan_path)
-        setPlanDir(data.plan_dir ?? null)
-        setPlanFiles(data.files ?? [])
+        if (cancelled) return
+        if (data?.plan_path) {
+          setPlanPath(data.plan_path)
+          setPlanDir(data.plan_dir ?? null)
+          setPlanFiles(data.files ?? [])
+        } else {
+          setPlanPath(null)
+          setPlanDir(null)
+          setPlanFiles([])
+        }
       })
-      .catch(() => {})
+      .catch(() => {
+        if (cancelled) return
+        setPlanPath(null)
+        setPlanDir(null)
+        setPlanFiles([])
+      })
     return () => {
       cancelled = true
     }
-  }, [sessionId])
+  }, [activeSessionId])
+
+  function handleSelectSystem(newId: string) {
+    setActiveSessionId(newId)
+    setPlanPath(null)
+    setPlanDir(null)
+    setPlanFiles([])
+    setError(null)
+  }
 
   async function handleDeletePlan() {
     setPlanDeleting(true)
     setError(null)
     try {
-      await window.api.aeh.deleteEvalPlan(sessionId)
+      await window.api.aeh.deleteEvalPlan(activeSessionId)
       setPlanPath(null)
       setPlanDir(null)
       setPlanFiles([])
@@ -63,18 +90,34 @@ export default function Stage4Screen(): React.ReactElement {
     setPlanCreating(true)
     setError(null)
     try {
-      await window.api.aeh.deleteEvalPlan(sessionId)
+      await window.api.aeh.deleteEvalPlan(activeSessionId)
     } catch {
       // A missing plan is fine — regenerate is also the "render it fresh" path.
     }
-    await handleCreatePlan()
+    await handleRegeneratePlanFresh()
+  }
+
+  async function handleRegeneratePlanFresh() {
+    setPlanCreating(true)
+    setError(null)
+    try {
+      const data = await window.api.aeh.createEvalPlan(activeSessionId, baseRef)
+      setPlanPath(data.plan_path)
+      setPlanDir(data.plan_dir ?? null)
+      setPlanFiles(data.files ?? [])
+      toast.success(`Eval plan created — ${data.files?.length ?? 0} files. Start with AGENTS.md.`)
+    } catch (err: any) {
+      setError(err?.message ?? 'Failed to create eval plan')
+    } finally {
+      setPlanCreating(false)
+    }
   }
 
   async function handleCreatePlan() {
     setPlanCreating(true)
     setError(null)
     try {
-      const data = await window.api.aeh.createEvalPlan(sessionId, baseRef)
+      const data = await window.api.aeh.createEvalPlan(activeSessionId, baseRef)
       setPlanPath(data.plan_path)
       setPlanDir(data.plan_dir ?? null)
       setPlanFiles(data.files ?? [])
@@ -157,6 +200,13 @@ export default function Stage4Screen(): React.ReactElement {
               </p>
 
               <div className="space-y-3">
+                <SystemSelector
+                  sessionId={sessionId}
+                  activeSessionId={activeSessionId}
+                  onSelect={handleSelectSystem}
+                  disabled={planCreating || planDeleting}
+                />
+
                 <div>
                   <label className="block text-xs font-medium text-slate-400 mb-1">Base Branch (default: main)</label>
                   <input

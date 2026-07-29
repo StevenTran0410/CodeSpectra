@@ -1,0 +1,38 @@
+target_system_id: langgraph_agent
+framework: langgraph
+discrepancies: []
+components:
+  - id: load_context
+    role: worker
+    entry_point: "test_targets.langgraph_agent.pipeline:load_context"
+    file: "test_targets/langgraph_agent/pipeline.py"
+    upstream: []
+    downstream: [plan_step]
+
+  - id: plan_step
+    role: orchestrator
+    entry_point: "test_targets.langgraph_agent.pipeline:plan_step"
+    file: "test_targets/langgraph_agent/pipeline.py"
+    upstream: [load_context, investigate]
+    downstream: [investigate, synthesize]
+
+  - id: investigate
+    role: worker
+    entry_point: "test_targets.langgraph_agent.pipeline:ResearchAgent._node_investigate"
+    file: "test_targets/langgraph_agent/pipeline.py"
+    upstream: [plan_step]
+    downstream: [plan_step]
+
+  - id: synthesize
+    role: synthesizer
+    entry_point: "test_targets.langgraph_agent.pipeline:ResearchAgent._node_synthesize"
+    file: "test_targets/langgraph_agent/pipeline.py"
+    upstream: [plan_step]
+    downstream: []
+
+  - id: retrieve
+    role: worker
+    entry_point: "test_targets.langgraph_agent.pipeline:ResearchAgent._node_retrieve"
+    file: "test_targets/langgraph_agent/pipeline.py"
+    upstream: [plan_step]
+    downstream: [plan_step]

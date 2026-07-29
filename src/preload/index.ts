@@ -338,8 +338,6 @@ const api = {
       ipcRenderer.invoke('aeh:getPlanReport', sessionId),
     updatePlanReport: (sessionId: string, body: unknown) =>
       ipcRenderer.invoke('aeh:updatePlanReport', sessionId, body),
-    runEval: (sessionId: string, body?: unknown) =>
-      ipcRenderer.invoke('aeh:runEval', sessionId, body ?? {}),
     resetStage3: (sessionId: string) => ipcRenderer.invoke('aeh:resetStage3', sessionId),
     createEvalBranch: (sessionId: string, baseRef: string) =>
       ipcRenderer.invoke('aeh:createEvalBranch', sessionId, baseRef),
@@ -349,6 +347,7 @@ const api = {
       ipcRenderer.invoke('aeh:createEvalPlan', sessionId, baseRef),
     getEvalPlan: (sessionId: string) => ipcRenderer.invoke('aeh:getEvalPlan', sessionId),
     deleteEvalPlan: (sessionId: string) => ipcRenderer.invoke('aeh:deleteEvalPlan', sessionId),
+    listSiblingSystems: (sessionId: string) => ipcRenderer.invoke('aeh:listSiblingSystems', sessionId),
     loadEvalResults: (sessionId: string) =>
       ipcRenderer.invoke('aeh:loadEvalResults', sessionId),
     getEvalRunCases: (runId: string) =>

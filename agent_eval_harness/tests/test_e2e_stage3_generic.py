@@ -184,7 +184,7 @@ async def test_langgraph_agent_scanner_to_case():
 
     files = sorted((_TARGETS_DIR / "langgraph_agent").glob("*.py"))
     candidates = LangGraphScanner().scan(files)
-    assert len(candidates) == 4, f"expected 4 candidates, got {[c.class_name for c in candidates]}"
+    assert len(candidates) == 5, f"expected 5 candidates, got {[c.class_name for c in candidates]}"
 
     builder = SystemMapBuilder(FakeLLMClient(LLMResponse(content="[]", model="fake")))
     system_map, _summary = await builder._build_from_candidates(

@@ -903,27 +903,6 @@ declare global {
           sessionId: string,
           body: AEHEvaluationPlanReport
         ) => Promise<{ success: boolean }>
-        runEval: (
-          sessionId: string,
-          body?: {
-            provider_id?: string | null
-            model_id?: string | null
-            judge_provider_id?: string | null
-            judge_model_id?: string | null
-          }
-        ) => Promise<{
-          agents: Record<
-            string,
-            {
-              status: 'completed' | 'needs_human'
-              run_id?: string
-              metric_count?: number
-              error_count?: number
-              reason?: string
-              stale?: boolean
-            }
-          >
-        }>
         resetStage3: (
           sessionId: string
         ) => Promise<{ success: boolean; deleted_dataset_ids: string[] }>
@@ -940,6 +919,21 @@ declare global {
           sessionId: string
         ) => Promise<{ plan_path: string | null; plan_dir: string | null; files: string[] }>
         deleteEvalPlan: (sessionId: string) => Promise<{ deleted: number }>
+        listSiblingSystems: (
+          sessionId: string
+        ) => Promise<
+          Array<{
+            session_id: string
+            name: string
+            framework: string | null
+            agent_count: number | null
+            dataset_count?: number
+            runnable_cases_count?: number
+            ready: boolean
+            is_current: boolean
+            created_at?: string
+          }>
+        >
         loadEvalResults: (sessionId: string) => Promise<{ run_id: string; status: string }>
         getEvalRunCases: (runId: string) => Promise<{
           run_id: string

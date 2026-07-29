@@ -48,7 +48,7 @@ def _generate_in_harness_dispatch(agent_facts: AgentFacts) -> str:
     stub_note = (
         "        #      Replace its retrieval dependency with `retrieval` built above — never a\n"
         "        #      live client, or the agent reads the real repo instead of this case.\n"
-        if agent_facts.has_retrieval_signal else ""
+        if agent_facts.retrieves_internally else ""
     )
     stub_setup = _build_stub_setup_code(agent_facts)
     unusable_note = (
@@ -56,6 +56,20 @@ def _generate_in_harness_dispatch(agent_facts: AgentFacts) -> str:
         f"        # builds that context itself: {', '.join(agent_facts.unconsumed_case_fields)}"
         if agent_facts.unconsumed_case_fields else ""
     )
+
+    is_langgraph = agent_facts.framework == "langgraph"
+    is_async = is_langgraph or agent_facts.entry_is_async
+
+    if is_langgraph:
+        reconstruct_note = (
+            "        #      NOTE: For LangGraph state-nodes, the `state` kwarg is a plain dict at runtime (TypedDict).\n"
+            "        #      Reconstruct any nested Pydantic-typed fields (e.g. list[RetrievalEvidence]) from their\n"
+            "        #      JSON before calling the node method; the call is async.\n"
+        )
+    else:
+        reconstruct_note = ""
+
+    async_parenthetical = "await it" if is_async else "await it if it is async"
 
     return textwrap.dedent(f'''
     """Dispatch module for agent: {agent_id}
@@ -77,7 +91,7 @@ def _generate_in_harness_dispatch(agent_facts: AgentFacts) -> str:
         # {IMPLEMENT_MARKER}
         #   1. Import the agent class defined at {loc_file}:{entry_line}
         #   2. Construct it with its constructor dependencies: {deps}
-{stub_note}        #   3. Call its `{entry_method}(**kwargs)` entry method (await it if it is async)
+{stub_note}{reconstruct_note}        #   3. Call its `{entry_method}(**kwargs)` entry method ({async_parenthetical})
         #   4. Return the raw result unchanged (no schema massaging here)
         #   Read credentials/provider from `config` only — never hardcode any secret.
         # === END IMPLEMENT THIS ===
@@ -174,7 +188,7 @@ def _constructor_deps(agent_facts: AgentFacts) -> list[str]:
 
 def _build_stub_setup_code(agent_facts: AgentFacts) -> str:
     """Generate Python code to set up retrieval stub(s) from virtual inputs (single-dep output matches the legacy shape); falls back to EVIDENCE_CASE_KEY when none were harvested."""
-    if not agent_facts.has_retrieval_signal:
+    if not agent_facts.retrieves_internally:
         return ""
 
     virtual = []
@@ -187,7 +201,7 @@ def _build_stub_setup_code(agent_facts: AgentFacts) -> str:
 
     if not virtual:
         # Degrade path: no virtual inputs harvested — fall back to the default evidence key, but log since retrieval signal is true with an empty virtual list.
-        if agent_facts.has_retrieval_signal:
+        if agent_facts.retrieves_internally:
             agent_id = agent_facts.agent_id
             logger.warning(
                 f"retrieval agent {agent_id} produced no virtual_inputs — falling back to default bundle key; "
@@ -259,7 +273,7 @@ def _json_path_parts(path: str) -> list[str]:
 
 def generate_retrieval_stub(agent_facts: AgentFacts) -> str:
     """Skeleton for the retrieval stub; its interface is the target's so it's never invented here — guessing the method shape once left agents running on zero evidence while still reporting success."""
-    if not agent_facts.has_retrieval_signal:
+    if not agent_facts.retrieves_internally:
         return ""
 
     deps = ", ".join(_constructor_deps(agent_facts)) or "the retrieval dependency"

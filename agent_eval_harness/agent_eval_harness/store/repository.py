@@ -859,6 +859,16 @@ async def list_expansion_sessions_for_candidate(candidate_id: str) -> list[dict]
     return [_decode_expansion_session_row(dict(r)) for r in rows]
 
 
+async def list_expansion_sessions_for_snapshot(snapshot_id: str) -> list[dict]:
+    db = get_db()
+    async with db.execute(
+        "SELECT * FROM expansion_sessions WHERE snapshot_id = ? ORDER BY created_at DESC",
+        (snapshot_id,),
+    ) as cur:
+        rows = await cur.fetchall()
+    return [_decode_expansion_session_row(dict(r)) for r in rows]
+
+
 async def update_expansion_session_plan_path(session_id: str, plan_path: str | None) -> None:
     db = get_db()
     await db.execute(

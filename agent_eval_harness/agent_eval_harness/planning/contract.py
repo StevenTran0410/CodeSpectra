@@ -66,6 +66,7 @@ class ObservabilityContract(BaseModel):
     spans_have_usage: bool = True
     llm_call_budget: int | None = None
     llm_fields: list[str] = Field(default_factory=list)
+    entry_is_async: bool = False
 
 
 class EvaluationContract(BaseModel):
@@ -83,6 +84,7 @@ class EvaluationContract(BaseModel):
     query_planning_subcall: bool = False
     # True when keyword-tier OR role-tier retrieval signal fires (D1).
     has_retrieval_signal: bool = False
+    retrieves_internally: bool = False
     # Harvested upstream output specs — [{name, description}, ...] — for generic dataset builders (D3).
     upstream_context_specs: list[dict] = Field(default_factory=list)
     # Deterministic archetype computed at Stage 2 after upstream_context_specs is filled (CS-311 relocate).

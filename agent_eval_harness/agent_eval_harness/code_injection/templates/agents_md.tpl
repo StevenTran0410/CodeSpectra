@@ -12,6 +12,8 @@
 4. **Hit a GATE** (red 🛑 line)? Run the Verify command. If it passes, continue. If it fails, stop and report the task ID.
 5. **No workaround**: If a gate fails, the plan has detected an issue; report it back to AEH (see Hand-back).
 
+{{block:tracing_adaptation}}
+
 ## Session Resume
 
 New session? Open TASKS.md, read the last completed gate (its Verify command), and re-run it to confirm state before continuing to the next task.
@@ -23,6 +25,8 @@ New session? Open TASKS.md, read the last completed gate (its Verify command), a
 - Copy code blocks from CODE.md
 - Edit marked regions (between `[P]` markers)
 - Ask AEH-supplied clarifications (see REFERENCE.md)
+
+**Environment**: Always run through the target's own locked interpreter — `uv run python …`, `poetry run python …`, or the activated `.venv/bin/python`. Never use bare `python`, which may resolve to a system interpreter missing the project's locked dependencies.
 
 **Ask First** (these are the only questions you may ask):
 - Permission to read the target's provider/credential store — before running the query, show

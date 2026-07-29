@@ -12,6 +12,7 @@ import {
 import { Button, useToastStore } from '../../components/ui'
 import { useProviderStore } from '../../store/provider.store'
 import LLMConfigModal, { LLMModelButton } from './LLMConfigModal'
+import SystemSelector, { SiblingSystem } from './SystemSelector'
 
 type CaseEvaluation = {
   metric_name: string
@@ -104,6 +105,9 @@ export default function Stage5Screen(): React.ReactElement {
   const navigate = useNavigate()
   const toast = useToastStore()
   const sessionId = searchParams.get('sessionId') || ''
+  const [activeSessionId, setActiveSessionId] = useState(sessionId)
+  const [siblingSystems, setSiblingSystems] = useState<SiblingSystem[]>([])
+  const activeSystem = siblingSystems.find((s) => s.session_id === activeSessionId)
 
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<{ run_id: string; status: string } | null>(null)
@@ -140,6 +144,28 @@ export default function Stage5Screen(): React.ReactElement {
     loadProviders()
   }, [loadProviders])
 
+  // Sync activeSessionId if sessionId URL parameter changes
+  useEffect(() => {
+    setActiveSessionId(sessionId)
+  }, [sessionId])
+
+  // Fetch the sibling systems once and keep them in this screen's own state, so the selector
+  // renders instantly from a prop and never blanks out / refetches when a switch briefly
+  // unmounts it — this is what made the picker flicker away on every system switch.
+  useEffect(() => {
+    if (!sessionId) return
+    let cancelled = false
+    window.api.aeh
+      .listSiblingSystems(sessionId)
+      .then((d) => {
+        if (!cancelled) setSiblingSystems((d || []) as SiblingSystem[])
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [sessionId])
+
   useEffect(() => {
     if (providers.length > 0 && !providerId) {
       setProviderId(providers[0].id)
@@ -163,9 +189,9 @@ export default function Stage5Screen(): React.ReactElement {
     }
   }
 
-  async function refreshRuns(): Promise<EvalRun[]> {
+  async function refreshRuns(targetSessionId: string): Promise<EvalRun[]> {
     try {
-      const data = await window.api.aeh.listEvalRuns(sessionId)
+      const data = await window.api.aeh.listEvalRuns(targetSessionId)
       setRuns(data.runs)
       return data.runs
     } catch {
@@ -173,52 +199,80 @@ export default function Stage5Screen(): React.ReactElement {
     }
   }
 
+  // System-switching effect driven by activeSessionId
   useEffect(() => {
-    if (!sessionId) {
+    if (!activeSessionId) {
       setCheckingExisting(false)
       return
     }
     let cancelled = false
+
+    // Reset state to avoid data bleeding
+    setResult(null)
+    setAgentCases(null)
+    setRuns([])
+    setAgentSummaries({})
+    setViewingAgentId(null)
+    setShowSummary(false)
+    setCheckingExisting(true)
+    setError(null)
+
     ;(async () => {
       try {
-        const [sess, runList] = await Promise.all([
-          window.api.aeh.getExpansionSession(sessionId),
-          refreshRuns(),
-        ])
+        const runList = await refreshRuns(activeSessionId)
         if (cancelled) return
-        // Prefer the session's last-viewed run; otherwise the newest ingested one.
-        const runId = sess.eval_run_id || runList[0]?.id
-        if (!runId) return
-        const data = await window.api.aeh.getEvalRunCases(runId)
-        if (cancelled) return
-        setResult({ run_id: data.run_id, status: data.status })
-        setAgentCases(data.agents)
-        setAgentSummaries(data.agent_summaries ?? {})
+
+        let targetRunId = null
+        if (runList.length > 0) {
+          const sess = await window.api.aeh.getExpansionSession(activeSessionId)
+          if (cancelled) return
+          targetRunId = sess.eval_run_id || runList[0]?.id
+        } else {
+          // Auto-ingest fallback: listEvalRuns is empty, try auto-ingestion
+          try {
+            const loadData = await window.api.aeh.loadEvalResults(activeSessionId)
+            if (cancelled) return
+            await refreshRuns(activeSessionId)
+            if (cancelled) return
+            targetRunId = loadData.run_id
+          } catch (loadErr) {
+            // Ingest failed or manifest not found — normal for not-yet-run systems
+          }
+        }
+
+        if (targetRunId) {
+          const data = await window.api.aeh.getEvalRunCases(targetRunId)
+          if (cancelled) return
+          setResult({ run_id: data.run_id, status: data.status })
+          setAgentCases(data.agents)
+          setAgentSummaries(data.agent_summaries ?? {})
+        }
       } catch {
-        // No existing run — fall through to the "Load Results" button.
+        // No existing runs
       } finally {
         if (!cancelled) setCheckingExisting(false)
       }
     })()
+
     return () => {
       cancelled = true
     }
-  }, [sessionId])
+  }, [activeSessionId])
 
   async function handleLoadResults() {
     setLoading(true)
     setError(null)
     try {
-      const data = await window.api.aeh.loadEvalResults(sessionId)
-      await refreshRuns()
-      // Show the run that was just ingested — from the grid this is a "load another run" action.
+      const data = await window.api.aeh.loadEvalResults(activeSessionId)
+      await refreshRuns(activeSessionId)
+      // Show the run that was just ingested
       await viewRun(data.run_id)
       toast.success('Eval results loaded')
     } catch (err: any) {
       if (err?.message?.includes('manifest not found')) {
         setError(
-          'No results yet. Start your CodeSpectra backend on the eval branch, ' +
-          'run POST /aeh/run-eval from /docs, then click Load Results again.'
+          'No results yet. Start your target\'s backend on its eval branch and ' +
+          'run its `/aeh/run-eval` route, then Load Results again.'
         )
         return
       }
@@ -355,7 +409,9 @@ export default function Stage5Screen(): React.ReactElement {
     )
   }
 
-  if (checkingExisting) {
+  // Full-screen spinner only on the very first load (before we even have the system list).
+  // Once systems are known, a switch keeps the selector on screen and shows loading inline.
+  if (checkingExisting && siblingSystems.length === 0) {
     return (
       <div className="flex flex-col h-full bg-[#090d16] text-slate-100 items-center justify-center gap-2">
         <Loader2 size={20} className="animate-spin text-slate-500" />
@@ -677,11 +733,18 @@ export default function Stage5Screen(): React.ReactElement {
               <ArrowLeft size={16} />
             </Button>
             <div>
-              <h1 className="screen-title">Stage 5: Results</h1>
+              <h1 className="screen-title">
+                {activeSystem ? activeSystem.name : 'Stage 5: Results'}
+              </h1>
               <p className="screen-subtitle">
+                {activeSystem && activeSystem.framework ? (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded font-mono uppercase bg-indigo-950/40 border border-indigo-850 text-indigo-300 mr-2">
+                    {activeSystem.framework}
+                  </span>
+                ) : null}
                 {judgeAllProgress
                   ? `Judging ${judgeAllProgress.agentId}... (${judgeAllProgress.done}/${judgeAllProgress.total} agents)`
-                  : `Run ${result?.run_id} — click an agent to see cases`}
+                  : `Run ${result?.run_id ?? ''} — click an agent to see cases`}
               </p>
             </div>
           </div>
@@ -738,6 +801,16 @@ export default function Stage5Screen(): React.ReactElement {
           </div>
         </div>
         <div className="flex-1 overflow-y-auto p-6">
+          <div className="max-w-2xl mb-6">
+            <SystemSelector
+              sessionId={sessionId}
+              activeSessionId={activeSessionId}
+              onSelect={setActiveSessionId}
+              systems={siblingSystems}
+              onSystemsLoaded={setSiblingSystems}
+              disabled={loading || judgingAll || casesLoading}
+            />
+          </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
             {agentIds.map((agentId) => (
               <button
@@ -815,14 +888,32 @@ export default function Stage5Screen(): React.ReactElement {
             <ArrowLeft size={16} />
           </Button>
           <div>
-            <h1 className="screen-title">Stage 5: Load Results</h1>
-            <p className="screen-subtitle">Ingest evaluation results from the instrumented backend</p>
+            <h1 className="screen-title">
+              {activeSystem ? activeSystem.name : 'Stage 5: Load Results'}
+            </h1>
+            <p className="screen-subtitle">
+              {activeSystem && activeSystem.framework ? (
+                <span className="text-[10px] px-1.5 py-0.5 rounded font-mono uppercase bg-indigo-950/40 border border-indigo-850 text-indigo-300 mr-2">
+                  {activeSystem.framework}
+                </span>
+              ) : null}
+              Ingest evaluation results from the instrumented backend
+            </p>
           </div>
         </div>
       </div>
 
       <div className="flex-1 overflow-y-auto p-6">
         <div className="space-y-6 max-w-2xl">
+          <SystemSelector
+            sessionId={sessionId}
+            activeSessionId={activeSessionId}
+            onSelect={setActiveSessionId}
+            systems={siblingSystems}
+            onSystemsLoaded={setSiblingSystems}
+            disabled={loading}
+          />
+
           {error && (
             <div className="bg-rose-950/20 border border-rose-800/40 rounded-xl p-4 text-xs text-rose-300 space-y-1">
               <div className="font-semibold flex items-center gap-1.5">
@@ -841,7 +932,12 @@ export default function Stage5Screen(): React.ReactElement {
                 click below to ingest the results into AEH.
               </p>
 
-              {result ? (
+              {checkingExisting ? (
+                <div className="flex items-center justify-center gap-2 py-4 text-xs text-slate-500">
+                  <Loader2 size={14} className="animate-spin" />
+                  Loading results…
+                </div>
+              ) : result ? (
                 <div className="space-y-4">
                   <div className="flex items-start gap-3 p-4 bg-emerald-950/20 border border-emerald-800/40 rounded-lg">
                     <CheckCircle2 size={20} className="text-emerald-400 shrink-0 mt-0.5" />

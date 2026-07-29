@@ -29,6 +29,7 @@ _BLOCK_FLAGS = {
     "troubleshooting_stale_data_pointer": "troubleshooting_stale_data_pointer.md",
     "runbook_missing": "runbook_missing.md",
     "provider_missing": "provider_missing.md",
+    "tracing_adaptation": "tracing_adaptation.md",
 }
 
 _BLOCKS_DIR = Path(__file__).resolve().parent / "blocks"
@@ -47,6 +48,21 @@ class DiscoveryTask(BaseModel):
 
 def resolve(text: str, facts: PlanFacts, agent: AgentFacts | None = None, depth: int = 0) -> str:
     """Resolve {{type:arg}} slots in template text; depth is capped at 2 to prevent runaway recursion."""
+    if depth == 0 and text.startswith("# AGENTS"):
+        total_cases = sum(ds.get("case_count", 0) for ds in facts.dataset_summaries)
+        if total_cases == 0 and facts.dataset_summaries:
+            banner = (
+                "> [!IMPORTANT]\n"
+                "> **This plan will evaluate 0 cases** because all datasets are synthetic/unreviewed. "
+                "Promote or review those datasets in Stage 3 first to make them runnable.\n\n"
+            )
+            text = banner + text
+
+    if depth == 0 and text.startswith("# RECON"):
+        if getattr(facts, "recon_notes", None):
+            notes_str = "\n".join(f"- [NEEDS CLARIFICATION] {note}" for note in facts.recon_notes)
+            text = text + "\n\n## Cross-System Leak Notes\n\n" + notes_str + "\n"
+
     if depth > 2:
         raise ValueError(f"Template recursion depth exceeded (>{depth})")
 
@@ -110,6 +126,8 @@ def _resolve_scalar(arg: str, facts: PlanFacts, agent: AgentFacts | None) -> str
             return str(facts.batch_size)
         elif parts[1] == "dataset_ids":
             return json.dumps(facts.dataset_ids)
+        elif parts[1] == "framework":
+            return facts.framework or "the target"
         elif parts[1] == "main_entry_path":
             if facts.main_entry_path is None:
                 return "[NEEDS CLARIFICATION]"
@@ -188,6 +206,7 @@ def _resolve_table(arg: str, facts: PlanFacts, agent: AgentFacts | None) -> str:
             roles[a.role or "unknown"] = roles.get(a.role or "unknown", 0) + 1
         total_cases = sum(ds.get("case_count", 0) for ds in facts.dataset_summaries)
         lines = ["| Property | Value |", "| --- | --- |",
+                 f"| Framework | {facts.framework or 'unknown'} |",
                  f"| Agents | {len(facts.agents)} |",
                  f"| Roles | {', '.join(f'{r}×{n}' for r, n in sorted(roles.items())) or '(none)'} |",
                  f"| Datasets | {len(facts.dataset_summaries)} |",
@@ -363,6 +382,21 @@ def _location_str(a: AgentFacts) -> str:
     return ""
 
 
+def _format_schema_properties(json_schema: dict[str, Any] | None) -> str:
+    if not isinstance(json_schema, dict):
+        return ""
+    props = json_schema.get("properties")
+    if isinstance(props, dict) and props:
+        parts = []
+        for k, v in sorted(props.items()):
+            t = v.get("type", "any") if isinstance(v, dict) else "any"
+            parts.append(f"`{k}` ({t})")
+        return ", ".join(parts)
+    elif json_schema.get("type") == "object":
+        return "`object`"
+    return f"`{json_schema.get('type', 'any')}`"
+
+
 def _render_agent_card(a: AgentFacts, facts: PlanFacts) -> str:
     """Render one per-agent card: functionality + WHERE + WIRE + retrieval warning."""
     lines = [f"### Agent: {a.agent_id}  (role: {a.role or 'unknown'})"]
@@ -395,14 +429,34 @@ def _render_agent_card(a: AgentFacts, facts: PlanFacts) -> str:
         lines.append("\n".join(wire))
         if a.typed_bindings:
             typed = ", ".join(f"`{k}`: `{v}`" for k, v in a.typed_bindings.items())
-            lines.append(
-                f"\n⚠️ **Typed kwarg**: {typed} — the case supplies a raw JSON value, but the "
-                "entry method annotates a project type it dereferences by attribute. Build that "
-                "type from the raw value in your dispatch region instead of passing the dict "
-                "through; read the real constructor from the target's source."
-            )
+            if a.framework == "langgraph":
+                lines.append(
+                    f"\n⚠️ **Typed kwarg**: {typed} — for LangGraph state-nodes, the `state` kwarg "
+                    "is a plain dict at runtime (TypedDict); reconstruct any nested Pydantic-typed "
+                    "fields (e.g. list[RetrievalEvidence]) from their JSON before calling the "
+                    "node method; the call is async."
+                )
+            else:
+                lines.append(
+                    f"\n⚠️ **Typed kwarg**: {typed} — the case supplies a raw JSON value, but the "
+                    "entry method annotates a project type it dereferences by attribute. Build that "
+                    "type from the raw value in your dispatch region instead of passing the dict "
+                    "through; read the real constructor from the target's source."
+                )
     else:
         lines.append("\n**WIRE**: no case_binding harvested — dispatch module uses empty kwargs.")
+
+    if isinstance(a.input_contract, list):
+        for arg_res in a.input_contract:
+            if isinstance(arg_res, Resolved) and arg_res.value and arg_res.value.resolved_schema:
+                p_str = _format_schema_properties(arg_res.value.resolved_schema)
+                if p_str:
+                    lines.append(f"\n**Input schema (reads: `{arg_res.value.kwarg}`)**: {p_str}")
+
+    if isinstance(a.output_contract, Resolved) and a.output_contract.value and a.output_contract.value.json_schema:
+        out_str = _format_schema_properties(a.output_contract.value.json_schema)
+        if out_str:
+            lines.append(f"\n**Output schema (writes)**: {out_str}")
 
     if a.unsatisfiable_bindings:
         fields = ", ".join(f"`{f}`" for f in a.unsatisfiable_bindings)
@@ -431,7 +485,7 @@ def _render_agent_card(a: AgentFacts, facts: PlanFacts) -> str:
             "reflect the real environment for those inputs, and say so when you hand back."
         )
 
-    if a.has_retrieval_signal:
+    if a.retrieves_internally:
         block_file = _BLOCKS_DIR / _BLOCK_FLAGS["retrieval_stub_warning"]
         if block_file.exists():
             lines.append("\n" + resolve(block_file.read_text(encoding="utf-8"), facts, a, depth=1))

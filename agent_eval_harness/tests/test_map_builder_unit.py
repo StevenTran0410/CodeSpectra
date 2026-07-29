@@ -287,13 +287,15 @@ class TestLangGraphScanner:
         candidates = LangGraphScanner().scan(files)
         by_name = {c.class_name: c for c in candidates}
 
-        assert set(by_name) == {"load_context", "plan_step", "_node_investigate", "_node_synthesize"}
+        assert set(by_name) == {"load_context", "plan_step", "_node_investigate", "_node_synthesize", "_node_retrieve"}
         assert by_name["load_context"].entry_kind == "function"
         assert by_name["plan_step"].entry_kind == "function"
         assert by_name["_node_investigate"].entry_kind == "bound_method"
         assert by_name["_node_investigate"].owner_class_name == "ResearchAgent"
         assert by_name["_node_synthesize"].entry_kind == "bound_method"
         assert by_name["_node_synthesize"].owner_class_name == "ResearchAgent"
+        assert by_name["_node_retrieve"].entry_kind == "bound_method"
+        assert by_name["_node_retrieve"].owner_class_name == "ResearchAgent"
 
     def test_haystack_fixture_candidate_count_unchanged_after_add_node_removal(
         self, target_root: Path
@@ -329,7 +331,7 @@ class TestScanAll:
     def test_langgraph_fixture_labels_langgraph(self, target_root: Path):
         files = sorted((target_root / "langgraph_agent").glob("*.py"))
         candidates, label = scan_all(files)
-        assert len(candidates) == 4
+        assert len(candidates) == 5
         assert label == "langgraph"
 
     def test_mixed_set_unions_both_scanners_and_joins_label(self, target_root: Path):
@@ -341,7 +343,7 @@ class TestScanAll:
         files += sorted((target_root / "langgraph_agent").glob("*.py"))
         candidates, label = scan_all(files)
         names = {c.class_name for c in candidates}
-        assert len(candidates) == 6  # 2 haystack + 4 langgraph
+        assert len(candidates) == 7  # 2 haystack + 5 langgraph
         assert {"RetrieverComponent", "WriterComponent"} <= names
         assert {"_node_investigate", "_node_synthesize"} <= names
         assert label == "haystack+langgraph+plain_python"

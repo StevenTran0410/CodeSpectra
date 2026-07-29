@@ -111,6 +111,7 @@ class TestE2ERender:
                 contract=EvaluationContract(
                     agent_id=aid, invocation=inv,
                     has_retrieval_signal=(i == 0),  # first agent needs a retrieval stub
+                    retrieves_internally=(i == 0),
                 ),
             ))
         plan_report = EvaluationPlanReport(target_system_id="fictional_pipeline", agents=reports)
@@ -267,7 +268,7 @@ class TestForeignTargetRender:
     """AC#5: the plan must render on targets that are NOT CodeSpectra. Passing on CodeSpectra
     is necessary but not sufficient — genericity is only proven on a foreign map."""
 
-    @pytest.mark.parametrize("target", ["multi_agent", "linear_rag"])
+    @pytest.mark.parametrize("target", ["multi_agent", "linear_rag", "langgraph_agent"])
     def test_render_on_foreign_target(self, target, tmp_path) -> None:
         from agent_eval_harness.mapping.system_map import load_system_map
         from agent_eval_harness.code_injection.wiring import build_wiring
@@ -287,8 +288,9 @@ class TestForeignTargetRender:
         wiring["aeh_db_path"] = str(tmp_path / "aeh.db")
         wiring["dataset_ids"] = sorted(d["dataset_id"] for d in dataset_summaries)
 
+        plan_report = _get_plan_report_for_target(system_map, map_path)
         files = render_eval_plan_files(
-            system_map, wiring, dataset_summaries, f"sess-{target}", f"aeh/eval-{target}",
+            system_map, wiring, dataset_summaries, f"sess-{target}", f"aeh/eval-{target}", plan_report=plan_report
         )
         assert set(files) == {"AGENTS.md", "TASKS.md", "REFERENCE.md", "CODE.md", "RECON.md"}
 
@@ -305,6 +307,74 @@ class TestForeignTargetRender:
             assert cid in files["TASKS.md"], f"{target}: {cid} missing from TASKS.md"
             assert cid in files["REFERENCE.md"], f"{target}: {cid} missing from REFERENCE.md"
         assert system_map.target_system_id in files["REFERENCE.md"]
+
+        if target == "langgraph_agent":
+            assert "NOTE: For LangGraph state-nodes" in files["CODE.md"]
+
+
+def _normalize_ws(text: str) -> str:
+    return "\n".join(line.rstrip() for line in text.strip().splitlines())
+
+
+def _get_plan_report_for_target(system_map, map_path):
+    if map_path.parent.name != "langgraph_agent":
+        return None
+    from agent_eval_harness.mapping.agent_flow import AgentFlowMap, AgentFlow
+    from agent_eval_harness.mapping.builder.contract_harvest import harvest_contracts
+    from agent_eval_harness.planning.report import EvaluationPlanReport, AgentPlanReport
+
+    target_files = list(map_path.parent.rglob("*.py"))
+    agent_flow_map = AgentFlowMap(
+        target_system_id=system_map.target_system_id,
+        agents=[AgentFlow(id=c.id, component_ids=[c.id]) for c in system_map.components],
+    )
+    contracts = harvest_contracts(system_map, agent_flow_map, target_files, map_path.parent)
+    return EvaluationPlanReport(
+        target_system_id=system_map.target_system_id,
+        agents=[
+            AgentPlanReport(agent_id=c.id, role=c.role, contract=contracts.get(c.id))
+            for c in system_map.components
+        ],
+    )
+
+
+class TestRenderGolden:
+    """P0 golden assertion: rendered plan files for target fixtures must equal committed goldens."""
+
+    @pytest.mark.parametrize("target", ["multi_agent", "linear_rag", "langgraph_agent"])
+    def test_rendered_plan_matches_golden(self, target, tmp_path) -> None:
+        from agent_eval_harness.mapping.system_map import load_system_map
+        from agent_eval_harness.code_injection.wiring import build_wiring
+        from agent_eval_harness.code_injection.plan_renderer import render_eval_plan_files
+
+        targets_dir = Path(__file__).parent.parent / "test_targets"
+        map_path = targets_dir / target / "system_map.yaml"
+        system_map = load_system_map(map_path)
+        agent_ids = [c.id for c in system_map.components]
+
+        dataset_summaries = [
+            {"dataset_id": f"ds_{cid}", "kind": "synthetic_agent_io", "case_count": 2, "gate_ids": [], "example_case": None}
+            for cid in agent_ids
+        ]
+        wiring = build_wiring(system_map, f"sess-{target}")
+        wiring["aeh_db_path"] = "tmp/aeh.db"
+        wiring["dataset_ids"] = sorted(d["dataset_id"] for d in dataset_summaries)
+
+        plan_report = _get_plan_report_for_target(system_map, map_path)
+        rendered_files = render_eval_plan_files(
+            system_map, wiring, dataset_summaries, f"sess-{target}", f"aeh/eval-{target}", plan_report=plan_report
+        )
+
+        golden_dir = targets_dir / target / "expected_plan"
+        assert golden_dir.exists(), f"Golden dir {golden_dir} does not exist"
+
+        for fname, rendered_text in rendered_files.items():
+            golden_path = golden_dir / fname
+            assert golden_path.exists(), f"Golden file {golden_path} missing"
+            golden_text = golden_path.read_text(encoding="utf-8")
+            assert _normalize_ws(rendered_text) == _normalize_ws(golden_text), (
+                f"Mismatch in {target} rendered {fname} vs golden"
+            )
 
 
 class TestTypedBindingSurfacing:
@@ -551,3 +621,30 @@ def test_slice31_merge_virtual_input_bindings() -> None:
     assert contracts["test_agent"].invocation.case_binding["existing_kwarg"] == "case:$.input.query", (
         "Existing case_binding entry should not be modified"
     )
+
+
+def test_langgraph_agent_ast_harvest_retrieval_scoping() -> None:
+    """P5.3: runs AST harvest directly on langgraph_agent and asserts retrieves_internally logic."""
+    from agent_eval_harness.mapping.system_map import load_system_map
+    from agent_eval_harness.mapping.agent_flow import AgentFlowMap, AgentFlow
+    from agent_eval_harness.mapping.builder.contract_harvest import harvest_contracts
+
+    targets_dir = Path(__file__).parent.parent / "test_targets"
+    map_path = targets_dir / "langgraph_agent" / "system_map.yaml"
+    system_map = load_system_map(map_path)
+    
+    target_files = list(map_path.parent.rglob("*.py"))
+    agent_flow_map = AgentFlowMap(
+        target_system_id=system_map.target_system_id,
+        agents=[AgentFlow(id=c.id, component_ids=[c.id]) for c in system_map.components],
+    )
+    contracts = harvest_contracts(system_map, agent_flow_map, target_files, map_path.parent)
+
+    assert "retrieve" in contracts
+    assert contracts["retrieve"].retrieves_internally is True
+    
+    # Other nodes should be False
+    for cid in ("load_context", "plan_step", "investigate", "synthesize"):
+        assert cid in contracts
+        assert contracts[cid].retrieves_internally is False
+
