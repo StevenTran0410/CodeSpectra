@@ -24,6 +24,8 @@ const api = {
     delete: (id: string): Promise<void> => ipcRenderer.invoke('provider:delete', id),
     test: (id: string): Promise<{ ok: boolean; message: string; warning?: string }> =>
       ipcRenderer.invoke('provider:test', id),
+    embeddingModels: (id: string): Promise<{ models: string[] }> =>
+      ipcRenderer.invoke('provider:embedding-models', id),
     models: (id: string): Promise<{ models: string[] }> =>
       ipcRenderer.invoke('provider:models', id)
   },
@@ -32,11 +34,23 @@ const api = {
     giveCloud: (given: boolean): Promise<{ given: boolean }> =>
       ipcRenderer.invoke('consent:cloud:give', given)
   },
+  gpuReranker: {
+    status: (): Promise<unknown> => ipcRenderer.invoke('gpuReranker:status'),
+    setEnabled: (enabled: boolean): Promise<unknown> =>
+      ipcRenderer.invoke('gpuReranker:setEnabled', enabled),
+    download: (): Promise<unknown> => ipcRenderer.invoke('gpuReranker:download')
+  },
+  localEmbedding: {
+    status: (): Promise<unknown> => ipcRenderer.invoke('localEmbedding:status'),
+    setEnabled: (enabled: boolean): Promise<unknown> =>
+      ipcRenderer.invoke('localEmbedding:setEnabled', enabled),
+    download: (): Promise<unknown> => ipcRenderer.invoke('localEmbedding:download')
+  },
   folder: {
     pick: (): Promise<string | null> => ipcRenderer.invoke('folder:pick'),
     validate: (path: string) => ipcRenderer.invoke('folder:validate', path),
-    list: (workspaceId?: string) => ipcRenderer.invoke('folder:list', workspaceId),
-    add: (path: string, workspaceId?: string) => ipcRenderer.invoke('folder:add', path, workspaceId),
+    list: (workspaceId?: string, mode?: string) => ipcRenderer.invoke('folder:list', workspaceId, mode),
+    add: (path: string, workspaceId?: string, mode?: string) => ipcRenderer.invoke('folder:add', path, workspaceId, mode),
     remove: (id: string): Promise<void> => ipcRenderer.invoke('folder:remove', id),
     revalidate: (id: string) => ipcRenderer.invoke('folder:revalidate', id),
     branches: (id: string, refresh = false): Promise<string[]> =>
@@ -55,7 +69,7 @@ const api = {
       }
     ) => ipcRenderer.invoke('folder:updateSettings', id, settings),
     estimateFileCount: (id: string) => ipcRenderer.invoke('folder:estimateFileCount', id),
-    cloneFromUrl: (url: string, workspaceId?: string) => ipcRenderer.invoke('folder:cloneFromUrl', url, workspaceId)
+    cloneFromUrl: (url: string, workspaceId?: string, mode?: string) => ipcRenderer.invoke('folder:cloneFromUrl', url, workspaceId, mode)
   },
   sync: {
     prepare: (body: {
@@ -108,6 +122,7 @@ const api = {
   retrieval: {
     buildIndex: (snapshotId: string, forceRebuild = true) =>
       ipcRenderer.invoke('retrieval:buildIndex', snapshotId, forceRebuild),
+    summary: (snapshotId: string) => ipcRenderer.invoke('retrieval:summary', snapshotId),
     retrieve: (body: {
       snapshot_id: string
       query: string
@@ -271,14 +286,99 @@ const api = {
     getLogsPath: (): Promise<string> => ipcRenderer.invoke('app:get-logs-path'),
     getDiagnostics: () => ipcRenderer.invoke('app:get-diagnostics'),
     retryBackend: (): Promise<void> => ipcRenderer.invoke('app:retry-backend'),
+    copyToClipboard: (text: string): Promise<void> =>
+      ipcRenderer.invoke('app:copy-to-clipboard', text),
+    showInFolder: (targetPath: string): Promise<void> =>
+      ipcRenderer.invoke('app:show-in-folder', targetPath),
+  },
+  aeh: {
+    start: (): Promise<number> => ipcRenderer.invoke('aeh:start'),
+    listRuns: () => ipcRenderer.invoke('aeh:listRuns'),
+    runDetail: (runId: string) => ipcRenderer.invoke('aeh:runDetail', runId),
+    componentEvaluations: (runId: string, componentId: string) =>
+      ipcRenderer.invoke('aeh:componentEvaluations', runId, componentId),
+    traceDetail: (traceId: string) => ipcRenderer.invoke('aeh:traceDetail', traceId),
+    providers: () => ipcRenderer.invoke('aeh:providers'),
+    rerun: (runId: string, body: unknown) => ipcRenderer.invoke('aeh:rerun', runId, body),
+    startDiscovery: (body: unknown) => ipcRenderer.invoke('aeh:startDiscovery', body),
+    listDiscoverySessions: (repoRef?: string, snapshotId?: string) => ipcRenderer.invoke('aeh:listDiscoverySessions', repoRef, snapshotId),
+    getDiscoverySession: (sessionId: string) => ipcRenderer.invoke('aeh:getDiscoverySession', sessionId),
+    resumeDiscoverySession: (
+      sessionId: string,
+      body?: {
+        provider_id?: string | null
+        model_id?: string | null
+        reasoning_effort?: string | null
+        thinking_budget?: number | null
+      }
+    ) => ipcRenderer.invoke('aeh:resumeDiscoverySession', sessionId, body ?? {}),
+    listDiscoveryCandidates: (sessionId: string) =>
+      ipcRenderer.invoke('aeh:listDiscoveryCandidates', sessionId),
+    updateDiscoveryCandidateVerdict: (candidateId: string, verdict: string) =>
+      ipcRenderer.invoke('aeh:updateDiscoveryCandidateVerdict', candidateId, verdict),
+    updateDiscoveryCandidateExcludedFiles: (candidateId: string, excludedFiles: string[]) =>
+      ipcRenderer.invoke('aeh:updateDiscoveryCandidateExcludedFiles', candidateId, excludedFiles),
+    startExpansion: (candidateId: string, body: unknown) =>
+      ipcRenderer.invoke('aeh:startExpansion', candidateId, body),
+    getExpansionSession: (sessionId: string) =>
+      ipcRenderer.invoke('aeh:getExpansionSession', sessionId),
+    listExpansionSessions: (candidateId: string) =>
+      ipcRenderer.invoke('aeh:listExpansionSessions', candidateId),
+    getExpansionMap: (sessionId: string) =>
+      ipcRenderer.invoke('aeh:getExpansionMap', sessionId),
+    updateExpansionMap: (sessionId: string, map: unknown) =>
+      ipcRenderer.invoke('aeh:updateExpansionMap', sessionId, map),
+    generatePlan: (sessionId: string, body: unknown) =>
+      ipcRenderer.invoke('aeh:generatePlan', sessionId, body),
+    getPlan: (sessionId: string) =>
+      ipcRenderer.invoke('aeh:getPlan', sessionId),
+    updatePlan: (sessionId: string, body: unknown) =>
+      ipcRenderer.invoke('aeh:updatePlan', sessionId, body),
+    getPlanReport: (sessionId: string) =>
+      ipcRenderer.invoke('aeh:getPlanReport', sessionId),
+    updatePlanReport: (sessionId: string, body: unknown) =>
+      ipcRenderer.invoke('aeh:updatePlanReport', sessionId, body),
+    resetStage3: (sessionId: string) => ipcRenderer.invoke('aeh:resetStage3', sessionId),
+    createEvalBranch: (sessionId: string, baseRef: string) =>
+      ipcRenderer.invoke('aeh:createEvalBranch', sessionId, baseRef),
+    restoreEvalBranch: (sessionId: string) =>
+      ipcRenderer.invoke('aeh:restoreEvalBranch', sessionId),
+    createEvalPlan: (sessionId: string, baseRef: string) =>
+      ipcRenderer.invoke('aeh:createEvalPlan', sessionId, baseRef),
+    getEvalPlan: (sessionId: string) => ipcRenderer.invoke('aeh:getEvalPlan', sessionId),
+    deleteEvalPlan: (sessionId: string) => ipcRenderer.invoke('aeh:deleteEvalPlan', sessionId),
+    listSiblingSystems: (sessionId: string) => ipcRenderer.invoke('aeh:listSiblingSystems', sessionId),
+    loadEvalResults: (sessionId: string) =>
+      ipcRenderer.invoke('aeh:loadEvalResults', sessionId),
+    getEvalRunCases: (runId: string) =>
+      ipcRenderer.invoke('aeh:getEvalRunCases', runId),
+    listEvalRuns: (sessionId: string) =>
+      ipcRenderer.invoke('aeh:listEvalRuns', sessionId),
+    judgeEvalRunCases: (runId: string, body: unknown) =>
+      ipcRenderer.invoke('aeh:judgeEvalRunCases', runId, body),
+    summarizeEvalRunAgent: (runId: string, body: unknown) =>
+      ipcRenderer.invoke('aeh:summarizeEvalRunAgent', runId, body),
+    generateAgentFlowMap: (sessionId: string, body: unknown) =>
+      ipcRenderer.invoke('aeh:generateAgentFlowMap', sessionId, body),
+    getAgentFlowMap: (sessionId: string) =>
+      ipcRenderer.invoke('aeh:getAgentFlowMap', sessionId),
+    enrichAgents: (sessionId: string, body: unknown) =>
+      ipcRenderer.invoke('aeh:enrichAgents', sessionId, body),
+    getAgentKnowledge: (sessionId: string) =>
+      ipcRenderer.invoke('aeh:getAgentKnowledge', sessionId),
+    advanceSession: (sessionId: string, body: unknown) =>
+      ipcRenderer.invoke('aeh:advanceSession', sessionId, body),
+    fulfillDatasets: (sessionId: string, body: unknown) =>
+      ipcRenderer.invoke('aeh:fulfillDatasets', sessionId, body),
+    listDatasets: (sessionId?: string) => ipcRenderer.invoke('aeh:listDatasets', sessionId),
+    getDatasetCases: (datasetId: string) =>
+      ipcRenderer.invoke('aeh:getDatasetCases', datasetId),
+    caseVerdict: (caseId: string, body: unknown) =>
+      ipcRenderer.invoke('aeh:caseVerdict', caseId, body)
   }
 }
 
-// Note: contextBridge.exposeInMainWorld does NOT support Proxy objects —
-// Proxies are stripped/cloned across the context isolation boundary, causing
-// window.api.* access to return undefined in the renderer. TypeScript types
-// already enforce channel declarations at compile time; runtime assertion
-// would need a different mechanism (e.g. wrap each leaf function individually).
+// contextBridge.exposeInMainWorld doesn't support Proxy objects — they get stripped across the context isolation boundary, so window.api.* would be undefined in the renderer.
 if (process.contextIsolated) {
   contextBridge.exposeInMainWorld('electron', electronAPI)
   contextBridge.exposeInMainWorld('api', api)

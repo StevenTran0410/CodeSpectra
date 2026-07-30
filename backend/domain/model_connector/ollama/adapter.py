@@ -2,9 +2,14 @@
 import httpx
 
 from domain.model_connector._local_base import LocalAdapterBase
-from domain.model_connector.errors import ProviderError
-from domain.model_connector.types import ChatRequest, ChatResponse
+from domain.model_connector.errors import ProviderError, ProviderErrorCode
+from domain.model_connector.reasoning import ReasoningStyle, classify
+from domain.model_connector.types import ChatRequest, ChatResponse, EmbedRequest, EmbedResponse, ProviderKind
 from shared.logger import logger
+
+# Local embedding-only models commonly pulled alongside chat models — not usable
+# for text generation, so they're excluded from the model picker.
+_NON_CHAT_MARKERS = ("embed", "bert")
 
 
 class OllamaAdapter(LocalAdapterBase):
@@ -15,7 +20,11 @@ class OllamaAdapter(LocalAdapterBase):
             res = await self._client.get("/api/tags")
             res.raise_for_status()
             data = res.json()
-            return [m["name"] for m in data.get("models", [])]
+            return [
+                m["name"]
+                for m in data.get("models", [])
+                if not any(marker in m["name"].lower() for marker in _NON_CHAT_MARKERS)
+            ]
         except httpx.ConnectError as e:
             raise self._map_connect_error(e) from e
         except httpx.TimeoutException as e:
@@ -37,6 +46,11 @@ class OllamaAdapter(LocalAdapterBase):
         }
         if request.json_mode:
             payload["format"] = "json"
+        if (
+            classify(ProviderKind.OLLAMA, self.config.model_id or "") == ReasoningStyle.TOGGLE
+            and request.thinking_budget
+        ):
+            payload["think"] = True
         try:
             logger.debug(f"Ollama chat: model={self.config.model_id}")
             res = await self._client.post("/api/chat", json=payload)
@@ -73,3 +87,10 @@ class OllamaAdapter(LocalAdapterBase):
             return True, f"Connected — {len(models)} model(s) available", None
         except ProviderError as e:
             return False, e.message, None
+
+    async def embed(self, request: EmbedRequest) -> EmbedResponse:  # noqa: ARG002
+        raise ProviderError(
+            ProviderErrorCode.UNKNOWN,
+            "Ollama embeddings are not wired in this version — use OpenAI, Gemini, or Local GPU",
+            provider_id=self.config.id,
+        )

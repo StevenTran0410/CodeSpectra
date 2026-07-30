@@ -1,6 +1,6 @@
 """Core types for the LLM model connector layer."""
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
@@ -54,6 +54,12 @@ class ChatRequest(BaseModel):
     # None = omit temperature from payload entirely (use provider/model default).
     # Required for models that reject any explicit temperature (o1, o3, gpt-5, etc.)
     temperature: float | None = 0.2
+    # Generic reasoning controls — each adapter maps these onto its own provider's
+    # actual parameter shape (OpenAI reasoning_effort, Anthropic thinking.budget_tokens,
+    # Gemini thinkingConfig.thinkingBudget, ...). Ignored by adapters/models that don't
+    # support reasoning controls. See domain.model_connector.reasoning.ReasoningStyle.
+    reasoning_effort: str | None = None
+    thinking_budget: int | None = None
     # When True each adapter enables its native JSON-output mode:
     # OpenAI → response_format=json_object, Gemini → responseMimeType=application/json,
     # Ollama → format=json, LM Studio → response_format=json_object,
@@ -68,3 +74,20 @@ class ChatResponse(BaseModel):
     content: str
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
+
+
+class EmbedRequest(BaseModel):
+    provider_id: str
+    model_id: str | None = None
+    texts: list[str]
+    # Gemini only: use "retrieval_document" when embedding corpus chunks (default),
+    # "retrieval_query" when embedding a query. Ignored by all other providers.
+    task_type: Literal["retrieval_document", "retrieval_query"] | None = None
+
+
+class EmbedResponse(BaseModel):
+    provider_id: str
+    model_id: str
+    embeddings: list[list[float]]
+    dimensions: int
+

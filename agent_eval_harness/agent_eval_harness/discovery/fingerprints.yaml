@@ -1,0 +1,147 @@
+# Framework and Primitive Fingerprints for Stage 1 Candidate Agentic-System Enumeration
+# Weights reflect the confidence of the fingerprint being part of an agentic system.
+
+# Framework-import fingerprints are "retrieval" (content search), never "symbol"
+# (name/path search) — a real target's symbol names and file paths (e.g. T1's
+# WriterComponent/build_pipeline in pipeline.py) almost never contain the
+# framework's own name even when the file genuinely does `from haystack import
+# ...`. Confirmed directly: T1's actual Haystack-based pipeline has zero
+# symbols/paths containing "haystack" anywhere, so a `type: symbol` fingerprint
+# for it would never fire on the exact fixture this ticket's golden test requires
+# to work. Only use `type: symbol` for fingerprints that are genuinely about a
+# declared name (e.g. a class actually named `...Agent`), never for import/module
+# detection.
+#
+# `query` for every "retrieval" fingerprint is a BARE keyword, not a verbose
+# natural-language phrase — confirmed empirically against this repo's own
+# codebase (a real `from haystack import ...` in backend/domain/analysis/
+# agent_pipeline.py): querying "import haystack pipeline component" diluted
+# BM25's exact-term signal against unrelated chunks sharing "pipeline"/
+# "component", while querying bare "haystack" correctly ranked the real file
+# top via retrieve_rrf_fusion's unbounded, BM25-weighted "fused" results.
+fingerprints:
+  - id: haystack_import
+    type: retrieval
+    query: "haystack"
+    pattern: "\\bimport\\s+haystack\\b|\\bfrom\\s+haystack\\b"
+    framework: "haystack"
+    weight: 1.0
+
+  - id: langgraph_import
+    type: retrieval
+    query: "langgraph"
+    pattern: "\\bimport\\s+langgraph\\b|\\bfrom\\s+langgraph\\b"
+    framework: "langgraph"
+    weight: 1.0
+
+  - id: langchain_import
+    type: retrieval
+    query: "langchain"
+    pattern: "\\bimport\\s+langchain\\b|\\bfrom\\s+langchain\\b"
+    framework: "langchain"
+    weight: 0.9
+
+  - id: crewai_import
+    type: retrieval
+    query: "crewai"
+    pattern: "\\bimport\\s+crewai\\b|\\bfrom\\s+crewai\\b"
+    framework: "crewai"
+    weight: 1.0
+
+  - id: autogen_import
+    type: retrieval
+    query: "autogen"
+    pattern: "\\bimport\\s+autogen\\b|\\bfrom\\s+autogen\\b"
+    framework: "autogen"
+    weight: 1.0
+
+  - id: semantic_kernel_import
+    type: retrieval
+    query: "semantic_kernel"
+    pattern: "\\bimport\\s+semantic_kernel\\b|\\bfrom\\s+semantic_kernel\\b"
+    framework: "semantic_kernel"
+    weight: 1.0
+
+  - id: openai_sdk
+    type: retrieval
+    query: "openai"
+    pattern: "\\bimport\\s+openai\\b|\\bfrom\\s+openai\\b"
+    framework: "openai"
+    weight: 0.7
+
+  - id: anthropic_sdk
+    type: retrieval
+    query: "anthropic"
+    pattern: "\\bimport\\s+anthropic\\b|\\bfrom\\s+anthropic\\b"
+    framework: "anthropic"
+    weight: 0.7
+
+  - id: component_decorator
+    type: retrieval
+    query: "@component"
+    pattern: "@component"
+    framework: "haystack"
+    weight: 0.9
+
+  - id: tool_decorator
+    type: retrieval
+    query: "@tool"
+    pattern: "@tool"
+    framework: "unknown"
+    weight: 0.9
+
+  - id: agent_class
+    type: symbol
+    query: "Agent"
+    pattern: "Agent"
+    framework: "unknown"
+    weight: 0.7
+
+  - id: chat_loop
+    type: retrieval
+    query: "chat.completions.create"
+    pattern: "chat\\.completions\\.create|client\\.chat"
+    framework: "unknown"
+    weight: 0.7
+
+  - id: system_prompt
+    type: retrieval
+    query: "system prompt"
+    pattern: "system_prompt|system prompt"
+    framework: "unknown"
+    weight: 0.6
+
+  - id: mcp_tool_description
+    type: retrieval
+    query: "Tool description"
+    pattern: "Tool\\(description="
+    framework: "mcp"
+    weight: 0.8
+
+  - id: mcp_agent_card
+    type: retrieval
+    query: "AgentCard"
+    pattern: "AgentCard\\("
+    framework: "mcp"
+    weight: 0.8
+
+  - id: mcp_list_tools
+    type: retrieval
+    query: "list_tools"
+    pattern: "@\\w+\\.list_tools\\("
+    framework: "mcp"
+    weight: 0.9
+
+  - id: tools_list_literal
+    type: retrieval
+    query: "tools"
+    pattern: "tools\\s*=\\s*\\["
+    framework: "unknown"
+    weight: 0.6
+
+  - id: tool_dispatch_loop
+    type: retrieval
+    query: "tool_calls"
+    pattern: "for\\s+\\w+\\s+in\\s+[\\w\\.]*tool_calls"
+    framework: "unknown"
+    weight: 0.7

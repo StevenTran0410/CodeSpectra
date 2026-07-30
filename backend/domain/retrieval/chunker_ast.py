@@ -1,4 +1,4 @@
-"""AST-based semantic chunker for code files (CS-101).
+"""AST-based semantic chunker for code files.
 
 Replaces flat line-count chunking with syntax-aware chunking via Tree-sitter.
 Functions, classes, and other logical units are never split mid-body.
@@ -30,7 +30,7 @@ def _load_native_chunker() -> Any:
 _native_chunker = _load_native_chunker()
 
 # ---------------------------------------------------------------------------
-# Pre-pass filters: applied to source before AST chunking (CS-229)
+# Pre-pass filters: applied to source before AST chunking
 # ---------------------------------------------------------------------------
 
 def _strip_license_header_pass(source: str, language: str) -> tuple[str, str | None]:
@@ -143,6 +143,8 @@ class ASTChunk:
     start_line: int = 0
     end_line: int = 0
     language: str = ""
+    split_part: int = 0          # 0-indexed position among split_of parts of one oversized function/class
+    split_of: int = 1            # >1 means this chunk is one piece of a single symbol split for size
 
 
 # ---------------------------------------------------------------------------
@@ -718,6 +720,8 @@ class _NodeSpan:
     node_type: str
     name: str          # best-effort symbol name, empty if not determinable
     is_import: bool
+    split_part: int = 0
+    split_of: int = 1
 
 
 # ---------------------------------------------------------------------------
@@ -825,6 +829,41 @@ def _extract_name(node: Any, src_bytes: bytes) -> str:
     return ""
 
 
+def _split_oversized_span(node: Any, src_bytes: bytes, max_size: int, overlap_ratio: float = 0.05) -> list[_NodeSpan]:
+    """Split a node's own byte range into overlapping parts instead of recursing into children -- most large methods have no nested function/class children, so recursion silently dropped their content."""
+    start, end = node.start_byte, node.end_byte
+    step = max(1, int(max_size * (1 - overlap_ratio)))
+    overlap = max_size - step
+
+    bounds: list[tuple[int, int]] = []
+    pos = start
+    while pos < end:
+        part_end = min(pos + max_size, end)
+        bounds.append((pos, part_end))
+        if part_end >= end:
+            break
+        pos = part_end - overlap
+
+    name = _extract_name(node, src_bytes)
+    total = len(bounds)
+    spans: list[_NodeSpan] = []
+    for i, (s, e) in enumerate(bounds):
+        start_line = node.start_point[0] + src_bytes[node.start_byte:s].count(b"\n")
+        end_line = node.start_point[0] + src_bytes[node.start_byte:e].count(b"\n")
+        spans.append(_NodeSpan(
+            start_byte=s,
+            end_byte=e,
+            start_line=start_line,
+            end_line=end_line,
+            node_type=node.type,
+            name=name,
+            is_import=False,
+            split_part=i,
+            split_of=total,
+        ))
+    return spans
+
+
 def _collect_nodes(
     root: Any,
     src_bytes: bytes,
@@ -891,8 +930,8 @@ def _collect_nodes(
                     is_import=False,
                 ))
                 continue
-            # Node too large — push named children in reverse to maintain order.
-            stack.extend(reversed(node.named_children))
+            # Node too large for one chunk — split its own range instead of recursing into children.
+            result.extend(_split_oversized_span(node, src_bytes, max_size))
             continue
 
         # Non-semantic node — flush imports and descend into named children.
@@ -984,24 +1023,24 @@ def _merge_spans(spans: list[_NodeSpan], target_size: int) -> list[list[_NodeSpa
     """
     Merge spans into groups.
 
-    Import spans are always emitted as their own group (never merged with
-    non-import spans). Non-import segments are merged greedily up to target_size,
-    using the native C++ hotspot when available.
+    Import spans and split-oversized-node parts (split_of > 1) are always emitted
+    as their own group -- merging split parts back together would recreate the
+    overflow the split exists to avoid. Everything else is merged greedily up to
+    target_size, using the native C++ hotspot when available.
     """
     if not spans:
         return []
 
-    # Split the span list at import boundaries, preserving order.
-    # Each segment is either a single import span or a run of non-import spans.
+    # Split the span list at import/split-part boundaries, preserving order.
     segments: list[list[_NodeSpan]] = []
     current_seg: list[_NodeSpan] = []
 
     for span in spans:
-        if span.is_import:
+        if span.is_import or span.split_of > 1:
             if current_seg:
                 segments.append(current_seg)
                 current_seg = []
-            segments.append([span])  # import always its own segment
+            segments.append([span])  # always its own segment
         else:
             current_seg.append(span)
 
@@ -1012,8 +1051,8 @@ def _merge_spans(spans: list[_NodeSpan], target_size: int) -> list[list[_NodeSpa
     for seg in segments:
         if not seg:
             continue
-        if seg[0].is_import:
-            # Import segment: emit as-is (already a single coalesced span).
+        if seg[0].is_import or seg[0].split_of > 1:
+            # Import or split-part segment: emit as-is, never merged.
             result.append(seg)
             continue
         # Non-import segment: merge with native or Python fallback.
@@ -1090,7 +1129,7 @@ class ASTChunker:
         """
         lang_key = language.lower() if language else ""
 
-        # Apply pre-passes (CS-229).
+        # Apply pre-passes.
         pre_pass_chunk_type_override = None
         for pre_pass in _PRE_PASSES:
             try:
@@ -1187,6 +1226,8 @@ class ASTChunker:
                 start_line=first.start_line,
                 end_line=last.end_line,
                 language=language,
+                split_part=first.split_part,
+                split_of=first.split_of,
             ))
 
         return chunks

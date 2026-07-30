@@ -1,3 +1,22 @@
+import http from 'http'
+
+/** FastAPI returns `{ "detail": "..." }` for 4xx errors — prefer that over a `message` field or raw text. */
+function pickErrorMessage(json: unknown): string | undefined {
+  if (json && typeof json === 'object') {
+    const obj = json as { detail?: unknown; message?: unknown }
+    if (typeof obj.detail === 'string') return obj.detail
+    if (typeof obj.message === 'string') return obj.message
+  }
+  return undefined
+}
+
+/** Thrown by BackendClient on a non-2xx response; `status` lets callers branch on 404 without parsing message text. */
+export class BackendHttpError extends Error {
+  constructor(message: string, public readonly status: number) {
+    super(message)
+  }
+}
+
 /** HTTP client for communicating with the Python FastAPI backend. */
 export class BackendClient {
   private readonly base: string
@@ -6,37 +25,92 @@ export class BackendClient {
     this.base = `http://127.0.0.1:${port}`
   }
 
-  /** Extract a human-readable message from a failed response.
-   *  FastAPI returns `{ "detail": "..." }` for 4xx errors — prefer that over raw text. */
+  /** Extract a human-readable message from a failed response. */
   private async _errorMessage(res: Response): Promise<string> {
     try {
       const json: unknown = await res.json()
-      if (json && typeof json === 'object' && 'detail' in json && typeof (json as { detail: unknown }).detail === 'string') {
-        return (json as { detail: string }).detail
-      }
-      if (json && typeof json === 'object' && 'message' in json && typeof (json as { message: unknown }).message === 'string') {
-        return (json as { message: string }).message
-      }
-      return JSON.stringify(json)
+      return pickErrorMessage(json) ?? JSON.stringify(json)
     } catch {
       return res.text().catch(() => res.statusText)
     }
   }
 
+  private async _throwHttpError(res: Response): Promise<never> {
+    throw new BackendHttpError(await this._errorMessage(res), res.status)
+  }
+
   async get<T>(path: string): Promise<T> {
     const res = await fetch(`${this.base}${path}`)
-    if (!res.ok) throw new Error(await this._errorMessage(res))
+    if (!res.ok) await this._throwHttpError(res)
     return res.json() as Promise<T>
   }
 
-  async post<T>(path: string, body: unknown): Promise<T> {
+  async delete<T>(path: string): Promise<T> {
+    const res = await fetch(`${this.base}${path}`, { method: 'DELETE' })
+    if (!res.ok) await this._throwHttpError(res)
+    return res.json() as Promise<T>
+  }
+
+  /** Short routes go over `fetch`; long routes MUST pass `timeoutMs` and go over Node's `http` instead, since undici's ~5-min `headersTimeout` isn't overridden by an AbortSignal and would abort a long server-side run client-side while the backend keeps working. */
+  async post<T>(path: string, body: unknown, timeoutMs?: number): Promise<T> {
+    if (timeoutMs) return this._postViaHttp<T>(path, body, timeoutMs)
     const res = await fetch(`${this.base}${path}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
     })
-    if (!res.ok) throw new Error(await this._errorMessage(res))
+    if (!res.ok) await this._throwHttpError(res)
     return res.json() as Promise<T>
+  }
+
+  /** http.request-based POST for long server-side runs. `timeoutMs` is a socket-inactivity guard, NOT undici's 5-min headers cap. */
+  private _postViaHttp<T>(path: string, body: unknown, timeoutMs: number): Promise<T> {
+    const url = new URL(`${this.base}${path}`)
+    const payload = JSON.stringify(body ?? {})
+    return new Promise<T>((resolve, reject) => {
+      const req = http.request(
+        {
+          hostname: url.hostname,
+          port: url.port,
+          path: url.pathname + url.search,
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Content-Length': Buffer.byteLength(payload)
+          }
+        },
+        (res) => {
+          const chunks: Buffer[] = []
+          res.on('data', (c: Buffer) => chunks.push(c))
+          res.on('end', () => {
+            const text = Buffer.concat(chunks).toString('utf-8')
+            const status = res.statusCode ?? 0
+            if (status >= 200 && status < 300) {
+              try {
+                resolve((text ? JSON.parse(text) : undefined) as T)
+              } catch (e) {
+                reject(new Error(`Failed to parse response from ${path}: ${(e as Error).message}`))
+              }
+              return
+            }
+            let message = text || res.statusMessage || `HTTP ${status}`
+            try {
+              message = pickErrorMessage(JSON.parse(text)) ?? message
+            } catch {
+              /* non-JSON body — keep raw text */
+            }
+            reject(new BackendHttpError(message, status))
+          })
+        }
+      )
+      // http.request has no default response timeout; this only trips on full socket silence, never on a mid-run 5-min headers cap like undici's.
+      req.setTimeout(timeoutMs, () => {
+        req.destroy(new Error(`Request to ${path} timed out after ${timeoutMs}ms of inactivity`))
+      })
+      req.on('error', reject)
+      req.write(payload)
+      req.end()
+    })
   }
 
   async put<T>(path: string, body: unknown): Promise<T> {
@@ -45,17 +119,20 @@ export class BackendClient {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
     })
-    if (!res.ok) throw new Error(await this._errorMessage(res))
+    if (!res.ok) await this._throwHttpError(res)
     return res.json() as Promise<T>
   }
 
-  async del(path: string): Promise<void> {
+  /** Most DELETE routes return 204 (nothing to parse); a 200 + JSON body route gets it parsed and typed. */
+  async del<T = void>(path: string): Promise<T> {
     const res = await fetch(`${this.base}${path}`, { method: 'DELETE' })
-    if (!res.ok) throw new Error(await this._errorMessage(res))
+    if (!res.ok) await this._throwHttpError(res)
+    if (res.status === 204) return undefined as T
+    const text = await res.text()
+    return (text ? JSON.parse(text) : undefined) as T
   }
 
-  /** Consume a Server-Sent Events stream. Calls `onEvent` for every parsed data frame.
-   *  Resolves when the stream ends or an error/done event is received. */
+  /** Consume a Server-Sent Events stream, calling `onEvent` for every parsed data frame until the stream ends. */
   async postStream(
     path: string,
     body: unknown,

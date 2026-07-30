@@ -1,4 +1,4 @@
-"""SHA256 incremental extraction cache for structural graph builds (RPA-058 Part A)."""
+"""SHA256 incremental extraction cache for structural graph builds."""
 
 from __future__ import annotations
 
@@ -183,11 +183,9 @@ async def copy_unchanged_edges(
             *chunk,
         )
 
-        # CS-255: baseline captured immediately before execute(), not tracked as a
-        # running total from 0 -- total_changes is cumulative for the whole connection's
-        # lifetime, so any prior writes on this connection would otherwise be
-        # misattributed to this chunk's insert count (same fix as the symbol-edges
-        # sibling below).
+        # Capture baseline immediately before execute() (total_changes is cumulative for the whole
+        # connection's lifetime, so any prior writes on this connection would otherwise be
+        # misattributed to this chunk's insert count).
         before = db.total_changes
         await db.execute(query, params)
         total_copied += db.total_changes - before
@@ -202,7 +200,7 @@ async def copy_unchanged_symbol_edges(
     current_snapshot_id: str,
     unchanged_paths: list[str],
 ) -> int:
-    """Copy symbol edges for unchanged files from previous snapshot via bulk INSERT SELECT (CS-249).
+    """Copy symbol edges for unchanged files from previous snapshot via bulk INSERT SELECT.
 
     Matches symbol edges belonging to unchanged files using substr-based prefix matching
     on src_symbol (format: 'path::symbol_name'). Preserves all edge properties including
@@ -242,13 +240,10 @@ async def copy_unchanged_symbol_edges(
         """
         params = (current_snapshot_id, previous_snapshot_id, *params_list)
 
-        # CS-255: get the inserted count from the db.total_changes delta across just
-        # this execute() (one round-trip total), instead of running a separate COUNT
-        # query before the INSERT (was 2 round-trips per chunk). Note this captures a
-        # fresh baseline immediately before each execute rather than tracking a
-        # running total from 0 -- total_changes is cumulative for the whole connection's
-        # lifetime, so any prior writes on this connection (e.g. test fixture setup)
-        # would otherwise be misattributed to the first chunk's insert count.
+        # Get the inserted count from the db.total_changes delta across just this execute()
+        # (total_changes is cumulative for the whole connection's lifetime, so any prior
+        # writes on this connection, e.g. test fixture setup, would otherwise be misattributed
+        # to the first chunk's insert count).
         before = db.total_changes
         await db.execute(query, params)
         total_copied += db.total_changes - before

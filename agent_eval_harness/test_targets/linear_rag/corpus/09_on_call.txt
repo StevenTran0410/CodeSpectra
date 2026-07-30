@@ -1,0 +1,1 @@
+On-call rotation is weekly and covers production incident response. On-call engineers receive a stipend and a compensating day off after a night with a page.

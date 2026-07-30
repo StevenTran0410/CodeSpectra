@@ -1,0 +1,41 @@
+{
+  "agent_id": "violations",
+  "archetype": "rag_upstream",
+  "target_count": 5,
+  "batch_n": 3,
+  "json_schema": {
+    "rules": [
+      {
+        "rule": "string",
+        "strength": "strong|suspected|weak",
+        "rationale": "string",
+        "evidence_files": [
+          "string"
+        ]
+      }
+    ],
+    "violations": [
+      {
+        "rule_broken": "string",
+        "location": "string",
+        "severity": "high|medium|low"
+      }
+    ],
+    "confidence": "high|medium|low",
+    "evidence_files": [
+      "string"
+    ],
+    "blind_spots": [
+      "string"
+    ]
+  },
+  "schema_present": true,
+  "system_prompt": "You are generating synthetic test cases for evaluating an agent.\n\nEach case is an object with two keys: 'input' (matching the input shape provided) and 'gold' (the expected output, strictly matching the output schema provided).\n\nCRITICAL (faithfulness guard): keep every case internally consistent — every file path appearing anywhere in the input (evidence rel_paths, paths named in any context field) MUST also appear in any folder-tree / file-listing field present in that same input; never reference a file absent from the folder tree you generate. Every claim in 'gold' must be traceable to the input evidence you created. Any 'blind_spots' or fallback/degradation notes in 'gold' MUST be grounded in and consistent with 'input' — never assert absence or failure of a feature/section when present in 'input'.\n\nRespond ONLY with a JSON array of such objects. No markdown, no explanation.",
+  "prompt": "INPUT SHAPE — each case's 'input' must have exactly these fields:\n{\n  \"snapshot_id\": \"(str)\",\n  \"static_convention\": \"a JSON object that MUST use EXACTLY the keys shown here at EVERY level — no renaming, no omissions, no extra keys — matching this nested structure (values are the types): {\\\"signals\\\": [{\\\"signal\\\": \\\"string\\\", \\\"title\\\": \\\"string\\\", \\\"description\\\": \\\"string\\\", \\\"confidence\\\": \\\"string\\\", \\\"evidence\\\": [\\\"string\\\"], \\\"details\\\": \\\"object\\\"}]}\",\n  \"static_risk\": \"a JSON object that MUST use EXACTLY the keys shown here at EVERY level — no renaming, no omissions, no extra keys — matching this nested structure (values are the types): {\\\"findings\\\": [{\\\"category\\\": \\\"string\\\", \\\"severity\\\": \\\"string\\\", \\\"title\\\": \\\"string\\\", \\\"rationale\\\": \\\"string\\\", \\\"evidence\\\": [\\\"string\\\"], \\\"details\\\": \\\"object\\\"}]}\",\n  \"conventions_output\": \"the conventions agent's output — JSON schema: {\\\"naming_style\\\": {\\\"description\\\": \\\"string\\\", \\\"evidence_files\\\": [\\\"string\\\"]}, \\\"error_handling\\\": {\\\"description\\\": \\\"string\\\", \\\"evidence_files\\\": [\\\"string\\\"]}, \\\"async_style\\\": {\\\"description\\\": \\\"string\\\", \\\"evidence_files\\\": [\\\"string\\\"]}, \\\"di_style\\\": {\\\"description\\\": \\\"string\\\", \\\"evidence_files\\\": [\\\"string\\\"]}, \\\"class_vs_functional\\\": {\\\"description\\\": \\\"string\\\", \\\"evidence_files\\\": [\\\"string\\\"]}, \\\"test_style\\\": {\\\"description\\\": \\\"string\\\", \\\"evidence_files\\\": [\\\"string\\\"]}, \\\"signals\\\": [{\\\"pattern\\\": \\\"string\\\", \\\"category\\\": \\\"string\\\", \\\"evidence_files\\\": [\\\"string\\\"]}], \\\"confidence\\\": \\\"high|medium|low\\\", \\\"evidence_files\\\": [\\\"string\\\"], \\\"blind_spots\\\": [\\\"string\\\"]}\",\n  \"profile\": \"a JSON object that MUST use EXACTLY the keys shown here at EVERY level — no renaming, no omissions, no extra keys — matching this nested structure (values are the types): {\\\"mode\\\": \\\"string\\\", \\\"retrieval_max_results\\\": \\\"integer\\\", \\\"retrieval_doc_char_limit\\\": \\\"integer\\\", \\\"retrieval_manifest_char_limit\\\": \\\"integer\\\", \\\"retrieval_arch_max_results\\\": \\\"integer\\\", \\\"tokens_project_identity\\\": \\\"integer\\\", \\\"tokens_architecture\\\": \\\"integer\\\", \\\"tokens_structure\\\": \\\"integer\\\", \\\"tokens_conventions\\\": \\\"integer\\\", \\\"tokens_violations\\\": \\\"integer\\\", \\\"tokens_feature_map\\\": \\\"integer\\\", \\\"tokens_important_files\\\": \\\"integer\\\", \\\"tokens_onboarding\\\": \\\"integer\\\", \\\"tokens_glossary\\\": \\\"integer\\\", \\\"tokens_risk\\\": \\\"integer\\\", \\\"tokens_auditor\\\": \\\"integer\\\", \\\"tokens_synthesizer\\\": \\\"integer\\\", \\\"concurrency_scale\\\": \\\"number\\\", \\\"retrieval_augment_rounds\\\": \\\"integer\\\"}\"\n}\n\nAGENT PURPOSE: Analyzes retrieved evidence combined with an upstream agent's output.\n\nOUTPUT SCHEMA (for 'gold'):\n{\"rules\": [{\"rule\": \"string\", \"strength\": \"strong|suspected|weak\", \"rationale\": \"string\", \"evidence_files\": [\"string\"]}], \"violations\": [{\"rule_broken\": \"string\", \"location\": \"string\", \"severity\": \"high|medium|low\"}], \"confidence\": \"high|medium|low\", \"evidence_files\": [\"string\"], \"blind_spots\": [\"string\"]}\n\nThis dataset has 5 cases total. Make EXACTLY 1 of them EDGE-CASE / NEGATIVE (failure-mode) cases; every OTHER case MUST be a normal, SUCCESSFUL case with substantive, NON-EMPTY output — never produce more than 1 empty/low-confidence case(s). The 1 edge case(s) draw on the agent's known failure modes:\n- LLM output fails JSON parsing or validation, triggering up to two repair attempts before falling back to a low-confidence empty result.\n- Retrieval service failure or empty bundle leads to a fallback response with low confidence and a blind spot note.\n- Any unexpected exception during the run method is caught and returns a fallback dict with low confidence.\n\nINPUT STRATEGY: Structured data parameters matching exact harvested schemas.\n\nALLOWED ENUM DOMAINS FOR OUTPUT FIELDS (gold must use ONLY these values):\n  \"severity\": [\"strong\", \"suspected\", \"weak\"]\n  \"confidence\": [\"high\", \"low\", \"medium\"]\n  \"rules[*].severity\": [\"strong\", \"weak\"]\n  \"violations_found[*].severity\": [\"high\", \"medium\", \"low\"]\n\nGenerate exactly 3 DISTINCT cases.",
+  "raw_content": "[]",
+  "candidates_parsed": 0,
+  "newly_accepted": 0,
+  "rejected_this_round": 0,
+  "accepted_total": 0,
+  "sample_rejection_errors": []
+}

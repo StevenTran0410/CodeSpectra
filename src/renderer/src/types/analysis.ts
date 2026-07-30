@@ -160,7 +160,7 @@ export interface SectionB {
   confidence: Confidence
   evidence_files: string[]
   blind_spots: string[]
-  mermaid_diagram?: C4DiagramData | null // undefined/null = no diagram (pre-CS-218 analysis)
+  mermaid_diagram?: C4DiagramData | null // undefined/null = no diagram (older analyses predate this field)
 }
 
 export interface SectionC {
@@ -169,7 +169,7 @@ export interface SectionC {
   confidence: Confidence
   evidence_files: string[]
   blind_spots: string[]
-  mermaid_diagram?: C4DiagramData | null // undefined/null = no diagram (pre-CS-218 analysis)
+  mermaid_diagram?: C4DiagramData | null // undefined/null = no diagram (older analyses predate this field)
 }
 
 export interface SectionD {
@@ -198,7 +198,7 @@ export interface SectionF {
   confidence: Confidence
   evidence_files: string[]
   blind_spots: string[]
-  mermaid_diagram?: C4DiagramData | null // undefined/null = no diagram (pre-CS-218 analysis)
+  mermaid_diagram?: C4DiagramData | null // undefined/null = no diagram (older analyses predate this field)
 }
 
 export interface SectionG {

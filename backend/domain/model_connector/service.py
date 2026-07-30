@@ -16,7 +16,8 @@ from .gemini.adapter import GeminiAdapter
 from .lmstudio.adapter import LMStudioAdapter
 from .ollama.adapter import OllamaAdapter
 from .openai.adapter import OpenAIAdapter
-from .types import ChatRequest, ChatResponse, ProviderCapabilities, ProviderConfig, ProviderKind
+from .reasoning import ModelInfo, classify
+from .types import ChatRequest, ChatResponse, EmbedRequest, EmbedResponse, ProviderCapabilities, ProviderConfig, ProviderKind
 
 
 class TestConnectionResult:
@@ -183,20 +184,32 @@ class ProviderConfigService:
         finally:
             await adapter.aclose()
 
-    async def list_models(self, provider_id: str) -> list[str]:
+    async def list_models(self, provider_id: str) -> list[ModelInfo]:
         config = await self._get_by_id_full(provider_id)
         adapter = _get_adapter(config)
         try:
-            return await adapter.list_models()
+            try:
+                raw_ids = await adapter.list_models()
+            except ProviderError:
+                manual = config.extra.get("manual_models")
+                if manual:
+                    raw_ids = manual
+                else:
+                    raise
+            return [
+                ModelInfo(id=model_id, reasoning_style=classify(config.kind, model_id))
+                for model_id in raw_ids
+            ]
         finally:
             await adapter.aclose()
 
     async def chat(self, request: ChatRequest) -> ChatResponse:
         """Route a chat request to the correct provider adapter.
 
-        If the provider rejects the temperature value, automatically retry once
-        with temperature=None (let the model use its built-in default).
-        This handles models like o1, o3, gpt-5 that only accept their default temp.
+        Automatically retries once, dropping a parameter the provider rejected:
+        - reasoning_effort — the model-id heuristic can't know every proxy/gateway's real
+          capabilities (a 'gpt-5'-named alias may not accept reasoning_effort at all).
+        - temperature — models like o1/o3/gpt-5 only accept their built-in default.
         """
         config = await self._get_by_id_full(request.provider_id)
         if request.model_id:
@@ -207,6 +220,14 @@ class ProviderConfigService:
                 return await adapter.chat(request)
             except ProviderError as e:
                 msg = (e.message or "").lower()
+                if request.reasoning_effort is not None and "reasoning_effort" in msg:
+                    logger.warning(
+                        "Provider %s/%s rejected reasoning_effort=%s — retrying without it",
+                        request.provider_id,
+                        config.model_id,
+                        request.reasoning_effort,
+                    )
+                    return await adapter.chat(request.model_copy(update={"reasoning_effort": None}))
                 if request.temperature is not None and "temperature" in msg:
                     logger.warning(
                         "Provider %s/%s rejected temperature=%s — retrying without temperature",
@@ -234,6 +255,43 @@ class ProviderConfigService:
                 yield token
         finally:
             await adapter.aclose()
+
+    async def embed(self, request: EmbedRequest) -> EmbedResponse:
+        """Route an embedding request to the correct provider adapter.
+
+        Only OpenAI and Gemini support embeddings; Anthropic and DeepSeek raise
+        ProviderError with a clear message.
+        """
+        config = await self._get_by_id_full(request.provider_id)
+        if request.model_id:
+            config = config.model_copy(update={"model_id": request.model_id})
+        adapter = _get_adapter(config)
+        try:
+            return await adapter.embed(request)
+        finally:
+            await adapter.aclose()
+
+    async def list_embedding_models(self, provider_id: str) -> list[str]:
+        """Embedding model ids this provider's ACTUAL endpoint serves — never a hardcoded list.
+
+        Provider kind alone doesn't guarantee embeddings: an OpenAI-compatible base_url (e.g. a
+        DeepSeek endpoint registered as kind=openai) may only do chat and 404 on /v1/embeddings. We
+        enumerate the endpoint's own /v1/models and keep only its embedding models; [] means the
+        endpoint serves none, so the UI hides it. No blind probe — that would 404-spam chat-only
+        endpoints.
+        """
+        config = await self._get_by_id_full(provider_id)
+        kind = config.kind.value if hasattr(config.kind, "value") else str(config.kind)
+        if kind not in ("openai", "gemini"):
+            return []
+        adapter = _get_adapter(config)
+        try:
+            models = await adapter.list_embedding_models()
+        except Exception:  # noqa: BLE001 — endpoint/auth error ⇒ can't enumerate ⇒ treat as no embeddings
+            models = []
+        finally:
+            await adapter.aclose()
+        return sorted(models)
 
     @staticmethod
     def _row_to_config(row) -> ProviderConfig:

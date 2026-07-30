@@ -1,0 +1,32 @@
+target_system_id: t3_reranker
+discrepancies: []
+components:
+  - id: retriever
+    role: retrieval_agent
+    model: null
+    entry_point: "test_targets.t3_reranker.components:RetrieverComponent"
+    span_match:
+      - component_name: retriever
+    constraints: []
+    upstream: []
+    downstream: [reranker]
+
+  - id: reranker
+    role: retrieval_agent
+    model: null
+    entry_point: "test_targets.t3_reranker.components:RerankerComponent"
+    span_match:
+      - component_name: reranker
+    constraints: []
+    upstream: [retriever]
+    downstream: [writer]
+
+  - id: writer
+    role: writer
+    model: fake-mini
+    entry_point: "test_targets.t3_reranker.components:WriterComponent"
+    span_match:
+      - component_name: writer
+    constraints: []
+    upstream: [reranker]
+    downstream: []

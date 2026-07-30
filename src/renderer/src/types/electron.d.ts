@@ -1,9 +1,7 @@
-// ── Job / Analysis pipeline ───────────────────────────────────────────────────
-
 export interface SectionDoneEvent {
   type?: string
   section: string
-  status: 'done' | 'error'
+  status: 'running' | 'done' | 'error'
   duration_ms?: number
   data?: unknown
   error?: string | null
@@ -29,10 +27,33 @@ export interface Job {
   started_at: string
   finished_at: string | null
 }
+export interface AEHTraceSpan {
+  id: string
+  trace_id?: string
+  parent_id?: string | null
+  component_id: string
+  name: string
+  start_time?: string
+  end_time?: string
+  latency_ms: number
+  error?: string | null
+  span_type?: string
+  tokens_in?: number | null
+  tokens_out?: number | null
+  input_json?: string | null
+  output_json?: string | null
+  attributes?: Record<string, unknown>
+  events?: Array<{ name: string; timestamp: string; attributes?: Record<string, unknown> }>
+}
 
-// ── Workspace ─────────────────────────────────────────────────────────────────
+
+export interface AEHTraceDetailResponse {
+  trace?: Record<string, unknown> | null
+  spans: AEHTraceSpan[]
+}
 
 export interface Workspace {
+
   id: string
   name: string
   description?: string
@@ -62,6 +83,7 @@ export interface LocalRepo {
   ignore_overrides: string[]
   detect_submodules: boolean
   include_tests: boolean
+  mode: 'code_analysis' | 'aeh'
   added_at: string
   last_validated_at: string
 }
@@ -265,8 +287,6 @@ export interface CyclesResponse {
   cycles: string[][]
 }
 
-// ── CS-250: function-level symbol edge drill-down (graph viewer) ─────────────
-
 export interface SymbolEdgeInfo {
   src_symbol: string
   dst_symbol: string
@@ -370,6 +390,16 @@ export interface FusedRankEntry {
   token_estimate?: number
 }
 
+export interface RerankedEntry {
+  chunk_id: string
+  rel_path: string
+  fused_score: number
+  rerank_score: number
+  fused_rank: number
+  excerpt: string
+  token_estimate?: number
+}
+
 export interface RrfFusionDebugBundle {
   snapshot_id: string
   query: string
@@ -379,7 +409,34 @@ export interface RrfFusionDebugBundle {
   module_signal: SignalRankEntry[]
   category_signal: SignalRankEntry[]
   fused: FusedRankEntry[]
+  reranked?: RerankedEntry[]
+  reranker_status?: 'ok' | 'no_gpu' | 'model_load_failed' | 'disabled'
+  final?: FusedRankEntry[]
 }
+
+export interface GpuRerankerStatus {
+  enabled: boolean
+  gpu_available: boolean
+  vram_gb: number | null
+  weights_ready: boolean
+  weights_dir: string
+  download_url: string
+  download_status: 'idle' | 'downloading' | 'done' | 'failed'
+  download_error: string | null
+}
+
+export interface LocalEmbeddingStatus {
+  enabled: boolean
+  gpu_available: boolean
+  vram_gb: number | null
+  model_id: string
+  weights_ready: boolean
+  weights_dir: string
+  download_url: string
+  download_status: 'idle' | 'downloading' | 'done' | 'failed'
+  download_error: string | null
+}
+
 
 export interface TwoStageDebugBundle {
   snapshot_id: string
@@ -454,8 +511,6 @@ export interface ValidateFolderResponse {
   size_warning_reason: string | null
 }
 
-// ── Providers ─────────────────────────────────────────────────────────────────
-
 export type ProviderKind = 'ollama' | 'lmstudio' | 'openai' | 'anthropic' | 'gemini' | 'deepseek'
 
 export interface ProviderCapabilities {
@@ -477,6 +532,20 @@ export interface ProviderConfig {
   updated_at: string
 }
 
+/** How a model's reasoning/thinking parameters must be shaped for its provider's request. */
+export type ReasoningStyle =
+  | 'none'
+  | 'effort'
+  | 'budget_tokens'
+  | 'thinking_budget'
+  | 'toggle'
+  | 'effort_toggle'
+
+export interface ModelInfo {
+  id: string
+  reasoning_style: ReasoningStyle
+}
+
 export interface CreateProviderRequest {
   kind: ProviderKind
   display_name: string
@@ -491,6 +560,7 @@ export interface UpdateProviderRequest {
   base_url?: string
   model_id?: string
   api_key?: string
+  extra?: Record<string, any>
 }
 
 declare global {
@@ -508,17 +578,29 @@ declare global {
         update: (id: string, req: UpdateProviderRequest) => Promise<ProviderConfig>
         delete: (id: string) => Promise<void>
         test: (id: string) => Promise<{ ok: boolean; message: string; warning?: string }>
-        models: (id: string) => Promise<{ models: string[] }>
+        embeddingModels: (id: string) => Promise<{ models: string[] }>
+        models: (id: string) => Promise<{ models: ModelInfo[] }>
       }
       consent: {
         checkCloud: () => Promise<{ given: boolean }>
         giveCloud: (given: boolean) => Promise<{ given: boolean }>
       }
+      gpuReranker: {
+        status: () => Promise<GpuRerankerStatus>
+        setEnabled: (enabled: boolean) => Promise<GpuRerankerStatus>
+        download: () => Promise<GpuRerankerStatus>
+      }
+      localEmbedding: {
+        status: () => Promise<LocalEmbeddingStatus>
+        setEnabled: (enabled: boolean) => Promise<LocalEmbeddingStatus>
+        download: () => Promise<LocalEmbeddingStatus>
+      }
+
       folder: {
         pick: () => Promise<string | null>
         validate: (path: string) => Promise<ValidateFolderResponse>
-        list: () => Promise<LocalRepo[]>
-        add: (path: string) => Promise<LocalRepo>
+        list: (workspaceId?: string, mode?: string) => Promise<LocalRepo[]>
+        add: (path: string, workspaceId?: string, mode?: string) => Promise<LocalRepo>
         remove: (id: string) => Promise<void>
         revalidate: (id: string) => Promise<LocalRepo>
         branches: (id: string, refresh?: boolean) => Promise<string[]>
@@ -535,7 +617,7 @@ declare global {
           }
         ) => Promise<LocalRepo>
         estimateFileCount: (id: string) => Promise<EstimateFileCountResponse>
-        cloneFromUrl: (url: string, workspaceId?: string) => Promise<LocalRepo>
+        cloneFromUrl: (url: string, workspaceId?: string, mode?: string) => Promise<LocalRepo>
       }
       sync: {
         prepare: (body: {
@@ -613,6 +695,12 @@ declare global {
           chunk_count: number
           files_indexed: number
           generated_at: string
+        }>
+        summary: (snapshotId: string) => Promise<{
+          snapshot_id: string
+          chunk_count: number
+          has_bm25_stats: boolean
+          built: boolean
         }>
         retrieve: (body: {
           snapshot_id: string
@@ -769,7 +857,673 @@ declare global {
             module: string
           }>
         }>
+        retryBackend: () => Promise<void>
+        copyToClipboard: (text: string) => Promise<void>
+        showInFolder: (targetPath: string) => Promise<void>
+      }
+      aeh: {
+        start: () => Promise<number>
+        listRuns: () => Promise<AEHRunListItem[]>
+        runDetail: (runId: string) => Promise<AEHRunDetailResponse>
+        componentEvaluations: (runId: string, componentId: string) => Promise<AEHEvaluationDetailItem[]>
+        traceDetail: (traceId: string) => Promise<AEHTraceDetailResponse>
+        providers: () => Promise<AEHProviderSummary[]>
+        rerun: (runId: string, body: { model_overrides: Record<string, string>; active_defects: string[] }) => Promise<{ run_id: string }>
+        startDiscovery: (body: {
+          repo_ref: string
+          snapshot_id: string
+          provider_id?: string | null
+          model_id?: string | null
+          backend_url?: string | null
+          backend_token?: string | null
+          reasoning_effort?: string | null
+          thinking_budget?: number | null
+        }) => Promise<{ session_id: string }>
+        listDiscoverySessions: (repoRef?: string, snapshotId?: string) => Promise<AEHDiscoverySession[]>
+        getDiscoverySession: (sessionId: string) => Promise<AEHDiscoverySession>
+        resumeDiscoverySession: (
+          sessionId: string,
+          body?: {
+            provider_id?: string | null
+            model_id?: string | null
+            reasoning_effort?: string | null
+            thinking_budget?: number | null
+          }
+        ) => Promise<{ success: boolean }>
+        listDiscoveryCandidates: (sessionId: string) => Promise<AEHDiscoveryCandidate[]>
+        updateDiscoveryCandidateVerdict: (candidateId: string, verdict: 'proposed' | 'confirmed' | 'rejected') => Promise<{ success: boolean }>
+        updateDiscoveryCandidateExcludedFiles: (candidateId: string, excludedFiles: string[]) => Promise<{ success: boolean }>
+        startExpansion: (
+          candidateId: string,
+          body: {
+            provider_id?: string | null
+            model_id?: string | null
+            reasoning_effort?: string | null
+            thinking_budget?: number | null
+            node_budget?: number
+            hop_cap?: number
+            classify_provider_id?: string | null
+            classify_model_id?: string | null
+            classify_reasoning_effort?: string | null
+            classify_thinking_budget?: number | null
+          }
+        ) => Promise<{ session_id: string }>
+        getExpansionSession: (sessionId: string) => Promise<AEHExpansionSession>
+        listExpansionSessions: (candidateId: string) => Promise<AEHExpansionSession[]>
+        getExpansionMap: (sessionId: string) => Promise<AEHSystemMap>
+        updateExpansionMap: (sessionId: string, map: AEHSystemMap) => Promise<{ success: boolean }>
+        generatePlan: (
+          sessionId: string,
+          body: {
+            provider_id?: string | null
+            model_id?: string | null
+            reasoning_effort?: string | null
+            thinking_budget?: number | null
+          }
+        ) => Promise<AEHPlanSuite>
+        getPlan: (sessionId: string) => Promise<AEHPlanSuite | null>
+        updatePlan: (sessionId: string, body: { entries: AEHPlanEntry[] }) => Promise<{ success: boolean }>
+        getPlanReport: (sessionId: string) => Promise<AEHEvaluationPlanReport | null>
+        updatePlanReport: (
+          sessionId: string,
+          body: AEHEvaluationPlanReport
+        ) => Promise<{ success: boolean }>
+        resetStage3: (
+          sessionId: string
+        ) => Promise<{ success: boolean; deleted_dataset_ids: string[] }>
+        createEvalBranch: (
+          sessionId: string,
+          baseRef: string
+        ) => Promise<{ branch_name: string; current_branch: string }>
+        restoreEvalBranch: (sessionId: string) => Promise<{ restored_branch: string }>
+        createEvalPlan: (
+          sessionId: string,
+          baseRef: string
+        ) => Promise<{ plan_path: string; plan_dir: string; files: string[] }>
+        getEvalPlan: (
+          sessionId: string
+        ) => Promise<{ plan_path: string | null; plan_dir: string | null; files: string[] }>
+        deleteEvalPlan: (sessionId: string) => Promise<{ deleted: number }>
+        listSiblingSystems: (
+          sessionId: string
+        ) => Promise<
+          Array<{
+            session_id: string
+            name: string
+            framework: string | null
+            agent_count: number | null
+            dataset_count?: number
+            runnable_cases_count?: number
+            ready: boolean
+            is_current: boolean
+            created_at?: string
+          }>
+        >
+        loadEvalResults: (sessionId: string) => Promise<{ run_id: string; status: string }>
+        getEvalRunCases: (runId: string) => Promise<{
+          run_id: string
+          status: string
+          agents: Record<string, Array<{
+            case_id: string | null
+            trace_id: string
+            input: string | null
+            result: string | null
+            expected: unknown
+            evaluations: Array<{
+              metric_name: string
+              metric_class: string
+              score: number | null
+              details: Record<string, unknown>
+            }>
+          }>>
+          agent_summaries: Record<string, { insight: string; case_count: number; avg_score: number | null }>
+        }>
+        listEvalRuns: (sessionId: string) => Promise<{
+          runs: Array<{
+            id: string
+            started_at: string
+            status: string
+            case_count: number
+            scored_count: number
+          }>
+        }>
+        judgeEvalRunCases: (
+          runId: string,
+          body: {
+            agent_id: string
+            /** Re-scores cases that already have evaluations, replacing them. */
+            force?: boolean
+            provider_id?: string | null
+            model_id?: string | null
+            reasoning_effort?: string | null
+            thinking_budget?: number | null
+          }
+        ) => Promise<{ scored: number; skipped: number }>
+        summarizeEvalRunAgent: (
+          runId: string,
+          body: {
+            agent_id: string
+            provider_id?: string | null
+            model_id?: string | null
+            reasoning_effort?: string | null
+            thinking_budget?: number | null
+          }
+        ) => Promise<{ insight: string; case_count: number; cached: boolean }>
+        generateAgentFlowMap: (
+          sessionId: string,
+          body: {
+            provider_id?: string | null
+            model_id?: string | null
+            reasoning_effort?: string | null
+            thinking_budget?: number | null
+          }
+        ) => Promise<AEHAgentFlowMap>
+        getAgentFlowMap: (sessionId: string) => Promise<AEHAgentFlowMap | null>
+        enrichAgents: (
+          sessionId: string,
+          body: {
+            provider_id?: string | null
+            model_id?: string | null
+            reasoning_effort?: string | null
+            thinking_budget?: number | null
+            depth?: string
+            agent_ids?: string[] | null
+            force_agent_ids?: string[] | null
+          }
+        ) => Promise<{ enriched_count: number; degraded_count: number; skipped_count: number }>
+        getAgentKnowledge: (sessionId: string) => Promise<AEHAgentKnowledgeRecord[]>
+        advanceSession: (
+          sessionId: string,
+          body: {
+            confirmed_candidates?: string[] | null
+            confirmed_map_session_id?: string | null
+            confirmed_plan?: boolean | null
+            provider_id?: string | null
+            model_id?: string | null
+          }
+        ) => Promise<{ pipeline_stage: string }>
+        fulfillDatasets: (
+          sessionId: string,
+          body: {
+            provider_id?: string | null
+            model_id?: string | null
+            reasoning_effort?: string | null
+            thinking_budget?: number | null
+            instructions?: Record<string, { painpoint?: string; seed_cases?: unknown[] }> | null
+            embedding_provider_id?: string | null
+            embedding_model_id?: string | null
+            use_local_embedding?: boolean
+            agent_ids?: string[] | null
+            force_agent_ids?: string[] | null
+          }
+        ) => Promise<Record<string, AEHFulfillmentGroupResult>>
+        listDatasets: (sessionId?: string) => Promise<AEHDatasetSummary[]>
+        getDatasetCases: (datasetId: string) => Promise<AEHDatasetCase[]>
+        caseVerdict: (
+          caseId: string,
+          body: {
+            verdict: 'accept' | 'edit' | 'reject'
+            input_json?: Record<string, any>
+            expected_json?: Record<string, any>
+            labels_json?: Record<string, any>
+          }
+        ) => Promise<{ success: boolean; remaining?: number; shortfall?: number }>
       }
     }
+  }
+
+  export interface AEHRunSummaryBase {
+    id: string
+    target_system_id: string
+    eval_plan_id: string | null
+    started_at: string
+    finished_at: string | null
+    status: string
+    map_path: string | null
+    active_defects: string[]
+  }
+
+  export interface AEHRunListItem extends AEHRunSummaryBase {
+    pass_rate: number
+    judge_cost: number
+  }
+
+  export interface AEHComponentAggregate {
+    total: number
+    passed: number
+  }
+
+  // Backend `role` stays `string` (not narrowed at the boundary); this union exists so ROLE_COLORS is exhaustive and a missing key is a compile error, not a silent grey "unknown" render.
+  export type AEHRole =
+    | 'orchestrator'
+    | 'retrieval_agent'
+    | 'tool'
+    | 'validator'
+    | 'writer'
+    | 'worker'
+    | 'input_guard.rule'
+    | 'input_guard.llm'
+    | 'unknown'
+
+  export interface AEHSystemMapComponent {
+    id: string
+    role: string
+    role_confidence?: number | null
+    role_source?: string | null
+    model: string | null
+    entry_point: string | null
+    entry_kind?: string | null
+    file?: string
+    constraints: Array<{ name: string; value: any; source: string }>
+    upstream: string[]
+    downstream: string[]
+  }
+
+  export interface AEHSystemMap {
+    target_system_id: string
+    framework?: string | null
+    discrepancies: string[]
+    components: AEHSystemMapComponent[]
+  }
+
+  export interface AEHTraceSpan {
+    id: string
+    trace_id?: string
+    parent_id?: string | null
+    component_id: string
+    name: string
+    start_time?: string
+    end_time?: string
+    latency_ms: number
+    error?: string | null
+    attributes?: Record<string, unknown>
+    events?: Array<{ name: string; timestamp: string; attributes?: Record<string, unknown> }>
+  }
+
+  export interface AEHTraceDetailResponse {
+    trace?: Record<string, unknown> | null
+    spans: AEHTraceSpan[]
+  }
+
+
+  export interface AEHAgentFlow {
+    id: string
+    role: string
+    label: string
+    summary: string
+    component_ids: string[]
+    upstream_agents: string[]
+    downstream_agents: string[]
+    parent_agent: string | null
+  }
+
+  export interface AEHAgentFlowMap {
+    target_system_id: string
+    agents: AEHAgentFlow[]
+    entry_agent_ids: string[]
+    unassigned_component_ids: string[]
+    flow_component_ids: string[]
+  }
+
+  export interface AEHRunDetailResponse extends AEHRunSummaryBase {
+    system_map: AEHSystemMap
+    component_aggregates: Record<string, AEHComponentAggregate>
+    overall_pass_rate: number
+    target?: string | null
+    suite_path?: string | null
+    parent_run_id?: string | null
+    model_overrides?: Record<string, string>
+  }
+
+  export interface AEHEvaluationDetailItem {
+    id: string
+    metric_name: string
+    metric_class: string
+    score: number | null
+    passed: boolean | null
+    details: Record<string, any>
+    evaluator: string | null
+    cost_tokens: number | null
+    trace_id: string | null
+    span_id: string | null
+    root_input: string | null
+    final_output: string | null
+    trace_tokens: number | null
+    trace_latency: number | null
+  }
+
+  export interface AEHTraceSpan {
+    id: string
+    trace_id: string
+    parent_span_id: string | null
+    component_id: string | null
+    span_type: string
+    input_json: string | null
+    output_json: string | null
+    model: string | null
+    tokens_in: number | null
+    tokens_out: number | null
+    latency_ms: number | null
+    started_at: string
+    details_json: string
+  }
+
+  export interface AEHTraceDetailResponse {
+    trace: {
+      id: string
+      run_id: string
+      dataset_case_id: string | null
+      root_input: string
+      final_output: string | null
+      total_tokens: number
+      total_latency_ms: number
+    } | null
+    spans: AEHTraceSpan[]
+  }
+
+  export interface AEHProviderSummary {
+    provider_id: string
+    display_name: string
+    model_id: string | null
+  }
+
+  export interface AEHSessionBase<Status extends string> {
+    id: string
+    snapshot_id: string
+    status: Status
+    error: string | null
+    created_at: string
+    finished_at: string | null
+  }
+
+  export interface AEHDiscoverySession
+    extends AEHSessionBase<'running' | 'completed' | 'failed' | 'paused_rate_limit'> {
+    repo_ref: string
+    pause_info: { reason: string; provider_id: string; model_id: string | null } | null
+    pipeline_stage: string
+    analysis_context: 'available' | 'unavailable'
+  }
+
+  export interface AEHDiscoveryCandidate {
+    id: string
+    session_id: string
+    name: string
+    frameworks: string[]
+    entry_points: string[]
+    evidence: any[]
+    confidence: 'high' | 'medium' | 'low'
+    needs_human: boolean
+    verdict: 'proposed' | 'confirmed' | 'rejected'
+    community_id: string | null
+    cluster_files: string[]
+    hub_paths: string[]
+    wiring_block: {
+      nodes: Array<{ alias: string; callee_name: string; source_hint_file: string; entry_kind: string; owner_class: string | null; framework?: string }>
+      edges: Array<{ src: string; dst: string }>
+      framework: string
+      source: 'static' | 'llm_fallback'
+    } | null
+    excluded_files: string[]
+    matched_files?: string[]
+    file_provenance?: Record<string, string>
+    system_type?: string | null
+    system_type_signals?: {
+      kind?: 'agent' | 'system'
+      confidence?: 'high' | 'medium' | 'low'
+      capability_tags?: string[]
+      [k: string]: unknown
+    }
+  }
+
+  export interface AEHExpansionAcceptedItem {
+    file: string
+    role_hint: string | null
+    key_symbols: string[]
+    follow: boolean
+  }
+
+  export interface AEHCitation {
+    file: string
+    line: number
+    symbol: string
+  }
+
+  export interface AEHConsumerRef {
+    name: string
+    file: string
+    line: number
+  }
+
+  export interface AEHFailureModeRef {
+    description: string
+    file: string
+    line: number
+  }
+
+  export interface AEHContextBuilderRef {
+    name: string
+    file: string
+    line: number
+    builds_kwarg: string
+  }
+
+  export interface AEHLocationInfo {
+    file: string
+    line_start: number
+    line_end: number
+    entry_method: string
+    entry_line: number
+  }
+
+  export interface AEHComponentRef {
+    id: string
+    role: string
+    file: string
+    line: number
+  }
+
+  export interface AEHContractArg {
+    kwarg: string
+    source_kind: string
+    type_hint: string
+    example: string
+  }
+
+  export interface AEHPromptSiteRef {
+    file: string
+    line: number
+    kind: string
+    snippet: string
+  }
+
+  /** Mirrors agent_eval_harness/discovery/agent_knowledge.py::AgentKnowledge.to_json(). */
+  export interface AEHAgentKnowledgeContent {
+    location: AEHLocationInfo | null
+    components: AEHComponentRef[]
+    input_contract: AEHContractArg[]
+    prompt_sites: AEHPromptSiteRef[]
+    functionality: string
+    functionality_citations: AEHCitation[]
+    context_builders: AEHContextBuilderRef[]
+    upstream_consumers: AEHConsumerRef[]
+    downstream_consumers: AEHConsumerRef[]
+    failure_modes: AEHFailureModeRef[]
+    degraded: boolean
+    confidence: 'low' | 'medium' | 'high'
+    degraded_reason: string | null
+    needs_human: string[]
+    evidence_hash: string
+    query_count: number
+    generated_at: string
+  }
+
+  /** DB pointer row + parsed sidecar JSON, from GET .../agent-knowledge. */
+  export interface AEHAgentKnowledgeRecord {
+    session_id: string
+    agent_id: string
+    md_path: string
+    json_path: string
+    evidence_hash: string
+    confidence: 'low' | 'medium' | 'high'
+    query_count: number
+    generated_at: string
+    content: AEHAgentKnowledgeContent | null
+  }
+
+  export interface AEHExpansionSession extends AEHSessionBase<'running' | 'completed' | 'failed'> {
+    candidate_id: string
+    map_path: string | null
+    accepted: AEHExpansionAcceptedItem[]
+    boundary: string[]
+    accepted_edges: { src: string; dst: string }[]
+    stop_reason: string | null
+    plan_path: string | null
+    agent_flows_path: string | null
+    plan_report_path: string | null
+    eval_branch_name?: string | null
+    eval_plan_md_path?: string | null
+    eval_run_id?: string | null
+  }
+
+  export interface AEHDatasetRef {
+    ref?: string | null
+    required?: Record<string, any> | null
+    waived?: string | null
+  }
+
+  export interface AEHPlanEntry {
+    id: string
+    component: string
+    metric: string
+    metric_class: 'assertion' | 'classifier' | 'llm_judge'
+    dataset?: AEHDatasetRef | null
+    params?: Record<string, any>
+    rationale?: string
+    provenance?: 'rule' | 'human_added' | 'llm_suggested'
+    status?: string | null
+    agent_id?: string | null
+  }
+
+  export interface AEHPlanSuite {
+    entries: AEHPlanEntry[]
+  }
+
+  export interface AEHAgentDataProfile {
+    agent_id: string
+    input_data: string
+    output_data: string
+    internal_tools: string[]
+    failure_modes: string[]
+    consistency_notes: string[]
+  }
+
+  export interface AEHEvaluationGate {
+    id: string
+    agent_id: string
+    component: string
+    location: 'input' | 'output' | 'handoff' | 'internal_tool'
+    property: string
+    metric: string
+    metric_class: 'assertion' | 'classifier' | 'llm_judge'
+    toolkit: 'assertion' | 'classifier' | 'ragas' | 'deepeval'
+    params?: Record<string, any>
+    dataset_kind?: string | null
+    rationale?: string
+    provenance?: 'rule' | 'human_added' | 'llm_suggested'
+    status?: string | null
+  }
+
+  export interface AEHKwargSpec {
+    name: string
+    annotation: string | null
+    default_repr: string | null
+    required: boolean
+  }
+
+  export interface AEHInvocationContract {
+    callable: string
+    method: string
+    kwargs: AEHKwargSpec[]
+    constructor_deps: string[]
+    invocation_mode: 'pipeline_entry' | 'per_agent_route' | 'in_harness' | 'unsupported'
+    route: string | null
+    case_binding: Record<string, string>
+    source: 'ast' | 'llm' | 'human'
+    citations: string[]
+  }
+
+  export interface AEHOutputContract {
+    json_schema: Record<string, any> | null
+    schema_source: string | null
+    fallback_literal: Record<string, any> | null
+    fallback_source: string | null
+    validated_in_target: boolean
+    schema_enum_values: Record<string, string[]>
+  }
+
+  export interface AEHObservabilityContract {
+    has_tools: boolean
+    has_separable_context: boolean | null
+    context_location: string | null
+    input_kind: 'query' | 'structured' | 'unknown'
+    is_multi_turn: boolean
+    spans_have_usage: boolean
+    llm_call_budget: number | null
+    llm_fields: string[]
+  }
+
+  export interface AEHEvaluationContract {
+    agent_id: string
+    component_id: string
+    invocation: AEHInvocationContract | null
+    output: AEHOutputContract | null
+    observability: AEHObservabilityContract
+    constants: Record<string, number>
+    connect_edges: { src: string; dst: string }[]
+    needs_human: string[]
+    field_downstream_consumers: Record<string, string[]>
+  }
+
+  export interface AEHAgentPlanReport {
+    agent_id: string
+    role: string
+    label: string
+    data_profile: AEHAgentDataProfile | null
+    contract: AEHEvaluationContract | null
+    gates: AEHEvaluationGate[]
+    needs_human: string[]
+    eval_enabled: boolean
+  }
+
+  export interface AEHEvaluationPlanReport {
+    target_system_id: string
+    agents: AEHAgentPlanReport[]
+    advisory_notes: string[]
+  }
+
+  export interface AEHDatasetSummary {
+    dataset_id: string
+    total_count: number
+    synthetic_count: number
+    handwritten_count: number
+    reviewed_count: number
+    kind: string | null
+    min_cases: number
+    review_complete: boolean
+  }
+
+  export interface AEHDatasetCase {
+    id: string
+    dataset_id: string
+    input_json: string
+    expected_json: string | null
+    labels_json: string | null
+    provenance: 'synthetic' | 'handwritten' | 'generated+reviewed'
+  }
+
+  export interface AEHFulfillmentGroupResult {
+    status: 'fulfilled' | 'failed' | 'needs_human' | 'skipped'
+    dataset_id?: string
+    reason?: string
   }
 }

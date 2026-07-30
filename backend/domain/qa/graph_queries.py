@@ -356,3 +356,128 @@ async def get_impact_cone(
             break
 
     return ImpactResult(seed_file=file_path, impacted_files=discovered, hop_map=hop_map)
+
+
+@dataclass
+class SymbolImpactResult:
+    """Result of symbol-granular impact analysis."""
+
+    seed_symbol: str
+    impacted_symbols: list[str]
+    hop_map: dict[str, int]
+
+
+async def get_symbol_impact_cone(
+    snapshot_id: str,
+    symbol_fqn: str,
+    hops: int = 3,
+    min_confidence: float = 0.7,
+    edge_kinds: list[str] | None = None,
+) -> SymbolImpactResult:
+    """Symbol-granular reverse transitive closure over symbol_graph_edges.
+
+    Discovers all symbols that depend on symbol_fqn (callers, subclasses, instantiators).
+    By default traverses all edge kinds reversed (calls, extends, instantiates).
+    """
+    db = get_db()
+    async with db.execute(
+        """SELECT src_symbol, dst_symbol, edge_type, confidence_score
+           FROM symbol_graph_edges
+           WHERE snapshot_id=? AND confidence_score>=?""",
+        (snapshot_id, min_confidence),
+    ) as cur:
+        rows = await cur.fetchall()
+
+    if edge_kinds:
+        kinds_set = set(edge_kinds)
+        rows = [r for r in rows if r["edge_type"] in kinds_set]
+
+    if not rows:
+        return SymbolImpactResult(seed_symbol=symbol_fqn, impacted_symbols=[], hop_map={})
+
+    # Reverse adjacency (dst -> its dependents): directed reverse-BFS finds only true dependents (callers/subclasses/instantiators), never what the seed itself depends on.
+    rev_adj: dict[str, list[str]] = {}
+    for r in rows:
+        rev_adj.setdefault(r["dst_symbol"], []).append(r["src_symbol"])
+
+    clamped_hops = min(max(hops, 1), 6)
+    hop_map: dict[str, int] = {}
+    visited: set[str] = {symbol_fqn}
+    frontier: list[str] = [symbol_fqn]
+    for hop_num in range(1, clamped_hops + 1):
+        next_frontier: list[str] = []
+        for node in frontier:
+            for dep in rev_adj.get(node, []):
+                if dep not in visited:
+                    visited.add(dep)
+                    hop_map[dep] = hop_num
+                    next_frontier.append(dep)
+        frontier = next_frontier
+        if not frontier or len(visited) > 500:
+            break
+
+    return SymbolImpactResult(seed_symbol=symbol_fqn, impacted_symbols=list(hop_map.keys()), hop_map=hop_map)
+
+
+async def find_symbol_path(
+    snapshot_id: str,
+    start_fqn: str,
+    target_fqn: str,
+    max_hops: int = 6,
+    high_confidence_only: bool = True,
+) -> list[SymbolHop] | None:
+    """Find an ordered connecting path of SymbolHop edges from start_fqn to target_fqn.
+
+    Forward BFS over symbol_graph_edges. Returns ordered list of SymbolHop objects,
+    or None if target_fqn is unreachable within max_hops.
+    """
+    if start_fqn == target_fqn:
+        return []
+
+    min_score = 0.7 if high_confidence_only else 0.0
+    db = get_db()
+    async with db.execute(
+        """SELECT src_symbol, dst_symbol, edge_type, confidence, confidence_score, evidence_lines
+           FROM symbol_graph_edges
+           WHERE snapshot_id=? AND confidence_score>=?""",
+        (snapshot_id, min_score),
+    ) as cur:
+        rows = await cur.fetchall()
+
+    adj: dict[str, list[SymbolHop]] = {}
+    for r in rows:
+        lines = []
+        if r["evidence_lines"]:
+            try:
+                lines = json.loads(r["evidence_lines"])
+            except Exception:
+                logger.warning("find_symbol_path: bad evidence_lines JSON for %s->%s", r["src_symbol"], r["dst_symbol"])
+        hop = SymbolHop(
+            src_symbol=r["src_symbol"],
+            dst_symbol=r["dst_symbol"],
+            edge_type=r["edge_type"],
+            confidence=r["confidence"],
+            evidence_lines=lines,
+            confidence_score=r["confidence_score"],
+        )
+        adj.setdefault(r["src_symbol"], []).append(hop)
+
+    visited: set[str] = {start_fqn}
+    frontier: list[tuple[str, list[SymbolHop]]] = [(start_fqn, [])]
+
+    clamped_hops = min(max(max_hops, 1), 10)
+    for _step in range(clamped_hops):
+        next_frontier: list[tuple[str, list[SymbolHop]]] = []
+        for curr_symbol, path in frontier:
+            for hop in adj.get(curr_symbol, []):
+                next_path = path + [hop]
+                if hop.dst_symbol == target_fqn:
+                    return next_path
+                if hop.dst_symbol not in visited:
+                    visited.add(hop.dst_symbol)
+                    next_frontier.append((hop.dst_symbol, next_path))
+        frontier = next_frontier
+        if not frontier:
+            break
+
+    return None

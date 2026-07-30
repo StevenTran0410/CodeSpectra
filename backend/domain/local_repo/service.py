@@ -163,6 +163,7 @@ def _row_to_model(row) -> LocalRepo:
         ignore_overrides=ignore_overrides,
         detect_submodules=bool(row["detect_submodules"]),
         include_tests=bool(row["include_tests"]) if "include_tests" in row.keys() else False,
+        mode=row["mode"] if "mode" in row.keys() else "code_analysis",
         added_at=row["added_at"],
         last_validated_at=row["last_validated_at"],
     )
@@ -236,11 +237,11 @@ class LocalRepoService:
 
         db = get_db()
         async with db.execute(
-            "SELECT 1 FROM local_repos WHERE path = ? AND workspace_id IS ?",
-            (normalized_path, req.workspace_id),
+            "SELECT 1 FROM local_repos WHERE path = ? AND workspace_id IS ? AND mode = ?",
+            (normalized_path, req.workspace_id, req.mode),
         ) as cur:
             if await cur.fetchone():
-                raise ConflictError(f"Folder '{normalized_path}' is already added to this workspace")
+                raise ConflictError(f"Folder '{normalized_path}' is already added to this workspace in this mode")
 
         repo_id = new_id()
         now = utc_now_iso()
@@ -250,8 +251,8 @@ class LocalRepoService:
                (id, workspace_id, path, name, source_type, is_git_repo, git_branch,
                 git_head_hash, git_remote_url, has_size_warning, selected_branch,
                 sync_mode, pinned_ref, ignore_overrides, detect_submodules,
-                added_at, last_validated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                include_tests, mode, added_at, last_validated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 repo_id,
                 req.workspace_id,
@@ -268,6 +269,8 @@ class LocalRepoService:
                 None,
                 "[]",
                 1,
+                1 if req.mode == "aeh" else 0,
+                req.mode,
                 now,
                 now,
             ),
@@ -278,17 +281,30 @@ class LocalRepoService:
         row = await self._fetch_row(repo_id)
         return _row_to_model(row)
 
-    async def list_all(self, workspace_id: str | None = None) -> list[LocalRepo]:
+    async def list_all(
+        self,
+        workspace_id: str | None = None,
+        mode: str | None = None,
+    ) -> list[LocalRepo]:
         db = get_db()
-        if workspace_id:
-            async with db.execute(
-                "SELECT * FROM local_repos WHERE workspace_id = ? ORDER BY added_at ASC",
-                (workspace_id,),
-            ) as cur:
-                rows = await cur.fetchall()
-        else:
-            async with db.execute("SELECT * FROM local_repos ORDER BY added_at ASC") as cur:
-                rows = await cur.fetchall()
+        sql = "SELECT * FROM local_repos"
+        params = []
+        conditions = []
+
+        if workspace_id is not None:
+            conditions.append("workspace_id = ?")
+            params.append(workspace_id)
+        if mode is not None:
+            conditions.append("mode = ?")
+            params.append(mode)
+
+        if conditions:
+            sql += " WHERE " + " AND ".join(conditions)
+
+        sql += " ORDER BY added_at ASC"
+
+        async with db.execute(sql, tuple(params)) as cur:
+            rows = await cur.fetchall()
         return [_row_to_model(r) for r in rows]
 
     async def get_by_id(self, repo_id: str) -> LocalRepo:
@@ -300,11 +316,19 @@ class LocalRepoService:
         repo = await self.get_by_id(repo_id)
         await delete_repo_artifacts(repo_id)
 
-        # If this path is inside CodeSpectra-managed clone root, delete it from disk first.
-        # For managed clones, deletion is strict to avoid silent leftovers causing clone conflicts.
+        # A path can be shared by multiple rows (e.g. Code Analysis + AEH); only delete the folder once no other row references it.
+        async with db.execute(
+            "SELECT 1 FROM local_repos WHERE path = ? AND id != ?",
+            (repo.path, repo_id),
+        ) as cur:
+            shared_by_other_repo = await cur.fetchone() is not None
+
+        # If this path is inside CodeSpectra's managed clone root, delete it strictly first to avoid silent leftovers causing clone conflicts.
         managed_root = Path.home() / "CodeSpectra" / "repos"
         repo_path = Path(repo.path)
-        if _is_under_path(repo_path, managed_root):
+        if shared_by_other_repo:
+            logger.info(f"Skipping folder delete for {repo_path} — still referenced by another repo entry")
+        elif _is_under_path(repo_path, managed_root):
             _remove_tree_strict(repo_path)
             logger.info(f"Deleted managed clone folder: {repo_path}")
 
@@ -450,13 +474,20 @@ class LocalRepoService:
                 if remote and remote.rstrip("/") == req.url.rstrip("/"):
                     logger.info(f"Destination already contains same repo, reusing: {normalized_dest_path}")
                     try:
-                        return await self.add(AddLocalRepoRequest(path=normalized_dest_path, workspace_id=req.workspace_id))
+                        # mode must be threaded through here too: this exact path fires when the same URL is re-cloned under a different mode, and without req.mode it always registered as 'code_analysis' regardless of what was requested.
+                        return await self.add(
+                            AddLocalRepoRequest(
+                                path=normalized_dest_path,
+                                workspace_id=req.workspace_id,
+                                mode=req.mode,
+                            )
+                        )
                     except ConflictError:
-                        # Already registered in DB for this workspace, return existing row
+                        # Already registered in DB for this exact (path, workspace, mode) — return existing row
                         db = get_db()
                         async with db.execute(
-                            "SELECT id FROM local_repos WHERE path = ? AND workspace_id IS ?",
-                            (normalized_dest_path, req.workspace_id),
+                            "SELECT id FROM local_repos WHERE path = ? AND workspace_id IS ? AND mode = ?",
+                            (normalized_dest_path, req.workspace_id, req.mode),
                         ) as cur:
                             row = await cur.fetchone()
                         if row:
@@ -494,7 +525,7 @@ class LocalRepoService:
 
         logger.info(f"Cloned '{req.url}' → {normalized_dest_path}")
         return await self.add(
-            AddLocalRepoRequest(path=normalized_dest_path, workspace_id=req.workspace_id),
+            AddLocalRepoRequest(path=normalized_dest_path, workspace_id=req.workspace_id, mode=req.mode),
             source_type=_detect_source_type(req.url),
         )
 

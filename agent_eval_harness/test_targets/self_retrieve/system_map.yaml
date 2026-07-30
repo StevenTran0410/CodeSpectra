@@ -1,0 +1,20 @@
+target_system_id: self_retrieve
+discrepancies: []
+components:
+  - id: annotation_tier
+    role: retrieval_agent
+    model: null
+    entry_point: "test_targets.self_retrieve.agents:AnnotationTierAgent"
+    span_match: []
+    constraints: []
+    upstream: []
+    downstream: []
+
+  - id: usage_tier
+    role: retrieval_agent
+    model: null
+    entry_point: "test_targets.self_retrieve.agents:UsageTierAgent"
+    span_match: []
+    constraints: []
+    upstream: []
+    downstream: []

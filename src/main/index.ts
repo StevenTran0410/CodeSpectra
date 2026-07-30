@@ -18,11 +18,15 @@ import { startPythonServer, stopPythonServer } from './infrastructure/python-ser
 import { registerWorkspaceHandlers } from './api/workspace.api'
 import { registerProviderHandlers } from './api/provider.api'
 import { registerConsentHandlers } from './api/consent.api'
+import { registerGpuRerankerHandlers } from './api/gpuReranker.api'
+import { registerLocalEmbeddingHandlers } from './api/localEmbedding.api'
 import { registerFolderHandlers } from './api/folder.api'
 import { registerJobHandlers } from './api/job.api'
 import { registerAppHandlers } from './api/app.api'
 import { registerQAHandlers } from './api/qa.api'
 import { registerImpactHandlers } from './api/impact.api'
+import { registerAEHHandlers } from './api/aeh.api'
+import { getAEHProcessManager } from './infrastructure/aeh-server/server'
 import { logger } from './shared/logger'
 
 app.whenReady().then(async () => {
@@ -40,10 +44,13 @@ app.whenReady().then(async () => {
     registerWorkspaceHandlers(client)
     registerProviderHandlers(client)
     registerConsentHandlers(client)
+    registerGpuRerankerHandlers(client)
+    registerLocalEmbeddingHandlers(client)
     registerFolderHandlers(client)
     registerJobHandlers(client)
     registerQAHandlers(client)
     registerImpactHandlers(client)
+    registerAEHHandlers()
 
     createMainWindow()
     logger.info('Startup complete')
@@ -64,9 +71,11 @@ app.whenReady().then(async () => {
 
 app.on('window-all-closed', () => {
   stopPythonServer()
+  getAEHProcessManager().stop()
   if (process.platform !== 'darwin') app.quit()
 })
 
 app.on('before-quit', () => {
   stopPythonServer()
+  getAEHProcessManager().stop()
 })

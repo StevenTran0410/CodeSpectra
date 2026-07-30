@@ -54,7 +54,7 @@
   html:not(.dark) body { color: #111827; }
 
   /* gray-* text — dark-first design uses gray-100 as primary, gray-400 as muted */
-  /* Verified CS-230: contrast ratio ≥7:1 */
+  /* Verified: contrast ratio >=7:1 */
   html:not(.dark) .text-gray-100 { color: #111827; }
   html:not(.dark) .text-gray-200 { color: #1f2937; }
   html:not(.dark) .text-gray-300 { color: #374151; }
@@ -297,5 +297,33 @@
 
   .screen-subtitle {
     @apply text-sm text-gray-400 mt-1;
+  }
+
+  .glass {
+    background: rgba(17, 24, 39, 0.7);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+  }
+
+  html:not(.dark) .glass {
+    background: rgba(255, 255, 255, 0.7);
+    border-color: rgba(0, 0, 0, 0.08);
+  }
+
+  .glass-hover {
+    transition: all 0.2s ease-in-out;
+  }
+  .glass-hover:hover {
+    background: rgba(26, 36, 57, 0.85);
+    border-color: rgba(99, 102, 241, 0.25);
+    box-shadow: 0 0 20px rgba(99, 102, 241, 0.1);
+    transform: translateY(-2px);
+  }
+
+  html:not(.dark) .glass-hover:hover {
+    background: rgba(255, 255, 255, 0.95);
+    border-color: rgba(99, 102, 241, 0.4);
+    box-shadow: 0 0 20px rgba(99, 102, 241, 0.08);
   }
 }

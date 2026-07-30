@@ -8,6 +8,7 @@ import {
   MarkerType,
   type Node,
   type Edge,
+  type NodeChange,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import dagre from '@dagrejs/dagre'
@@ -215,24 +216,12 @@ interface ForceNode extends d3force.SimulationNodeDatum {
   communityId: number
 }
 
-/**
- * Force-directed layout with community clustering (Neo4j-Browser style): nodes
- * repel each other and are pulled along edges, PLUS an extra custom force that
- * pulls every node toward its own community's centroid each tick. That cluster
- * force is what actually produces visually distinct blobs — plain repulsion +
- * links alone (no cluster force) just spreads everything out evenly with no
- * separation between communities, which isn't what we want here.
- *
- * Replaces an earlier single-ring layout that was far too literal a reading of
- * "arrange in a circle" — a real force simulation is what actually looks like
- * the reference (organic clusters, not one ordered ring).
- */
+/** Force-directed layout with community clustering: one differential-collision rule gives tight same-cluster packing and wide gaps between clusters, instead of a separate repulsion force fighting for the same job. */
 function applyForceClusterLayout(nodes: Node[], edges: Edge[]): Node[] {
   const n = nodes.length
   if (n === 0) return nodes
 
-  // Seed positions on a circle so the simulation starts from a reasonable
-  // spread instead of every node collapsing onto the origin.
+  // Seed positions on a circle so the simulation doesn't start with every node at the origin.
   const seedRadius = Math.max(300, n * 4)
   const forceNodes: ForceNode[] = nodes.map((node, i) => {
     const angle = (2 * Math.PI * i) / n
@@ -249,26 +238,35 @@ function applyForceClusterLayout(nodes: Node[], edges: Edge[]): Node[] {
     .filter((e) => nodeById.has(e.source) && nodeById.has(e.target))
     .map((e) => ({ source: e.source, target: e.target }))
 
-  // Community sizes, computed once -- singleton/tiny communities (1-2 nodes)
-  // get a much weaker cluster pull below, since "pull toward your own
-  // centroid" is meaningless for a lone node and was previously the reason
-  // small communities drifted away with nothing bounding them.
-  const communitySize = new Map<number, number>()
-  for (const fn of forceNodes) {
-    communitySize.set(fn.communityId, (communitySize.get(fn.communityId) ?? 0) + 1)
+  // Padding sized for this app's ~160x36 node boxes: same-cluster pairs get just enough
+  // room to avoid label overlap, different-cluster pairs get a much wider gap.
+  const SAME_CLUSTER_PADDING = 100
+  const DIFF_CLUSTER_PADDING = 230
+
+  // Brute-force O(n^2) pairwise collision check — fine at this app's node-count scale;
+  // a quadtree-accelerated version only pays off on much larger graphs.
+  function differentialCollide(alpha: number): void {
+    for (let i = 0; i < forceNodes.length; i++) {
+      const a = forceNodes[i]
+      for (let j = i + 1; j < forceNodes.length; j++) {
+        const b = forceNodes[j]
+        const dx = (b.x ?? 0) - (a.x ?? 0)
+        const dy = (b.y ?? 0) - (a.y ?? 0)
+        const dist = Math.sqrt(dx * dx + dy * dy) || 0.01
+        const minDist = a.communityId === b.communityId ? SAME_CLUSTER_PADDING : DIFF_CLUSTER_PADDING
+        if (dist >= minDist) continue
+        const push = ((minDist - dist) / dist) * alpha * 0.5
+        const ox = dx * push
+        const oy = dy * push
+        a.vx = (a.vx ?? 0) - ox
+        a.vy = (a.vy ?? 0) - oy
+        b.vx = (b.vx ?? 0) + ox
+        b.vy = (b.vy ?? 0) + oy
+      }
+    }
   }
 
-  // Minimum desired distance between two DIFFERENT communities' centroids.
-  // This -- not raw node-level repulsion -- is what actually keeps clusters
-  // visually distinct. A previous version relied on generic charge + a global
-  // gravity force fighting each other, which either flung small clusters away
-  // (gravity too weak) or crushed everything into one ball (gravity too
-  // strong relative to charge) -- there was never a force that specifically
-  // said "different clusters should stay apart," only "things in general
-  // repel" vs "things in general are pulled to the center."
-  const MIN_CLUSTER_SEPARATION = 260
-
-  function clusterForce(alpha: number): void {
+  function clusterCohesion(alpha: number): void {
     const centroids = new Map<number, { x: number; y: number; count: number }>()
     for (const fn of forceNodes) {
       const c = centroids.get(fn.communityId) ?? { x: 0, y: 0, count: 0 }
@@ -277,80 +275,38 @@ function applyForceClusterLayout(nodes: Node[], edges: Edge[]): Node[] {
       c.count += 1
       centroids.set(fn.communityId, c)
     }
-    const centroidList = Array.from(centroids.entries()).map(([id, c]) => ({
-      id,
-      x: c.x / c.count,
-      y: c.y / c.count,
-    }))
-
-    // 1. Cohesion: pull each node toward its own community's centroid.
     for (const fn of forceNodes) {
       const c = centroids.get(fn.communityId)
-      if (!c || c.count === 0) continue
-      const size = communitySize.get(fn.communityId) ?? 1
-      // Bigger communities pull together more strongly (denser, more cohesive
-      // blob); singletons/pairs barely self-pull (there's nothing to cohere to).
-      const strength = size <= 2 ? 0.02 : 0.12
-      fn.vx = (fn.vx ?? 0) + (c.x / c.count - (fn.x ?? 0)) * alpha * strength
-      fn.vy = (fn.vy ?? 0) + (c.y / c.count - (fn.y ?? 0)) * alpha * strength
-    }
-
-    // 2. Separation: push two communities' centroids apart whenever they're
-    // closer than MIN_CLUSTER_SEPARATION, applied to every node in both
-    // communities (moves each cluster as a whole, not node-by-node). This is
-    // the piece that actually produces visible gaps between distinct blobs.
-    for (let i = 0; i < centroidList.length; i++) {
-      for (let j = i + 1; j < centroidList.length; j++) {
-        const a = centroidList[i]
-        const b = centroidList[j]
-        const dx = b.x - a.x
-        const dy = b.y - a.y
-        const dist = Math.sqrt(dx * dx + dy * dy) || 1
-        if (dist >= MIN_CLUSTER_SEPARATION) continue
-        const push = ((MIN_CLUSTER_SEPARATION - dist) / MIN_CLUSTER_SEPARATION) * alpha * 0.5
-        const ux = dx / dist
-        const uy = dy / dist
-        for (const fn of forceNodes) {
-          if (fn.communityId === a.id) {
-            fn.vx = (fn.vx ?? 0) - ux * push
-            fn.vy = (fn.vy ?? 0) - uy * push
-          } else if (fn.communityId === b.id) {
-            fn.vx = (fn.vx ?? 0) + ux * push
-            fn.vy = (fn.vy ?? 0) + uy * push
-          }
-        }
-      }
+      if (!c || c.count <= 2) continue // singleton/pair communities: nothing to cohere to
+      fn.vx = (fn.vx ?? 0) + (c.x / c.count - (fn.x ?? 0)) * alpha * 0.1
+      fn.vy = (fn.vy ?? 0) + (c.y / c.count - (fn.y ?? 0)) * alpha * 0.1
     }
   }
 
   const simulation = d3force
     .forceSimulation(forceNodes)
-    .force('charge', d3force.forceManyBody().strength(-60))
+    // No generic repulsion — differential collision below already does all the separation work.
     .force(
       'link',
       d3force
         .forceLink<ForceNode, { source: string; target: string }>(forceLinks)
         .id((d) => d.id)
         .distance(70)
-        .strength(0.35)
+        .strength(0.3)
     )
-    // Minimum spacing between node centers so labels never overlap within a
-    // cluster. Radius approximates the node's 160x36 bounding box (half-
-    // diagonal ~82) plus a small gap.
-    .force('collide', d3force.forceCollide(95))
-    // Very weak per-node gravity -- just enough of a safety net to stop a
-    // fully-disconnected node from sailing off to infinity, not strong enough
-    // to compete with cluster separation above (that was the overcorrection:
-    // 0.025 was strong enough to crush every cluster into the same point).
+    // Very weak per-node gravity — just a safety net against disconnected nodes drifting off.
     .force('gravityX', d3force.forceX(0).strength(0.004))
     .force('gravityY', d3force.forceY(0).strength(0.004))
+    .velocityDecay(0.45) // dampens oscillation for a more stable settled layout
     .stop()
 
-  // Run synchronously to a settled state (no live animation needed — React Flow
-  // just needs final positions), interleaving our custom cluster force each tick.
+  // Run synchronously to a settled state — React Flow only needs final positions. Multiple
+  // collision passes per tick are needed to fully resolve overlaps in a dense graph.
   for (let tick = 0; tick < 300; tick++) {
     simulation.tick()
-    clusterForce(simulation.alpha())
+    const alpha = simulation.alpha()
+    clusterCohesion(alpha)
+    for (let pass = 0; pass < 3; pass++) differentialCollide(alpha)
   }
 
   const positionById = new Map(forceNodes.map((fn) => [fn.id, { x: fn.x ?? 0, y: fn.y ?? 0 }]))
@@ -410,14 +366,13 @@ function LeftPanel({
 
   const blastRadiusFiles = neighborData?.nodes.filter((n) => n !== selectedNode) ?? []
 
-  // Centrality score, computed client-side from already-loaded edges using the
-  // same formula as the backend's _compute_scores_python: indegree*3 + outdegree.
+  // Centrality score, computed client-side using the same formula as the backend's
+  // _compute_scores_python: indegree*3 + outdegree.
   const indegree = incomingEdges.length
   const outdegree = outgoingEdges.length
   const centralityScore = indegree * 3 + outdegree
 
-  // Cross-file function calls only (drop same-file self-references, which are
-  // noise for "who else does this file talk to").
+  // Cross-file function calls only — same-file self-references are noise here.
   const outgoingCalls = (symbolEdgesData?.outgoing ?? []).filter(
     (e) => symbolFile(e.dst_symbol) !== selectedNode
   )
@@ -527,7 +482,7 @@ function LeftPanel({
         </div>
       )}
 
-      {/* Function-level drill-down (CS-250, backed by CS-240/CS-249's symbol_graph_edges) */}
+      {/* Function-level drill-down, backed by symbol_graph_edges */}
       {symbolEdgesData && !symbolEdgesLoading && (
         <div>
           <div className="text-zinc-400 font-semibold mb-2">
@@ -886,8 +841,7 @@ export default function GraphScreen(): React.ReactElement {
         const res = await window.api.graph.symbolEdges(snapshotId, path)
         setSymbolEdgesData(res)
       } catch {
-        // Not every file has function-level data (e.g. non-Python/TS files,
-        // or the graph predates CS-240) — treat as "nothing to show", not an error.
+        // Not every file has function-level data — treat as "nothing to show", not an error.
         setSymbolEdgesData(null)
       } finally {
         setSymbolEdgesLoading(false)
@@ -924,10 +878,37 @@ export default function GraphScreen(): React.ReactElement {
     return buildFlowGraph(cappedData, nodeIndex, selectedNode, neighborSet, cycleNodes, impactState.active ? impactState.result : null)
   }, [graphData, nodeIndex, selectedNode, neighborData, impactState.active, impactState.result])
 
-  const nodes = useMemo(() => {
+  const layoutNodes = useMemo(() => {
     if (rawNodes.length === 0) return []
     return layoutMode === 'cluster' ? applyForceClusterLayout(rawNodes, edges) : applyDagreLayout(rawNodes, edges)
   }, [rawNodes, edges, layoutMode])
+
+  // User-dragged positions override the auto-layout, keyed by node id; cleared when
+  // layoutMode changes so switching layouts doesn't keep stale drags around.
+  const [manualPositions, setManualPositions] = useState<Record<string, { x: number; y: number }>>({})
+  useEffect(() => {
+    setManualPositions({})
+  }, [layoutMode])
+
+  const nodes = useMemo(() => {
+    if (Object.keys(manualPositions).length === 0) return layoutNodes
+    return layoutNodes.map((node) =>
+      manualPositions[node.id] ? { ...node, position: manualPositions[node.id] } : node
+    )
+  }, [layoutNodes, manualPositions])
+
+  const onNodesChange = useCallback((changes: NodeChange[]) => {
+    setManualPositions((prev) => {
+      let next = prev
+      for (const change of changes) {
+        if (change.type === 'position' && change.position) {
+          if (next === prev) next = { ...prev }
+          next[change.id] = change.position
+        }
+      }
+      return next
+    })
+  }, [])
 
   const fitViewOptions = { padding: 0.1 }
 
@@ -1052,6 +1033,8 @@ export default function GraphScreen(): React.ReactElement {
             nodes={nodes}
             edges={edges}
             onNodeClick={onNodeClick}
+            onNodesChange={onNodesChange}
+            nodesDraggable
             fitView
             fitViewOptions={fitViewOptions}
             minZoom={0.05}

@@ -723,7 +723,7 @@ class TestBatchScoreParity:
         assert py["c2"] == 0.0
 
     def test_chunk_type_weighting(self):
-        """chunk_type_weights should multiply scores (CS-227)."""
+        """chunk_type_weights should multiply scores."""
         corpus = [["foo"], ["foo"]]
         idf = BM25Scorer.build_idf(corpus, 2)
 
@@ -746,7 +746,7 @@ class TestBatchScoreParity:
         assert abs(cpp["c2"] - py["c2"]) < 1e-4
 
     def test_min_score_absolute_cutoff(self):
-        """Chunks below min_score_abs should be filtered (CS-227)."""
+        """Chunks below min_score_abs should be filtered."""
         corpus = [["foo"], ["bar"]]
         idf = BM25Scorer.build_idf(corpus, 2)
 
@@ -765,7 +765,7 @@ class TestBatchScoreParity:
         assert cpp == py, "Cutoff filtering should match"
 
     def test_min_score_relative_cutoff(self):
-        """Chunks below relative fraction of top score should be filtered (CS-227)."""
+        """Chunks below relative fraction of top score should be filtered."""
         corpus = [["foo"], ["foo"]]
         idf = BM25Scorer.build_idf(corpus, 2)
 

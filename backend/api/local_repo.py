@@ -25,8 +25,11 @@ async def validate_folder(body: ValidateFolderRequest) -> ValidateFolderResponse
 
 
 @router.get("/", response_model=list[LocalRepo])
-async def list_repos(workspace_id: str | None = Query(default=None)) -> list[LocalRepo]:
-    return await _service.list_all(workspace_id=workspace_id)
+async def list_repos(
+    workspace_id: str | None = Query(default=None),
+    mode: str | None = Query(default=None),
+) -> list[LocalRepo]:
+    return await _service.list_all(workspace_id=workspace_id, mode=mode)
 
 
 @router.post("/", response_model=LocalRepo, status_code=201)

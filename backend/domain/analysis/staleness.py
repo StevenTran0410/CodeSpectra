@@ -1,4 +1,4 @@
-"""Staleness detection and incremental re-analysis support (CS-222)."""
+"""Staleness detection and incremental re-analysis support."""
 
 from __future__ import annotations
 
@@ -216,8 +216,7 @@ async def check_staleness(report_id: str, db: aiosqlite.Connection) -> Staleness
         )
         non_linear = is_ancestor is None
 
-        # Recommend rebuild only for substantial changes:
-        # non-linear history (force push/rebase), OR 5+ commits with significant LOC churn
+        # Recommend rebuild only for substantial changes: non-linear history, or 5+ commits with significant LOC churn.
         total_loc_change = insertions + deletions
         recommend_force_rebuild = non_linear or (commit_count >= 5 and total_loc_change >= 500)
 

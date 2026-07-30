@@ -1,0 +1,49 @@
+[project]
+name = "agent-eval-harness"
+version = "0.1.0"
+description = "AEH — Agentic Evaluation Harness (evaluates OTHER agentic systems). CS-261 Phase 0: instrumentation, trace store, runner."
+requires-python = ">=3.11"
+dependencies = [
+    "haystack-ai>=2.14.0",
+    "aiosqlite>=0.20.0",
+    "pydantic>=2.9.0",
+    "pyyaml>=6.0.0",
+    "httpx>=0.27.0",
+    "jsonschema>=4.0.0",
+    "scikit-learn>=1.4.0",
+    "fastapi>=0.110.0",
+    "uvicorn>=0.28.0",
+    "json-repair>=0.61.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "ruff>=0.7.0",
+]
+datasets = [
+    "ragas==0.4.3",
+    "deepeval>=2.0.0",
+    "nest_asyncio>=1.6.0",
+]
+
+[project.scripts]
+aeh = "agent_eval_harness.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["agent_eval_harness", "test_targets"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

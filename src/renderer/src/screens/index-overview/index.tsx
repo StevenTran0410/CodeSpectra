@@ -15,6 +15,7 @@ import type {
   RrfFusionDebugBundle,
   SignalRankEntry,
   FusedRankEntry,
+  RerankedEntry,
 } from '../../types/electron'
 import { ErrorBanner } from '../../components/ui/ErrorBanner'
 import { toErrorMessage } from '../../lib/errors'
@@ -29,11 +30,7 @@ function csvEscape(value: string | number): string {
   return s
 }
 
-/**
- * Builds one combined CSV from both query systems' FINAL results only
- * (Stage 3 re-ranked for 2-stage, fused results for RRF) — capped at
- * QUERY_CSV_MAX_ROWS entries per system, not the full debug breakdown.
- */
+/** Builds one combined CSV from both query systems' FINAL results only, capped at QUERY_CSV_MAX_ROWS rows per system. */
 function buildQueryComparisonCsv(
   twoStageBundle: TwoStageDebugBundle | null,
   rrfFusionBundle: RrfFusionDebugBundle | null
@@ -72,6 +69,38 @@ function buildQueryComparisonCsv(
         ].join(',')
       )
     })
+
+    if (rrfFusionBundle.reranked && rrfFusionBundle.reranked.length > 0) {
+      rrfFusionBundle.reranked.slice(0, QUERY_CSV_MAX_ROWS).forEach((entry, i) => {
+        const details = `fused_score=${entry.fused_score.toFixed(4)} fused_rank=#${entry.fused_rank}`
+        rows.push(
+          [
+            'cross_encoder_rerank',
+            String(i + 1),
+            csvEscape(entry.rel_path),
+            entry.rerank_score.toFixed(4),
+            csvEscape(details),
+          ].join(',')
+        )
+      })
+    }
+
+    if (rrfFusionBundle.final && rrfFusionBundle.final.length > 0) {
+      rrfFusionBundle.final.slice(0, QUERY_CSV_MAX_ROWS).forEach((entry, i) => {
+        const details = Object.entries(entry.per_signal_ranks)
+          .map(([name, rank]) => `${name}=#${rank}`)
+          .join(' ')
+        rows.push(
+          [
+            'final_ranked',
+            String(i + 1),
+            csvEscape(entry.rel_path),
+            entry.fused_score.toFixed(4),
+            csvEscape(details),
+          ].join(',')
+        )
+      })
+    }
   }
 
   return rows.join('\n')
@@ -89,8 +118,7 @@ function dedupeEvidences(
   return Array.from(seen.values()).sort((a, b) => b.score - a.score)
 }
 
-/** Adapt RRF's FusedRankEntry list into RetrievalResultPanel's expected shape, so
- * "Run retrieval" can reuse the same display component when wired to RRF fusion. */
+/** Adapts RRF's FusedRankEntry list into RetrievalResultPanel's expected shape, so "Run retrieval" can reuse the same display component. */
 function adaptFusedEntriesForPanel(
   fused: FusedRankEntry[]
 ): Array<{ rel_path: string; chunk_index: number; reason_codes: string[]; score: number; token_estimate: number; excerpt: string }> {
@@ -444,6 +472,66 @@ function RrfFusedPanel({ entries }: { entries: FusedRankEntry[] }): React.ReactE
   )
 }
 
+function RerankedPanel({ entries, status }: { entries: RerankedEntry[], status?: string }): React.ReactElement {
+  const [expanded, setExpanded] = React.useState<string | null>(null)
+
+  if (status && status !== 'ok') {
+    return (
+      <div className="p-4 space-y-2">
+        <div className="text-[11px] text-yellow-600 bg-yellow-950/30 border border-yellow-800 rounded px-2 py-1">
+          {status === 'no_gpu' ? 'GPU not available — cross-encoder reranking is disabled' : 'Failed to load cross-encoder model — reranking unavailable'}
+        </div>
+        <div className="text-[10px] text-zinc-500 px-2">
+          Note: CC BY-NC-4.0 licensed model. See model card at{' '}
+          <a href="https://huggingface.co/jinaai/jina-reranker-v3" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline">
+            jinaai/jina-reranker-v3
+          </a>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="p-2 space-y-1.5">
+      <div className="text-[10px] text-zinc-600 px-2 py-1">
+        Cross-encoder reranked results (sorted by relevance_score descending).
+        <br />
+        <strong>License:</strong> CC BY-NC-4.0 (jinaai/jina-reranker-v3).{' '}
+        <a href="https://huggingface.co/jinaai/jina-reranker-v3" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline">
+          View model card
+        </a>
+      </div>
+      <div className="max-h-80 overflow-y-auto space-y-1">
+        {entries.map((e, idx) => {
+          const key = `${e.rel_path}#${e.chunk_id}`
+          const isOpen = expanded === key
+          return (
+            <div key={key} className="border border-zinc-800 rounded">
+              <button
+                className="w-full text-left px-2 py-1 flex items-center gap-1 hover:bg-zinc-800/40 transition-colors text-[11px]"
+                onClick={() => setExpanded(isOpen ? null : key)}
+              >
+                <span className={`shrink-0 text-[9px] transition-transform ${isOpen ? 'rotate-90' : ''}`}>▶</span>
+                <span className="shrink-0 text-zinc-600 font-mono text-[10px]">#{idx + 1}</span>
+                <span className="text-zinc-300 font-mono truncate flex-1">{e.rel_path}</span>
+                <span className="shrink-0 text-zinc-700 mx-1">|</span>
+                <span className="shrink-0 text-zinc-400 font-mono text-[10px]">rerank={e.rerank_score.toFixed(4)}</span>
+                <span className="shrink-0 text-zinc-700 mx-1">|</span>
+                <span className="shrink-0 text-zinc-600 font-mono text-[10px]">fused={e.fused_score.toFixed(2)}@#{e.fused_rank}</span>
+              </button>
+              {isOpen && (
+                <pre className="mx-2 mb-2 p-2 bg-zinc-950 border border-zinc-800 rounded text-[10px] text-zinc-300 font-mono whitespace-pre-wrap break-all max-h-40 overflow-y-auto leading-4">
+                  {e.excerpt || '(no excerpt)'}
+                </pre>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 
 export default function IndexOverviewScreen(): React.ReactElement {
   const navigate = useNavigate()
@@ -751,19 +839,15 @@ export default function IndexOverviewScreen(): React.ReactElement {
                     setRetrievalCompare(null)
                     try {
                       await window.api.retrieval.buildIndex(snapshotId, false)
-                      // Wired to RRF fusion instead of the legacy two-stage retrieve()
-                      // for this debug button specifically -- the actual production
-                      // Ask Mode/Deep Research path (RetrievalService.retrieve()) is
-                      // left untouched, since RRF still has a known open weakness
-                      // (magnitude-blindness on dominant-signal queries) pending CS-254's
-                      // reranker. This button is for comparing RRF's shape, not a
-                      // claim that RRF has replaced production retrieval.
+                      // Same call as the "Run RRF fusion" button below — shares the same
+                      // breakdown panel so both buttons show identical detail.
                       const out = await window.api.retrieval.retrieveRrfFusion({
                         snapshot_id: snapshotId,
                         query: retrievalQuery.trim(),
                         section: retrievalSection,
                       })
                       setPrimaryRrfBundle(out)
+                      setRrfFusionBundle(out)
                     } catch (err) {
                       setError(toErrorMessage(err))
                     } finally {
@@ -988,6 +1072,19 @@ export default function IndexOverviewScreen(): React.ReactElement {
                       <span className="text-zinc-600"> (no budget cap — unbounded debug path)</span>
                     </summary>
                     <RrfFusedPanel entries={rrfFusionBundle.fused} />
+                  </details>
+                  <details className="border border-zinc-800 rounded">
+                    <summary className="px-2 py-1 text-[11px] text-zinc-400 cursor-pointer hover:text-zinc-200">
+                      Cross-Encoder Reranked Results — {rrfFusionBundle.reranked?.length ?? 0} entries
+                    </summary>
+                    <RerankedPanel entries={rrfFusionBundle.reranked ?? []} status={rrfFusionBundle.reranker_status} />
+                  </details>
+                  <details open className="border border-zinc-800 rounded">
+                    <summary className="px-2 py-1 text-[11px] text-zinc-400 cursor-pointer hover:text-zinc-200">
+                      Final Ranked Results — {rrfFusionBundle.final?.length ?? 0} entries
+                      <span className="text-zinc-600"> (1-hop expansion + fused_rank/cross_encoder_rank RRF-fuse, 0.6/0.4)</span>
+                    </summary>
+                    <RrfFusedPanel entries={rrfFusionBundle.final ?? []} />
                   </details>
                 </div>
               )}

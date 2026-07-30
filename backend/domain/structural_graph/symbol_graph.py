@@ -1,4 +1,4 @@
-"""Symbol reference edge extraction — CS-202.
+"""Symbol reference edge extraction.
 
 Extracts symbol-level call edges from Python and TypeScript source files.
 Cross-file import resolution narrows which symbol is being called when

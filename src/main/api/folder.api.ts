@@ -23,14 +23,23 @@ export function registerFolderHandlers(client: BackendClient): void {
 
   ipcMain.handle(
     'folder:list',
-    (_event, workspaceId?: string) =>
-      client.get(`/api/local-repo/${workspaceId ? `?workspace_id=${encodeURIComponent(workspaceId)}` : ''}`)
+    (_event, workspaceId?: string, mode?: string) => {
+      const queryParams: string[] = []
+      if (workspaceId) {
+        queryParams.push(`workspace_id=${encodeURIComponent(workspaceId)}`)
+      }
+      if (mode) {
+        queryParams.push(`mode=${encodeURIComponent(mode)}`)
+      }
+      const queryStr = queryParams.length > 0 ? `?${queryParams.join('&')}` : ''
+      return client.get(`/api/local-repo/${queryStr}`)
+    }
   )
 
   ipcMain.handle(
     'folder:add',
-    (_event, path: string, workspaceId?: string) =>
-      client.post('/api/local-repo/', { path, workspace_id: workspaceId ?? null })
+    (_event, path: string, workspaceId?: string, mode?: string) =>
+      client.post('/api/local-repo/', { path, workspace_id: workspaceId ?? null, mode: mode ?? 'code_analysis' })
   )
 
   ipcMain.handle(
@@ -82,10 +91,10 @@ export function registerFolderHandlers(client: BackendClient): void {
    * Destination is auto-resolved to ~/CodeSpectra/repos/<repo-name>.
    * Returns the registered LocalRepo on success.
    */
-  ipcMain.handle('folder:cloneFromUrl', async (_event, url: string, workspaceId?: string) => {
+  ipcMain.handle('folder:cloneFromUrl', async (_event, url: string, workspaceId?: string, mode?: string) => {
     const repoName = url.split('/').pop()?.replace(/\.git$/, '') ?? 'repo'
     const destPath = path.join(app.getPath('home'), 'CodeSpectra', 'repos', repoName)
-    return client.post('/api/local-repo/clone', { url, dest_path: destPath, workspace_id: workspaceId ?? null })
+    return client.post('/api/local-repo/clone', { url, dest_path: destPath, workspace_id: workspaceId ?? null, mode: mode ?? 'code_analysis' })
   })
 
   ipcMain.handle(
@@ -246,6 +255,10 @@ export function registerFolderHandlers(client: BackendClient): void {
 
   ipcMain.handle('retrieval:buildIndex', (_event, snapshotId: string, forceRebuild = true) =>
     client.post('/api/retrieval/build-index', { snapshot_id: snapshotId, force_rebuild: forceRebuild })
+  )
+
+  ipcMain.handle('retrieval:summary', (_event, snapshotId: string) =>
+    client.get(`/api/retrieval/summary/${snapshotId}`)
   )
 
   ipcMain.handle(

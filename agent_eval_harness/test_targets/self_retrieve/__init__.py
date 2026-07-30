@@ -1,0 +1,1 @@
+"""Self-retrieve test fixture."""

@@ -1,0 +1,68 @@
+{
+  "agent_id": "_node_retrieve",
+  "archetype": "rag_single_shot",
+  "target_count": 5,
+  "batch_n": 3,
+  "json_schema": {
+    "type": "object",
+    "properties": {
+      "reasoning_chain": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "step_number": {
+              "type": "integer"
+            },
+            "description": {
+              "type": "string"
+            },
+            "files_involved": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "finding": {
+              "type": "string"
+            },
+            "graph_path": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "confidence": {
+        "type": "string",
+        "enum": [
+          "high",
+          "medium",
+          "low"
+        ]
+      },
+      "unknowns": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "required": [
+      "reasoning_chain",
+      "confidence",
+      "unknowns"
+    ]
+  },
+  "schema_present": true,
+  "system_prompt": "You are generating synthetic test cases for evaluating an agent.\n\nEach case is an object with two keys: 'input' (matching the input shape provided) and 'gold' (the expected output, strictly matching the output schema provided).\n\nCRITICAL (faithfulness guard): keep every case internally consistent — every file path appearing anywhere in the input (evidence rel_paths, paths named in any context field) MUST also appear in any folder-tree / file-listing field present in that same input; never reference a file absent from the folder tree you generate. Every claim in 'gold' must be traceable to the input evidence you created. Any 'blind_spots' or fallback/degradation notes in 'gold' MUST be grounded in and consistent with 'input' — never assert absence or failure of a feature/section when present in 'input'.\n\nRespond ONLY with a JSON array of such objects. No markdown, no explanation.",
+  "prompt": "INPUT SHAPE — each case's 'input' must have exactly these fields:\n{\n  \"state\": \"a JSON object that MUST use EXACTLY the keys shown here at EVERY level — no renaming, no omissions, no extra keys — matching this nested structure (values are the types): {\\\"question\\\": \\\"string\\\", \\\"snapshot_id\\\": \\\"string\\\", \\\"provider_id\\\": \\\"string\\\", \\\"model_id\\\": \\\"string\\\", \\\"max_hops\\\": \\\"integer\\\", \\\"hop_cap\\\": \\\"integer\\\", \\\"gctx\\\": \\\"object\\\", \\\"plan\\\": [\\\"object\\\"], \\\"plan_cursor\\\": \\\"integer\\\", \\\"step_findings\\\": [\\\"object\\\"], \\\"visited_files\\\": [\\\"string\\\"], \\\"accumulated_chunk_ids\\\": [\\\"string\\\"], \\\"all_evidences\\\": [{\\\"chunk_id\\\": \\\"string\\\", \\\"rel_path\\\": \\\"string\\\", \\\"chunk_index\\\": \\\"integer\\\", \\\"reason_codes\\\": [\\\"string\\\"], \\\"score\\\": \\\"number\\\", \\\"token_estimate\\\": \\\"integer\\\", \\\"excerpt\\\": \\\"string\\\"}], \\\"debug\\\": \\\"object\\\", \\\"step_type\\\": \\\"string\\\", \\\"target\\\": \\\"string\\\", \\\"description\\\": \\\"string\\\", \\\"new_files\\\": [\\\"string\\\"], \\\"graph_path\\\": \\\"any\\\", \\\"graph_path_with_conf\\\": \\\"any\\\", \\\"tentative_files\\\": [\\\"string\\\"], \\\"tentative_confidence\\\": \\\"object\\\", \\\"current_evidence\\\": \\\"array\\\", \\\"sufficient\\\": \\\"boolean\\\", \\\"summary\\\": \\\"string\\\", \\\"reasoning_chain\\\": [\\\"object\\\"], \\\"confidence\\\": \\\"string\\\", \\\"unknowns\\\": [\\\"string\\\"]}\"\n}\n\nAGENT PURPOSE: Analyzes retrieved code evidence and produces a structured output.\n\nOUTPUT SCHEMA (for 'gold'):\n{\"type\": \"object\", \"properties\": {\"reasoning_chain\": {\"type\": \"array\", \"items\": {\"type\": \"object\", \"properties\": {\"step_number\": {\"type\": \"integer\"}, \"description\": {\"type\": \"string\"}, \"files_involved\": {\"type\": \"array\", \"items\": {\"type\": \"string\"}}, \"finding\": {\"type\": \"string\"}, \"graph_path\": {\"type\": \"array\", \"items\": {\"type\": \"string\"}}}}}, \"confidence\": {\"type\": \"string\", \"enum\": [\"high\", \"medium\", \"low\"]}, \"unknowns\": {\"type\": \"array\", \"items\": {\"type\": \"string\"}}}, \"required\": [\"reasoning_chain\", \"confidence\", \"unknowns\"]}\n\nThis dataset has 5 cases total. Make EXACTLY 1 of them EDGE-CASE / NEGATIVE (failure-mode) cases; every OTHER case MUST be a normal, SUCCESSFUL case with substantive, NON-EMPTY output — never produce more than 1 empty/low-confidence case(s). The 1 edge case(s) draw on the agent's known failure modes:\n- If planning LLM call fails, falls back to a single retrieve step (line 953).\n- Retrieval evidence collection may silently fail if forced files exceed token budget or DB errors occur, leading to incomplete evidence (lines 951-953).\n- Trace steps may fall back to a generic retrieval if no call-graph evidence is found, potentially missing relevant code (line 582).\n- If the sufficiency check never triggers true, the investigation loop will run through all plan steps, potentially wasting resources (line 440).\n\nINPUT STRATEGY: Structured data parameters matching exact harvested schemas.\n\nALLOWED ENUM DOMAINS FOR OUTPUT FIELDS (gold must use ONLY these values):\n  \"confidence\": [\"high\", \"medium\", \"low\"]\n\nGenerate exactly 3 DISTINCT cases.",
+  "raw_content": "[]",
+  "candidates_parsed": 0,
+  "newly_accepted": 0,
+  "rejected_this_round": 0,
+  "accepted_total": 0,
+  "sample_rejection_errors": []
+}

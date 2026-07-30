@@ -1,4 +1,4 @@
-"""Service that builds and loads QA section caches (CS-225)."""
+"""Service that builds and loads QA section caches."""
 
 from __future__ import annotations
 

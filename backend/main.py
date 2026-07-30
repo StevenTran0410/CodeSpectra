@@ -16,6 +16,9 @@ from fastapi.responses import JSONResponse
 from api.app import router as app_router
 from api.analysis import router as analysis_router
 from api.consent import router as consent_router
+from api.external import router as external_router
+from api.gpu_reranker import router as gpu_reranker_router
+from api.local_embedding import router as local_embedding_router
 from api.impact import router as impact_router
 from api.job import router as job_router
 from api.local_repo import router as local_repo_router
@@ -53,6 +56,16 @@ from typing import AsyncGenerator
 from domain.qa.classifier_service import ClassifierService as _ClassifierService
 
 
+async def _warm_up_local_gpu_models() -> None:
+    try:
+        from domain.retrieval.cross_encoder_rerank import is_gpu_reranker_enabled, load_reranker
+
+        if await is_gpu_reranker_enabled():
+            await asyncio.to_thread(load_reranker)
+    except Exception as e:
+        logger.warning(f"GPU reranker warm-up failed: {e}")
+
+
 @asynccontextmanager
 async def _lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     await init_db()
@@ -61,6 +74,10 @@ async def _lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     asyncio.get_event_loop().create_task(
         _ClassifierService().warm_up_with_db_examples(),
         name="classifier-warmup",
+    )
+    asyncio.get_event_loop().create_task(
+        _warm_up_local_gpu_models(),
+        name="local-gpu-models-warmup",
     )
     logger.info("Backend startup complete")
     yield
@@ -90,6 +107,8 @@ def create_app() -> FastAPI:
     app.include_router(workspace_router, prefix="/api/workspace")
     app.include_router(provider_router, prefix="/api/provider")
     app.include_router(consent_router, prefix="/api/consent")
+    app.include_router(gpu_reranker_router, prefix="/api/gpu-reranker")
+    app.include_router(local_embedding_router, prefix="/api/local-embedding")
     app.include_router(local_repo_router, prefix="/api/local-repo")
     app.include_router(sync_router, prefix="/api/sync")
     app.include_router(manifest_router, prefix="/api/manifest")
@@ -99,6 +118,7 @@ def create_app() -> FastAPI:
     app.include_router(analysis_router, prefix="/api/analysis")
     app.include_router(qa_router, prefix="/api/qa")
     app.include_router(job_router, prefix="/api/job")
+    app.include_router(external_router, prefix="/api/external")
 
     @app.exception_handler(ProviderError)
     async def provider_error_handler(_req: Request, exc: ProviderError) -> JSONResponse:
@@ -111,9 +131,6 @@ def create_app() -> FastAPI:
     return app
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Custom uvicorn server that prints the BACKEND_READY signal after binding
-# ──────────────────────────────────────────────────────────────────────────────
 class _ReadySignalServer(uvicorn.Server):
     def __init__(self, config: uvicorn.Config, port: int) -> None:
         super().__init__(config)

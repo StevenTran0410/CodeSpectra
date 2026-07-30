@@ -1,11 +1,12 @@
-"""Retrieval types (RPA-034)."""
+"""Retrieval types."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class RetrievalMode(StrEnum):
@@ -34,6 +35,13 @@ class BuildRetrievalIndexResponse(BaseModel):
     generated_at: str
 
 
+class RetrievalSummary(BaseModel):
+    snapshot_id: str
+    chunk_count: int
+    has_bm25_stats: bool
+    built: bool
+
+
 class RetrievalEvidence(BaseModel):
     chunk_id: str
     rel_path: str
@@ -42,6 +50,27 @@ class RetrievalEvidence(BaseModel):
     score: float
     token_estimate: int
     excerpt: str
+    start_line: int = 0
+    end_line: int = 0
+
+
+class FileChunk(BaseModel):
+    chunk_id: str
+    rel_path: str
+    chunk_index: int
+    chunk_type: str
+    content: str
+    token_estimate: int
+    start_line: int = 0
+    end_line: int = 0
+    split_part: int = 0
+    split_of: int = 1
+
+
+class FileChunksResponse(BaseModel):
+    snapshot_id: str
+    rel_path: str
+    chunks: list[FileChunk]
 
 
 class RetrievalBundle(BaseModel):
@@ -140,7 +169,7 @@ class TwoStageBundle(BaseModel):
     stage3: TwoStageStage3Result
 
 
-# ── Impact retrieval types (RPA-060) ─────────────────────────────────────────
+# ── Impact retrieval types ────────────────────────────────────────────────────
 
 
 class ImpactRankedChunk(BaseModel):
@@ -182,7 +211,7 @@ class ImpactRetrievalBundle(BaseModel):
     risk_summary: dict  # high_risk_files, total_affected, affected_community_count
 
 
-# ── RRF Multi-Signal Fusion Types (CS-252) ──────────────────────────────────
+# ── RRF Multi-Signal Fusion Types ───────────────────────────────────────────
 
 
 class SignalRankEntry(BaseModel):
@@ -193,6 +222,8 @@ class SignalRankEntry(BaseModel):
     signal_name: str
     excerpt: str = ""
     token_estimate: int = 0
+    start_line: int = 0
+    end_line: int = 0
 
 
 class FusedRankEntry(BaseModel):
@@ -202,6 +233,22 @@ class FusedRankEntry(BaseModel):
     per_signal_ranks: dict[str, int]
     excerpt: str
     token_estimate: int = 0
+    start_line: int = 0
+    end_line: int = 0
+
+
+class RerankedEntry(BaseModel):
+    """Result from cross-encoder reranking of fused entries."""
+
+    chunk_id: str
+    rel_path: str
+    fused_score: float
+    rerank_score: float
+    fused_rank: int
+    excerpt: str
+    token_estimate: int = 0
+    start_line: int = 0
+    end_line: int = 0
 
 
 class RrfFusionBundle(BaseModel):
@@ -213,6 +260,9 @@ class RrfFusionBundle(BaseModel):
     module_signal: list[SignalRankEntry]
     category_signal: list[SignalRankEntry]
     fused: list[FusedRankEntry]
+    reranked: list[RerankedEntry] = Field(default_factory=list)
+    reranker_status: Literal["ok", "no_gpu", "model_load_failed", "disabled"] = "ok"
+    final: list[FusedRankEntry] = Field(default_factory=list)
 
 
 class RrfFusionRequest(BaseModel):
@@ -221,3 +271,4 @@ class RrfFusionRequest(BaseModel):
     section: RetrievalSection
     budget: int | None = None
     min_confidence: float | None = None
+    symbol_chunks_only: bool = False

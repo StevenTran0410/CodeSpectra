@@ -250,8 +250,10 @@ You receive the original question, all step findings, AND the actual code eviden
 collected across every investigation step.
 
 Use the code evidence to produce a precise, code-grounded answer — cite specific
-functions, file paths, line numbers, and actual logic from the evidence.
-Do NOT invent details that are not in the evidence; state them as unknowns.
+functions, file paths, and actual logic from the evidence. When citing a line number,
+copy it from the `lines=start-end` range printed on the evidence chunk — never guess
+or estimate one from the excerpt text. Do NOT invent details that are not in the
+evidence; state them as unknowns.
 
 FORMATTING — MANDATORY:
 - Write in rich Markdown (use ### headings, **bold**, bullet lists, ```code blocks```).
@@ -868,12 +870,9 @@ class DeepResearchAgent(BaseTypedAgent):
             ) as cur:
                 row = await cur.fetchone()
             if not row:
-                async with db.execute(
-                    "SELECT 1 FROM code_symbols WHERE snapshot_id=? AND name LIKE ? LIMIT 1",
-                    (snapshot_id, f"%{target}%"),
-                ) as cur:
-                    row2 = await cur.fetchone()
-                if not row2:
+                from domain.repo_map.service import search_symbols_cascade
+                matches = await search_symbols_cascade(db, snapshot_id, target, limit=1)
+                if not matches:
                     step["_warning"] = f"target '{target}' not found in snapshot — step may produce empty results"
         return step
 
@@ -949,7 +948,7 @@ class DeepResearchAgent(BaseTypedAgent):
                 if path in existing_paths or used >= _RESEARCH_RETRIEVAL_BUDGET:
                     continue
                 async with db.execute(
-                    """SELECT id, rel_path, chunk_index, content, token_estimate
+                    """SELECT id, rel_path, chunk_index, content, token_estimate, start_line, end_line
                        FROM retrieval_chunks
                        WHERE snapshot_id=? AND rel_path=?
                        ORDER BY chunk_index ASC LIMIT 3""",
@@ -971,6 +970,8 @@ class DeepResearchAgent(BaseTypedAgent):
                             score=0.5,
                             token_estimate=tok,
                             excerpt=row["content"],
+                            start_line=row["start_line"] or 0,
+                            end_line=row["end_line"] or 0,
                         )
                     )
                     used += tok

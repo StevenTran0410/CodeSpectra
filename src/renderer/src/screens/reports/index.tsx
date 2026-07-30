@@ -151,7 +151,7 @@ export default function ReportViewerScreen(): React.ReactElement {
       // Navigate first so reportIdInUrl is cleared before refreshList updates
       // selectedReportId — otherwise the fetch effect would try to load the
       // just-deleted report (it prefers reportIdInUrl over selectedReportId).
-      navigate('/reports')
+      navigate('/ca/reports')
       await refreshList()
     } catch (err) {
       setError(toErrorMessage(err))
@@ -261,7 +261,7 @@ export default function ReportViewerScreen(): React.ReactElement {
         const msg = toErrorMessage(err)
         // Report was deleted externally — silently refresh the list instead of showing an error
         if (msg.toLowerCase().includes('not found')) {
-          navigate('/reports')
+          navigate('/ca/reports')
           await refreshList()
         } else {
           setError(msg)
@@ -338,7 +338,7 @@ export default function ReportViewerScreen(): React.ReactElement {
                     <button
                       key={r.id}
                       onClick={() => setSelectedReportId(r.id)}
-                      onDoubleClick={() => navigate(`/reports?reportId=${encodeURIComponent(r.id)}`)}
+                      onDoubleClick={() => navigate(`/ca/reports?reportId=${encodeURIComponent(r.id)}`)}
                       className={`w-full text-left rounded-md border px-2 py-1.5 text-[11px] ${
                         r.id === selectedReportId
                           ? 'border-indigo-600 bg-indigo-950/40 text-indigo-200'
@@ -360,7 +360,7 @@ export default function ReportViewerScreen(): React.ReactElement {
                 </div>
                 <div className="pt-1">
                   <button
-                    onClick={() => selectedReportId && navigate(`/reports?reportId=${encodeURIComponent(selectedReportId)}`)}
+                    onClick={() => selectedReportId && navigate(`/ca/reports?reportId=${encodeURIComponent(selectedReportId)}`)}
                     disabled={!selectedReportId}
                     className="px-3 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 text-white rounded-md disabled:opacity-50"
                   >
@@ -399,7 +399,7 @@ export default function ReportViewerScreen(): React.ReactElement {
                   </div>
                   <div className="flex items-center gap-2">
                     <button
-                      onClick={() => navigate('/reports')}
+                      onClick={() => navigate('/ca/reports')}
                       className="px-2 py-1 text-[11px] border border-zinc-700 text-zinc-300 rounded hover:border-zinc-600"
                     >
                       Back

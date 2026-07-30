@@ -1,4 +1,4 @@
-"""Two-stage retrieval pipeline (CS-203): BM25 stage1 → graph expansion stage2 → rank_and_budget stage3."""
+"""Two-stage retrieval pipeline: BM25 stage1 → graph expansion stage2 → rank_and_budget stage3."""
 from __future__ import annotations
 
 import importlib
@@ -11,7 +11,7 @@ from shared.logger import logger
 
 from .bm25_scorer import CHUNK_TYPE_WEIGHT, BM25Scorer, _query_terms
 from .quality import compute_retrieval_quality
-from .service import _CHUNK_FULL_COLS
+from .service import _CHUNK_FULL_COLS, _SECTION_CATEGORY_HINTS
 from .types import (
     RankedChunk,
     RetrievalBundle,
@@ -39,10 +39,10 @@ _SYMBOL_OVERLAP_BONUS: float = 1.5
 _MODULE_PROXIMITY_BONUS: float = 1.3
 # Flat binary bonus (not a decay function despite the "MAX" name) -- see _compute_chunk_score's
 # cent_bonus assignment below. rrf_fusion.py's build_graph_confidence_rank_list applies its own
-# separate flat centrality_boost (1.5x); the two are intentionally independent (CS-255): one
+# separate flat centrality_boost (1.5x); the two are intentionally independent: one
 # scores a single chunk's BM25-based candidacy, the other scores a file's confidence-weighted
 # rank-fusion signal -- same underlying "is this file structurally central" concept, applied to
-# two different scoring mechanisms (additive score vs RRF input list), not duplicated logic.
+# two different scoring mechanisms (additive score vs RRF input list).
 _CENTRALITY_BONUS_MAX: float = 2.6
 
 # Hard floor on rerank final score — chunks below this are dropped entirely
@@ -54,18 +54,9 @@ _CENTRALITY_BONUS_MAX: float = 2.6
 # so callers never get an empty bundle when some scoring was possible.
 _RERANK_MIN_SCORE: float = 10.0
 
-# Mirrors service.py _SECTION_CATEGORY_HINTS — keep in sync if sections change.
-_SECTION_CATEGORY_HINTS: dict[RetrievalSection, set[str]] = {
-    RetrievalSection.ARCHITECTURE:    {"source", "config", "infra"},
-    RetrievalSection.CONVENTIONS:     {"source", "test", "config"},
-    RetrievalSection.FEATURE_MAP:     {"source", "docs"},
-    RetrievalSection.IMPORTANT_FILES: {"source", "config", "infra"},
-    RetrievalSection.GLOSSARY:        {"source", "docs"},
-    RetrievalSection.QA:              {"source", "config", "docs"},
-}
 _CATEGORY_HINT_BONUS: float = 1.4
 
-# Section-specific score cutoffs (absolute, relative) — CS-227
+# Section-specific score cutoffs (absolute, relative)
 _SECTION_SCORE_FLOOR: dict[RetrievalSection, tuple[float, float]] = {
     RetrievalSection.QA:              (0.5, 0.35),
     RetrievalSection.ARCHITECTURE:    (0.3, 0.15),
@@ -92,7 +83,7 @@ def _get_native():
 
 
 async def _load_file_size_stats(snapshot_id: str) -> dict[str, tuple[int, int]]:
-    """Fetch size_bytes + symbol_count per file in ONE joined query (CS-229).
+    """Fetch size_bytes + symbol_count per file in ONE joined query.
 
     Returns: dict[rel_path, (size_bytes, symbol_count)].
 
@@ -172,7 +163,7 @@ def _compute_file_caps(
         if total >= 20 and (n / total) >= 0.3:
             cap += 1
 
-        # Size + symbol signals (CS-229 smart cap extension).
+        # Size + symbol signals (smart cap extension).
         size_bytes, symbol_count = file_size_stats.get(rel_path, (0, 0))
         if symbol_count >= 10:
             cap += 1  # function-dense file → information-dense
@@ -192,7 +183,7 @@ def _apply_diversity_filter(
     file_total_chunks: dict[str, int] | None = None,
     file_size_stats: dict[str, tuple[int, int]] | None = None,
 ) -> list[RankedChunk]:
-    """Light diversity pass: smart per-file cap + soft MMR (CS-229).
+    """Light diversity pass: smart per-file cap + soft MMR.
 
     Tuned 2026-04-24 with smart cap after feedback that a fixed max_per_file
     was blunt. Cap now scales per-file based on:
@@ -345,17 +336,29 @@ async def load_symbol_index(
     index: dict[str, list[tuple[str, int, int]]] = {}
 
     async with db.execute(
-        "SELECT name, rel_path, line_start, line_end FROM code_symbols WHERE snapshot_id=?",
+        "SELECT name, parent_name, rel_path, line_start, line_end FROM code_symbols WHERE snapshot_id=?",
         (snapshot_id,),
     ) as cur:
         rows = await cur.fetchall()
 
     for row in rows:
-        name_lower = (row["name"] or "").lower()
+        name = row["name"] or ""
+        parent = row["parent_name"] or ""
+        rel_path = row["rel_path"] or ""
+        line_start = int(row["line_start"])
+        line_end = int(row["line_end"])
+        entry = (rel_path, line_start, line_end)
+
+        name_lower = name.lower()
         if name_lower:
-            index.setdefault(name_lower, []).append(
-                (row["rel_path"], int(row["line_start"]), int(row["line_end"]))
-            )
+            index.setdefault(name_lower, []).append(entry)
+
+        if parent:
+            q_key = f"{parent}.{name}".lower()
+            index.setdefault(q_key, []).append(entry)
+
+        fqn_key = (f"{rel_path}::{parent + '.' if parent else ''}{name}").lower()
+        index.setdefault(fqn_key, []).append(entry)
 
     _symbol_cache[snapshot_id] = index
     return index
@@ -545,7 +548,7 @@ def _rank_and_budget(
                     token_estimate=int(r["token_estimate"] or 1),
                     excerpt=r["content"] or "",
                 ))
-            # Apply diversity filter with smart per-file caps (CS-229).
+            # Apply diversity filter with smart per-file caps.
             out = _apply_diversity_filter(
                 out,
                 central_files=central_files,
@@ -578,7 +581,7 @@ def _rank_and_budget(
             excerpt=r["content"] or "",
         ))
         used += tok
-    # Apply diversity filter with smart per-file caps (CS-229).
+    # Apply diversity filter with smart per-file caps.
     out = _apply_diversity_filter(
         out,
         central_files=central_files,
@@ -681,7 +684,7 @@ async def retrieve_two_stage(
             _RERANK_MIN_SCORE, len(all_scored),
         )
 
-    # Build per-file total chunk counts + size/symbol stats for smart cap (CS-229).
+    # Build per-file total chunk counts + size/symbol stats for smart cap.
     file_total_chunks: dict[str, int] = {path: len(rows) for path, rows in file_rows.items()}
     file_size_stats = await _load_file_size_stats(snapshot_id)
     ranked, used_cpp = _rank_and_budget(

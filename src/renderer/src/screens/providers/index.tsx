@@ -157,7 +157,7 @@ interface ProviderFormProps {
 }
 
 function ProviderForm({ kind, initial, onClose }: ProviderFormProps) {
-  const { create, update, testConnection, fetchModels, testing, testResults, modelLists, loadingModels, modelErrors } = useProviderStore()
+  const { create, update, testConnection, fetchModels, saveManualModels, testing, testResults, modelLists, loadingModels, modelErrors } = useProviderStore()
   const toast = useToastStore()
 
   const isEdit = !!initial
@@ -176,9 +176,40 @@ function ProviderForm({ kind, initial, onClose }: ProviderFormProps) {
   const tempId = initial?.id ?? '__new__'
   const testResult = testResults[tempId]
   const isTesting = testing[tempId] ?? false
-  const models = modelLists[tempId] ?? []
+  const models = (modelLists[tempId] ?? []).map((m) => m.id)
   const isLoadingModels = loadingModels[tempId] ?? false
   const modelFetchError = modelErrors[tempId] ?? ''
+
+  const [manualText, setManualText] = useState('')
+  const [showManualUI, setShowManualUI] = useState(false)
+  const [manualSaveError, setManualSaveError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (modelFetchError) {
+      setShowManualUI(true)
+    }
+  }, [modelFetchError])
+
+  const handleSaveManualModels = async () => {
+    setManualSaveError(null)
+    if (!initial) return
+    const parsed = manualText
+      .split(/[,\n]/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+    const deduped = [...new Set(parsed)]
+    if (deduped.length === 0) {
+      setManualSaveError('Please enter at least one model ID')
+      return
+    }
+    try {
+      await saveManualModels(initial.id, deduped)
+      setShowManualUI(false)
+      setManualText('')
+    } catch (err) {
+      setManualSaveError(String(err))
+    }
+  }
 
   const handleSave = async () => {
     setFormError(null)
@@ -213,6 +244,26 @@ function ProviderForm({ kind, initial, onClose }: ProviderFormProps) {
 
   const handleTest = async () => {
     if (!initial) return
+    // Test connection must exercise the CURRENT form values, not whatever was last
+    // persisted — save first so a not-yet-saved base URL/key/model is what gets tested.
+    setFormError(null)
+    if (!name.trim()) { setFormError('Display name is required'); return }
+    if (!url.trim()) { setFormError('Base URL is required'); return }
+    if (!modelId.trim()) { setFormError('Model ID is required'); return }
+
+    setSaving(true)
+    try {
+      const req: UpdateProviderRequest = {
+        display_name: name, base_url: url, model_id: modelId,
+        ...(apiKey.trim() ? { api_key: apiKey.trim() } : {})
+      }
+      await update(initial.id, req)
+    } catch (err) {
+      setFormError(String(err))
+      setSaving(false)
+      return
+    }
+    setSaving(false)
     await testConnection(initial.id)
   }
 
@@ -220,6 +271,22 @@ function ProviderForm({ kind, initial, onClose }: ProviderFormProps) {
     setShowModelPicker(true)
     if (!initial) {
       // For cloud providers before save: show presets directly
+      return
+    }
+    // Same as Test connection: browsing must query the CURRENT base URL/key, not
+    // whatever was last saved — persist first (model_id intentionally omitted, the
+    // user may be Browsing precisely to pick one).
+    setFormError(null)
+    if (!name.trim()) { setFormError('Display name is required'); return }
+    if (!url.trim()) { setFormError('Base URL is required'); return }
+    try {
+      const req: UpdateProviderRequest = {
+        display_name: name, base_url: url,
+        ...(apiKey.trim() ? { api_key: apiKey.trim() } : {})
+      }
+      await update(initial.id, req)
+    } catch (err) {
+      setFormError(String(err))
       return
     }
     await fetchModels(initial.id)
@@ -329,9 +396,53 @@ function ProviderForm({ kind, initial, onClose }: ProviderFormProps) {
         </div>
       )}
       {showModelPicker && modelFetchError && (
-        <div className="flex items-start gap-2 border border-red-500/20 rounded-md bg-red-500/5 px-3 py-3 text-xs text-red-400">
-          <XCircle size={13} className="shrink-0 mt-0.5" />
-          <span>{modelFetchError}</span>
+        <div className="space-y-2">
+          <div className="flex items-start gap-2 border border-red-500/20 rounded-md bg-red-500/5 px-3 py-3 text-xs text-red-400">
+            <XCircle size={13} className="shrink-0 mt-0.5" />
+            <span>{modelFetchError}</span>
+          </div>
+          {showManualUI && (
+            <div className="border border-zinc-700 rounded-md bg-zinc-800 p-3 space-y-2">
+              <label className="block text-[11px] font-medium text-zinc-400">
+                Or enter model list manually:
+              </label>
+              <textarea
+                className="w-full bg-zinc-900 border border-zinc-700 rounded px-2 py-1.5 text-xs text-zinc-100 font-mono focus:outline-none focus:border-violet-500"
+                rows={3}
+                value={manualText}
+                onChange={(e) => setManualText(e.target.value)}
+                placeholder="GPT-5.4, GPT-5.4-mini&#10;or one per line"
+              />
+              {manualSaveError && (
+                <p className="text-[10px] text-red-400">{manualSaveError}</p>
+              )}
+              <div className="flex gap-2 justify-end">
+                <button
+                  type="button"
+                  onClick={() => setShowManualUI(false)}
+                  className="px-2.5 py-1 text-[11px] bg-zinc-700 hover:bg-zinc-600 text-zinc-300 rounded transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSaveManualModels}
+                  className="px-2.5 py-1 text-[11px] bg-violet-600 hover:bg-violet-500 text-zinc-100 rounded font-medium transition-colors"
+                >
+                  Save models
+                </button>
+              </div>
+            </div>
+          )}
+          {!showManualUI && (
+            <button
+              type="button"
+              onClick={() => setShowManualUI(true)}
+              className="text-[11px] text-violet-400 hover:text-violet-300 transition-colors font-medium underline"
+            >
+              Configure model list manually
+            </button>
+          )}
         </div>
       )}
       {showModelPicker && displayModels.length === 0 && !isLoadingModels && !modelFetchError && (
@@ -346,10 +457,10 @@ function ProviderForm({ kind, initial, onClose }: ProviderFormProps) {
         <div className="space-y-2">
           <button
             onClick={handleTest}
-            disabled={isTesting}
+            disabled={isTesting || saving}
             className="flex items-center gap-2 px-3 py-2 text-xs bg-zinc-700 hover:bg-zinc-600 text-zinc-300 rounded-md transition-colors disabled:opacity-50"
           >
-            {isTesting ? <Loader2 size={13} className="animate-spin" /> : <Wifi size={13} />}
+            {isTesting || saving ? <Loader2 size={13} className="animate-spin" /> : <Wifi size={13} />}
             Test connection
           </button>
           {testResult && <TestStatus ok={testResult.ok} message={testResult.message} />}

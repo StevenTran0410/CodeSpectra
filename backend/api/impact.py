@@ -1,4 +1,4 @@
-"""Impact analysis API endpoints (RPA-060)."""
+"""Impact analysis API endpoints."""
 from __future__ import annotations
 
 from fastapi import APIRouter

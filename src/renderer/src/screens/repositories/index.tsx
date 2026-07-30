@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState, useRef } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams, useLocation } from 'react-router-dom'
 import { AlertTriangle, CheckCircle2, FolderOpen, GitBranch, Loader2, RefreshCw, Trash2 } from 'lucide-react'
 import { EmptyState } from '../../components/ui/EmptyState'
 import { ErrorBanner } from '../../components/ui/ErrorBanner'
@@ -9,6 +9,7 @@ import { toErrorMessage } from '../../lib/errors'
 import type {
   ClonePolicy,
   EstimateFileCountResponse,
+  LocalRepo,
   RepoSnapshot,
 } from '../../types/electron'
 import { useLocalRepoStore } from '../../store/local-repo.store'
@@ -47,7 +48,40 @@ export default function RepositoriesScreen(): React.ReactElement {
     [repos, selectedRepoId],
   )
 
-  useEffect(() => { load(activeWorkspaceId ?? undefined) }, [load, activeWorkspaceId])
+  const location = useLocation()
+  const mode = location.pathname.startsWith('/aeh') ? 'aeh' : 'code_analysis'
+
+  useEffect(() => { load(activeWorkspaceId ?? undefined, mode) }, [load, activeWorkspaceId, mode])
+
+  // AEH mode only: repos already imported under Code Analysis but not yet registered for
+  // AEH — "Use for AEH" reuses the on-disk clone instead of re-cloning via Code Hosts.
+  const [caReposAvailable, setCaReposAvailable] = useState<LocalRepo[]>([])
+  const [activatingPath, setActivatingPath] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (mode !== 'aeh' || !activeWorkspaceId) {
+      setCaReposAvailable([])
+      return
+    }
+    window.api.folder.list(activeWorkspaceId, 'code_analysis')
+      .then((caRepos) => {
+        const aehPaths = new Set(repos.map((r) => r.path))
+        setCaReposAvailable(caRepos.filter((r) => !aehPaths.has(r.path)))
+      })
+      .catch(() => setCaReposAvailable([]))
+  }, [mode, activeWorkspaceId, repos])
+
+  const handleUseForAEH = async (caRepo: LocalRepo) => {
+    setActivatingPath(caRepo.path)
+    try {
+      await window.api.folder.add(caRepo.path, activeWorkspaceId ?? undefined, 'aeh')
+      await load(activeWorkspaceId ?? undefined, 'aeh')
+    } catch (err) {
+      setScreenError(toErrorMessage(err))
+    } finally {
+      setActivatingPath(null)
+    }
+  }
 
   useEffect(() => {
     if (!selectedRepoId && repos.length > 0) setSelectedRepoId(repos[0].id)
@@ -103,6 +137,34 @@ export default function RepositoriesScreen(): React.ReactElement {
 
   useEffect(() => () => clearTimeout(syncTimerRef.current), [])
 
+  const caAvailableSection = mode === 'aeh' && caReposAvailable.length > 0 && (
+    <div className="border border-indigo-800/40 bg-indigo-950/20 rounded-lg p-4 space-y-2.5">
+      <h3 className="text-sm font-semibold text-indigo-300">Available from Code Analysis</h3>
+      <p className="text-xs text-indigo-300/70">
+        Already cloned/imported for Code Analysis — reuse it for AEH without cloning again
+        (AEH indexes it independently, test files included).
+      </p>
+      <div className="space-y-1.5">
+        {caReposAvailable.map((r) => (
+          <div key={r.id} className="flex items-center justify-between gap-3 bg-zinc-900/60 border border-zinc-800 rounded-md px-3 py-2">
+            <div className="min-w-0">
+              <p className="text-sm text-zinc-200 truncate">{r.name}</p>
+              <p className="text-xs text-zinc-500 truncate">{r.path}</p>
+            </div>
+            <Button
+              variant="secondary"
+              className="shrink-0 text-xs px-2.5 py-1"
+              disabled={activatingPath === r.path}
+              onClick={() => handleUseForAEH(r)}
+            >
+              {activatingPath === r.path ? 'Activating…' : 'Use for AEH'}
+            </Button>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+
   return (
     <div className="flex flex-col h-full">
       <div className="screen-header">
@@ -125,13 +187,22 @@ export default function RepositoriesScreen(): React.ReactElement {
         ) : loading ? (
           <LoadingRow message="Loading repositories..." />
         ) : repos.length === 0 ? (
-          <EmptyState
-            icon={<FolderOpen className="w-7 h-7" />}
-            title="No repositories in this workspace"
-            description="Add repositories from Code Hosts first, then configure snapshot settings here."
-          />
+          <>
+            {caAvailableSection}
+            <EmptyState
+              icon={<FolderOpen className="w-7 h-7" />}
+              title="No repositories in this workspace"
+              description={
+                mode === 'aeh'
+                  ? 'Use a repo already imported in Code Analysis above, or add a new one from Code Hosts.'
+                  : 'Add repositories from Code Hosts first, then configure snapshot settings here.'
+              }
+            />
+          </>
         ) : (
-          <div className="grid grid-cols-12 gap-4">
+          <>
+            {caAvailableSection}
+            <div className="grid grid-cols-12 gap-4">
             <div className="col-span-4 space-y-2">
               <h3 className="text-sm font-semibold text-zinc-300">Repositories</h3>
               {repos.map((repo) => (
@@ -282,7 +353,7 @@ export default function RepositoriesScreen(): React.ReactElement {
                               detect_submodules: detectSubmodules,
                               include_tests: includeTests,
                             })
-                            await load()
+                            await load(activeWorkspaceId ?? undefined, mode)
                           } catch (err) {
                             setScreenError(toErrorMessage(err))
                           } finally {
@@ -448,7 +519,8 @@ export default function RepositoriesScreen(): React.ReactElement {
                 </>
               )}
             </div>
-          </div>
+            </div>
+          </>
         )}
       </div>
       <ConfirmDialog
@@ -464,7 +536,7 @@ export default function RepositoriesScreen(): React.ReactElement {
             const rows = await window.api.sync.listForRepo(selectedRepo.id)
             setSnapshots(rows)
             setSelectedSnapshotId(rows[0]?.id ?? null)
-            await load()
+            await load(activeWorkspaceId ?? undefined, mode)
             setConfirmDeleteSnapshotId(null)
           } catch (err) {
             setScreenError(toErrorMessage(err))

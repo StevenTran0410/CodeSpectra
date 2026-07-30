@@ -400,6 +400,20 @@ class _SectionAgentComponent:
             "risk_output": risk_output,
             "auditor_output": auditor_output,
         }
+        if self._on_section_done is not None:
+            try:
+                await self._on_section_done(
+                    self._section,
+                    "running",
+                    0,
+                    None,
+                    None,
+                )
+            except Exception:
+                logger.warning(
+                    "[pipeline] on_section_done callback for running failed for %s",
+                    self._section,
+                )
         t0 = time.monotonic()
         status = "done"
         error_msg: str | None = None

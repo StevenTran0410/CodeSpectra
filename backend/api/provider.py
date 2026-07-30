@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 from pydantic import BaseModel, field_validator
 
+from domain.model_connector.reasoning import ModelInfo
 from domain.model_connector.service import ProviderConfigService
 from domain.model_connector.types import ProviderCapabilities, ProviderConfig, ProviderKind
 
@@ -58,6 +59,10 @@ class TestConnectionResponse(BaseModel):
 
 
 class ListModelsResponse(BaseModel):
+    models: list[ModelInfo]
+
+
+class EmbeddingModelsResponse(BaseModel):
     models: list[str]
 
 
@@ -109,6 +114,12 @@ async def delete_provider(provider_id: str) -> None:
 async def test_provider_connection(provider_id: str) -> TestConnectionResponse:
     result = await _service.test_connection(provider_id)
     return TestConnectionResponse(ok=result.ok, message=result.message, warning=result.warning)
+
+
+@router.get("/{provider_id}/embedding-models", response_model=EmbeddingModelsResponse)
+async def list_provider_embedding_models(provider_id: str) -> EmbeddingModelsResponse:
+    """Embedding model ids the provider's real endpoint serves (empty = none — kind isn't enough)."""
+    return EmbeddingModelsResponse(models=await _service.list_embedding_models(provider_id))
 
 
 @router.get("/{provider_id}/models", response_model=ListModelsResponse)

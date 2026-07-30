@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from domain.retrieval.types import RetrievalBundle
+from domain.retrieval.types import RetrievalBundle, RetrievalEvidence
 
 
 # Characters that can break JSON serialization or are rejected by LLM provider parsers.
@@ -55,7 +55,7 @@ def render_bundle(bundle: RetrievalBundle, limit: int = 40, excerpt_chars: int =
     limit: max evidence items to include (default 40).
     excerpt_chars: max chars per chunk. boundary-expanded chunks get 2× room.
 
-    Within-bundle dedup (CS-229, relaxed 2026-04-24): only consolidate when
+    Within-bundle dedup (relaxed 2026-04-24): only consolidate when
     the SAME chunk appears twice in one bundle's evidence list (e.g. via
     multi-query retrieval returning overlapping hits). Same file at different
     chunk positions is kept — different chunks usually represent different
@@ -81,14 +81,36 @@ def render_bundle(bundle: RetrievalBundle, limit: int = 40, excerpt_chars: int =
             seen[ev.chunk_id] = ev
             deduped_evidences.append(ev)
 
-    parts: list[str] = []
-    for i, ev in enumerate(deduped_evidences[:limit], start=1):
+    def _render_excerpt(ev: RetrievalEvidence) -> tuple[str, str]:
         excerpt = sanitize_chunk_text((ev.excerpt or "").strip())
         cap = excerpt_chars * 2 if "boundary-expanded" in ev.reason_codes else excerpt_chars
         if len(excerpt) > cap:
             excerpt = excerpt[:cap].rstrip() + "..."
+        lines = f" lines={ev.start_line}-{ev.end_line}" if ev.end_line else ""
+        return lines, excerpt
+
+    # Symbols multiple sub-queries independently converged on (see
+    # agents/_graph_plan.py::promote_dominant_symbols) are pulled out of the regular
+    # per-chunk list and shown as one fully-assembled block — a strong "this matters" signal.
+    dominant = [ev for ev in deduped_evidences if "dominant-seed" in ev.reason_codes]
+    regular = [ev for ev in deduped_evidences if "dominant-seed" not in ev.reason_codes]
+
+    parts: list[str] = []
+
+    if dominant:
+        dom_parts = []
+        for ev in sorted(dominant, key=lambda e: (e.rel_path, e.chunk_index)):
+            lines, excerpt = _render_excerpt(ev)
+            dom_parts.append(f"file={ev.rel_path}{lines}\n{excerpt}")
         parts.append(
-            f"[{i}] file={ev.rel_path} chunk={ev.chunk_index} score={ev.score:.3f} "
+            "=== DOMINANT FUNCTION/CLASS — converged on by multiple sub-queries, shown in full ===\n\n"
+            + "\n\n---\n\n".join(dom_parts)
+        )
+
+    for i, ev in enumerate(regular[:limit], start=1):
+        lines, excerpt = _render_excerpt(ev)
+        parts.append(
+            f"[{i}] file={ev.rel_path} chunk={ev.chunk_index}{lines} score={ev.score:.3f} "
             f"reasons={','.join(ev.reason_codes)}\n{excerpt}"
         )
     return "\n\n---\n\n".join(parts) if parts else "No evidence returned."

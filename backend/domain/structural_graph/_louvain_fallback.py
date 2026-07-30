@@ -1,4 +1,4 @@
-"""Pure-Python Louvain community detection fallback (CS-102).
+"""Pure-Python Louvain community detection fallback.
 
 Uses networkx if available (already in pyproject.toml optional deps),
 otherwise falls back to a minimal greedy modularity implementation

@@ -459,7 +459,7 @@ CREATE INDEX IF NOT EXISTS idx_retrieval_chunks_snapshot_path
 -- Covers report history queries ordered by creation time.
 -- NOTE: DESC on the second column requires SQLite 3.37+; this project targets
 -- Python 3.11+ which bundles SQLite 3.39+, so DESC is safe here.
--- TODO(CS-229): extend this index if a soft-delete column is added to analysis_reports.
+-- TODO: extend this index if a soft-delete column is added to analysis_reports.
 CREATE INDEX IF NOT EXISTS idx_analysis_reports_repo_created
     ON analysis_reports(repo_id, created_at DESC);
 """,
@@ -517,6 +517,91 @@ ALTER TABLE symbol_graph_edges ADD COLUMN confidence_score REAL NOT NULL DEFAULT
 ALTER TABLE symbol_graph_edges ADD COLUMN resolution_method TEXT NOT NULL DEFAULT 'unknown';
 ALTER TABLE structural_graph_edges ADD COLUMN confidence_score REAL NOT NULL DEFAULT 1.0;
 ALTER TABLE structural_graph_edges ADD COLUMN resolution_method TEXT NOT NULL DEFAULT 'import_statement';
+""",
+    },
+    {
+        "version": 33,
+        "description": "Add mode column to local_repos and replace single UNIQUE(path) with composite (path, workspace_id, mode)",
+        "sql": """
+CREATE TABLE local_repos_new (
+    id                TEXT PRIMARY KEY,
+    workspace_id      TEXT,
+    path              TEXT NOT NULL,
+    name              TEXT NOT NULL,
+    source_type       TEXT NOT NULL DEFAULT 'local_folder',
+    is_git_repo       INTEGER NOT NULL DEFAULT 0,
+    git_branch        TEXT,
+    git_head_hash     TEXT,
+    git_remote_url    TEXT,
+    has_size_warning  INTEGER NOT NULL DEFAULT 0,
+    selected_branch   TEXT,
+    active_snapshot_id TEXT,
+    sync_mode         TEXT NOT NULL DEFAULT 'latest',
+    pinned_ref        TEXT,
+    ignore_overrides  TEXT NOT NULL DEFAULT '[]',
+    detect_submodules INTEGER NOT NULL DEFAULT 1,
+    include_tests     INTEGER NOT NULL DEFAULT 0,
+    mode              TEXT NOT NULL DEFAULT 'code_analysis',
+    added_at          TEXT NOT NULL,
+    last_validated_at TEXT NOT NULL
+);
+
+INSERT INTO local_repos_new (
+    id, workspace_id, path, name, source_type, is_git_repo, git_branch, git_head_hash,
+    git_remote_url, has_size_warning, selected_branch, active_snapshot_id, sync_mode,
+    pinned_ref, ignore_overrides, detect_submodules, include_tests, mode,
+    added_at, last_validated_at
+)
+SELECT
+    id, workspace_id, path, name, source_type, is_git_repo, git_branch, git_head_hash,
+    git_remote_url, has_size_warning, selected_branch, active_snapshot_id, sync_mode,
+    pinned_ref, ignore_overrides, detect_submodules, include_tests, 'code_analysis',
+    added_at, last_validated_at
+FROM local_repos;
+
+DROP TABLE local_repos;
+ALTER TABLE local_repos_new RENAME TO local_repos;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_local_repos_path_workspace_mode
+    ON local_repos(path, workspace_id, mode);
+""",
+    },
+    {
+        "version": 34,
+        "description": "Add split_part/split_of to retrieval_chunks — an oversized function/class is now split into overlapping parts instead of being silently dropped from the index",
+        "sql": """
+ALTER TABLE retrieval_chunks ADD COLUMN split_part INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE retrieval_chunks ADD COLUMN split_of    INTEGER NOT NULL DEFAULT 1;
+""",
+    },
+    {
+        "version": 35,
+        "description": "Widen idx_sym_edges_unique to (snapshot_id, src_symbol, dst_symbol, edge_type) to support multi-edge kinds between symbol pairs",
+        "sql": """
+DROP INDEX IF EXISTS idx_sym_edges_unique;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sym_edges_unique ON symbol_graph_edges(snapshot_id, src_symbol, dst_symbol, edge_type);
+""",
+    },
+    {
+        "version": 36,
+        "description": "Add qualified_name column to code_symbols for FQN graph-signal joins",
+        "sql": """
+ALTER TABLE code_symbols ADD COLUMN qualified_name TEXT;
+CREATE INDEX IF NOT EXISTS idx_symbols_qname ON code_symbols(snapshot_id, qualified_name);
+UPDATE code_symbols SET qualified_name = rel_path || '::' || CASE WHEN parent_name IS NOT NULL AND parent_name<>'' THEN parent_name||'.'||name ELSE name END;
+""",
+    },
+    {
+        "version": 37,
+        "description": "Add name_segment_vocab table for CS-331 fuzzy symbol lookup and segment matching",
+        "sql": """
+CREATE TABLE IF NOT EXISTS name_segment_vocab (
+    snapshot_id TEXT NOT NULL,
+    segment     TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    PRIMARY KEY (snapshot_id, segment, name)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS idx_vocab_seg ON name_segment_vocab(snapshot_id, segment);
 """,
     },
 ]

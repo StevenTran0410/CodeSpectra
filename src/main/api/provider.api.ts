@@ -1,6 +1,6 @@
 import { ipcMain } from 'electron'
 import type { BackendClient } from '../infrastructure/python-server/client'
-import type { ProviderConfig, CreateProviderRequest, UpdateProviderRequest } from './types'
+import type { ProviderConfig, CreateProviderRequest, UpdateProviderRequest, ModelInfo } from './types'
 
 export function registerProviderHandlers(client: BackendClient): void {
   ipcMain.handle('provider:list', (): Promise<ProviderConfig[]> =>
@@ -30,8 +30,14 @@ export function registerProviderHandlers(client: BackendClient): void {
   )
 
   ipcMain.handle(
-    'provider:models',
+    'provider:embedding-models',
     (_event, id: string): Promise<{ models: string[] }> =>
+      client.get(`/api/provider/${id}/embedding-models`)
+  )
+
+  ipcMain.handle(
+    'provider:models',
+    (_event, id: string): Promise<{ models: ModelInfo[] }> =>
       client.get(`/api/provider/${id}/models`)
   )
 }

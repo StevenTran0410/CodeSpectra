@@ -311,7 +311,7 @@ function LocalRepoCard({
   )
 }
 
-function AddFolderPanel({ onClose, workspaceId }: { onClose: () => void; workspaceId?: string }) {
+function AddFolderPanel({ onClose, workspaceId, mode = 'code_analysis' }: { onClose: () => void; workspaceId?: string; mode?: string }) {
   const { validate, clearValidation, validation, validating, add, adding, error } = useLocalRepoStore()
 
   const handlePick = async () => {
@@ -322,7 +322,7 @@ function AddFolderPanel({ onClose, workspaceId }: { onClose: () => void; workspa
 
   const handleConfirm = async () => {
     if (!validation?.path) return
-    const repo = await add(validation.path, workspaceId)
+    const repo = await add(validation.path, workspaceId, mode)
     if (repo) {
       useToastStore.getState().success('Folder added')
       onClose()
@@ -366,7 +366,7 @@ function AddFolderPanel({ onClose, workspaceId }: { onClose: () => void; workspa
   )
 }
 
-function CloneFromUrlPanel({ onClose, onCloned, workspaceId }: { onClose: () => void; onCloned: () => void; workspaceId?: string }) {
+function CloneFromUrlPanel({ onClose, onCloned, workspaceId, mode = 'code_analysis' }: { onClose: () => void; onCloned: () => void; workspaceId?: string; mode?: string }) {
   const [url, setUrl] = useState('')
   const [cloning, setCloning] = useState(false)
   const [cloneError, setCloneError] = useState<string | null>(null)
@@ -381,7 +381,7 @@ function CloneFromUrlPanel({ onClose, onCloned, workspaceId }: { onClose: () => 
     setCloning(true)
     setCloneError(null)
     try {
-      await window.api.folder.cloneFromUrl(trimmed, workspaceId)
+      await window.api.folder.cloneFromUrl(trimmed, workspaceId, mode)
       useToastStore.getState().success('Repository cloned')
       onCloned()
       onClose()
@@ -583,8 +583,11 @@ export default function CodeHostsSetup(): React.ReactElement {
   const toast = useToastStore()
   const [panel, setPanel] = useState<'none' | 'folder' | 'clone'>('none')
   const [confirmRemoveId, setConfirmRemoveId] = useState<string | null>(null)
+  // Code Hosts is a shared screen with no route-based mode (unlike Repositories/Ask) — the
+  // user must pick CA vs AEH lineage explicitly here, or AEH repos could never be created.
+  const [hostMode, setHostMode] = useState<'code_analysis' | 'aeh'>('code_analysis')
 
-  useEffect(() => { load(activeWorkspaceId ?? undefined) }, [load, activeWorkspaceId])
+  useEffect(() => { load(activeWorkspaceId ?? undefined, hostMode) }, [load, activeWorkspaceId, hostMode])
 
   return (
     <>
@@ -611,18 +614,49 @@ export default function CodeHostsSetup(): React.ReactElement {
         )}
       </div>
 
+      <div className="px-6 pt-4">
+        <div className="inline-flex items-center rounded-lg border border-zinc-800 bg-zinc-900/60 p-0.5 text-xs">
+          <button
+            onClick={() => setHostMode('code_analysis')}
+            className={`px-3 py-1.5 rounded-md font-medium transition-colors ${
+              hostMode === 'code_analysis'
+                ? 'bg-zinc-800 text-gray-100'
+                : 'text-gray-400 hover:text-gray-200'
+            }`}
+          >
+            Code Analysis
+          </button>
+          <button
+            onClick={() => setHostMode('aeh')}
+            className={`px-3 py-1.5 rounded-md font-medium transition-colors ${
+              hostMode === 'aeh'
+                ? 'bg-indigo-500/15 text-indigo-300 border border-indigo-500/30'
+                : 'text-gray-400 hover:text-gray-200'
+            }`}
+          >
+            Agentic Eval Harness
+          </button>
+        </div>
+        <p className="text-[11px] text-gray-500 mt-1.5">
+          {hostMode === 'aeh'
+            ? 'Repos added here are indexed independently for AEH (test files included) — separate from any Code Analysis import of the same folder.'
+            : 'Repos added here are indexed for Code Analysis (test files excluded by default).'}
+        </p>
+      </div>
+
       <div className="p-6 space-y-4 overflow-y-auto">
         {error && <ErrorBanner message={error} onDismiss={clearError} />}
 
         {panel === 'folder' && (
-          <AddFolderPanel onClose={() => setPanel('none')} workspaceId={activeWorkspaceId ?? undefined} />
+          <AddFolderPanel onClose={() => setPanel('none')} workspaceId={activeWorkspaceId ?? undefined} mode={hostMode} />
         )}
 
         {panel === 'clone' && (
           <CloneFromUrlPanel
             onClose={() => setPanel('none')}
-            onCloned={() => { load(activeWorkspaceId ?? undefined); setPanel('none') }}
+            onCloned={() => { load(activeWorkspaceId ?? undefined, hostMode); setPanel('none') }}
             workspaceId={activeWorkspaceId ?? undefined}
+            mode={hostMode}
           />
         )}
 

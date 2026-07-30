@@ -2,14 +2,18 @@
 import httpx
 
 from domain.model_connector._local_base import LocalAdapterBase
-from domain.model_connector.errors import ProviderError
-from domain.model_connector.types import ChatRequest, ChatResponse
+from domain.model_connector.errors import ProviderError, ProviderErrorCode
+from domain.model_connector.types import ChatRequest, ChatResponse, EmbedRequest, EmbedResponse
 from shared.logger import logger
 
 _NO_MODEL_WARNING = (
     "Connected, but no model is loaded in LM Studio. "
     "Load a model in the Chat tab before running analysis."
 )
+
+# Local embedding-only models commonly loaded alongside chat models — not usable
+# for text generation, so they're excluded from the model picker.
+_NON_CHAT_MARKERS = ("embed", "bert")
 
 
 class LMStudioAdapter(LocalAdapterBase):
@@ -20,7 +24,11 @@ class LMStudioAdapter(LocalAdapterBase):
             res = await self._client.get("/v1/models")
             res.raise_for_status()
             data = res.json()
-            return [m["id"] for m in data.get("data", [])]
+            return [
+                m["id"]
+                for m in data.get("data", [])
+                if not any(marker in m["id"].lower() for marker in _NON_CHAT_MARKERS)
+            ]
         except httpx.ConnectError as e:
             raise self._map_connect_error(e) from e
         except httpx.TimeoutException as e:
@@ -89,3 +97,10 @@ class LMStudioAdapter(LocalAdapterBase):
             return True, f"Connected — {len(models)} model(s) loaded", None
         except ProviderError as e:
             return False, e.message, None
+
+    async def embed(self, request: EmbedRequest) -> EmbedResponse:  # noqa: ARG002
+        raise ProviderError(
+            ProviderErrorCode.UNKNOWN,
+            "LM Studio embeddings are not wired in this version — use OpenAI, Gemini, or Local GPU",
+            provider_id=self.config.id,
+        )

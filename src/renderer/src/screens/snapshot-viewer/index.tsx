@@ -292,7 +292,7 @@ export default function SnapshotViewerScreen(): React.ReactElement {
               Select for index
             </button>
             <button
-              onClick={() => navigate('/repositories')}
+              onClick={() => navigate(-1)}
               className="px-2.5 py-1.5 text-xs border border-zinc-700 rounded-md text-zinc-300 hover:border-zinc-600 inline-flex items-center gap-1"
             >
               <ArrowLeft size={12} />
@@ -399,6 +399,8 @@ export default function SnapshotViewerScreen(): React.ReactElement {
                   try {
                     await window.api.folder.setActiveSnapshot(repoId, snapshotId)
                     await window.api.repomap.build(snapshotId, false)
+                    // Retrieval/BM25 index is separate from repo-map; AEH Discovery needs it too.
+                    await window.api.retrieval.buildIndex(snapshotId, false)
                     setBuildProgress(100)
                     navigate(`/index-overview?repoId=${encodeURIComponent(repoId)}&snapshotId=${encodeURIComponent(snapshotId)}`)
                   } catch (err) {

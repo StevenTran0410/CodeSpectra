@@ -587,6 +587,21 @@ def _char_ngrams(text: str, n_min: int = 2, n_max: int = 4) -> list[str]:
 # Primary: sklearn TF-IDF (char_wb n-gram) + Logistic Regression
 # ---------------------------------------------------------------------------
 
+class _SklearnClassifier:
+    """Module-level (not a closure) so pickle/joblib can find it by qualified name when
+    persisting the trained model. Holds the fitted vectorizer + estimator as attributes —
+    both are picklable sklearn objects."""
+
+    def __init__(self, vec: "object", clf: "object") -> None:
+        self._vec = vec
+        self._clf = clf
+
+    def predict(self, text: str, threshold: float = 0.5) -> tuple[bool, float]:
+        xv = self._vec.transform([text])
+        prob = self._clf.predict_proba(xv)[0, 1]
+        return prob >= threshold, float(prob)
+
+
 def _build_sklearn_classifier(dataset: list[tuple[str, bool]]) -> "object | None":
     """Build a sklearn classifier. Returns None if sklearn is not available."""
     try:
@@ -608,13 +623,7 @@ def _build_sklearn_classifier(dataset: list[tuple[str, bool]]) -> "object | None
         clf = LogisticRegression(max_iter=500, C=5.0, solver="lbfgs")
         clf.fit(X, labels)
 
-        class _SklearnClassifier:
-            def predict(self, text: str, threshold: float = 0.5) -> tuple[bool, float]:
-                xv = vec.transform([text])
-                prob = clf.predict_proba(xv)[0, 1]
-                return prob >= threshold, float(prob)
-
-        return _SklearnClassifier()
+        return _SklearnClassifier(vec, clf)
 
     except ImportError:
         return None

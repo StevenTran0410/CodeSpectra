@@ -1,0 +1,22 @@
+target_system_id: linear_rag
+discrepancies: []
+components:
+  - id: retriever
+    role: retrieval_agent
+    model: null
+    entry_point: "test_targets.linear_rag.pipeline:run_retrieve"
+    span_match:
+      - component_name: retriever
+    constraints: []
+    upstream: []
+    downstream: [writer]
+
+  - id: writer
+    role: writer
+    model: fake-mini
+    entry_point: "test_targets.linear_rag.pipeline:run_write"
+    span_match:
+      - component_name: writer
+    constraints: []
+    upstream: [retriever]
+    downstream: []

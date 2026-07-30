@@ -1,0 +1,1 @@
+All pull requests require at least one approval from a code owner before merging to the main branch. Reviewers should focus on correctness, readability, and test coverage.

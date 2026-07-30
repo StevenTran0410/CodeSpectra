@@ -1,7 +1,8 @@
-"""Repo map and symbol extraction service (RPA-032)."""
+"""Repo map and symbol extraction service."""
 import json
 from pathlib import Path
 
+from domain.retrieval.bm25_scorer import split_identifier
 from infrastructure.db.database import get_db
 from shared.errors import NotFoundError
 from shared.logger import logger
@@ -31,11 +32,17 @@ from .types import (
     SymbolsResponse,
 )
 
+def make_qualified_name(rel_path: str, name: str, parent_name: str | None = None) -> str:
+    """Standard FQN identity convention: rel_path::name (for class/function) or rel_path::parent_name.name (for method)."""
+    p = f"{parent_name}." if parent_name else ""
+    return f"{rel_path}::{p}{name}"
+
+
 # Column list for code_symbols SELECT queries — avoids pulling all columns when
 # only a subset is needed. Explicit columns are cheaper and document intent.
 _SYMBOL_COLS = (
     "id, snapshot_id, rel_path, language, name, kind, "
-    "line_start, line_end, signature, parent_name, extract_source"
+    "line_start, line_end, signature, parent_name, extract_source, qualified_name"
 )
 
 # Batch size for executemany inserts into code_symbols.
@@ -88,7 +95,7 @@ async def _flush_symbol_batch(db, batch: list[tuple]) -> None:
 
     Each tuple must match the INSERT column order:
     (id, snapshot_id, rel_path, language, name, kind, line_start, line_end,
-     signature, parent_name, extract_source, created_at)
+     signature, parent_name, extract_source, created_at, qualified_name)
     """
     if not batch:
         return
@@ -96,8 +103,8 @@ async def _flush_symbol_batch(db, batch: list[tuple]) -> None:
         """
         INSERT INTO code_symbols
         (id, snapshot_id, rel_path, language, name, kind, line_start, line_end,
-         signature, parent_name, extract_source, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         signature, parent_name, extract_source, created_at, qualified_name)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         batch,
     )
@@ -120,6 +127,119 @@ def _extract_symbols_treesitter(content: str, language: str) -> list[_Symbol]:
     except Exception as exc:
         logger.warning("tree-sitter extraction failed for %s: %s", language, exc)
         return []
+
+
+def levenshtein_distance(s1: str, s2: str) -> int:
+    """Compute Levenshtein edit distance between two strings."""
+    if s1 == s2:
+        return 0
+    if not s1:
+        return len(s2)
+    if not s2:
+        return len(s1)
+    previous_row = list(range(len(s2) + 1))
+    for i, c1 in enumerate(s1):
+        current_row = [i + 1]
+        for j, c2 in enumerate(s2):
+            insertions = previous_row[j + 1] + 1
+            deletions = current_row[j] + 1
+            substitutions = previous_row[j] + (c1 != c2)
+            current_row.append(min(insertions, deletions, substitutions))
+        previous_row = current_row
+    return previous_row[-1]
+
+
+def _symbol_record_from_row(r) -> SymbolRecord:
+    """Build a SymbolRecord from a code_symbols row, deriving qualified_name for rows predating that column."""
+    return SymbolRecord(
+        id=r["id"],
+        snapshot_id=r["snapshot_id"],
+        rel_path=r["rel_path"],
+        language=r["language"],
+        name=r["name"],
+        kind=SymbolKind(r["kind"]),
+        line_start=r["line_start"],
+        line_end=r["line_end"],
+        signature=r["signature"],
+        parent_name=r["parent_name"],
+        extract_source=ExtractSource(
+            r["extract_source"] if r["extract_source"] else "lexical"
+        ),
+        qualified_name=r["qualified_name"] if "qualified_name" in r.keys() else make_qualified_name(r["rel_path"], r["name"], r["parent_name"]),
+    )
+
+
+async def search_symbols_cascade(
+    db, snapshot_id: str, q: str, limit: int = 120
+) -> list[SymbolRecord]:
+    """Search code symbols using a cascade: LIKE search -> bounded Levenshtein (<=2) fallback.
+
+    Re-verifies all candidates against code_symbols table for snapshot_id before returning.
+    """
+    q_str = q.strip()
+    if not q_str:
+        return []
+
+    like = f"%{q_str}%"
+    async with db.execute(
+        f"""
+        SELECT {_SYMBOL_COLS} FROM code_symbols
+        WHERE snapshot_id=? AND (name LIKE ? OR rel_path LIKE ?)
+        ORDER BY
+          CASE WHEN name = ? THEN 0 WHEN name LIKE ? THEN 1 ELSE 2 END,
+          rel_path ASC,
+          line_start ASC
+        LIMIT ?
+        """,
+        (snapshot_id, like, like, q_str, f"{q_str}%", limit),
+    ) as cur:
+        rows = await cur.fetchall()
+
+    if rows:
+        return [_symbol_record_from_row(r) for r in rows]
+
+    # Stage 2: Bounded Levenshtein fuzzy fallback (edit distance <= 2)
+    q_low = q_str.lower()
+    async with db.execute(
+        "SELECT DISTINCT name FROM code_symbols WHERE snapshot_id=? AND kind NOT IN ('file', 'module')",
+        (snapshot_id,),
+    ) as cur:
+        name_rows = await cur.fetchall()
+
+    candidate_names: list[tuple[int, str]] = []
+    for r in name_rows:
+        sym_name = r["name"]
+        if not sym_name:
+            continue
+        dist = levenshtein_distance(q_low, sym_name.lower())
+        if dist <= 2:
+            candidate_names.append((dist, sym_name))
+
+    if not candidate_names:
+        return []
+
+    candidate_names.sort(key=lambda x: (x[0], x[1].lower()))
+
+    fuzzy_records: list[SymbolRecord] = []
+    seen_ids: set[str] = set()
+
+    for _dist, sym_name in candidate_names:
+        async with db.execute(
+            f"SELECT {_SYMBOL_COLS} FROM code_symbols WHERE snapshot_id=? AND LOWER(name)=? LIMIT 10",
+            (snapshot_id, sym_name.lower()),
+        ) as cur:
+            r_rows = await cur.fetchall()
+            for r in r_rows:
+                rec_id = r["id"]
+                if rec_id not in seen_ids:
+                    seen_ids.add(rec_id)
+                    fuzzy_records.append(_symbol_record_from_row(r))
+                if len(fuzzy_records) >= limit:
+                    break
+        if len(fuzzy_records) >= limit:
+            break
+
+    return fuzzy_records[:limit]
 
 
 class RepoMapService:
@@ -177,6 +297,7 @@ class RepoMapService:
 
         # Accumulate rows for batch insert; flushed every _SYMBOL_BATCH_SIZE rows.
         pending_batch: list[tuple] = []
+        vocab_batch: list[tuple[str, str, str]] = []
 
         for row in files:
             rel_path = row["rel_path"]
@@ -229,6 +350,7 @@ class RepoMapService:
                 if dedupe_key in inserted_keys:
                     continue
                 inserted_keys.add(dedupe_key)
+                qname = make_qualified_name(rel_path, name, parent_name)
                 pending_batch.append((
                     new_id(),
                     req.snapshot_id,
@@ -242,9 +364,14 @@ class RepoMapService:
                     parent_name,
                     extract_source.value,
                     now,
+                    qname,
                 ))
                 total_symbols += 1
                 kind_breakdown[kind.value] = kind_breakdown.get(kind.value, 0) + 1
+
+                if kind.value not in ("file", "module"):
+                    for seg in split_identifier(name):
+                        vocab_batch.append((req.snapshot_id, seg, name))
 
                 if len(pending_batch) >= _SYMBOL_BATCH_SIZE:
                     await _flush_symbol_batch(db, pending_batch)
@@ -253,6 +380,16 @@ class RepoMapService:
         # Flush any remaining rows.
         if pending_batch:
             await _flush_symbol_batch(db, pending_batch)
+
+        if vocab_batch:
+            try:
+                await db.executemany(
+                    "INSERT OR IGNORE INTO name_segment_vocab (snapshot_id, segment, name) VALUES (?, ?, ?)",
+                    vocab_batch,
+                )
+                await db.commit()
+            except Exception:
+                logger.exception("Failed to flush name_segment_vocab batch for %s", req.snapshot_id)
 
         extract_mode = ExtractMode.HYBRID if used_structural > 0 else ExtractMode.LEXICAL
 
@@ -354,44 +491,8 @@ class RepoMapService:
         )
 
     async def search(self, snapshot_id: str, q: str, limit: int = 120) -> SymbolsResponse:
-        q = q.strip()
-        if not q:
-            return SymbolsResponse(snapshot_id=snapshot_id, symbols=[])
-        like = f"%{q}%"
-        async with get_db().execute(
-            f"""
-            SELECT {_SYMBOL_COLS} FROM code_symbols
-            WHERE snapshot_id=? AND (name LIKE ? OR rel_path LIKE ?)
-            ORDER BY
-              CASE WHEN name = ? THEN 0 WHEN name LIKE ? THEN 1 ELSE 2 END,
-              rel_path ASC,
-              line_start ASC
-            LIMIT ?
-            """,
-            (snapshot_id, like, like, q, f"{q}%", limit),
-        ) as cur:
-            rows = await cur.fetchall()
-        return SymbolsResponse(
-            snapshot_id=snapshot_id,
-            symbols=[
-                SymbolRecord(
-                    id=r["id"],
-                    snapshot_id=r["snapshot_id"],
-                    rel_path=r["rel_path"],
-                    language=r["language"],
-                    name=r["name"],
-                    kind=SymbolKind(r["kind"]),
-                    line_start=r["line_start"],
-                    line_end=r["line_end"],
-                    signature=r["signature"],
-                    parent_name=r["parent_name"],
-                    extract_source=ExtractSource(
-                        r["extract_source"] if r["extract_source"] else "lexical"
-                    ),
-                )
-                for r in rows
-            ],
-        )
+        symbols = await search_symbols_cascade(get_db(), snapshot_id, q, limit=limit)
+        return SymbolsResponse(snapshot_id=snapshot_id, symbols=symbols)
 
     async def export_csv(self, snapshot_id: str, exclude_tests: bool = True) -> RepoMapCsvResponse:
         q_exists = "SELECT 1 FROM repo_maps WHERE snapshot_id=?"

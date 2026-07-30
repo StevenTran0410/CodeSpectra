@@ -1,4 +1,4 @@
-"""Typed section contracts for analysis report (RPA-053)."""
+"""Typed section contracts for analysis report."""
 
 from __future__ import annotations
 
@@ -101,7 +101,7 @@ class SectionB(TypedDict):
     confidence: str
     evidence_files: list[str]
     blind_spots: list[str]
-    mermaid_diagram: NotRequired[str | None]  # None for analyses run before CS-218
+    mermaid_diagram: NotRequired[str | None]  # None for analyses run before mermaid diagrams existed
 
 
 class SectionC(TypedDict):
@@ -110,7 +110,7 @@ class SectionC(TypedDict):
     confidence: str
     evidence_files: list[str]
     blind_spots: list[str]
-    mermaid_diagram: NotRequired[str | None]  # None for analyses run before CS-218
+    mermaid_diagram: NotRequired[str | None]  # None for analyses run before mermaid diagrams existed
 
 
 class SectionD(TypedDict):
@@ -139,7 +139,7 @@ class SectionF(TypedDict):
     confidence: str
     evidence_files: list[str]
     blind_spots: list[str]
-    mermaid_diagram: NotRequired[str | None]  # None for analyses run before CS-218
+    mermaid_diagram: NotRequired[str | None]  # None for analyses run before mermaid diagrams existed
 
 
 class SectionG(TypedDict):
