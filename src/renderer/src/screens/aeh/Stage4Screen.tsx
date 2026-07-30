@@ -147,7 +147,7 @@ export default function Stage4Screen(): React.ReactElement {
           <Button
             variant="ghost"
             className="w-8 h-8 p-0 rounded-full flex items-center justify-center border border-slate-800 bg-slate-900/40 text-slate-400 hover:text-slate-200"
-            onClick={() => navigate('/aeh/analysis')}
+            onClick={() => navigate(-1)}
           >
             <ArrowLeft size={16} />
           </Button>
@@ -165,7 +165,7 @@ export default function Stage4Screen(): React.ReactElement {
           <Button
             variant="ghost"
             className="w-8 h-8 p-0 rounded-full flex items-center justify-center border border-slate-800 bg-slate-900/40 text-slate-400 hover:text-slate-200"
-            onClick={() => navigate('/aeh/analysis')}
+            onClick={() => navigate(-1)}
           >
             <ArrowLeft size={16} />
           </Button>

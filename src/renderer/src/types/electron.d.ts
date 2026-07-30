@@ -27,8 +27,33 @@ export interface Job {
   started_at: string
   finished_at: string | null
 }
+export interface AEHTraceSpan {
+  id: string
+  trace_id?: string
+  parent_id?: string | null
+  component_id: string
+  name: string
+  start_time?: string
+  end_time?: string
+  latency_ms: number
+  error?: string | null
+  span_type?: string
+  tokens_in?: number | null
+  tokens_out?: number | null
+  input_json?: string | null
+  output_json?: string | null
+  attributes?: Record<string, unknown>
+  events?: Array<{ name: string; timestamp: string; attributes?: Record<string, unknown> }>
+}
+
+
+export interface AEHTraceDetailResponse {
+  trace?: Record<string, unknown> | null
+  spans: AEHTraceSpan[]
+}
 
 export interface Workspace {
+
   id: string
   name: string
   description?: string
@@ -1100,6 +1125,26 @@ declare global {
     discrepancies: string[]
     components: AEHSystemMapComponent[]
   }
+
+  export interface AEHTraceSpan {
+    id: string
+    trace_id?: string
+    parent_id?: string | null
+    component_id: string
+    name: string
+    start_time?: string
+    end_time?: string
+    latency_ms: number
+    error?: string | null
+    attributes?: Record<string, unknown>
+    events?: Array<{ name: string; timestamp: string; attributes?: Record<string, unknown> }>
+  }
+
+  export interface AEHTraceDetailResponse {
+    trace?: Record<string, unknown> | null
+    spans: AEHTraceSpan[]
+  }
+
 
   export interface AEHAgentFlow {
     id: string

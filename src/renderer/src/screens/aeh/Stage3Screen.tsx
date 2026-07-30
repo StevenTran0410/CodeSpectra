@@ -435,7 +435,7 @@ export default function Stage3Screen(): React.ReactElement {
             variant="ghost"
             className="w-8 h-8 p-0 rounded-full flex items-center justify-center border border-slate-800 bg-slate-900/40 text-slate-400 hover:text-slate-200 shrink-0"
             onClick={() =>
-              viewingAgent ? setViewingAgentId(null) : navigate(`/aeh/analysis?repoId=${repoId}&snapshotId=${snapshotId}`)
+              viewingAgent ? setViewingAgentId(null) : navigate(-1)
             }
             title={viewingAgent ? 'Back to agent list' : undefined}
           >

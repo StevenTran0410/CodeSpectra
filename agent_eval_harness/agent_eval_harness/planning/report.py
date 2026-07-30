@@ -69,9 +69,25 @@ class EvaluationPlanReport(BaseModel):
     schema_version: int | None = None
 
 
+_PLAN_REPORT_CACHE: dict[tuple[str, float], EvaluationPlanReport] = {}
+
+
 def load_plan_report(path: str | Path) -> EvaluationPlanReport:
-    data = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
-    return EvaluationPlanReport.model_validate(data)
+    """Load EvaluationPlanReport from YAML. Cached by (path, mtime)."""
+    p = Path(path)
+    try:
+        mtime = p.stat().st_mtime
+    except OSError:
+        mtime = 0.0
+    cache_key = (str(p.resolve()), mtime)
+    if cache_key in _PLAN_REPORT_CACHE:
+        return _PLAN_REPORT_CACHE[cache_key]
+
+    data = yaml.safe_load(p.read_text(encoding="utf-8"))
+    report = EvaluationPlanReport.model_validate(data)
+    _PLAN_REPORT_CACHE[cache_key] = report
+    return report
+
 
 
 def save_plan_report(report: EvaluationPlanReport, path: str | Path) -> None:

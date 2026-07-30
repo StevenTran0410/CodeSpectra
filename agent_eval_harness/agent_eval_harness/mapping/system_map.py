@@ -88,10 +88,25 @@ class SystemMap(BaseModel):
         return None
 
 
+_SYSTEM_MAP_CACHE: dict[tuple[str, float], SystemMap] = {}
+
+
 def load_system_map(path: str | Path) -> SystemMap:
-    """Schema validation is a hard gate — invalid shape fails loudly."""
-    data = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
-    return SystemMap.model_validate(data)
+    """Schema validation is a hard gate — invalid shape fails loudly. Cached by (path, mtime)."""
+    p = Path(path)
+    try:
+        mtime = p.stat().st_mtime
+    except OSError:
+        mtime = 0.0
+    cache_key = (str(p.resolve()), mtime)
+    if cache_key in _SYSTEM_MAP_CACHE:
+        return _SYSTEM_MAP_CACHE[cache_key]
+
+    data = yaml.safe_load(p.read_text(encoding="utf-8"))
+    sys_map = SystemMap.model_validate(data)
+    _SYSTEM_MAP_CACHE[cache_key] = sys_map
+    return sys_map
+
 
 
 def save_system_map(system_map: SystemMap, path: str | Path) -> None:

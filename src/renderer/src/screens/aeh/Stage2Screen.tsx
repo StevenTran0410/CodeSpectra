@@ -340,7 +340,7 @@ export default function Stage2Screen(): React.ReactElement {
       <div className="px-4 py-3 border-b border-slate-800 bg-[#0f172a]/60 backdrop-blur-sm flex items-center justify-between shrink-0">
         <div className="flex items-center gap-3">
           <button
-            onClick={() => navigate(`/aeh/analysis?repoId=${repoId}&snapshotId=${snapshotId}`)}
+            onClick={() => navigate(-1)}
             className="p-1 rounded-lg hover:bg-slate-800 transition-colors text-slate-400 hover:text-slate-200"
           >
             <ArrowLeft className="w-4 h-4" />

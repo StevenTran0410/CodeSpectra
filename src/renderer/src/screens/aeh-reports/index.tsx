@@ -36,6 +36,7 @@ export default function AEHReportsScreen(): React.ReactElement {
     <Routes>
       <Route path="/" element={<RunsListScreen />} />
       <Route path="runs/:runId" element={<RunDetailScreen />} />
+      <Route path="runs/:runId/agents/:agentId" element={<ComponentDetailScreen />} />
       <Route path="runs/:runId/components/:componentId" element={<ComponentDetailScreen />} />
       <Route path="runs/:runId/traces/:traceId" element={<TraceViewerScreen />} />
       <Route path="compare/:runIdA/:runIdB" element={<RunCompareScreen />} />

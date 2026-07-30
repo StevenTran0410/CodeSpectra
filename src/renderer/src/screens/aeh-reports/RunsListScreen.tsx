@@ -4,22 +4,35 @@ import {
   Layers,
   RefreshCw,
   AlertTriangle,
-  Database,
-  CheckCircle2,
+  Boxes,
+  Activity,
   ArrowRight,
   TrendingUp,
-  Boxes,
-  DollarSign
+  Cpu
 } from 'lucide-react'
-import { useAEHReportsStore } from '../../store/aeh-reports.store'
+import { useAEHReportsStore, AEHEvalRunSummary } from '../../store/aeh-reports.store'
 
 function formatTime(isoStr: string) {
+  if (!isoStr) return 'N/A'
   try {
     const d = new Date(isoStr)
     return d.toLocaleString()
   } catch (e) {
     return isoStr
   }
+}
+
+function formatLatency(ms: number) {
+  if (!ms || ms <= 0) return 'N/A'
+  if (ms < 1000) return `${ms}ms`
+  return `${(ms / 1000).toFixed(2)}s`
+}
+
+function _scoreColor(score: number | null): string {
+  if (score === null) return 'text-slate-400'
+  if (score >= 0.7) return 'text-emerald-400'
+  if (score >= 0.4) return 'text-amber-400'
+  return 'text-rose-400'
 }
 
 export default function RunsListScreen(): React.ReactElement {
@@ -33,239 +46,277 @@ export default function RunsListScreen(): React.ReactElement {
     fetchRunsList().catch(() => {})
   }, [fetchRunsList])
 
+  const judgedRuns = runs.filter((r) => r.judged_status !== 'not_judged')
+  const avgOverallSemantic =
+    judgedRuns.length > 0
+      ? judgedRuns.reduce((acc, r) => acc + (r.avg_semantic_match ?? 0), 0) / judgedRuns.length
+      : null
+
   return (
-    <div className="flex-1 flex flex-col min-h-screen text-slate-100 selection:bg-indigo-500 selection:text-white pb-10">
-      {/* Premium Header */}
-      <header className="border-b border-surface-border bg-surface-overlay/30 backdrop-blur-md sticky top-0 z-50 px-6 py-4 flex items-center justify-between">
+    <div className="flex-1 flex flex-col min-h-screen text-slate-100 bg-slate-950 pb-10">
+      {/* Navigation Header */}
+      <header className="border-b border-slate-800 bg-slate-900 px-6 py-4 flex items-center justify-between sticky top-0 z-50">
         <div className="flex items-center gap-3">
-          <div className="h-10 w-10 rounded-xl bg-gradient-to-tr from-indigo-500 to-purple-600 flex items-center justify-center shadow-lg shadow-indigo-500/20">
-            <Layers className="h-5 w-5 text-white" />
+          <div className="h-9 w-9 rounded-lg bg-indigo-600/20 border border-indigo-500/30 flex items-center justify-center">
+            <Layers className="h-5 w-5 text-indigo-400" />
           </div>
           <div>
-            <h1 className="text-xl font-bold tracking-tight bg-gradient-to-r from-gray-100 via-gray-200 to-gray-400 bg-clip-text text-transparent">
-              AEH Dashboard
-            </h1>
-            <p className="text-xs text-gray-400 font-medium">Agentic Evaluation Harness</p>
+            <h1 className="text-lg font-bold text-gray-100">AEH Evaluation Dashboard</h1>
+            <p className="text-xs text-gray-400">Agentic Evaluation Harness · Runs & Systems</p>
           </div>
         </div>
 
-        <div className="flex items-center gap-4">
-          <button
-            onClick={() => fetchRunsList()}
-            disabled={loading}
-            className="p-2 text-gray-400 hover:text-indigo-400 hover:bg-surface-overlay border border-surface-border hover:border-indigo-500/30 rounded-lg transition-all"
-            title="Refresh current view"
-          >
-            <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-          </button>
-        </div>
+        <button
+          onClick={() => fetchRunsList()}
+          disabled={loading}
+          className="p-2 text-gray-400 hover:text-white bg-slate-800 border border-slate-700 rounded-lg transition-colors cursor-pointer"
+          title="Refresh runs"
+        >
+          <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+        </button>
       </header>
 
-      {/* Main Content Area */}
+      {/* Main Content */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-6 flex flex-col gap-6">
         {error && (
-          <div className="p-4 rounded-xl border border-red-500/20 bg-red-950/20 text-red-400 flex items-center gap-3">
-            <AlertTriangle className="h-5 w-5 flex-shrink-0" />
-            <p className="text-sm font-medium">{error}</p>
+          <div className="p-4 rounded-xl border border-rose-900/40 bg-rose-950/20 text-rose-300 flex items-center gap-3 text-sm">
+            <AlertTriangle className="h-5 w-5 flex-shrink-0 text-rose-400" />
+            <p className="font-medium">{error}</p>
           </div>
         )}
 
         {loading && runs.length === 0 ? (
           <div className="flex-1 flex flex-col items-center justify-center py-20 gap-4">
-            <div className="relative">
-              <div className="h-12 w-12 rounded-full border-t-2 border-indigo-500 animate-spin"></div>
-            </div>
-            <p className="text-sm text-gray-400 font-medium">Loading evaluation runs...</p>
+            <div className="h-10 w-10 rounded-full border-t-2 border-indigo-500 animate-spin"></div>
+            <p className="text-sm text-gray-400">Loading evaluation runs...</p>
           </div>
         ) : (
           <>
-            {/* Dashboard Stats */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              <div className="glass rounded-2xl p-6 relative overflow-hidden">
-                <div className="absolute top-0 right-0 h-32 w-32 bg-indigo-500/5 rounded-full blur-3xl -mr-8 -mt-8"></div>
-                <p className="text-xs font-semibold uppercase tracking-wider text-gray-400">Total Runs</p>
-                <p className="text-4xl font-extrabold text-gray-100 mt-2">{runs.length}</p>
-                <div className="flex items-center gap-2 mt-4 text-xs text-indigo-400 font-medium">
-                  <Database className="h-4 w-4" />
-                  <span>Loaded from SQLite store</span>
-                </div>
+            {/* Top Overview KPI Banner */}
+            <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 grid grid-cols-1 md:grid-cols-4 gap-6 items-center">
+              <div>
+                <span className="text-xs font-semibold uppercase tracking-wider text-gray-400 block mb-1">
+                  Overall Avg Semantic Match
+                </span>
+                <span className={`text-3xl font-extrabold ${_scoreColor(avgOverallSemantic)}`}>
+                  {avgOverallSemantic !== null ? `${(avgOverallSemantic * 100).toFixed(0)}%` : 'N/A'}
+                </span>
               </div>
 
-              <div className="glass rounded-2xl p-6 relative overflow-hidden">
-                <div className="absolute top-0 right-0 h-32 w-32 bg-emerald-500/5 rounded-full blur-3xl -mr-8 -mt-8"></div>
-                <p className="text-xs font-semibold uppercase tracking-wider text-gray-400">Latest Run Pass Rate</p>
-                <p className="text-4xl font-extrabold text-emerald-400 mt-2">
-                  {runs.length > 0
-                    ? `${(runs[0].pass_rate * 100).toFixed(0)}%`
-                    : 'N/A'}
-                </p>
-                <div className="flex items-center gap-2 mt-4 text-xs text-emerald-500 font-medium">
-                  <CheckCircle2 className="h-4 w-4" />
-                  <span>Metric-level correctness</span>
-                </div>
+              <div>
+                <span className="text-xs font-semibold uppercase tracking-wider text-gray-400 block mb-1">
+                  Total Runs
+                </span>
+                <span className="text-2xl font-bold text-gray-100">{runs.length}</span>
               </div>
 
-              <div className="glass rounded-2xl p-6 relative overflow-hidden">
-                <div className="absolute top-0 right-0 h-32 w-32 bg-purple-500/5 rounded-full blur-3xl -mr-8 -mt-8"></div>
-                <p className="text-xs font-semibold uppercase tracking-wider text-gray-400">Run Comparison</p>
-                <div className="flex items-center gap-2 mt-2">
-                  <select
-                    value={compareRunIdA}
-                    onChange={(e) => setCompareRunIdA(e.target.value)}
-                    className="bg-slate-900 border border-slate-800 text-xs rounded-lg p-2 text-gray-300 w-full focus:outline-none focus:border-indigo-500"
-                  >
-                    <option value="">Baseline Run</option>
-                    {runs.map((r) => (
-                      <option key={r.id} value={r.id}>
-                        {r.target_system_id} ({r.id.slice(0, 8)})
-                      </option>
-                    ))}
-                  </select>
-                  <ArrowRight className="h-4 w-4 text-gray-500 flex-shrink-0" />
-                  <select
-                    value={compareRunIdB}
-                    onChange={(e) => setCompareRunIdB(e.target.value)}
-                    className="bg-slate-900 border border-slate-800 text-xs rounded-lg p-2 text-gray-300 w-full focus:outline-none focus:border-indigo-500"
-                  >
-                    <option value="">Comparison Run</option>
-                    {runs.map((r) => (
-                      <option key={r.id} value={r.id}>
-                        {r.target_system_id} ({r.id.slice(0, 8)})
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <button
-                  onClick={() => navigate(`/aeh/reports/compare/${compareRunIdA}/${compareRunIdB}`)}
-                  disabled={!compareRunIdA || !compareRunIdB}
-                  className="mt-3 w-full bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 disabled:from-slate-800 disabled:to-slate-800 disabled:text-gray-500 disabled:cursor-not-allowed font-medium text-xs text-white py-2 px-3 rounded-lg shadow-md transition-all flex items-center justify-center gap-2"
-                >
-                  <TrendingUp className="h-3.5 w-3.5" />
-                  <span>Compare Selected Runs</span>
-                </button>
+              <div>
+                <span className="text-xs font-semibold uppercase tracking-wider text-gray-400 block mb-1">
+                  Judged Runs
+                </span>
+                <span className="text-2xl font-bold text-gray-100">{judgedRuns.length}</span>
+              </div>
+
+              <div>
+                <span className="text-xs font-semibold uppercase tracking-wider text-gray-400 block mb-1">
+                  Evaluated Systems
+                </span>
+                <span className="text-2xl font-bold text-indigo-400">
+                  {new Set(runs.map((r) => r.target_system_id)).size}
+                </span>
               </div>
             </div>
 
-            {/* Runs Table */}
-            <div className="glass rounded-2xl overflow-hidden">
-              <div className="px-6 py-4 border-b border-surface-border bg-surface-overlay flex items-center justify-between">
-                <h3 className="text-md font-bold text-gray-100 flex items-center gap-2">
-                  <Boxes className="h-4 w-4 text-indigo-400" />
-                  <span>Evaluation Runs</span>
-                </h3>
-              </div>
+            {/* Run Comparison Launcher */}
+            {runs.length >= 2 && (
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-wrap items-center justify-between gap-4">
+                <div className="flex items-center gap-2 text-sm font-semibold text-gray-200">
+                  <TrendingUp className="h-4 w-4 text-indigo-400" />
+                  <span>Compare Two Runs</span>
+                </div>
 
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse">
-                  <thead>
-                    <tr className="border-b border-surface-border bg-surface-overlay/50 text-gray-400 text-xs font-semibold uppercase tracking-wider">
-                      <th className="py-4 px-6">Target System</th>
-                      <th className="py-4 px-6">Run ID / Plan</th>
-                      <th className="py-4 px-6">Timestamp</th>
-                      <th className="py-4 px-6">Defects Active</th>
-                      <th className="py-4 px-6">Pass Rate</th>
-                      <th className="py-4 px-6">Cost</th>
-                      <th className="py-4 px-6">Status</th>
-                      <th className="py-4 px-6 text-right">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-surface-border/60 text-sm">
-                    {runs.length === 0 ? (
-                      <tr>
-                        <td colSpan={8} className="py-12 text-center text-gray-500 font-medium">
-                          No evaluation runs found in database. Run `aeh eval` first to populate.
-                        </td>
-                      </tr>
-                    ) : (
-                      runs.map((run) => (
-                        <tr key={run.id} className="hover:bg-surface-overlay/20 transition-colors group">
-                          <td className="py-4 px-6 font-bold text-gray-100">
-                            {run.target_system_id}
-                          </td>
-                          <td className="py-4 px-6">
-                            <span className="font-mono text-xs text-gray-400 block">
-                              {run.id.slice(0, 8)}...
-                            </span>
-                            <span className="text-xs text-gray-500 block truncate max-w-xs">
-                              {run.eval_plan_id || 'no suite plan'}
-                            </span>
-                          </td>
-                          <td className="py-4 px-6 text-xs text-gray-400">
-                            {formatTime(run.started_at)}
-                          </td>
-                          <td className="py-4 px-6">
-                            <div className="flex flex-wrap gap-1.5 max-w-xs">
-                              {run.active_defects.length === 0 ? (
-                                <span className="text-xs text-gray-500 italic">None (Clean)</span>
-                              ) : (
-                                run.active_defects.map((def) => (
-                                  <span
-                                    key={def}
-                                    className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-red-950/30 text-red-400 border border-red-900/40"
-                                  >
-                                    {def.toUpperCase()}
-                                  </span>
-                                ))
-                              )}
-                            </div>
-                          </td>
-                          <td className="py-4 px-6">
-                            <div className="flex items-center gap-2">
-                              <div className="w-16 bg-slate-800 rounded-full h-1.5 overflow-hidden">
-                                <div
-                                  className={`h-full rounded-full ${
-                                    run.pass_rate === 1.0 ? 'bg-emerald-500' : 'bg-indigo-500'
-                                  }`}
-                                  style={{ width: `${run.pass_rate * 100}%` }}
-                                ></div>
-                              </div>
-                              <span className="text-xs font-bold text-gray-100">
-                                {(run.pass_rate * 100).toFixed(0)}%
-                              </span>
-                            </div>
-                          </td>
-                          <td className="py-4 px-6 text-xs text-purple-400 font-bold">
-                            {run.judge_cost > 0 ? (
-                              <span className="flex items-center">
-                                <DollarSign className="h-3 w-3 mr-0.5" />
-                                {run.judge_cost} tokens
-                              </span>
-                            ) : (
-                              <span className="text-gray-500">Free</span>
-                            )}
-                          </td>
-                          <td className="py-4 px-6">
-                            <span
-                              className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border ${
-                                run.status === 'completed'
-                                  ? 'bg-emerald-950/20 text-emerald-400 border-emerald-900/30'
-                                  : run.status === 'failed'
-                                  ? 'bg-red-950/20 text-red-400 border-red-900/30'
-                                  : 'bg-indigo-950/20 text-indigo-400 border-indigo-900/30 animate-pulse'
-                              }`}
-                            >
-                              {run.status}
-                            </span>
-                          </td>
-                          <td className="py-4 px-6 text-right">
-                            <button
-                              onClick={() => navigate(`/aeh/reports/runs/${run.id}`)}
-                              className="inline-flex items-center gap-1 text-xs font-bold text-indigo-400 hover:text-indigo-300 group-hover:translate-x-1 transition-all bg-transparent border-0 cursor-pointer"
-                            >
-                              <span>View Report</span>
-                              <ArrowRight className="h-3.5 w-3.5" />
-                            </button>
-                          </td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
+                <div className="flex items-center gap-3">
+                  <select
+                    value={compareRunIdA}
+                    onChange={(e) => setCompareRunIdA(e.target.value)}
+                    className="bg-slate-950 border border-slate-800 text-xs text-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:border-indigo-500"
+                  >
+                    <option value="">Select Baseline Run</option>
+                    {runs.map((r) => (
+                      <option key={r.id} value={r.id}>
+                        {r.system_name} ({r.id.slice(0, 8)})
+                      </option>
+                    ))}
+                  </select>
+
+                  <span className="text-xs text-gray-500 font-bold">VS</span>
+
+                  <select
+                    value={compareRunIdB}
+                    onChange={(e) => setCompareRunIdB(e.target.value)}
+                    className="bg-slate-950 border border-slate-800 text-xs text-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:border-indigo-500"
+                  >
+                    <option value="">Select Target Run</option>
+                    {runs.map((r) => (
+                      <option key={r.id} value={r.id}>
+                        {r.system_name} ({r.id.slice(0, 8)})
+                      </option>
+                    ))}
+                  </select>
+
+                  <button
+                    disabled={!compareRunIdA || !compareRunIdB || compareRunIdA === compareRunIdB}
+                    onClick={() => navigate(`/aeh/reports/compare/${compareRunIdA}/${compareRunIdB}`)}
+                    className="px-4 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 rounded-lg transition-colors cursor-pointer flex items-center gap-1.5"
+                  >
+                    <span>Compare Runs</span>
+                    <ArrowRight className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Systems / Runs List */}
+            <div className="flex flex-col gap-4">
+              <h2 className="text-md font-bold text-gray-200 flex items-center gap-2">
+                <Boxes className="h-4 w-4 text-indigo-400" />
+                <span>Ingested Runs ({runs.length})</span>
+              </h2>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {runs.map((run) => (
+                  <RunCard key={run.id} run={run} navigate={navigate} />
+                ))}
               </div>
             </div>
           </>
         )}
       </main>
     </div>
+  )
+}
+
+function RunCard({
+  run,
+  navigate
+}: {
+  run: AEHEvalRunSummary
+  navigate: (path: string) => void
+}): React.ReactElement {
+  return (
+    <div
+      onClick={() => navigate(`/aeh/reports/runs/${run.id}`)}
+      className="bg-slate-900 border border-slate-800 hover:border-indigo-500/50 rounded-xl p-5 flex flex-col gap-4 transition-colors cursor-pointer group"
+    >
+      {/* Card Header */}
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex flex-col gap-1">
+          <div className="flex items-center gap-2">
+            <span className="font-bold text-base text-gray-100 group-hover:text-indigo-400 transition-colors">
+              {run.system_name}
+            </span>
+            {run.framework && (
+              <span className="text-[11px] font-mono font-semibold px-2 py-0.5 rounded bg-indigo-950/60 text-indigo-300 border border-indigo-800/40 uppercase">
+                {run.framework}
+              </span>
+            )}
+          </div>
+          <span className="text-xs text-gray-500 font-mono">Run ID: {run.id}</span>
+        </div>
+
+        {/* Judged Status Pill */}
+        <StatusPill status={run.judged_status} scoredCount={run.scored_count} totalCount={run.case_count} />
+      </div>
+
+      {/* Metric Highlights */}
+      <div className="grid grid-cols-3 gap-3 border-y border-slate-800/60 py-3">
+        <div>
+          <span className="text-xs text-gray-400 block font-medium">Semantic Match</span>
+          <span className={`text-xl font-bold ${_scoreColor(run.avg_semantic_match)}`}>
+            {run.avg_semantic_match !== null ? `${(run.avg_semantic_match * 100).toFixed(0)}%` : 'N/A'}
+          </span>
+        </div>
+
+        <div>
+          <span className="text-xs text-gray-400 block font-medium">Field-Exact Pass</span>
+          <span className="text-xl font-bold text-gray-200">
+            {run.field_exact_pass_rate !== null ? `${(run.field_exact_pass_rate * 100).toFixed(0)}%` : 'N/A'}
+          </span>
+        </div>
+
+        <div>
+          <span className="text-xs text-gray-400 block font-medium">Precision / Recall</span>
+          <span className="text-xl font-bold text-gray-200">
+            {run.avg_precision_recall !== null ? run.avg_precision_recall.toFixed(2) : 'N/A'}
+          </span>
+        </div>
+      </div>
+
+      {/* Footer Sparkline & Case Meta */}
+      <div className="flex items-center justify-between text-xs text-gray-400">
+        <div className="flex items-center gap-3">
+          <span className="flex items-center gap-1 font-mono">
+            <Cpu className="h-3.5 w-3.5 text-indigo-400" />
+            {run.agent_count} Agents
+          </span>
+          <span>·</span>
+          <span className="flex items-center gap-1 font-mono">
+            <Activity className="h-3.5 w-3.5 text-purple-400" />
+            {run.case_count} Cases
+          </span>
+          <span>·</span>
+          <span>{formatLatency(run.total_latency_ms)}</span>
+        </div>
+
+        {/* 5-Bucket Distribution Sparkline */}
+        {run.judged_status !== 'not_judged' && (
+          <div className="flex items-end gap-1 h-5" title="Semantic Match 5-Bucket Score Distribution">
+            {run.semantic_match_histogram.map((count, i) => {
+              const max = Math.max(...run.semantic_match_histogram, 1)
+              const pct = count > 0 ? Math.max((count / max) * 100, 25) : 10
+              return (
+                <div
+                  key={i}
+                  className="w-1.5 bg-indigo-500/70 rounded-t transition-all"
+                  style={{ height: `${pct}%` }}
+                />
+              )
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function StatusPill({
+  status,
+  scoredCount,
+  totalCount
+}: {
+  status: 'judged' | 'partially_judged' | 'not_judged'
+  scoredCount: number
+  totalCount: number
+}): React.ReactElement {
+  if (status === 'judged') {
+    return (
+      <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-emerald-950/40 text-emerald-300 border border-emerald-800/50">
+        Judged
+      </span>
+    )
+  }
+
+  if (status === 'partially_judged') {
+    return (
+      <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-amber-950/40 text-amber-300 border border-amber-800/50">
+        Partially Judged ({scoredCount}/{totalCount})
+      </span>
+    )
+  }
+
+  return (
+    <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-slate-800 text-slate-400 border border-slate-700">
+      Not judged yet
+    </span>
   )
 }

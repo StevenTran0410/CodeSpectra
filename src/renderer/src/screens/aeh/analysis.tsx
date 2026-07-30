@@ -90,6 +90,8 @@ function AnalysisOverview(): React.ReactElement {
   const [candidates, setCandidates] = useState<AEHDiscoveryCandidate[]>([])
   const [completedExpansionsCount, setCompletedExpansionsCount] = useState(0)
   const [hasPlanCount, setHasPlanCount] = useState(0)
+  const [hasEvalPlanCount, setHasEvalPlanCount] = useState(0)
+  const [hasEvalRunCount, setHasEvalRunCount] = useState(0)
 
   // Load repos on mount or workspace change
   useEffect(() => {
@@ -270,6 +272,8 @@ function AnalysisOverview(): React.ReactElement {
     if (confirmedCands.length === 0) {
       setCompletedExpansionsCount(0)
       setHasPlanCount(0)
+      setHasEvalPlanCount(0)
+      setHasEvalRunCount(0)
       return
     }
 
@@ -278,6 +282,8 @@ function AnalysisOverview(): React.ReactElement {
       try {
         let completed = 0
         let planned = 0
+        let evalPlanned = 0
+        let evalRun = 0
         for (const cand of confirmedCands) {
           const sessions = await window.api.aeh.listExpansionSessions(cand.id)
           const completedSess = sessions.filter((s) => s.status === 'completed')
@@ -286,11 +292,20 @@ function AnalysisOverview(): React.ReactElement {
             if (completedSess.some((s) => s.plan_path)) {
               planned++
             }
+            // Stage 4 done = an eval plan was rendered; Stage 5 done = a run was ingested.
+            if (completedSess.some((s) => s.eval_plan_md_path)) {
+              evalPlanned++
+            }
+            if (completedSess.some((s) => s.eval_run_id)) {
+              evalRun++
+            }
           }
         }
         if (!cancelled) {
           setCompletedExpansionsCount(completed)
           setHasPlanCount(planned)
+          setHasEvalPlanCount(evalPlanned)
+          setHasEvalRunCount(evalRun)
         }
       } catch (e) {
         console.error('Failed to load expansion stats', e)
@@ -648,6 +663,22 @@ function AnalysisOverview(): React.ReactElement {
         return <Badge variant="warning" size="sm">Needs Review</Badge>
       }
       return <Badge variant="success" size="sm">Complete</Badge>
+    }
+
+    if (stageNum === 4) {
+      // Complete once an eval plan is rendered, or once results are already loaded (Stage 5
+      // implies Stage 4 happened) — so it never lingers on Pending after the user moves on.
+      if (hasEvalPlanCount > 0 || hasEvalRunCount > 0) {
+        return <Badge variant="success" size="sm">Complete</Badge>
+      }
+      return <Badge variant="neutral" size="sm">Pending</Badge>
+    }
+
+    if (stageNum === 5) {
+      if (hasEvalRunCount > 0) {
+        return <Badge variant="success" size="sm">Complete</Badge>
+      }
+      return <Badge variant="neutral" size="sm">Pending</Badge>
     }
 
     return <Badge variant="neutral" size="sm">Pending</Badge>

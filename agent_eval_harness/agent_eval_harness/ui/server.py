@@ -2108,8 +2108,10 @@ async def list_session_eval_runs(session_id: str):
 
 
 @app.get("/api/eval-runs/{run_id}/cases")
-async def get_eval_run_cases(run_id: str):
-    """Per-agent input/result/expected for an ingested run; agent_id comes from the dataset case's own labels_json."""
+async def get_eval_run_cases(run_id: str, acceptable_threshold: float = 0.70):
+    """Per-agent input/result/expected for an ingested run; enriched with suspect-data flags and agent verdicts."""
+    from agent_eval_harness.judging.case_flags import calculate_agent_verdict, derive_case_flags
+
     run = await repository.get_run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Run not found.")
@@ -2136,6 +2138,14 @@ async def get_eval_run_cases(run_id: str):
     case_ids = [t["dataset_case_id"] for t in traces if t.get("dataset_case_id")]
     cases_by_id = await repository.get_dataset_cases_by_ids(case_ids)
 
+    def _parse_if_json(val: Any) -> Any:
+        if isinstance(val, str):
+            try:
+                return json.loads(val)
+            except (json.JSONDecodeError, TypeError):
+                return val
+        return val
+
     agents: dict[str, list[dict]] = {}
     for trace in traces:
         case_id = trace.get("dataset_case_id")
@@ -2153,15 +2163,42 @@ async def get_eval_run_cases(run_id: str):
                     expected = json.loads(dataset_case["expected_json"])
                 except json.JSONDecodeError:
                     expected = dataset_case["expected_json"]
+
+        case_evals = evals_by_trace.get(trace["id"], [])
+        input_obj = _parse_if_json(trace.get("root_input"))
+        result_obj = _parse_if_json(trace.get("final_output"))
+        expected_obj = expected
+
+        flags = derive_case_flags(input_obj, result_obj, expected_obj, case_evals)
+
         agents.setdefault(agent_id, []).append({
             "case_id": case_id,
             "trace_id": trace["id"],
+            "latency_ms": trace.get("total_latency_ms"),
             "input": trace.get("root_input"),
             "result": trace.get("final_output"),
             "expected": expected,
-            "evaluations": evals_by_trace.get(trace["id"], []),
+            "evaluations": case_evals,
+            "flags": flags,
         })
-    return {"run_id": run_id, "status": run["status"], "agents": agents, "agent_summaries": agent_summaries}
+
+    agent_verdicts: dict[str, dict] = {}
+    for aid, case_list in agents.items():
+        case_tuples = []
+        for c in case_list:
+            sm_eval = next((e for e in c["evaluations"] if e["metric_name"] == "semantic_match"), None)
+            score = sm_eval["score"] if sm_eval else None
+            case_tuples.append((score, c["flags"]))
+        agent_verdicts[aid] = calculate_agent_verdict(case_tuples, acceptable_threshold)
+
+    return {
+        "run_id": run_id,
+        "status": run["status"],
+        "agents": agents,
+        "agent_summaries": agent_summaries,
+        "agent_verdicts": agent_verdicts,
+    }
+
 
 
 _JUDGE_BATCH_SIZE = 4  # concurrent LLM calls per batch — this is a dev-only tool, favor speed

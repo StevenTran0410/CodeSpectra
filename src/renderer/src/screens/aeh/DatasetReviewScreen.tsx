@@ -310,7 +310,7 @@ export default function DatasetReviewScreen(): React.ReactElement {
           <Button
             variant="ghost"
             className="w-8 h-8 p-0 rounded-full flex items-center justify-center border border-slate-800 bg-slate-900/40 text-slate-400 hover:text-slate-200 shrink-0"
-            onClick={() => navigate(`/aeh/analysis/stage3?repoId=${repoId ?? ''}&snapshotId=${snapshotId ?? ''}`)}
+            onClick={() => navigate(-1)}
             title="Back to Stage 3"
           >
             <ArrowLeft size={16} />
